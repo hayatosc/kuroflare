@@ -96,7 +96,6 @@ class MemoryStorage implements DurableObjectStorageBinding {
   private readonly values = new Map<string, unknown>()
 
   async get<T = unknown>(key: string): Promise<T | undefined> {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return this.values.get(key) as T | undefined
   }
 
@@ -223,7 +222,6 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       return []
     }
     if (normalized.includes('from schema_migrations')) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return [...this.migrationVersions].map((version) => ({ version })) as Iterable<T>
     }
     if (normalized.includes('insert into schema_migrations')) {
@@ -244,7 +242,6 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 consumedAt: token.consumedAt ?? null,
               },
             ]
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from device_refresh_tokens')) {
@@ -260,12 +257,10 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 revokedAt: token.revokedAt,
               },
             ]
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from devices')) {
       if (!normalized.includes('where device_id')) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
         return [...this.devices.values()].map((device) => ({
           yClientId: device.yClientId,
         })) as Iterable<T>
@@ -282,7 +277,6 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 revokedAt: device.revokedAt,
               },
             ]
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('update setup_tokens')) {
@@ -359,7 +353,6 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 horizonStateVector: doc.horizonStateVector,
               },
             ]
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (
@@ -372,20 +365,17 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         .sort(([, left], [, right]) => left.updatedAt - right.updatedAt)
         .slice(0, limit)
         .map(([docId]) => ({ docId }))
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('select latest_seq')) {
       const docId = expectString(bindings[0])
       const doc = this.docs.get(docId)
       const rows = doc === undefined ? [] : [{ latestSeq: doc.latestSeq }]
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from docs') && normalized.includes('limit') && !normalized.includes('latest_seq > latest_snapshot_seq')) {
       const first = this.docs.keys().next()
       const rows = first.done === true ? [] : [{ docId: first.value }]
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('select') && normalized.includes('latest_snapshot_seq')) {
@@ -400,7 +390,6 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 latestSnapshotKey: doc.latestSnapshotKey,
               },
             ]
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (
@@ -414,7 +403,6 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         .filter((row) => row.seq > minSeq)
         .sort((left, right) => left.seq - right.seq)
         .map((row) => ({ updateBytes: row.updateBytes }))
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('select durable_seq as durableseq')) {
@@ -422,7 +410,6 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       const messageId = expectString(bindings[1])
       const row = this.messageDedup.get(`${docId}:${messageId}`)
       const rows = row === undefined ? [] : [{ durableSeq: row.durableSeq }]
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from checkpoint_runs') && normalized.includes('status in')) {
@@ -443,7 +430,6 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
           upperSeq: run.upperSeq,
           snapshotKey: run.snapshotKey,
         }))
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('insert into op_log')) {
@@ -504,14 +490,12 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       const id = expectString(bindings[0])
       const row = this.quarantines.get(id)
       const rows = row === undefined ? [] : [quarantineSqlRow(row)]
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from quarantined_updates')) {
       const rows = [...this.quarantines.values()]
         .sort((left, right) => left.createdAt - right.createdAt)
         .map(quarantineSqlRow)
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('insert into checkpoint_runs')) {
@@ -681,7 +665,6 @@ class SqlOnlyStorage implements DurableObjectStorageBinding {
   private readonly values = new Map<string, unknown>()
 
   async get<T = unknown>(key: string): Promise<T | undefined> {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return this.values.get(key) as T | undefined
   }
 
@@ -1068,7 +1051,6 @@ test('VaultRoom exchanges setup tokens for device credentials', async () => {
   )
 
   assert.equal(response.status, 200)
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const body = (await response.json()) as {
     readonly endpoint?: unknown
     readonly vaultId?: unknown
@@ -1087,7 +1069,6 @@ test('VaultRoom exchanges setup tokens for device credentials', async () => {
   assert.equal(typeof body.deviceId, 'string')
   assert.equal(typeof body.accessToken, 'string')
   assert.equal(typeof body.refreshToken, 'string')
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   assert.equal((body.accessToken as string).split('.').length, 3)
   assert.equal(storage.sql.setupTokens.get(setupTokenHash)?.consumedAt !== undefined, true)
   assert.equal(storage.sql.refreshTokens.size, 1)
@@ -1155,7 +1136,6 @@ test('VaultRoom refreshes device access tokens and rotates refresh tokens', asyn
   )
 
   assert.equal(response.status, 200)
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const body = (await response.json()) as {
     readonly accessToken?: unknown
     readonly refreshToken?: unknown
@@ -1316,7 +1296,6 @@ test('VaultRoom serves authenticated blob head, upload, and download proxy reque
     }),
   )
   assert.equal(uploadUrlResponse.status, 200)
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const uploadUrlBody = (await uploadUrlResponse.json()) as {
     readonly kind?: unknown
     readonly url?: unknown
@@ -1324,19 +1303,15 @@ test('VaultRoom serves authenticated blob head, upload, and download proxy reque
   }
   assert.equal(uploadUrlBody.kind, 'single-put')
   assert.equal(typeof uploadUrlBody.url, 'string')
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   assert((uploadUrlBody.url as string).startsWith(`https://worker.example/blobs/${uploadHash}?`))
   assert.equal(
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     new URL(uploadUrlBody.url as string).searchParams.get('size'),
     String(uploadBytes.byteLength),
   )
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   assert.equal(new URL(uploadUrlBody.url as string).searchParams.get('expiresAt'), null)
   assert.deepEqual(uploadUrlBody.headers, {})
 
   const putResponse = await room.fetch(
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     new Request(uploadUrlBody.url as string, {
       method: 'PUT',
       headers: {
@@ -1564,7 +1539,6 @@ test('VaultRoom appends JSON sync updates, acks the sender, and broadcasts to pe
     if (typeof ack !== 'string') {
       throw new Error('expected ack string')
     }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(ack) as Ack, {
       type: 'ack',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -1585,7 +1559,6 @@ test('VaultRoom appends JSON sync updates, acks the sender, and broadcasts to pe
     if (typeof duplicateAck !== 'string') {
       throw new Error('expected duplicate ack string')
     }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(duplicateAck) as Ack, {
       type: 'ack',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -1642,7 +1615,6 @@ test('VaultRoom persists JSON sync updates through Durable Object SQL storage', 
     if (typeof ack !== 'string') {
       throw new Error('expected SQL ack string')
     }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.equal((JSON.parse(ack) as Ack).durableSeq, 1)
 
     await room.webSocketMessage(firstServer, updateJson)
@@ -1651,7 +1623,6 @@ test('VaultRoom persists JSON sync updates through Durable Object SQL storage', 
     if (typeof duplicateAck !== 'string') {
       throw new Error('expected SQL duplicate ack string')
     }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.equal((JSON.parse(duplicateAck) as Ack).durableSeq, 1)
     assert.deepEqual(syncMessages(secondServer.sent), [
       JSON.stringify({ ...update, durableSeq: 1 }),
@@ -1780,10 +1751,8 @@ test('VaultRoom acks snapshot-escape duplicates from message_dedup without reiss
       seenAt: storage.sql.messageDedup.get('file:large-file-doc:message-large-update')?.seenAt,
     })
     assert.equal(syncMessages(server.sent).length, 2)
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.equal((JSON.parse(stringMessageAt(server.sent, 0)) as Ack).durableSeq, 1)
     assert.equal(
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       (JSON.parse(stringMessageAt(server.sent, 1)) as NeedFullSnapshot).reason,
       'large-update-snapshot',
     )
@@ -1791,7 +1760,6 @@ test('VaultRoom acks snapshot-escape duplicates from message_dedup without reiss
     await room.webSocketMessage(server, updateJson)
 
     assert.equal(syncMessages(server.sent).length, 3)
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(stringMessageAt(server.sent, 2)) as Ack, {
       type: 'ack',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -1894,7 +1862,6 @@ test('VaultRoom persists binary sync frames before acking and broadcasting', asy
     if (typeof ack !== 'string') {
       throw new Error('expected binary ack string')
     }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.equal((JSON.parse(ack) as Ack).durableSeq, 1)
     assert.equal(syncMessages(secondServer.sent).length, 1)
     const broadcast = syncMessages(secondServer.sent)[0]
@@ -1947,7 +1914,6 @@ test('VaultRoom restores WebSocket sessions from hibernation attachments', async
     if (typeof ack !== 'string') {
       throw new Error('expected resumed session ack string')
     }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(ack) as Ack, {
       type: 'ack',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -2207,7 +2173,6 @@ test('VaultRoom answers sync requests with Yjs diffs and no-ops empty diffs', as
     if (typeof response !== 'string') {
       throw new Error('expected sync-request response string')
     }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     const parsed = JSON.parse(response) as SyncUpdate
     assert.equal(parsed.type, 'sync-update')
     assert.equal(parsed.messageId, makeMessageId('message-sync-request'))
@@ -2262,7 +2227,6 @@ test('VaultRoom requires a full snapshot when sync request state vector is older
     if (typeof response !== 'string') {
       throw new Error('expected need-full-snapshot response string')
     }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(response) as NeedFullSnapshot, {
       type: 'need-full-snapshot',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
