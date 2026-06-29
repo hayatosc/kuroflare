@@ -5,23 +5,23 @@ import {
   type ClientStartupLocalState,
   type ClientStartupStep,
 } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/protocol'
+import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema.js'
-import { type SyncRuntimeObsidianShellEvidenceReadResult } from './obsidian-shell-driver.js'
-import { createSyncRuntimeObsidianShellLifecycle } from './obsidian-shell-lifecycle.js'
-import { type SyncRuntimeObsidianShellUiPort } from './obsidian-shell-ui.js'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema'
+import { type SyncRuntimeObsidianShellEvidenceReadResult } from './obsidian-shell-driver'
+import { createSyncRuntimeObsidianShellLifecycle } from './obsidian-shell-lifecycle'
+import { type SyncRuntimeObsidianShellUiPort } from './obsidian-shell-ui'
 import {
   createSyncRuntimeSetupExchangePort,
   type SyncRuntimeShellEffectExecutor,
   type SyncRuntimeStartupStepEffect,
   type SyncRuntimeStartupStepEffectPort,
-} from './startup-actuation.js'
+} from './startup-actuation'
 import {
   type SyncRuntimeStartupEffect,
   type SyncRuntimeStartupFromSchemaEvidenceInput,
-} from './startup-runtime.js'
+} from './startup-runtime'
 
 const vaultId = makeVaultId('lifecycle-vault-1')
 const deviceId = makeDeviceId('lifecycle-device-1')

@@ -12,7 +12,7 @@ import {
   failItem,
   retryItem,
   type OutboxItemId,
-} from './outbox-model.js'
+} from './outbox-model'
 
 interface RandomSource {
   nextInt(exclusiveMax: number): number

@@ -16,11 +16,11 @@ import {
   parseControlMessage,
   type ClientHello,
   type DocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 import * as Y from 'yjs'
 
-import { type LocalStoreOutboxRecord } from './local-store.js'
+import { type LocalStoreOutboxRecord } from './local-store'
 import {
   attachSyncRuntimeWebSocketInboundMessageHandler,
   buildSyncRuntimeWebSocketProtocols,
@@ -54,7 +54,7 @@ import {
   type SyncRuntimeWebSocketSyncRequestAnswerRejectPort,
   type SyncRuntimeWebSocketYDocRegistryPort,
   type SyncRuntimeWebSocketInboundRoutePorts,
-} from './websocket-runtime.js'
+} from './websocket-runtime'
 
 const vaultId = makeVaultId('websocket-vault-1')
 const deviceId = makeDeviceId('websocket-device-1')

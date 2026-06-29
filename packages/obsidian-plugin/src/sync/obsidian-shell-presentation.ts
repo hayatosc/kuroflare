@@ -2,7 +2,7 @@ import {
   type SyncRuntimeRepairEntryState,
   type SyncRuntimeShellState,
   type SyncRuntimeShellStatus,
-} from './startup-actuation.js'
+} from './startup-actuation'
 
 /** Snapshot of Obsidian shell UI side effects already presented to the user. */
 export interface SyncRuntimeObsidianPresentationSnapshot {

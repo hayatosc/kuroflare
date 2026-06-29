@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { decideSchemaMigration } from './migrations.js'
+import { decideSchemaMigration } from './migrations'
 import {
   collectSqlObjectNames,
   INITIAL_SCHEMA_INDEXES,
@@ -10,7 +10,7 @@ import {
   INITIAL_SCHEMA_TABLES,
   migrationStatements,
   SCHEMA_MIGRATIONS,
-} from './schema.js'
+} from './schema'
 
 test('initial schema declares all required tables and indexes', () => {
   assert.deepEqual(collectSqlObjectNames(INITIAL_SCHEMA_OBJECTS, 'table'), INITIAL_SCHEMA_TABLES)

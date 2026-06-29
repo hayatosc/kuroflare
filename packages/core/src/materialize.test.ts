@@ -7,7 +7,7 @@ import {
   decideWatcherHashGate,
   makeLastMaterializedRecord,
   type LastMaterializedRecord,
-} from './materialize.js'
+} from './materialize'
 
 const last: LastMaterializedRecord = {
   ydocHash: 'ydoc-a',

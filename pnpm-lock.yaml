@@ -117,30 +117,8 @@ importers:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@22.19.21)(jsdom@29.1.1)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.28.1))
 
-  packages/blob:
-    dependencies:
-      '@kuroflare/core':
-        specifier: workspace:*
-        version: link:../core
-      '@kuroflare/protocol':
-        specifier: workspace:*
-        version: link:../protocol
-      valibot:
-        specifier: ^1.4.1
-        version: 1.4.1(typescript@5.9.3)
-    devDependencies:
-      '@types/node':
-        specifier: ^22.15.30
-        version: 22.19.21
-      typescript:
-        specifier: ^5.8.3
-        version: 5.9.3
-
   packages/core:
     dependencies:
-      '@kuroflare/protocol':
-        specifier: workspace:*
-        version: link:../protocol
       valibot:
         specifier: ^1.4.1
         version: 1.4.1(typescript@5.9.3)
@@ -154,9 +132,9 @@ importers:
 
   packages/model-tests:
     dependencies:
-      '@kuroflare/protocol':
+      '@kuroflare/core':
         specifier: workspace:*
-        version: link:../protocol
+        version: link:../core
       '@kuroflare/worker':
         specifier: workspace:*
         version: link:../worker
@@ -176,9 +154,6 @@ importers:
       '@kuroflare/core':
         specifier: workspace:*
         version: link:../core
-      '@kuroflare/protocol':
-        specifier: workspace:*
-        version: link:../protocol
       valibot:
         specifier: ^1.4.1
         version: 1.4.1(typescript@5.9.3)
@@ -217,24 +192,17 @@ importers:
         specifier: ^5.8.3
         version: 5.9.3
 
-  packages/protocol:
-    dependencies:
-      valibot:
-        specifier: ^1.4.1
-        version: 1.4.1(typescript@5.9.3)
-    devDependencies:
-      '@types/node':
-        specifier: ^22.15.30
-        version: 22.19.21
-      typescript:
-        specifier: ^5.8.3
-        version: 5.9.3
-
   packages/worker:
     dependencies:
-      '@kuroflare/protocol':
+      '@kuroflare/core':
         specifier: workspace:*
-        version: link:../protocol
+        version: link:../core
+      hono:
+        specifier: ^4.12.27
+        version: 4.12.27
+      kysely:
+        specifier: ^0.29.2
+        version: 0.29.2
       valibot:
         specifier: ^1.4.1
         version: 1.4.1(typescript@5.9.3)
@@ -1472,6 +1440,10 @@ packages:
     resolution: {integrity: sha512-/6gFNr0N04nob252sTQxyFLi3eKFRqIg1I87YcqAMT1i6SQrSF6KujUEQrtrjMV0H/eejTCltLdDSTEMzHbnsQ==}
     engines: {node: '>=20.20.0'}
 
+  hono@4.12.27:
+    resolution: {integrity: sha512-1yrb/+w6HWQJrUCLkJ2IF5jNIPvvFkblV5RNOYl6bV+OA6p9GLcMpHFFGTosSvHvcAUibuUukRqhlYI4z32C7Q==}
+    engines: {node: '>=16.9.0'}
+
   hookable@6.1.1:
     resolution: {integrity: sha512-U9LYDy1CwhMCnprUfeAZWZGByVbhd54hwepegYTK7Pi5NvqEj63ifz5z+xukznehT7i6NIZRu89Ay1AZmRsLEQ==}
 
@@ -1506,6 +1478,10 @@ packages:
   kleur@4.1.5:
     resolution: {integrity: sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ==}
     engines: {node: '>=6'}
+
+  kysely@0.29.2:
+    resolution: {integrity: sha512-s6WVJyEZrbm6jhBpiKHsGHyePMrVQKJ85wZCFCr9W4QHv6WTjWIrdvTmO9hDEA3bNK0xkrE2DqrHsXMLWuZpQg==}
+    engines: {node: '>=22.0.0'}
 
   lib0@0.2.117:
     resolution: {integrity: sha512-DeXj9X5xDCjgKLU/7RR+/HQEVzuuEUiwldwOGsHK/sfAfELGWEyTcf0x+uOvCvK3O2zPmZePXWL85vtia6GyZw==}
@@ -2861,6 +2837,8 @@ snapshots:
     dependencies:
       resolve-pkg-maps: 1.0.0
 
+  hono@4.12.27: {}
+
   hookable@6.1.1: {}
 
   html-encoding-sniffer@6.0.0:
@@ -2904,6 +2882,8 @@ snapshots:
   jsesc@3.1.0: {}
 
   kleur@4.1.5: {}
+
+  kysely@0.29.2: {}
 
   lib0@0.2.117:
     dependencies:

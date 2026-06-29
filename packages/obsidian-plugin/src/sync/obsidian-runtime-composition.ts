@@ -1,21 +1,21 @@
 import {
   createSyncRuntimeObsidianShellLifecycle,
   type SyncRuntimeObsidianShellLifecycle,
-} from './obsidian-shell-lifecycle.js'
-import { type SyncRuntimeObsidianShellUiPort } from './obsidian-shell-ui.js'
+} from './obsidian-shell-lifecycle'
+import { type SyncRuntimeObsidianShellUiPort } from './obsidian-shell-ui'
 import {
   createSyncRuntimeObsidianShellEvidencePort,
   createSyncRuntimeObsidianStartupEvidenceReader,
   type SyncRuntimeObsidianLocalStartupEvidenceReaderPort,
   type SyncRuntimeObsidianStartupSettingsEvidenceReaderPort,
-} from './obsidian-startup-evidence.js'
+} from './obsidian-startup-evidence'
 import {
   createSyncRuntimeStartupEffectExecutor,
   type SyncRuntimeLocalStoreEffectPort,
   type SyncRuntimeLocalStoreRebuildEffectPort,
   type SyncRuntimeSetupExchangePort,
   type SyncRuntimeStartupStepEffectPort,
-} from './startup-actuation.js'
+} from './startup-actuation'
 
 /** Input ports for composing the Obsidian sync runtime lifecycle. */
 export interface SyncRuntimeObsidianCompositionInput {

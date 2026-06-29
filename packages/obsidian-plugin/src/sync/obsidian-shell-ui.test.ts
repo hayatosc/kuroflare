@@ -5,7 +5,7 @@ import { test } from 'vitest'
 import {
   applySyncRuntimeObsidianShellPresentation,
   type SyncRuntimeObsidianShellUiPort,
-} from './obsidian-shell-ui.js'
+} from './obsidian-shell-ui'
 
 test('Obsidian shell UI adapter applies presentation without re-deciding shell state', () => {
   const ui = new RecordingObsidianShellUiPort()

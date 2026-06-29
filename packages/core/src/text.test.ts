@@ -8,7 +8,7 @@ import {
   computeMinimalTextReplacement,
   hashBytesSha256,
   hashCanonicalText,
-} from './index.js'
+} from './index'
 
 test('canonicalizeTextForYText removes BOM and normalizes line endings', () => {
   assert.equal(canonicalizeTextForYText('\uFEFFa\r\nb\r'), 'a\nb\n')

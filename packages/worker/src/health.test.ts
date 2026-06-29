@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { HealthResponseSchema } from '@kuroflare/protocol'
+import { HealthResponseSchema } from '@kuroflare/core'
 import * as v from 'valibot'
 import { test } from 'vitest'
 
@@ -9,7 +9,7 @@ import {
   decideWorkerHealth,
   healthAcceptsCheckpoint,
   healthAcceptsSync,
-} from './health.js'
+} from './health'
 
 test('worker health is ok when all subsystems and migrations are ready', () => {
   const health = decideWorkerHealth({

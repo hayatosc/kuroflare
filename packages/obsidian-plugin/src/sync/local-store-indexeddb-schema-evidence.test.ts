@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
 import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type LocalStoreObjectStore } from '@kuroflare/core'
-import { makeVaultId } from '@kuroflare/protocol'
+import { makeVaultId } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -13,12 +13,12 @@ import {
   type LocalStoreIndexedDbSchemaProbeDatabasePort,
   type LocalStoreIndexedDbSchemaProbeFactoryPort,
   type LocalStoreIndexedDbSchemaProbeTransactionPort,
-} from './local-store-indexeddb.js'
+} from './local-store-indexeddb'
 import {
   LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
   localStoreIndexedDbName,
   planLocalStoreIndexedDbOpen,
-} from './local-store-schema.js'
+} from './local-store-schema'
 
 const vaultId = makeVaultId('schema-evidence-vault-1')
 const dbName = localStoreIndexedDbName(vaultId)

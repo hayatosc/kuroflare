@@ -1,22 +1,22 @@
 import { type ClientStartupIntent } from '@kuroflare/core'
-import { type SetupBootstrapMode, type SetupExchangeResponse } from '@kuroflare/protocol'
+import { type SetupBootstrapMode, type SetupExchangeResponse } from '@kuroflare/core'
 
-import { type LocalStoreIndexedDbSchemaEvidencePlan } from './local-store-indexeddb.js'
+import { type LocalStoreIndexedDbSchemaEvidencePlan } from './local-store-indexeddb'
 import {
   type SyncRuntimeObsidianShellEvidencePort,
   type SyncRuntimeObsidianShellEvidenceReadResult,
-} from './obsidian-shell-driver.js'
+} from './obsidian-shell-driver'
 import {
   planSyncRuntimeObsidianStartupSettings,
   type SyncRuntimeObsidianStartupSettingsInput,
   type SyncRuntimeObsidianStartupSettingsPlan,
-} from './obsidian-startup-settings.js'
-import { type LocalSetupMetadataSnapshotDecision } from './setup-persist.js'
+} from './obsidian-startup-settings'
+import { type LocalSetupMetadataSnapshotDecision } from './setup-persist'
 import {
   planSyncRuntimeLocalStateFromEvidence,
   type SyncRuntimeLocalStateEvidencePlan,
   type SyncRuntimeStartupFromSchemaEvidenceInput,
-} from './startup-runtime.js'
+} from './startup-runtime'
 
 /** Raw startup evidence collected by the Obsidian shell before sync planning. */
 export interface SyncRuntimeObsidianStartupEvidenceInput {

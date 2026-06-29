@@ -1,22 +1,22 @@
 import assert from 'node:assert/strict'
 
 import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type ClientStartupLocalState } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/protocol'
+import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
   LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
   type LocalStoreIndexedDbOpenPlanInput,
-} from './local-store-schema.js'
+} from './local-store-schema'
 import {
   applySyncRuntimeSetupExchangeShellReplan,
   planSyncRuntimeStartupAfterSetupExchange,
-} from './setup-replan.js'
+} from './setup-replan'
 import {
   applySyncRuntimeShellCommands,
   INITIAL_SYNC_RUNTIME_SHELL_STATE,
   type SyncRuntimeSetupExchangeReplanRequest,
-} from './startup-actuation.js'
+} from './startup-actuation'
 
 const vaultId = makeVaultId('setup-replan-vault-1')
 const deviceId = makeDeviceId('setup-replan-device-1')

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 
-import { makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/protocol'
+import { makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
   decodeFullSnapshotBytesFromResponse,
   decideFullSnapshotApply,
   makeFullSnapshotApplyInputFromResponse,
-} from './snapshot.js'
+} from './snapshot'
 
 const firstHash = makeSha256Hex('a'.repeat(64))
 const secondHash = makeSha256Hex('b'.repeat(64))

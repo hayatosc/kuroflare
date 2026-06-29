@@ -10,13 +10,13 @@ import {
   type FileId,
   type MetaFile,
   type YDocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { env, evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { expect, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { SCHEMA_MIGRATIONS } from '../../src/schema.js'
-import { makeSnapshotListPrefix } from '../../src/snapshots.js'
+import { SCHEMA_MIGRATIONS } from '../../src/schema'
+import { makeSnapshotListPrefix } from '../../src/snapshots'
 
 const VAULT_ID = 'vault-1'
 const DEVICE_TOKEN_SECRET = 'e2e-device-token-secret'

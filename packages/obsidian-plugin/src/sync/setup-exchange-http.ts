@@ -6,15 +6,15 @@ import {
   type DeviceId,
   type SetupExchangeRequest,
   type SetupExchangeResponse,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import * as v from 'valibot'
 
 import {
   createSyncRuntimeSetupExchangePort,
   type SyncRuntimeSetupExchangePort,
   type SyncRuntimeSetupExchangeReplanRequest,
-} from './startup-actuation.js'
-import { type SyncEngineStartupEffect } from './sync-engine.js'
+} from './startup-actuation'
+import { type SyncEngineStartupEffect } from './sync-engine'
 
 /** Startup setup exchange effect accepted by the HTTP-backed setup exchange port. */
 export type SetupExchangeStartupEffect = Extract<

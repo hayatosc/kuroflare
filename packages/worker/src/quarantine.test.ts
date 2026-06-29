@@ -6,10 +6,10 @@ import {
   makeSha256Hex,
   makeYDocId,
   type DocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { decideQuarantinedUpdateAdmin, type QuarantinedUpdateRecord } from './quarantine.js'
+import { decideQuarantinedUpdateAdmin, type QuarantinedUpdateRecord } from './quarantine'
 
 const docId: DocId = { kind: 'file', ydocId: makeYDocId('doc-a') }
 const record: QuarantinedUpdateRecord = {

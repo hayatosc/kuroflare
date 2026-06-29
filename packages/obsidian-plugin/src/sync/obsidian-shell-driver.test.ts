@@ -5,10 +5,10 @@ import {
   type ClientStartupLocalState,
   type ClientStartupStep,
 } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/protocol'
+import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema.js'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema'
 import {
   INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE,
   runSyncRuntimeObsidianShellDriverSetupExchangeTick,
@@ -17,17 +17,17 @@ import {
   runSyncRuntimeObsidianShellDriverTransportTick,
   type SyncRuntimeObsidianShellEvidenceReadResult,
   type SyncRuntimeObsidianShellEvidencePort,
-} from './obsidian-shell-driver.js'
+} from './obsidian-shell-driver'
 import {
   createSyncRuntimeSetupExchangePort,
   type SyncRuntimeShellEffectExecutor,
   type SyncRuntimeStartupStepEffect,
   type SyncRuntimeStartupStepEffectPort,
-} from './startup-actuation.js'
+} from './startup-actuation'
 import {
   type SyncRuntimeStartupEffect,
   type SyncRuntimeStartupFromSchemaEvidenceInput,
-} from './startup-runtime.js'
+} from './startup-runtime'
 
 const vaultId = makeVaultId('driver-vault-1')
 const deviceId = makeDeviceId('driver-device-1')

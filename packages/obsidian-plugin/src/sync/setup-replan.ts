@@ -1,5 +1,5 @@
 import { type ClientStartupIntent } from '@kuroflare/core'
-import { type SetupBootstrapMode } from '@kuroflare/protocol'
+import { type SetupBootstrapMode } from '@kuroflare/core'
 
 import {
   applySyncRuntimeShellCommands,
@@ -8,12 +8,12 @@ import {
   type SyncRuntimeShellState,
   type SyncRuntimeSetupExchangeReplanRequest,
   type SyncRuntimeStartupActuationPlan,
-} from './startup-actuation.js'
+} from './startup-actuation'
 import {
   planSyncRuntimeStartup,
   type SyncRuntimeStartupInput,
   type SyncRuntimeStartupPlan,
-} from './startup-runtime.js'
+} from './startup-runtime'
 
 /** Input for replanning startup after setup exchange returned credentials. */
 export interface SyncRuntimeSetupExchangeStartupReplanInput {

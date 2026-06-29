@@ -5,7 +5,7 @@ import {
   type DocId,
   type VaultId,
   type YDocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import * as v from 'valibot'
 
 /** R2 prefix category for a document snapshot. */

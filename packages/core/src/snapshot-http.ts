@@ -1,0 +1,39 @@
+import * as v from 'valibot'
+
+import { Base64Schema, NonNegativeSafeIntegerSchema } from './_shared'
+import { DocIdSchema } from './ids'
+import { Sha256HexSchema } from './meta'
+
+const MAX_R2_KEY_LENGTH = 1024
+
+export const SnapshotObjectKeySchema = v.pipe(
+  v.string(),
+  v.minLength(1),
+  v.maxLength(MAX_R2_KEY_LENGTH),
+  v.check(
+    (val) =>
+      val.startsWith('snapshots/') &&
+      !val.includes('\0') &&
+      !val.includes('\\') &&
+      !val.includes('//') &&
+      val.endsWith('.yupdate'),
+    'Invalid R2 object key',
+  ),
+)
+
+export const MetaLatestSnapshotResponseSchema = v.object({
+  manifestSeq: NonNegativeSafeIntegerSchema,
+  snapshotKey: SnapshotObjectKeySchema,
+  snapshotSeq: NonNegativeSafeIntegerSchema,
+  updateSha256: Sha256HexSchema,
+  stateVectorSha256: Sha256HexSchema,
+  stateVector: Base64Schema,
+  updateBytesBase64: Base64Schema,
+})
+export type MetaLatestSnapshotResponse = v.InferInput<typeof MetaLatestSnapshotResponseSchema>
+
+export const DocLatestSnapshotResponseSchema = v.intersect([
+  MetaLatestSnapshotResponseSchema,
+  v.object({ docId: DocIdSchema }),
+])
+export type DocLatestSnapshotResponse = v.InferInput<typeof DocLatestSnapshotResponseSchema>

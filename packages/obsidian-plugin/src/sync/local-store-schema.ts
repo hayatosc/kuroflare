@@ -4,7 +4,7 @@ import {
   type LocalStoreObjectStore,
   type LocalStoreSchemaDecision,
 } from '@kuroflare/core'
-import { type VaultId } from '@kuroflare/protocol'
+import { type VaultId } from '@kuroflare/core'
 
 /** Current IndexedDB schema version created by this plugin bundle. */
 export const LOCAL_STORE_INDEXEDDB_TARGET_VERSION = 3

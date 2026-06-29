@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { decideSchemaMigration, schemaAcceptsSync, type SchemaMigration } from './migrations.js'
+import { decideSchemaMigration, schemaAcceptsSync, type SchemaMigration } from './migrations'
 
 const migrations: readonly SchemaMigration[] = [
   { version: 1, name: 'init', statements: ['create table one (id integer primary key)'] },

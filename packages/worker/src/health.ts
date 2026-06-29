@@ -2,9 +2,9 @@ import {
   CURRENT_PROTOCOL_VERSION,
   type HealthCheck,
   type HealthResponse,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 
-import type { SchemaMigrationDecision } from './migrations.js'
+import type { SchemaMigrationDecision } from './migrations'
 
 /** Subsystem evidence used to build the public health response. */
 export interface WorkerHealthDecisionInput {

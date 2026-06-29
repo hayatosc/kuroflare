@@ -22,7 +22,7 @@ import {
   type SetupExchangeResponse,
   type SyncRequest,
   type SyncUpdate,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import {
   MarkdownView,
   Notice,
@@ -41,20 +41,22 @@ import {
   dispatchFullDocumentReplace,
   getEditorView,
   replaceYText,
-} from './obsidian/editor-binding.js'
-import { applyFileCreate, applyFileDelete, applyFileRename } from './sync/meta-file-tree.js'
-import { reconcileMetaDoc } from './sync/meta-reconcile.js'
+} from './obsidian/editor-binding'
+import { applyFileCreate, applyFileDelete, applyFileRename } from './sync/meta-file-tree'
+import { reconcileMetaDoc } from './sync/meta-reconcile'
 import {
   createSyncRuntimeObsidianComposition,
   type SyncRuntimeObsidianComposition,
-} from './sync/obsidian-runtime-composition.js'
-import { type SyncRuntimeObsidianRepairPresentation } from './sync/obsidian-shell-presentation.js'
-import { createSyncRuntimeObsidianSetupExchangeEvidenceReader } from './sync/obsidian-startup-settings.js'
+} from './sync/obsidian-runtime-composition'
+import { type SyncRuntimeObsidianRepairPresentation } from './sync/obsidian-shell-presentation'
+import { createSyncRuntimeObsidianSetupExchangeEvidenceReader } from './sync/obsidian-startup-settings'
 import {
   createEvidenceBackedHttpSyncRuntimeSetupExchangePort,
   type SetupExchangeStartupEffect,
-} from './sync/setup-exchange-http.js'
-import { type SyncRuntimeStartupStepEffectPort } from './sync/startup-actuation.js'
+} from './sync/setup-exchange-http'
+import { type SyncRuntimeStartupStepEffectPort } from './sync/startup-actuation'
+
+import type { KuroflareSettings, FileDocId, LoadedTextDoc } from './main-types'
 
 const SPIKE_TEXT_NAME = 'fixed-file'
 const META_DOC_NAME = 'kuroflare-meta'
@@ -66,26 +68,6 @@ const FILE_TREE_ORIGIN = 'kuroflare:file-tree'
 const REPAIR_ORIGIN = 'kuroflare:repair'
 const REPAIR_DEVICE = makeDeviceId('repair')
 const MARKDOWN_EXTENSION = 'md'
-
-interface KuroflareSettings {
-  readonly endpoint: string
-  readonly setupVaultId: string
-  readonly setupToken: string
-  readonly requestedDeviceName: string
-  readonly setupBootstrapMode: 'new-vault' | 'join-existing'
-  readonly setupResponse?: SetupExchangeResponse | undefined
-  readonly accessToken?: string | undefined
-  readonly refreshToken?: string | undefined
-}
-
-type FileDocId = Extract<DocId, { readonly kind: 'file' }>
-
-interface LoadedTextDoc {
-  readonly docId: FileDocId
-  readonly doc: Y.Doc
-  readonly text: Y.Text
-  persistence: IndexeddbPersistence | null
-}
 
 const DEFAULT_SETTINGS: KuroflareSettings = {
   endpoint: 'http://127.0.0.1:8787',

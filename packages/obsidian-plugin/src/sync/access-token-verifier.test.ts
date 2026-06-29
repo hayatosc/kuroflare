@@ -5,10 +5,10 @@ import {
   makeVaultId,
   signHs256DeviceToken,
   type DeviceTokenClaims,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { createHs256AccessTokenVerifier } from './access-token-verifier.js'
+import { createHs256AccessTokenVerifier } from './access-token-verifier'
 
 const vaultId = makeVaultId('verifier-vault-1')
 const deviceId = makeDeviceId('verifier-device-1')

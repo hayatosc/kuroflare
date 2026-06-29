@@ -10,7 +10,7 @@ import {
   createYTextEditorExtension,
   dispatchFullDocumentReplace,
   replaceYText,
-} from './editor-binding.js'
+} from './editor-binding'
 
 // These tests exercise the real CodeMirror 6 <-> Yjs binding (y-codemirror.next) under jsdom — the
 // spec's §9.1 "highest implementation risk" — without a running Obsidian. They prove the binding

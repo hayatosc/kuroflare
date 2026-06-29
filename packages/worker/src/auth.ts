@@ -1,7 +1,7 @@
-import type { DeviceTokenClaims, DeviceTokenScope, VaultId } from '@kuroflare/protocol'
+import type { DeviceTokenClaims, DeviceTokenScope, VaultId } from '@kuroflare/core'
 import * as v from 'valibot'
 
-import type { DeviceRegistryEntry } from './devices.js'
+import type { DeviceRegistryEntry } from './devices'
 
 /** Input for admitting an authenticated HTTP or WebSocket request. */
 export interface AuthAdmissionDecisionInput {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/protocol'
+import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -14,13 +14,13 @@ import {
   type LocalStoreIndexedDbMetadataWriteOperation,
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
-} from './local-store-indexeddb.js'
+} from './local-store-indexeddb'
 import {
   LOCAL_AUTH_METADATA_KEY,
   LOCAL_SETUP_METADATA_KEY,
   planLocalSetupPersist,
   type LocalSetupMetadataPutOperation,
-} from './setup-persist.js'
+} from './setup-persist'
 
 const vaultId = makeVaultId('setup-indexeddb-vault-1')
 const deviceId = makeDeviceId('setup-indexeddb-device-1')

@@ -5,7 +5,7 @@ import {
   makeVaultId,
   type SetupExchangeRequest,
   type SetupExchangeResponse,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -15,7 +15,7 @@ import {
   requestSetupExchange,
   type SetupExchangeFetchPort,
   type SetupExchangeStartupEffect,
-} from './setup-exchange-http.js'
+} from './setup-exchange-http'
 
 const vaultId = makeVaultId('setup-http-vault-1')
 const deviceId = makeDeviceId('setup-http-device-1')

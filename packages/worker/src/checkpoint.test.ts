@@ -9,7 +9,7 @@ import {
   type CheckpointDocRecoveryState,
   type CheckpointRunRecoveryInput,
   type CheckpointSnapshotEvidence,
-} from './checkpoint.js'
+} from './checkpoint'
 
 const currentDoc: CheckpointDocRecoveryState = {
   latestSnapshotSeq: 10,

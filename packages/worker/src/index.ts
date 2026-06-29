@@ -1,4 +1,4 @@
-export { default, VaultRoom, workerEntrypoint } from './runtime.js'
+export { default, VaultRoom, workerEntrypoint } from './runtime'
 export type {
   DurableObjectIdBinding,
   DurableObjectNamespaceBinding,
@@ -13,18 +13,18 @@ export type {
   RuntimeCheckpointResult,
   RuntimeWebSocket,
   WorkerEnv,
-} from './runtime.js'
+} from './runtime'
 export {
   decideAuthAdmission,
   type AuthAdmissionDecision,
   type AuthAdmissionDecisionInput,
-} from './auth.js'
+} from './auth'
 export {
   AUTH_REFRESH_DEVICE_TOKEN_SCOPES,
   planDeviceTokenRefreshHttpResponse,
   type DeviceTokenRefreshHttpResponsePlan,
   type DeviceTokenRefreshHttpResponsePlanInput,
-} from './auth-refresh-http.js'
+} from './http/authRefresh'
 export {
   planBlobHeadHttpResponse,
   planBlobUploadUrlHttpResponse,
@@ -35,7 +35,7 @@ export {
   type BlobUploadUrlHttpResponsePlan,
   type BlobUploadUrlHttpResponsePlanInput,
   type BlobUploadUrlPolicy,
-} from './blob-http.js'
+} from './http/blob'
 export {
   decideDurableObjectSyncAdmission,
   decideWorkerHealth,
@@ -44,12 +44,12 @@ export {
   type DurableObjectSyncAdmissionDecision,
   type DurableObjectSyncAdmissionInput,
   type WorkerHealthDecisionInput,
-} from './health.js'
+} from './health'
 export {
   planRevokeDeviceHttpResponse,
   type RevokeDeviceHttpResponsePlan,
   type RevokeDeviceHttpResponsePlanInput,
-} from './device-http.js'
+} from './http/device'
 export {
   decideSchemaMigration,
   schemaAcceptsSync,
@@ -57,7 +57,7 @@ export {
   type SchemaMigration,
   type SchemaMigrationDecision,
   type SchemaMigrationDecisionInput,
-} from './migrations.js'
+} from './migrations'
 export {
   collectSqlObjectNames,
   INITIAL_SCHEMA_INDEXES,
@@ -66,19 +66,19 @@ export {
   migrationStatements,
   SCHEMA_MIGRATIONS,
   type SqlObjectDefinition,
-} from './schema.js'
+} from './schema'
 export {
   decideSetupTokenConsume,
   type SetupTokenConsumeDecision,
   type SetupTokenConsumeDecisionInput,
   type SetupTokenEntry,
-} from './setup-tokens.js'
+} from './setupTokens'
 export {
   planSetupExchangeHttpResponse,
   SETUP_EXCHANGE_DEVICE_TOKEN_SCOPES,
   type SetupExchangeHttpResponsePlan,
   type SetupExchangeHttpResponsePlanInput,
-} from './setup-http.js'
+} from './http/setup'
 export {
   chooseSnapshotForRestore,
   SnapshotManifestSchema,
@@ -92,13 +92,13 @@ export {
   type SnapshotDocPrefix,
   type SnapshotManifest,
   type SnapshotRestoreChoice,
-} from './snapshots.js'
+} from './snapshots'
 export {
   decideSyncRequest,
   type SyncRequestDecision,
   type SyncRequestDecisionInput,
   type SyncRequestDocState,
-} from './sync-request.js'
+} from './sync/request'
 export {
   decideSyncUpdateQuarantine,
   decideSyncUpdateAppend,
@@ -112,7 +112,7 @@ export {
   type SyncUpdateQuarantineDecisionInput,
   type SyncUpdateQuarantineReason,
   type SyncUpdateQuarantineRow,
-} from './sync-update.js'
+} from './sync/update'
 export {
   decideQuarantinedUpdateAdmin,
   type QuarantinedUpdateAdminAction,
@@ -122,7 +122,7 @@ export {
   type QuarantinedUpdateForceApplyDocPatch,
   type QuarantinedUpdateForceApplyOpLogAppend,
   type QuarantinedUpdateRecord,
-} from './quarantine.js'
+} from './quarantine'
 export {
   buildQuarantinedUpdateDetailResponse,
   buildQuarantinedUpdateListResponse,
@@ -134,7 +134,7 @@ export {
   type QuarantineConfirmationEvidence,
   type QuarantinedUpdateActionHttpPlan,
   type QuarantinedUpdateActionHttpPlanInput,
-} from './quarantine-http.js'
+} from './http/quarantine'
 export {
   decideCheckpointWrite,
   decideOrphanedCheckpointRecovery,
@@ -146,14 +146,14 @@ export {
   type CheckpointSnapshotEvidence,
   type OrphanedCheckpointRecoveryDecision,
   type OrphanedCheckpointRecoveryInput,
-} from './checkpoint.js'
+} from './checkpoint'
 export {
   planSnapshotRetention,
   type SnapshotRetentionCandidate,
   type SnapshotRetentionCheckpointRun,
   type SnapshotRetentionPlan,
   type SnapshotRetentionPlanInput,
-} from './retention.js'
+} from './retention'
 export {
   decideClientHelloRegistry,
   decideDeviceTokenRefresh,
@@ -181,4 +181,4 @@ export {
   type SetupExchangeRegistryState,
   type YClientId,
   type YClientIdRange,
-} from './devices.js'
+} from './devices'

@@ -1,21 +1,21 @@
 import { type ClientStartupLocalState } from '@kuroflare/core'
-import { type VaultId } from '@kuroflare/protocol'
+import { type VaultId } from '@kuroflare/core'
 
-import { type LocalStoreIndexedDbSchemaEvidencePlan } from './local-store-indexeddb.js'
+import { type LocalStoreIndexedDbSchemaEvidencePlan } from './local-store-indexeddb'
 import {
   LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
   planLocalStoreIndexedDbOpen,
   type LocalStoreIndexedDbOpenEffect,
   type LocalStoreIndexedDbOpenPlan,
   type LocalStoreIndexedDbOpenPlanInput,
-} from './local-store-schema.js'
-import { type LocalSetupMetadataSnapshotDecision } from './setup-persist.js'
+} from './local-store-schema'
+import { type LocalSetupMetadataSnapshotDecision } from './setup-persist'
 import {
   planSyncEngineStartup,
   type SyncEngineStartupEffect,
   type SyncEngineStartupInput,
   type SyncEngineStartupPlan,
-} from './sync-engine.js'
+} from './sync-engine'
 
 /** Local-store schema evidence gathered before the plugin enters sync runtime work. */
 export type SyncRuntimeLocalStoreEvidence = Omit<LocalStoreIndexedDbOpenPlanInput, 'vaultId'>

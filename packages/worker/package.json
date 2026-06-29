@@ -19,7 +19,9 @@
     "typecheck:compat": "tsc --noEmit"
   },
   "dependencies": {
-    "@kuroflare/protocol": "workspace:*",
+    "@kuroflare/core": "workspace:*",
+    "hono": "^4.12.27",
+    "kysely": "^0.29.2",
     "valibot": "^1.4.1",
     "yjs": "^13.6.27"
   },

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/protocol'
+import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { planClientStartup, type ClientStartupLocalState } from './startup.js'
+import { planClientStartup, type ClientStartupLocalState } from './startup'
 
 const vaultId = makeVaultId('vault-1')
 const otherVaultId = makeVaultId('vault-2')

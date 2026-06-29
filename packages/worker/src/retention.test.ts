@@ -6,7 +6,7 @@ import {
   planSnapshotRetention,
   type SnapshotRetentionCandidate,
   type SnapshotRetentionCheckpointRun,
-} from './retention.js'
+} from './retention'
 
 function snapshot(
   key: string,

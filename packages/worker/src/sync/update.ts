@@ -1,0 +1,205 @@
+import {
+  type Ack,
+  type DocId,
+  type DeviceId,
+  type MessageId,
+  type NeedFullSnapshot,
+  type Sha256Hex,
+  type SyncUpdate,
+} from '@kuroflare/core'
+import * as v from 'valibot'
+
+import type { YClientId } from '../devices'
+import type {
+  SyncUpdateDuplicateEvidence,
+  SyncUpdateDocClock,
+  SyncUpdateQuarantineReason,
+  SyncUpdateQuarantineDecisionInput,
+  SyncUpdateQuarantineRow,
+  SyncUpdateQuarantineDecision,
+  SyncUpdateAppendDecisionInput,
+  SyncUpdateOpLogAppend,
+  SyncUpdateDocPatch,
+  SyncUpdateAppendDecision,
+} from './update-types'
+
+export type {
+  SyncUpdateDuplicateEvidence,
+  SyncUpdateDocClock,
+  SyncUpdateQuarantineReason,
+  SyncUpdateQuarantineDecisionInput,
+  SyncUpdateQuarantineRow,
+  SyncUpdateQuarantineDecision,
+  SyncUpdateAppendDecisionInput,
+  SyncUpdateOpLogAppend,
+  SyncUpdateDocPatch,
+  SyncUpdateAppendDecision,
+}
+
+/**
+ * Decides whether an inbound update must be quarantined before append planning.
+ */
+export function decideSyncUpdateQuarantine(
+  input: SyncUpdateQuarantineDecisionInput,
+): SyncUpdateQuarantineDecision {
+  if (!v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), input.now)) {
+    return { action: 'reject', reason: 'invalid-now' }
+  }
+
+  if (!isValidQuarantineId(input.quarantineId)) {
+    return { action: 'reject', reason: 'invalid-quarantine-id' }
+  }
+
+  if (!Number.isSafeInteger(input.updateBytesLength) || input.updateBytesLength <= 0) {
+    return { action: 'reject', reason: 'invalid-update-size' }
+  }
+
+  if (
+    input.expectedUpdateSha256 !== undefined &&
+    input.expectedUpdateSha256 !== input.actualUpdateSha256
+  ) {
+    return makeQuarantineDecision(input, 'hash-mismatch')
+  }
+
+  if (!input.yjsApplySucceeded) {
+    return makeQuarantineDecision(input, 'yjs-apply-failed')
+  }
+
+  if (input.metaSchemaValid === false) {
+    return makeQuarantineDecision(input, 'meta-schema-invalid')
+  }
+
+  return {
+    action: 'accept',
+    updateBytesLength: input.updateBytesLength,
+    updateSha256: input.actualUpdateSha256,
+  }
+}
+
+/**
+ * Decides whether an inbound `sync-update` should append to op_log or take the snapshot escape path.
+ */
+export function decideSyncUpdateAppend(
+  input: SyncUpdateAppendDecisionInput,
+): SyncUpdateAppendDecision {
+  if (!v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), input.now)) {
+    return { action: 'reject', reason: 'invalid-now' }
+  }
+
+  if (!v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), input.yClientId)) {
+    return { action: 'reject', reason: 'invalid-y-client-id' }
+  }
+
+  if (
+    !Number.isSafeInteger(input.updateBytesLength) ||
+    input.updateBytesLength <= 0 ||
+    !Number.isSafeInteger(input.largeUpdateThresholdBytes) ||
+    input.largeUpdateThresholdBytes <= 0
+  ) {
+    return { action: 'reject', reason: 'invalid-update-size' }
+  }
+
+  if (!input.doc) {
+    return makeFirstAppendDecision(input)
+  }
+
+  if (!v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), input.doc.latestSeq)) {
+    return { action: 'reject', reason: 'invalid-clock' }
+  }
+
+  if (input.duplicate) {
+    if (
+      !v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), input.duplicate.durableSeq) ||
+      input.duplicate.durableSeq > input.doc.latestSeq
+    ) {
+      return { action: 'reject', reason: 'duplicate-ahead-of-doc' }
+    }
+
+    return {
+      action: 'ack-duplicate',
+      ack: makeAck(input.update, input.duplicate.durableSeq),
+    }
+  }
+
+  return makeNewUpdateDecision(input, input.doc.latestSeq + 1)
+}
+
+function makeFirstAppendDecision(input: SyncUpdateAppendDecisionInput): SyncUpdateAppendDecision {
+  if (input.duplicate) {
+    return { action: 'reject', reason: 'duplicate-ahead-of-doc' }
+  }
+
+  return makeNewUpdateDecision(input, 1)
+}
+
+function makeNewUpdateDecision(
+  input: SyncUpdateAppendDecisionInput,
+  seq: number,
+): SyncUpdateAppendDecision {
+  if (input.updateBytesLength > input.largeUpdateThresholdBytes) {
+    return {
+      action: 'snapshot-escape',
+      seq,
+      docPatch: { latestSeq: seq, updatedAt: input.now },
+      ack: makeAck(input.update, seq),
+      boundary: {
+        type: 'need-full-snapshot',
+        protocolVersion: input.update.protocolVersion,
+        vaultId: input.update.vaultId,
+        deviceId: input.update.deviceId,
+        docId: input.update.docId,
+        reason: 'large-update-snapshot',
+      },
+    }
+  }
+
+  return {
+    action: 'append-op',
+    opLogAppend: {
+      seq,
+      messageId: input.update.messageId,
+      deviceId: input.update.deviceId,
+      docId: input.update.docId,
+      yClientId: input.yClientId,
+      updateSha256: input.updateSha256,
+      createdAt: input.now,
+    },
+    docPatch: { latestSeq: seq, updatedAt: input.now },
+    ack: makeAck(input.update, seq),
+  }
+}
+
+function makeAck(update: SyncUpdate, durableSeq: number): Ack {
+  return {
+    type: 'ack',
+    protocolVersion: update.protocolVersion,
+    vaultId: update.vaultId,
+    deviceId: update.deviceId,
+    messageId: update.messageId,
+    docId: update.docId,
+    durableSeq,
+  }
+}
+
+function makeQuarantineDecision(
+  input: SyncUpdateQuarantineDecisionInput,
+  reason: SyncUpdateQuarantineReason,
+): SyncUpdateQuarantineDecision {
+  return {
+    action: 'quarantine',
+    row: {
+      id: input.quarantineId,
+      docId: input.update.docId,
+      messageId: input.update.messageId,
+      deviceId: input.update.deviceId,
+      reason,
+      updateSha256: input.actualUpdateSha256,
+      updateBytesLength: input.updateBytesLength,
+      createdAt: input.now,
+    },
+  }
+}
+
+function isValidQuarantineId(value: string): boolean {
+  return value.length > 0 && value.length <= 128
+}

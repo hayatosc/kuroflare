@@ -14,7 +14,7 @@ import {
   makeVaultId,
   makeYDocId,
   type DocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -36,16 +36,16 @@ import {
   type LocalStoreIndexedDbTransactionLifecycle,
   type LocalStoreIndexedDbTransactionPort,
   type LocalStoreIndexedDbWriteOperation,
-} from './local-store-indexeddb.js'
+} from './local-store-indexeddb'
 import {
   planLocalStoreAckCompletionTransaction,
   planLocalStoreSuccessCompletionTransaction,
   type LocalStoreOutboxRecord,
-} from './local-store.js'
+} from './local-store'
 import {
   planOutboundQueueAckCompletion,
   planOutboundQueueSuccessCompletion,
-} from './outbound-queue.js'
+} from './outbound-queue'
 
 const yUpdateId = outboxId('indexeddb-y-update-1')
 const materializeId = outboxId('indexeddb-materialize-1')

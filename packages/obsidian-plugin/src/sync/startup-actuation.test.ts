@@ -11,7 +11,7 @@ import {
   makeVaultId,
   type DeviceTokenClaims,
   type SetupExchangeResponse,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -21,15 +21,15 @@ import {
   type LocalStoreIndexedDbOpenRequest,
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbSchemaDatabasePort,
-} from './local-store-indexeddb.js'
+} from './local-store-indexeddb'
 import {
   LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
   type LocalStoreIndexedDbOpenEffect,
-} from './local-store-schema.js'
+} from './local-store-schema'
 import {
   type LocalSetupPersistMetadataPort,
   type LocalSetupPersistSecretStoragePort,
-} from './setup-persist-runtime.js'
+} from './setup-persist-runtime'
 import {
   applySyncRuntimeShellCommands,
   createSyncRuntimeIndexedDbLocalStoreEffectPort,
@@ -46,9 +46,9 @@ import {
   type SyncRuntimeStartupEffectExecutorPorts,
   type SyncRuntimeStartupStepExecutorPorts,
   type SyncRuntimeShellEffectExecutor,
-} from './startup-actuation.js'
-import { planSyncRuntimeStartup, type SyncRuntimeStartupEffect } from './startup-runtime.js'
-import { type SyncEngineStartupEffect } from './sync-engine.js'
+} from './startup-actuation'
+import { planSyncRuntimeStartup, type SyncRuntimeStartupEffect } from './startup-runtime'
+import { type SyncEngineStartupEffect } from './sync-engine'
 
 const vaultId = makeVaultId('actuation-vault-1')
 const deviceId = makeDeviceId('actuation-device-1')

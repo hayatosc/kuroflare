@@ -23,7 +23,7 @@ import {
   type NeedFullSnapshot,
   type SyncRequest,
   type SyncUpdate,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import * as v from 'valibot'
 import { test } from 'vitest'
 import * as Y from 'yjs'
@@ -41,7 +41,7 @@ import workerEntrypoint, {
   type R2ObjectsBinding,
   type RuntimeWebSocket,
   type WorkerEnv,
-} from './runtime.js'
+} from './runtime'
 
 const TEST_DEVICE_TOKEN_SECRET = 'test-device-token-secret'
 
@@ -210,7 +210,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
     query: string,
     ...bindings: readonly unknown[]
   ): Iterable<T> {
-    const normalized = query.toLowerCase()
+    const normalized = query.toLowerCase().replace(/"/g, '')
     this.queries.push(normalized)
     if (normalized === 'begin immediate' || normalized === 'commit' || normalized === 'rollback') {
       return []
@@ -373,7 +373,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       const rows = doc === undefined ? [] : [{ latestSeq: doc.latestSeq }]
       return rows as Iterable<T>
     }
-    if (normalized.includes('from docs') && normalized.includes('limit 1')) {
+    if (normalized.includes('from docs') && normalized.includes('limit') && !normalized.includes('latest_seq > latest_snapshot_seq')) {
       const first = this.docs.keys().next()
       const rows = first.done === true ? [] : [{ docId: first.value }]
       return rows as Iterable<T>
@@ -413,7 +413,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       return rows as Iterable<T>
     }
     if (normalized.includes('from checkpoint_runs') && normalized.includes('status in')) {
-      const limit = expectNumber(bindings[0])
+      const limit = expectNumber(bindings[3])
       const rows = [...this.checkpointRuns.values()]
         .filter(
           (run) =>
@@ -3211,10 +3211,13 @@ function expectNumber(value: unknown): number {
 }
 
 function expectUint8Array(value: unknown): Uint8Array {
-  if (!(value instanceof Uint8Array)) {
-    throw new Error('expected Uint8Array SQL binding')
+  if (value instanceof Uint8Array) {
+    return value
   }
-  return value
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value)
+  }
+  throw new Error('expected Uint8Array SQL binding')
 }
 
 function installFakeWebSocketPair(): unknown {

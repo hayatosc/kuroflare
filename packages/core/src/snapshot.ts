@@ -1,12 +1,8 @@
-import {
-  type DocId,
-  type DocLatestSnapshotResponse,
-  type MetaLatestSnapshotResponse,
-  makeSha256Hex,
-  type Sha256Hex,
-} from '@kuroflare/protocol'
+import { type DocId } from './ids'
+import { type DocLatestSnapshotResponse, type MetaLatestSnapshotResponse } from './snapshot-http'
+import { makeSha256Hex, type Sha256Hex } from './meta'
 
-import { hashBytesSha256 } from './hashing.js'
+import { hashBytesSha256 } from './hashing'
 
 /** Input for deciding whether a fetched full snapshot may replace local doc state. */
 export interface FullSnapshotApplyInput {

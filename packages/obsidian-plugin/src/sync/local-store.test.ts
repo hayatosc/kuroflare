@@ -14,7 +14,7 @@ import {
   makeVaultId,
   makeYDocId,
   type DocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -29,7 +29,7 @@ import {
   planLocalStoreSuccessCompletionTransaction,
   planLocalStoreTransactionCommit,
   type LocalStoreOutboxRecord,
-} from './local-store.js'
+} from './local-store'
 import {
   planOutboundQueueAckCompletion,
   planOutboundQueueFullSnapshotRelease,
@@ -38,7 +38,7 @@ import {
   planOutboundQueueQuarantinePause,
   planOutboundQueueSuccessCompletion,
   planOutboundQueueTick,
-} from './outbound-queue.js'
+} from './outbound-queue'
 
 const yUpdateId = outboxId('local-y-update-1')
 const pausedId = outboxId('local-paused-1')

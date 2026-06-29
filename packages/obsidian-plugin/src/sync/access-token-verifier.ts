@@ -1,6 +1,6 @@
-import { verifyHs256DeviceToken } from '@kuroflare/protocol'
+import { verifyHs256DeviceToken } from '@kuroflare/core'
 
-import { type SyncRuntimeSetupPersistAccessTokenVerifierPort } from './startup-actuation.js'
+import { type SyncRuntimeSetupPersistAccessTokenVerifierPort } from './startup-actuation'
 
 /** Input for creating an HS256 access-token verifier. */
 export interface Hs256AccessTokenVerifierInput {

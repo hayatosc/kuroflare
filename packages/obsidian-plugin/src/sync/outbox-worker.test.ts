@@ -15,11 +15,11 @@ import {
   makeYDocId,
   type BlobManifest,
   type DocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { type LocalStoreOutboxRecord } from './local-store.js'
-import { planOutboundQueueTick } from './outbound-queue.js'
+import { type LocalStoreOutboxRecord } from './local-store'
+import { planOutboundQueueTick } from './outbound-queue'
 import {
   classifyOutboxWorkerSideEffectCompletionEvidence,
   isSafeLocalBlobCacheKey,
@@ -36,7 +36,7 @@ import {
   planOutboxWorkerSuccessCompletion,
   planOutboxWorkerTick,
   planOutboxWorkerTickIndexedDbWriteTransactions,
-} from './outbox-worker.js'
+} from './outbox-worker'
 
 const yUpdateId = outboxId('worker-y-update-1')
 const blobPutId = outboxId('worker-blob-put-1')

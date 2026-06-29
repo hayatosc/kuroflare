@@ -11,7 +11,7 @@
     "typecheck:compat": "tsc --noEmit"
   },
   "dependencies": {
-    "@kuroflare/protocol": "workspace:*",
+    "@kuroflare/core": "workspace:*",
     "@kuroflare/worker": "workspace:*",
     "valibot": "^1.4.1"
   },

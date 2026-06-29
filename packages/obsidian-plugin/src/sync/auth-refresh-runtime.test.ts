@@ -8,7 +8,7 @@ import {
   type DeviceTokenClaims,
   type DeviceTokenRefreshRequest,
   type DeviceTokenScope,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -21,7 +21,7 @@ import {
   type AuthRefreshHttpResult,
   type AuthRefreshMetadataPort,
   type AuthRefreshSecretStoragePort,
-} from './auth-refresh-runtime.js'
+} from './auth-refresh-runtime'
 import {
   type LocalStoreIndexedDbMetadataDatabasePort,
   type LocalStoreIndexedDbMetadataObjectStorePort,
@@ -29,8 +29,8 @@ import {
   type LocalStoreIndexedDbMetadataWriteOperation,
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
-} from './local-store-indexeddb.js'
-import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from './setup-persist.js'
+} from './local-store-indexeddb'
+import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from './setup-persist'
 
 const vaultId = makeVaultId('auth-refresh-vault-1')
 const deviceId = makeDeviceId('auth-refresh-device-1')

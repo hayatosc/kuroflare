@@ -20,7 +20,7 @@ import {
   type MessageId,
   type RunId,
   type UpdateId,
-} from './checkpoint-model.js'
+} from './checkpoint-model'
 
 interface RandomSource {
   nextInt(exclusiveMax: number): number

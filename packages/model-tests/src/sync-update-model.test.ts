@@ -11,7 +11,7 @@ import {
   expireSyncUpdateDedupForMessage,
   restoredSyncUpdateContent,
   type SyncUpdateModelMessage,
-} from './sync-update-model.js'
+} from './sync-update-model'
 
 interface RandomSource {
   nextInt(exclusiveMax: number): number

@@ -12,20 +12,20 @@ import {
   type SyncRequest,
   type SyncUpdate,
   type VaultId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import * as Y from 'yjs'
 
 import {
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
-} from './local-store-indexeddb.js'
-import { type LocalStoreOutboxRecord } from './local-store.js'
-import { planOutboxWorkerAckCompletion, type OutboxWorkerCompletionPlan } from './outbox-worker.js'
-import { type LocalSetupMetadata } from './setup-persist.js'
+} from './local-store-indexeddb'
+import { type LocalStoreOutboxRecord } from './local-store'
+import { planOutboxWorkerAckCompletion, type OutboxWorkerCompletionPlan } from './outbox-worker'
+import { type LocalSetupMetadata } from './setup-persist'
 import {
   type SyncRuntimeStartupStepEffect,
   type SyncRuntimeWebSocketStepPort,
-} from './startup-actuation.js'
+} from './startup-actuation'
 
 const OPEN_READY_STATE = 1
 

@@ -5,7 +5,7 @@ import {
   type FileId,
   type MetaFile,
   type YDocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import type * as Y from 'yjs'
 
 /** Input for registering a newly created text file in the meta YDoc. */

@@ -6,12 +6,12 @@ import {
   makeFileId,
   makeYDocId,
   type MetaFile,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 import * as Y from 'yjs'
 
-import { applyFileCreate, applyFileDelete, applyFileRename } from './meta-file-tree.js'
-import { reconcileMetaDoc } from './meta-reconcile.js'
+import { applyFileCreate, applyFileDelete, applyFileRename } from './meta-file-tree'
+import { reconcileMetaDoc } from './meta-reconcile'
 
 const DEVICE_A = makeDeviceId('device-a')
 const DEVICE_B = makeDeviceId('device-b')

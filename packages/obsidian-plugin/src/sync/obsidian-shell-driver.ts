@@ -2,11 +2,11 @@ import {
   planSyncRuntimeObsidianPresentation,
   type SyncRuntimeObsidianPresentationPlan,
   type SyncRuntimeObsidianPresentationSnapshot,
-} from './obsidian-shell-presentation.js'
+} from './obsidian-shell-presentation'
 import {
   applySyncRuntimeSetupExchangeShellReplan,
   type SyncRuntimeSetupExchangeShellReplan,
-} from './setup-replan.js'
+} from './setup-replan'
 import {
   applySyncRuntimeShellCommands,
   executeRunnableSyncRuntimeShellEffects,
@@ -19,7 +19,7 @@ import {
   type SyncRuntimeShellState,
   type SyncRuntimeSetupExchangePort,
   type SyncRuntimeStartupStepEffectPort,
-} from './startup-actuation.js'
+} from './startup-actuation'
 import {
   planSyncRuntimeStartupFromSchemaEvidence,
   type SyncRuntimeLocalStateEvidencePlan,
@@ -27,89 +27,43 @@ import {
   type SyncRuntimeStartupInput,
   type SyncRuntimeStartupFromSchemaEvidenceInput,
   type SyncRuntimeStartupPlan,
-} from './startup-runtime.js'
-import { type SyncEngineStartupEffect } from './sync-engine.js'
+} from './startup-runtime'
+import { type SyncEngineStartupEffect } from './sync-engine'
+
+import type {
+  SyncRuntimeObsidianShellEvidenceReadResult,
+  SyncRuntimeObsidianShellEvidencePort,
+  SyncRuntimeObsidianShellDriverState,
+  SyncRuntimeObsidianShellDriverTickInput,
+  SyncRuntimeObsidianShellDriverSetupExchangeTickInput,
+  SyncRuntimeObsidianShellDriverStartupStepTickInput,
+  SyncRuntimeObsidianShellDriverTransportTickInput,
+  SyncRuntimeObsidianShellDriverTickResult,
+} from './obsidian-shell-types'
+
+export type {
+  SyncRuntimeObsidianShellEvidenceReadResult,
+  SyncRuntimeObsidianShellEvidencePort,
+  SyncRuntimeObsidianShellDriverState,
+  SyncRuntimeObsidianShellDriverTickInput,
+  SyncRuntimeObsidianShellDriverSetupExchangeTickInput,
+  SyncRuntimeObsidianShellDriverStartupStepTickInput,
+  SyncRuntimeObsidianShellDriverTransportTickInput,
+  SyncRuntimeObsidianShellDriverTickResult,
+}
 
 type SyncRuntimeSetupExchangeRuntimeEffect = Extract<
   SyncRuntimeStartupEffect,
   { readonly kind: 'run-sync-startup-effect' }
-> & {
+ > & {
   readonly effect: Extract<SyncEngineStartupEffect, { readonly kind: 'run-setup-exchange' }>
 }
 
 type SyncRuntimeStartupStepRuntimeEffect = Extract<
   SyncRuntimeStartupEffect,
   { readonly kind: 'run-sync-startup-effect' }
-> & {
+ > & {
   readonly effect: Extract<SyncEngineStartupEffect, { readonly kind: 'run-startup-step' }>
-}
-
-/** Result of reading startup evidence for the Obsidian shell driver. */
-export type SyncRuntimeObsidianShellEvidenceReadResult =
-  | {
-      readonly ok: true
-      readonly startupInput: SyncRuntimeStartupFromSchemaEvidenceInput
-    }
-  | {
-      readonly ok: false
-      readonly localState: Extract<SyncRuntimeLocalStateEvidencePlan, { readonly ok: false }>
-    }
-
-/** Evidence reader used by the Obsidian shell driver before startup planning. */
-export interface SyncRuntimeObsidianShellEvidencePort {
-  /**
-   * Reads current startup evidence from Obsidian settings, SecretStorage, IndexedDB, and the vault.
-   *
-   * @returns Guarded startup input for the runtime planner, or a local evidence failure to surface.
-   */
-  readStartupInput(): Promise<SyncRuntimeObsidianShellEvidenceReadResult>
-}
-
-/** Durable state owned by the Obsidian shell driver between startup ticks. */
-export interface SyncRuntimeObsidianShellDriverState {
-  readonly shell: SyncRuntimeShellState
-  readonly presentation: SyncRuntimeObsidianPresentationSnapshot
-  readonly startupPlan?: SyncRuntimeStartupPlan | undefined
-  readonly startupInput?: SyncRuntimeStartupFromSchemaEvidenceInput | undefined
-}
-
-/** Input for running one no-network Obsidian startup driver tick. */
-export interface SyncRuntimeObsidianShellDriverTickInput {
-  readonly state?: SyncRuntimeObsidianShellDriverState | undefined
-  readonly evidence: SyncRuntimeObsidianShellEvidencePort
-  readonly executor: SyncRuntimeShellEffectExecutor
-  readonly maxLocalEffects?: number | undefined
-}
-
-/** Input for running one Obsidian startup driver tick that may execute setup exchange. */
-export interface SyncRuntimeObsidianShellDriverSetupExchangeTickInput extends SyncRuntimeObsidianShellDriverTickInput {
-  readonly setupExchange: SyncRuntimeSetupExchangePort
-}
-
-/** Input for running one Obsidian startup driver tick that may execute startup steps. */
-export interface SyncRuntimeObsidianShellDriverStartupStepTickInput extends SyncRuntimeObsidianShellDriverTickInput {
-  readonly startupStep: SyncRuntimeStartupStepEffectPort
-  readonly maxStartupSteps?: number | undefined
-}
-
-/** Input for running one Obsidian startup driver tick with setup and startup transports wired. */
-export interface SyncRuntimeObsidianShellDriverTransportTickInput extends SyncRuntimeObsidianShellDriverSetupExchangeTickInput {
-  readonly startupStep: SyncRuntimeStartupStepEffectPort
-  readonly maxStartupSteps?: number | undefined
-}
-
-/** Result of one no-network Obsidian startup driver tick. */
-export interface SyncRuntimeObsidianShellDriverTickResult {
-  readonly state: SyncRuntimeObsidianShellDriverState
-  readonly startupPlan: SyncRuntimeStartupPlan | undefined
-  readonly presentation: SyncRuntimeObsidianPresentationPlan
-  readonly deferredEffect: SyncRuntimeDeferredStartupEffect | undefined
-  readonly executedLocalEffectCount: number
-  readonly executedStartupStepCount: number
-  readonly setupExchangeReplan?: SyncRuntimeSetupExchangeShellReplan | undefined
-  readonly evidenceFailure:
-    | Extract<SyncRuntimeLocalStateEvidencePlan, { readonly ok: false }>
-    | undefined
 }
 
 /** Initial durable state for the Obsidian shell startup driver. */
@@ -123,9 +77,6 @@ export const INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE: SyncRuntimeObsidi
 
 /**
  * Runs one no-network startup tick for the Obsidian plugin shell.
- *
- * @param input Evidence reader, local-only executor, optional previous state, and optional local effect limit.
- * @returns Updated shell state, presentation data, startup plan, deferred network effect, and local effect count.
  */
 export async function runSyncRuntimeObsidianShellDriverTick(
   input: SyncRuntimeObsidianShellDriverTickInput,
@@ -175,11 +126,6 @@ export async function runSyncRuntimeObsidianShellDriverTick(
 
 /**
  * Runs one startup tick that can execute setup exchange and immediately replan the shell.
- *
- * Local-store effects before and after setup exchange are still pumped through the provided executor.
- *
- * @param input Evidence reader, local executor, setup exchange port, and optional previous state.
- * @returns Updated shell state, presentation data, optional setup replan, and local execution count.
  */
 export async function runSyncRuntimeObsidianShellDriverSetupExchangeTick(
   input: SyncRuntimeObsidianShellDriverSetupExchangeTickInput,
@@ -264,11 +210,6 @@ export async function runSyncRuntimeObsidianShellDriverSetupExchangeTick(
 
 /**
  * Runs one startup tick that can execute accepted startup steps after local-store gating.
- *
- * This tick does not run setup exchange. If setup exchange is still queued, startup steps remain blocked.
- *
- * @param input Evidence reader, local executor, startup step port, and optional execution limits.
- * @returns Updated shell state, presentation data, and counts for local effects and startup steps.
  */
 export async function runSyncRuntimeObsidianShellDriverStartupStepTick(
   input: SyncRuntimeObsidianShellDriverStartupStepTickInput,
@@ -322,12 +263,6 @@ export async function runSyncRuntimeObsidianShellDriverStartupStepTick(
 
 /**
  * Runs one startup tick with setup exchange, local-store gate, and startup step transports wired.
- *
- * Setup exchange is attempted before startup steps, so newly obtained credentials can replan and continue
- * in the same outer tick. Local-store effects are still executed before any network-bound startup steps.
- *
- * @param input Evidence reader, local executor, setup exchange port, startup step port, and optional limits.
- * @returns Final shell state after ordered setup/local/startup pumping.
  */
 export async function runSyncRuntimeObsidianShellDriverTransportTick(
   input: SyncRuntimeObsidianShellDriverTransportTickInput,

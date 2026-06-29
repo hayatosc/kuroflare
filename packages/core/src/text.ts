@@ -1,4 +1,4 @@
-import { hashBytesSha256 } from './hashing.js'
+import { hashBytesSha256 } from './hashing'
 
 /**
  * Describes one contiguous text replacement.

@@ -1,8 +1,8 @@
-import type { DeviceId, DocId, MessageId, Sha256Hex } from '@kuroflare/protocol'
+import type { DeviceId, DocId, MessageId, Sha256Hex } from '@kuroflare/core'
 import * as v from 'valibot'
 
-import type { YClientId } from './devices.js'
-import type { SyncUpdateQuarantineReason } from './sync-update.js'
+import type { YClientId } from './devices'
+import type { SyncUpdateQuarantineReason } from './sync/update'
 
 /** Durable quarantined update row available to admin repair flows. */
 export interface QuarantinedUpdateRecord {

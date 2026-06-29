@@ -1,12 +1,12 @@
 import { type ClientStartupIntent } from '@kuroflare/core'
-import { type SetupBootstrapMode } from '@kuroflare/protocol'
+import { type SetupBootstrapMode } from '@kuroflare/core'
 
 import {
   buildSetupExchangeRequest,
   type SetupExchangeStartupEffect,
   type SetupExchangeRequestBuildPlan,
   type SetupExchangeRuntimeEvidence,
-} from './setup-exchange-http.js'
+} from './setup-exchange-http'
 
 /** Raw startup settings loaded from Obsidian plugin data or setup UI fields. */
 export interface SyncRuntimeObsidianStartupSettingsInput {

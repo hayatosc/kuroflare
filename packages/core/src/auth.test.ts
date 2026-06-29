@@ -6,7 +6,7 @@ import {
   makeVaultId,
   type DeviceTokenClaims,
   type SetupExchangeResponse,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -22,7 +22,7 @@ import {
   isClientAuthMetadata,
   planClientAuthMetadataFromSetupResponse,
   type ClientAuthMetadata,
-} from './auth.js'
+} from './auth'
 
 const vaultId = makeVaultId('vault-1')
 const otherVaultId = makeVaultId('vault-2')

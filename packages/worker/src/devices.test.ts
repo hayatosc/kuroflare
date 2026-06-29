@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { makeDeviceId } from '@kuroflare/protocol'
+import { makeDeviceId } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -13,7 +13,7 @@ import {
   planSetupExchangeCredentials,
   type DeviceRefreshTokenEvidence,
   type DeviceRegistryEntry,
-} from './devices.js'
+} from './devices'
 
 const deviceId = makeDeviceId('device-a')
 const activeDevice: DeviceRegistryEntry = {

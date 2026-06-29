@@ -5,8 +5,8 @@ import { test } from 'vitest'
 import {
   createSyncRuntimeObsidianSetupExchangeEvidenceReader,
   planSyncRuntimeObsidianStartupSettings,
-} from './obsidian-startup-settings.js'
-import { type SetupExchangeStartupEffect } from './setup-exchange-http.js'
+} from './obsidian-startup-settings'
+import { type SetupExchangeStartupEffect } from './setup-exchange-http'
 
 test('Obsidian startup settings default to reconnect when no setup evidence exists', () => {
   assert.deepEqual(planSyncRuntimeObsidianStartupSettings({}), {

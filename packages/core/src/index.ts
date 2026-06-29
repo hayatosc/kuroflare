@@ -1,186 +1,27 @@
-export {
-  canonicalizeTextForHash,
-  canonicalizeTextForYText,
-  computeMinimalTextReplacement,
-  hashCanonicalText,
-  type TextReplacement,
-} from './text.js'
-export { bytesToHex, hashBytesSha256 } from './hashing.js'
-export {
-  CLIENT_AUTH_REFRESH_RETRY_POLICY,
-  applyClientAuthMetadataRefreshAttemptPatch,
-  applyClientAuthMetadataRevokePatch,
-  decideClientDeviceRevoke,
-  decideClientAuthRefreshAttempt,
-  decideClientAuthRefreshStart,
-  decideClientAuthRefreshStaleStartRecovery,
-  decideClientAuthStart,
-  decideClientAuthRefresh,
-  isClientAuthMetadata,
-  planClientAuthMetadataFromSetupResponse,
-  type ClientAuthMetadata,
-  type ClientAuthMetadataPatchDecision,
-  type ClientAuthMetadataRefreshAttemptPatchInput,
-  type ClientAuthMetadataRevokePatchInput,
-  type ClientAuthMetadataSetupPersistDecision,
-  type ClientAuthMetadataSetupPersistInput,
-  type ClientDeviceRevokeDecision,
-  type ClientDeviceRevokeDecisionInput,
-  type ClientAuthRefreshAttemptDecision,
-  type ClientAuthRefreshAttemptInput,
-  type ClientAuthRefreshStartDecision,
-  type ClientAuthRefreshStartInput,
-  type ClientAuthRefreshStaleStartRecoveryDecision,
-  type ClientAuthRefreshStaleStartRecoveryInput,
-  type ClientAuthStartDecision,
-  type ClientAuthStartDecisionInput,
-  type ClientAuthRefreshDecision,
-  type ClientAuthRefreshDecisionInput,
-  type ClientAuthRefreshPermanentFailure,
-  type ClientAuthRefreshRetryableFailure,
-} from './auth.js'
-export {
-  applyMetaRepair,
-  planDeleteVsEditRepairs,
-  planPathConflictRepairs,
-  type DeleteVsEditRepair,
-  type MetaRepair,
-  type PathConflictRepair,
-} from './reconcile.js'
-export {
-  decideMaterializeWrite,
-  decideWatcherHashGate,
-  makeLastMaterializedRecord,
-  type LastMaterializedRecord,
-  type MaterializeWriteDecision,
-  type MaterializeWriteInput,
-  type WatcherHashGateDecision,
-  type WatcherHashGateInput,
-} from './materialize.js'
-export {
-  DEFAULT_LOCAL_STORE_OBJECT_STORES,
-  decideLocalOutboxRepairResume,
-  decideLocalStoreRepair,
-  decideLocalStoreSchema,
-  planLocalOutboxRepairImport,
-  type LocalStoreObjectStore,
-  type LocalOutboxRepairImportedYUpdate,
-  type LocalOutboxRepairImportDecision,
-  type LocalOutboxRepairImportDurableMessage,
-  type LocalOutboxRepairImportInput,
-  type LocalOutboxRepairImportQuarantinedMessage,
-  type LocalOutboxRepairImportSkip,
-  type LocalOutboxRepairResumeDecision,
-  type LocalOutboxRepairResumeInput,
-  type LocalStoreRepairDecision,
-  type LocalStoreRepairDecisionInput,
-  type LocalStoreRepairRequest,
-  type LocalStoreSchemaDecision,
-  type LocalStoreSchemaDecisionInput,
-} from './local-store.js'
-export {
-  decodeFullSnapshotBytesFromResponse,
-  decideFullSnapshotApply,
-  makeFullSnapshotApplyInputFromResponse,
-  type FullSnapshotBytesFromResponseInput,
-  type FullSnapshotBytesFromResponseResult,
-  type FullSnapshotApplyDecision,
-  type FullSnapshotApplyInput,
-  type FullSnapshotApplyInputFromResponseInput,
-  type FullSnapshotApplyPatch,
-} from './snapshot.js'
-export {
-  planClientStartup,
-  type ClientStartupAuthState,
-  type ClientStartupIntent,
-  type ClientStartupLocalState,
-  type ClientStartupPlan,
-  type ClientStartupPlanInput,
-  type ClientStartupStep,
-} from './startup.js'
-export {
-  buildBinaryDownloadOutboxPlan,
-  buildBinaryUploadOutboxPlan,
-  decideOutboxAckCompletion,
-  decideOutboxAuthRefreshRequest,
-  decideOutboxConcurrency,
-  decideOutboxLeaseAcquire,
-  decideOutboxLeaseRelease,
-  decideOutboxLeaseRenew,
-  decideOutboxQuarantinePause,
-  decideOutboxResume,
-  decideOutboxRun,
-  decideOutboxRetry,
-  makeOutboxPlanItemId,
-  outboxConcurrencyLane,
-  outboxConcurrencyLimit,
-  outboxRetryPolicy,
-  planOutboxDependencyBlocks,
-  planOutboxFullSnapshotRelease,
-  planOutboxResumePatches,
-  planOutboxSchedulerTick,
-  transitionOutboxFailure,
-  type BinaryDownloadChunkInput,
-  type BinaryDownloadOutboxPlan,
-  type BinaryDownloadOutboxPlanBuildResult,
-  type BinaryDownloadOutboxPlanInput,
-  type BinaryOutboxPlanBuildError,
-  type BinaryOutboxPlanItem,
-  type BinaryUploadChunkInput,
-  type BinaryUploadOutboxPlan,
-  type BinaryUploadOutboxPlanBuildResult,
-  type BinaryUploadOutboxPlanInput,
-  type OutboxAckCompletionDecision,
-  type OutboxAckCompletionInput,
-  type OutboxAckCompletionPatch,
-  type OutboxAuthRefreshRequestDecision,
-  type OutboxAuthRefreshRequestInput,
-  type OutboxAuthRefreshState,
-  type OutboxAuthStartEstimate,
-  type OutboxAuthStartRefreshBlock,
-  type OutboxConcurrencyDecision,
-  type OutboxConcurrencyDecisionInput,
-  type OutboxConcurrencyLane,
-  type OutboxDependencyState,
-  type OutboxDependencyBlockPatch,
-  type OutboxDependencyBlockPlan,
-  type OutboxDependencyDeadLetterPatch,
-  type OutboxDependencyGraphItem,
-  type OutboxFailureTransition,
-  type OutboxFailureTransitionInput,
-  type OutboxFullSnapshotPausedItem,
-  type OutboxFullSnapshotReleaseInput,
-  type OutboxFullSnapshotReleasePatch,
-  type OutboxFullSnapshotReleasePlan,
-  type OutboxItemStatus,
-  type OutboxLeaseAcquireDecision,
-  type OutboxLeaseAcquireInput,
-  type OutboxLeaseReclaimPatch,
-  type OutboxLeaseReleaseDecision,
-  type OutboxLeaseReleaseInput,
-  type OutboxLeaseRenewDecision,
-  type OutboxLeaseRenewInput,
-  type OutboxPlanItemId,
-  type OutboxQuarantinePauseDecision,
-  type OutboxQuarantinePauseInput,
-  type OutboxQuarantinePausePatch,
-  type OutboxResumeCondition,
-  type OutboxResumeDecision,
-  type OutboxResumeDecisionInput,
-  type OutboxResumeEvent,
-  type OutboxResumePatch,
-  type OutboxRunDecision,
-  type OutboxRunDecisionInput,
-  type OutboxRetryDecision,
-  type OutboxRetryDecisionInput,
-  type OutboxRetryKind,
-  type OutboxRetryPolicy,
-  type OutboxRuntimeProfile,
-  type OutboxRunError,
-  type OutboxRunningLease,
-  type OutboxSchedulerAuthGateInput,
-  type OutboxSchedulerItem,
-  type OutboxSchedulerStart,
-  type OutboxSchedulerTickInput,
-  type OutboxSchedulerTickPlan,
-} from './outbox.js'
+export * from './_shared'
+export * from './admin-http'
+export * from './auth'
+export * from './binary-frame'
+export * from './blob-http'
+export * from './blob-manifest'
+export * from './device-http'
+export * from './device-token-jwt'
+export * from './errors'
+export * from './hashing'
+export * from './health'
+export * from './ids'
+export * from './local-repair'
+export * from './local-store'
+export * from './manifest'
+export * from './materialize'
+export * from './messages'
+export * from './meta'
+export * from './outbox'
+export * from './reconcile'
+export * from './setup'
+export * from './snapshot-http'
+export * from './snapshot'
+export * from './startup'
+export * from './text'
+export * from './token-schemas'
+export * from './version'

@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict'
 
 import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type ClientStartupLocalState } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId } from '@kuroflare/protocol'
+import { makeDeviceId, makeVaultId } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema.js'
-import { createSyncRuntimeObsidianComposition } from './obsidian-runtime-composition.js'
-import { type SyncRuntimeObsidianShellUiPort } from './obsidian-shell-ui.js'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema'
+import { createSyncRuntimeObsidianComposition } from './obsidian-runtime-composition'
+import { type SyncRuntimeObsidianShellUiPort } from './obsidian-shell-ui'
 import {
   type SyncRuntimeLocalStoreEffectPort,
   type SyncRuntimeStartupStepEffectPort,
-} from './startup-actuation.js'
+} from './startup-actuation'
 
 const vaultId = makeVaultId('composition-vault-1')
 const deviceId = makeDeviceId('composition-device-1')

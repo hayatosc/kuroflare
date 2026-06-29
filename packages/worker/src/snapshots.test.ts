@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { makeVaultId, makeYDocId, type DocId } from '@kuroflare/protocol'
+import { makeVaultId, makeYDocId, type DocId } from '@kuroflare/core'
 import * as v from 'valibot'
 import { test } from 'vitest'
 
@@ -13,7 +13,7 @@ import {
   makeSnapshotObjectKey,
   makeSnapshotPointerKey,
   type SnapshotCandidate,
-} from './snapshots.js'
+} from './snapshots'
 
 const vaultId = makeVaultId('vault-a')
 const ydocId = makeYDocId('file-a')

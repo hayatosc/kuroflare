@@ -1,8 +1,5 @@
-import {
-  type SetupBootstrapMode,
-  type SetupExchangeResponse,
-  type VaultId,
-} from '@kuroflare/protocol'
+import { type SetupBootstrapMode, type SetupExchangeResponse } from './setup'
+import { type VaultId } from './ids'
 
 /** User-visible startup path requested by the plugin shell. */
 export type ClientStartupIntent = 'setup-new-vault' | 'join-existing-vault' | 'reconnect'

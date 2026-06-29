@@ -5,15 +5,15 @@ import {
   type OutboxPlanItemId,
   type OutboxRunningLease,
 } from '@kuroflare/core'
-import { makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/protocol'
+import { makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
   type LocalStoreIndexedDbObjectStorePort,
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
-} from './local-store-indexeddb.js'
-import { type LocalStoreOutboxRecord } from './local-store.js'
+} from './local-store-indexeddb'
+import { type LocalStoreOutboxRecord } from './local-store'
 import {
   commitFullSnapshotApplyIndexedDbTransaction,
   planFullSnapshotApplyRuntime,
@@ -25,7 +25,7 @@ import {
   type FullSnapshotApplyYDocObjectStorePort,
   type FullSnapshotApplyYDocRecord,
   type VerifiedFullSnapshotBytes,
-} from './snapshot-apply-runtime.js'
+} from './snapshot-apply-runtime'
 
 const fileDocId = { kind: 'file', ydocId: makeYDocId('snapshot-runtime-doc-1') } satisfies DocId
 const updateHash = makeSha256Hex('a'.repeat(64))

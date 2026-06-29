@@ -5,15 +5,15 @@ import {
   type ClientAuthMetadataPatchDecision,
   type ClientDeviceRevokeDecision,
 } from '@kuroflare/core'
-import { RevokeDeviceResponseSchema, type RevokeDeviceResponse } from '@kuroflare/protocol'
+import { RevokeDeviceResponseSchema, type RevokeDeviceResponse } from '@kuroflare/core'
 import * as v from 'valibot'
 
 import {
   commitLocalStoreIndexedDbMetadataTransaction,
   planLocalStoreIndexedDbMetadataWrites,
   type LocalStoreIndexedDbMetadataDatabasePort,
-} from './local-store-indexeddb.js'
-import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from './setup-persist.js'
+} from './local-store-indexeddb'
+import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from './setup-persist'
 
 /** SecretStorage surface required by local device revoke persistence. */
 export interface AuthRevokeSecretStoragePort {

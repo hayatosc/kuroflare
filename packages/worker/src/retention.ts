@@ -1,4 +1,4 @@
-import type { CheckpointRunStatus } from './checkpoint.js'
+import type { CheckpointRunStatus } from './checkpoint'
 
 /** Snapshot metadata needed before R2 retention cleanup. */
 export interface SnapshotRetentionCandidate {

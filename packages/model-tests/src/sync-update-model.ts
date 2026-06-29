@@ -10,7 +10,7 @@ import {
   type MessageId,
   type Sha256Hex,
   type SyncUpdate,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { decideSyncUpdateAppend, type SyncUpdateAppendDecision } from '@kuroflare/worker'
 
 /** Message tracked by the sync update model. */

@@ -10,7 +10,7 @@ import {
   makeYDocId,
   type DocId,
   type LocalOutboxRepairExport,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -20,7 +20,7 @@ import {
   decideLocalStoreSchema,
   planLocalOutboxRepairImport,
   type LocalStoreSchemaDecisionInput,
-} from './local-store.js'
+} from './local-store'
 
 const vaultId = makeVaultId('vault-1')
 const otherVaultId = makeVaultId('vault-2')

@@ -8,7 +8,7 @@ import {
   makeSha256Hex,
   makeVaultId,
   makeYDocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -33,7 +33,7 @@ import {
   planOutboxResumePatches,
   planOutboxSchedulerTick,
   transitionOutboxFailure,
-} from './outbox.js'
+} from './outbox'
 
 const fileId = makeFileId('file-1')
 const vaultId = makeVaultId('vault-1')

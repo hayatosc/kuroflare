@@ -11,7 +11,7 @@ import {
   VaultIdSchema,
   WireYClientIdSchema,
   type SetupExchangeResponse,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import * as v from 'valibot'
 
 /** Stable metadata row key for the plugin's setup identity record. */

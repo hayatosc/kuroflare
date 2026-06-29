@@ -4,17 +4,17 @@ import {
   type SyncRuntimeObsidianShellDriverState,
   type SyncRuntimeObsidianShellDriverTickResult,
   type SyncRuntimeObsidianShellEvidencePort,
-} from './obsidian-shell-driver.js'
+} from './obsidian-shell-driver'
 import {
   applySyncRuntimeObsidianShellPresentation,
   type SyncRuntimeObsidianShellUiApplyResult,
   type SyncRuntimeObsidianShellUiPort,
-} from './obsidian-shell-ui.js'
+} from './obsidian-shell-ui'
 import {
   type SyncRuntimeSetupExchangePort,
   type SyncRuntimeShellEffectExecutor,
   type SyncRuntimeStartupStepEffectPort,
-} from './startup-actuation.js'
+} from './startup-actuation'
 
 /** Runtime ports needed by the Obsidian plugin lifecycle to run startup ticks. */
 export interface SyncRuntimeObsidianShellLifecyclePorts {

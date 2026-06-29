@@ -14,7 +14,7 @@ import {
   type VaultId,
   type Ack,
   type NeedFullSnapshot,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 
 import {
   applyLocalStoreDriverCommit,
@@ -22,13 +22,13 @@ import {
   type LocalStoreDriverCommitPlan,
   type LocalStoreDriverReadSet,
   type LocalStoreDriverWriteOperation,
-} from './local-store-driver.js'
+} from './local-store-driver'
 import {
   planLocalStoreIndexedDbReads,
   planLocalStoreIndexedDbWrites,
   type LocalStoreIndexedDbReadOperation,
   type LocalStoreIndexedDbWriteOperation,
-} from './local-store-indexeddb.js'
+} from './local-store-indexeddb'
 import {
   planLocalStoreFailureCompletionTransaction,
   planLocalStoreAckCompletionTransaction,
@@ -41,7 +41,7 @@ import {
   type LocalStoreOutboxRecord,
   type LocalStoreTransactionApplyPlan,
   type LocalStoreTransactionOperation,
-} from './local-store.js'
+} from './local-store'
 import {
   planOutboundQueueLeaseAcquire,
   planOutboundQueueLeaseRenew,
@@ -58,7 +58,7 @@ import {
   type OutboundQueueQuarantinePausePlan,
   type OutboundQueueSuccessCompletionPlan,
   type OutboundQueueTickPlan,
-} from './outbound-queue.js'
+} from './outbound-queue'
 
 /** Successful local-store driver commit produced by outbox worker persistence planning. */
 export type SuccessfulLocalStoreDriverCommitPlan = Extract<

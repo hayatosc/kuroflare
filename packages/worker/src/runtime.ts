@@ -31,26 +31,28 @@ import {
   type SyncRequest,
   type SyncUpdate,
   type VaultId,
-} from '@kuroflare/protocol'
-import { VaultIdSchema } from '@kuroflare/protocol'
+} from '@kuroflare/core'
+import { VaultIdSchema } from '@kuroflare/core'
+import { type Context, Hono } from 'hono'
+import { cors } from 'hono/cors'
 import * as v from 'valibot'
 import * as Y from 'yjs'
 
-import { planDeviceTokenRefreshHttpResponse } from './auth-refresh-http.js'
-import { decideAuthAdmission } from './auth.js'
+import { planDeviceTokenRefreshHttpResponse } from './http/authRefresh'
+import { decideAuthAdmission } from './auth'
 import {
   planBlobHeadHttpResponse,
   planBlobUploadUrlHttpResponse,
   type BlobHeadObjectEvidence,
   type BlobUploadObjectEvidence,
-} from './blob-http.js'
+} from './http/blob'
 import {
   decideCheckpointCompact,
   decideCheckpointWrite,
   decideOrphanedCheckpointRecovery,
   type CheckpointRunStatus,
-} from './checkpoint.js'
-import { planRevokeDeviceHttpResponse } from './device-http.js'
+} from './checkpoint'
+import { planRevokeDeviceHttpResponse } from './http/device'
 import {
   decideDeviceTokenRefresh,
   decideRevokeDevice,
@@ -62,29 +64,85 @@ import {
   type DeviceRefreshTokenEvidence,
   type DeviceRegistryEntry,
   type YClientId,
-} from './devices.js'
-import { decideSchemaMigration } from './migrations.js'
+  type YClientIdRange,
+} from './devices'
+import { decideSchemaMigration } from './migrations'
 import {
   buildQuarantinedUpdateDetailResponse,
   buildQuarantinedUpdateListResponse,
-} from './quarantine-http.js'
-import type { QuarantinedUpdateRecord } from './quarantine.js'
-import { SCHEMA_MIGRATIONS } from './schema.js'
-import { planSetupExchangeHttpResponse } from './setup-http.js'
-import { decideSetupTokenConsume, type SetupTokenEntry } from './setup-tokens.js'
+} from './http/quarantine'
+import type { QuarantinedUpdateRecord } from './quarantine'
+import { SCHEMA_MIGRATIONS } from './schema'
+import { planSetupExchangeHttpResponse } from './http/setup'
+import { decideSetupTokenConsume, type SetupTokenEntry } from './setupTokens'
 import {
   chooseSnapshotForRestore,
   makeSnapshotListPrefix,
   makeSnapshotObjectKey,
   type SnapshotCandidate,
-} from './snapshots.js'
-import { decideSyncRequest, type SyncRequestDocState } from './sync-request.js'
+} from './snapshots'
+import { decideSyncRequest, type SyncRequestDocState } from './sync/request'
 import {
   decideSyncUpdateAppend,
   decideSyncUpdateQuarantine,
   type SyncUpdateDocClock,
   type SyncUpdateDuplicateEvidence,
-} from './sync-update.js'
+} from './sync/update'
+import {
+  upsertSetupToken,
+  getSetupToken,
+  consumeSetupToken,
+} from './db/setupRepo'
+import {
+  getDevice,
+  getAllDeviceYClientIds,
+  upsertDevice,
+  updateDeviceRevoked,
+  getRefreshToken,
+  insertRefreshToken,
+  updateRefreshTokenRevoked,
+} from './db/deviceRepo'
+import {
+  insertDoc,
+  upsertDocClock,
+  insertOpLog,
+  upsertMessageDedup,
+  getDocClock,
+  getDocSnapshotPointer,
+  getDocSnapshotSeq,
+  getDocRetention,
+  getDocsNeedingCheckpoint,
+  getFirstDocId,
+  getOpLogUpdatesSince,
+  getMessageDedupSeq,
+  updateDocSnapshotPointer,
+  updateDocCompact,
+  deleteOpLogBelowSeq,
+} from './db/docRepo'
+import { readSqlUpdateBytes } from './db/helpers'
+import {
+  insertCheckpointRun,
+  updateCheckpointR2Written,
+  updateCheckpointPointerUpdated,
+  updateCheckpointCompacted,
+  updateCheckpointFailed,
+  getRecoverableCheckpointRuns,
+  getCheckpointDocRecoveryState,
+  insertQuarantinedUpdate,
+  getQuarantinedUpdates,
+  getQuarantinedUpdateById,
+  getQuarantinedUpdateBytes,
+  type QuarantinedUpdateRow,
+} from './db/checkpointRepo'
+import {
+  createSchemaMigrationsTable,
+  getAppliedMigrations,
+  insertMigration,
+  applyMigrationStatements,
+} from './db/schemaRepo'
+import { createDb } from './db/db'
+import type { Kysely } from 'kysely'
+import type { Database } from './db/types'
 
 /** Environment bindings required by the Worker entrypoint. */
 export interface WorkerEnv {
@@ -185,10 +243,6 @@ interface RuntimeWebSocketPairConstructor {
   new (): RuntimeWebSocketPair
 }
 
-interface WebSocketUpgradeResponseInit extends ResponseInit {
-  readonly webSocket: RuntimeWebSocket
-}
-
 declare const WebSocketPair: RuntimeWebSocketPairConstructor | undefined
 
 const WEBSOCKET_UPGRADE = 'websocket'
@@ -205,9 +259,12 @@ const BLOB_SINGLE_PUT_MAX_BYTES = BLOB_MULTIPART_THRESHOLD_BYTES - 1
 const BLOB_MANIFEST_MAX_BYTES = 1024 * 1024
 const BLOB_UPLOAD_URL_TTL_MS = 10 * 60 * 1_000
 const VAULT_ID_STORAGE_KEY = 'vault:id'
-const Y_CLIENT_ID_RANGE = { min: 1, max: 2_147_483_647 } as const
+const Y_CLIENT_ID_RANGE: YClientIdRange = { min: 1, max: 2_147_483_647 }
 const E2E_SETUP_TOKEN_PATH = '/__e2e/setup-token'
 const E2E_SNAPSHOT_PATH = '/__e2e/snapshot'
+
+const PosIntSchema = v.pipe(v.number(), v.integer(), v.minValue(1))
+const NonNegIntSchema = v.pipe(v.number(), v.integer(), v.minValue(0))
 
 const E2eSetupTokenSeedRequestSchema = v.object({
   vaultId: VaultIdSchema,
@@ -219,7 +276,7 @@ const E2eSnapshotSeedRequestSchema = v.object({
   vaultId: VaultIdSchema,
   docId: DocIdSchema,
   update: v.pipe(v.string(), v.minLength(1)),
-  latestSeq: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  latestSeq: v.optional(PosIntSchema),
 })
 
 interface SessionState {
@@ -231,6 +288,10 @@ interface SessionState {
 interface WebSocketAttachment {
   readonly authToken?: string
   readonly session?: SessionState
+}
+
+interface WebSocketResponseInit extends ResponseInit {
+  readonly webSocket: RuntimeWebSocket
 }
 
 interface RuntimeDocClockRecord {
@@ -290,774 +351,529 @@ export class VaultRoom {
   private readonly docWriteQueues = new Map<string, Promise<void>>()
   private vaultId: VaultId | undefined
   private schemaReady = false
+  private readonly doRouter: Hono
 
   constructor(
     private readonly state: DurableObjectStateBinding,
     private readonly env: WorkerEnv,
-  ) {}
+  ) {
+    this.doRouter = new Hono()
+      .post(E2E_SETUP_TOKEN_PATH, async (c) => {
+        const db = this.getDb()
+        if (db === undefined) return c.text('E2E setup token seed unavailable', 503)
+        await this.ensureSchema()
 
-  /**
-   * Handles a WebSocket upgrade for one vault room.
-   *
-   * @param request Incoming Durable Object request.
-   * @returns A 101 response with the client WebSocket, or an error response for unsupported requests.
-   */
+        const body: unknown = await c.req.json().catch(() => undefined)
+        if (!v.is(E2eSetupTokenSeedRequestSchema, body)) {
+          return c.json({ error: 'invalid-e2e-setup-token-seed-request' }, 400)
+        }
+        if (this.vaultId !== undefined && body.vaultId !== this.vaultId) {
+          return c.json({ error: 'vault-mismatch' }, 400)
+        }
+        this.vaultId = body.vaultId
+
+        const now = Date.now()
+        const expiresAt = now + (body.expiresInMs ?? 10 * 60 * 1_000)
+        const setupTokenHash = makeSha256Hex(await sha256Text(body.setupToken))
+        await upsertSetupToken(db, setupTokenHash, body.vaultId, now, expiresAt)
+
+        return c.json(
+          {
+            ok: true,
+            vaultId: body.vaultId,
+            expiresAt,
+            tokenReadable: (await this.readSetupToken(setupTokenHash)) !== undefined,
+          },
+          200,
+        )
+      })
+      .post(E2E_SNAPSHOT_PATH, async (c) => {
+        const db = this.getDb()
+        const bucket = this.env.SNAPSHOT_BUCKET
+        if (db === undefined || bucket === undefined) {
+          return c.text('E2E snapshot seed unavailable', 503)
+        }
+        await this.ensureSchema()
+
+        const body: unknown = await c.req.json().catch(() => undefined)
+        if (!v.is(E2eSnapshotSeedRequestSchema, body)) {
+          return c.json({ error: 'invalid-e2e-snapshot-seed-request' }, 400)
+        }
+        if (this.vaultId !== undefined && body.vaultId !== this.vaultId) {
+          return c.json({ error: 'vault-mismatch' }, 400)
+        }
+        this.vaultId = body.vaultId
+
+        const update = decodeBase64(body.update)
+        if (update === null || !canApplyYjsUpdate(update)) {
+          return c.json({ error: 'invalid-e2e-snapshot-update' }, 400)
+        }
+        const doc = new Y.Doc()
+        Y.applyUpdate(doc, update)
+        const stateVector = Y.encodeStateVector(doc)
+        doc.destroy()
+
+        const now = Date.now()
+        const latestSeq = body.latestSeq ?? 1
+        const snapshotKey = makeSnapshotObjectKey(body.vaultId, body.docId, latestSeq)
+        await bucket.put(snapshotKey, update)
+        await insertDoc(db, docKey(body.docId), body.docId.kind, latestSeq, latestSeq, snapshotKey, stateVector, 0, now)
+
+        return c.json({ ok: true, vaultId: body.vaultId, docId: body.docId, snapshotKey }, 200)
+      })
+      .post('/setup/exchange', async (c) => {
+        const db = this.getDb()
+        const secret = this.env.DEVICE_TOKEN_SECRET
+        if (db === undefined || secret === undefined) return c.text('Setup exchange unavailable', 503)
+        await this.ensureSchema()
+
+        const body: unknown = await c.req.json().catch(() => undefined)
+        if (!v.is(SetupExchangeRequestSchema, body)) {
+          return c.json({ error: 'invalid-setup-exchange-request' }, 400)
+        }
+        if (this.vaultId !== undefined && body.vaultId !== this.vaultId) {
+          return c.json({ error: 'vault-mismatch' }, 400)
+        }
+        this.vaultId = body.vaultId
+
+        const now = Date.now()
+        const setupTokenHash = makeSha256Hex(await sha256Text(body.setupToken))
+        const tokenDecision = decideSetupTokenConsume({
+          token: await this.readSetupToken(setupTokenHash),
+          requestedVaultId: body.vaultId,
+          now,
+        })
+        if (tokenDecision.action === 'reject') {
+          return c.json({ error: `setup-token:${tokenDecision.reason}` }, 403)
+        }
+
+        const existingDevice =
+          body.existingDeviceId === undefined
+            ? undefined
+            : await this.readDeviceRegistryEntry(body.existingDeviceId)
+        const setupDecision = decideSetupExchange({
+          requestedDeviceId: body.existingDeviceId,
+          registry: { existingDevice, usedYClientIds: await this.readUsedYClientIds() },
+          yClientIdRange: Y_CLIENT_ID_RANGE,
+        })
+        if (setupDecision.action === 'reject') {
+          return c.json({ error: `setup-exchange:${setupDecision.reason}` }, 403)
+        }
+
+        const deviceId = body.existingDeviceId ?? makeGeneratedDeviceId()
+        const refreshToken = makeOpaqueToken()
+        const refreshTokenHash = makeSha256Hex(await sha256Text(refreshToken))
+        const credentialPlan = planSetupExchangeCredentials({
+          setupDecision,
+          deviceId,
+          refreshTokenHash,
+          now,
+          refreshTokenExpiresAt: now + SETUP_REFRESH_TOKEN_TTL_MS,
+        })
+        if (credentialPlan.action === 'reject') {
+          return c.json({ error: `setup-credentials:${credentialPlan.reason}` }, 500)
+        }
+
+        const claims: DeviceTokenClaims = {
+          iss: 'kuroflare-worker',
+          aud: body.vaultId,
+          sub: credentialPlan.deviceId,
+          scope: ['sync:read', 'sync:write', 'blob:read', 'blob:write'],
+          iat: now,
+          exp: now + SETUP_ACCESS_TOKEN_TTL_MS,
+          tokenVersion: credentialPlan.tokenVersion,
+        }
+        const accessToken = await signHs256DeviceToken({ claims, secret })
+        const responsePlan = planSetupExchangeHttpResponse({
+          credentialPlan,
+          endpoint: new URL(c.req.url).origin,
+          vaultId: body.vaultId,
+          accessToken,
+          refreshToken,
+          accessTokenIssuedAt: claims.iat,
+          accessTokenExpiresAt: claims.exp,
+          protocolVersion: CURRENT_PROTOCOL_VERSION,
+          bootstrapMode: (await this.hasAnyPersistedDocs()) ? 'join-existing' : 'new-vault',
+        })
+        if (responsePlan.action === 'reject') {
+          return c.json({ error: `setup-response:${responsePlan.reason}` }, 500)
+        }
+
+        try {
+          await this.withSqlTransaction(async () => {
+            await this.consumeSetupToken(setupTokenHash, tokenDecision.consumedAt)
+            await this.persistSetupDevice(credentialPlan.deviceId, credentialPlan.yClientId, now)
+            await this.persistRefreshToken(
+              credentialPlan.insertRefreshToken.tokenHash,
+              credentialPlan.insertRefreshToken.deviceId,
+              credentialPlan.insertRefreshToken.issuedAt,
+              credentialPlan.insertRefreshToken.expiresAt,
+            )
+          })
+        } catch (error) {
+          console.error('[kuroflare] setup exchange persist failed', error)
+          return c.json({ error: 'setup-persist:transaction-failed' }, 500)
+        }
+
+        return c.json(responsePlan.response, 200)
+      })
+      .post('/auth/refresh', async (c) => {
+        const db = this.getDb()
+        const secret = this.env.DEVICE_TOKEN_SECRET
+        if (db === undefined || secret === undefined) return c.text('Auth refresh unavailable', 503)
+        await this.ensureSchema()
+
+        const body: unknown = await c.req.json().catch(() => undefined)
+        if (!v.is(DeviceTokenRefreshRequestSchema, body)) {
+          return c.json({ error: 'invalid-auth-refresh-request' }, 400)
+        }
+        if (this.vaultId !== undefined && body.vaultId !== this.vaultId) {
+          return c.json({ error: 'vault-mismatch' }, 400)
+        }
+        this.vaultId = body.vaultId
+
+        const now = Date.now()
+        const currentTokenHash = makeSha256Hex(await sha256Text(body.refreshToken))
+        const device = await this.readDeviceRegistryEntry(body.deviceId)
+        const refreshDecision = decideDeviceTokenRefresh({
+          device,
+          refreshToken: await this.readRefreshToken(currentTokenHash),
+          previousTokenVersion: body.previousTokenVersion,
+          now,
+        })
+        if (refreshDecision.action === 'reject') {
+          return c.json({ error: `auth-refresh:${refreshDecision.reason}` }, 403)
+        }
+
+        const nextRefreshToken = makeOpaqueToken()
+        const nextRefreshTokenHash = makeSha256Hex(await sha256Text(nextRefreshToken))
+        const rotationPlan = planDeviceRefreshTokenRotation({
+          refreshDecision,
+          currentTokenHash,
+          nextTokenHash: nextRefreshTokenHash,
+          deviceId: body.deviceId,
+          now,
+          nextExpiresAt: now + REFRESH_TOKEN_TTL_MS,
+        })
+        if (rotationPlan.action === 'reject') {
+          return c.json({ error: `auth-refresh-rotation:${rotationPlan.reason}` }, 500)
+        }
+
+        const claims: DeviceTokenClaims = {
+          iss: 'kuroflare-worker',
+          aud: body.vaultId,
+          sub: body.deviceId,
+          scope: ['sync:read', 'sync:write', 'blob:read', 'blob:write'],
+          iat: now,
+          exp: now + REFRESH_ACCESS_TOKEN_TTL_MS,
+          tokenVersion: refreshDecision.tokenVersion,
+        }
+        const accessToken = await signHs256DeviceToken({ claims, secret })
+        const responsePlan = planDeviceTokenRefreshHttpResponse({
+          refreshDecision,
+          rotationPlan,
+          vaultId: body.vaultId,
+          accessToken,
+          refreshToken: nextRefreshToken,
+          accessTokenIssuedAt: claims.iat,
+          accessTokenExpiresAt: claims.exp,
+          protocolVersion: CURRENT_PROTOCOL_VERSION,
+        })
+        if (responsePlan.action === 'reject') {
+          return c.json({ error: `auth-refresh-response:${responsePlan.reason}` }, 500)
+        }
+
+        try {
+          await this.withSqlTransaction(async () => {
+            await this.revokeRefreshToken(rotationPlan.revoke.tokenHash, rotationPlan.revoke.revokedAt)
+            await this.persistRefreshToken(
+              rotationPlan.insert.tokenHash,
+              rotationPlan.insert.deviceId,
+              rotationPlan.insert.issuedAt,
+              rotationPlan.insert.expiresAt,
+            )
+          })
+        } catch {
+          return c.json({ error: 'auth-refresh-persist:transaction-failed' }, 500)
+        }
+
+        return c.json(responsePlan.response, 200)
+      })
+      .post('/devices/:deviceId/revoke', async (c) => {
+        const db = this.getDb()
+        const secret = this.env.DEVICE_TOKEN_SECRET
+        if (db === undefined || secret === undefined) return c.text('Device revoke unavailable', 503)
+        await this.ensureSchema()
+
+        const rawDeviceId = c.req.param('deviceId')
+        const targetDeviceId = v.is(DeviceIdSchema, rawDeviceId) ? rawDeviceId : undefined
+        if (targetDeviceId === undefined) return c.json({ error: 'invalid-device-id' }, 400)
+        const body: unknown = await c.req.json().catch(() => undefined)
+        if (!v.is(RevokeDeviceRequestSchema, body)) {
+          return c.json({ error: 'invalid-revoke-device-request' }, 400)
+        }
+
+        const rejection = await this.authorizeHttpRequest(c, ['sync:write'])
+        if (rejection !== undefined) return rejection
+
+        const targetDevice = await this.readDeviceRegistryEntry(targetDeviceId)
+        const revokeDecision = decideRevokeDevice({ device: targetDevice, revokedAt: Date.now() })
+        if (revokeDecision.action === 'reject') {
+          return c.json({ error: `revoke-device:${revokeDecision.reason}` }, 404)
+        }
+        const responsePlan = planRevokeDeviceHttpResponse({ revokeDecision, deviceId: targetDeviceId })
+        if (responsePlan.action === 'reject') {
+          return c.json({ error: `revoke-device-response:${responsePlan.reason}` }, 500)
+        }
+
+        if (revokeDecision.action === 'revoke-device') {
+          await this.persistDeviceRevocation(targetDeviceId, revokeDecision.tokenVersion, revokeDecision.revokedAt)
+        }
+
+        return c.json(responsePlan.response, 200)
+      })
+      .get('/admin/quarantine', async (c) => {
+        const db = this.getDb()
+        const secret = this.env.DEVICE_TOKEN_SECRET
+        if (db === undefined || secret === undefined) return c.text('Quarantine inspect unavailable', 503)
+        await this.ensureSchema()
+
+        const rejection = await this.authorizeHttpRequest(c, ['sync:write'])
+        if (rejection !== undefined) return rejection
+
+        return c.json(buildQuarantinedUpdateListResponse(await this.readQuarantinedUpdates()), 200)
+      })
+      .get('/admin/quarantine/:id', async (c) => {
+        const db = this.getDb()
+        const secret = this.env.DEVICE_TOKEN_SECRET
+        if (db === undefined || secret === undefined) return c.text('Quarantine inspect unavailable', 503)
+        await this.ensureSchema()
+
+        const rejection = await this.authorizeHttpRequest(c, ['sync:write'])
+        if (rejection !== undefined) return rejection
+
+        const quarantineId = c.req.param('id') ?? ''
+        const record = await this.readQuarantinedUpdate(quarantineId)
+        if (record === undefined) return c.json({ error: 'unknown-quarantine' }, 404)
+
+        return c.json(
+          buildQuarantinedUpdateDetailResponse(
+            record,
+            encodeOptionalBase64(await this.readQuarantinedUpdateBytes(quarantineId)),
+          ),
+          200,
+        )
+      })
+      .post('/blobs/head', async (c) => {
+        if (this.env.SNAPSHOT_BUCKET === undefined) return c.text('Blob storage unavailable', 503)
+
+        const rejection = await this.authorizeHttpRequest(c, ['blob:read'])
+        if (rejection !== undefined) return rejection
+        const vaultId = this.vaultId
+        if (vaultId === undefined) return c.json({ error: 'vault-unavailable' }, 500)
+
+        const body: unknown = await c.req.json().catch(() => undefined)
+        if (!v.is(BlobHeadRequestSchema, body)) {
+          return c.json({ error: 'invalid-blob-head-request' }, 400)
+        }
+
+        const objects: BlobHeadObjectEvidence[] = []
+        for (const hash of body.hashes) {
+          objects.push(await this.readBlobHeadEvidence(vaultId, hash))
+        }
+
+        const plan = planBlobHeadHttpResponse({ request: body, objects })
+        if (plan.action === 'reject') return c.json({ error: `blob-head:${plan.reason}` }, 400)
+        return c.json(plan.response, 200)
+      })
+      .post('/blobs/upload-url', async (c) => {
+        if (this.env.SNAPSHOT_BUCKET === undefined) return c.text('Blob storage unavailable', 503)
+
+        const rejection = await this.authorizeHttpRequest(c, ['blob:write'])
+        if (rejection !== undefined) return rejection
+
+        const body: unknown = await c.req.json().catch(() => undefined)
+        if (!v.is(BlobUploadUrlRequestSchema, body)) {
+          return c.json({ error: 'invalid-blob-upload-url-request' }, 400)
+        }
+        if (body.size > BLOB_SINGLE_PUT_MAX_BYTES || body.multipart === true) {
+          return c.json({ error: 'blob-upload-url:multipart-unimplemented' }, 413)
+        }
+        const vaultId = this.vaultId
+        if (vaultId === undefined) return c.json({ error: 'vault-unavailable' }, 500)
+
+        const now = Date.now()
+        const expiresAt = now + BLOB_UPLOAD_URL_TTL_MS
+        const uploadUrl = new URL(c.req.url)
+        uploadUrl.pathname = `/blobs/${body.sha256}`
+        uploadUrl.search = `?size=${body.size}`
+        const object = await this.readBlobUploadEvidence(vaultId, body.sha256)
+        const plan = planBlobUploadUrlHttpResponse({
+          request: body,
+          object,
+          now,
+          policy: { multipartThresholdBytes: BLOB_MULTIPART_THRESHOLD_BYTES },
+          singlePut: { kind: 'single-put', url: uploadUrl.toString(), headers: {}, expiresAt },
+        })
+        if (plan.action === 'reject') {
+          const status = plan.reason === 'multipart-required' ? 413 : 400
+          return c.json({ error: `blob-upload-url:${plan.reason}` }, status)
+        }
+        return c.json(plan.response, 200)
+      })
+      .get('/blobs/:hash', async (c) => {
+        const hash = c.req.param('hash')
+        if (!v.is(Sha256HexSchema, hash)) return c.json({ error: 'invalid-blob-hash' }, 400)
+
+        const rejection = await this.authorizeHttpRequest(c, ['blob:read'])
+        if (rejection !== undefined) return rejection
+        const vaultId = this.vaultId
+        if (vaultId === undefined) return c.json({ error: 'vault-unavailable' }, 500)
+
+        const object = await this.env.SNAPSHOT_BUCKET?.get(blobObjectKey(vaultId, hash))
+        if (object === undefined) return c.text('Blob storage unavailable', 503)
+        if (object === null) return c.json({ error: 'blob-not-found' }, 404)
+
+        const bytes = new Uint8Array(await object.arrayBuffer())
+        if (makeSha256Hex(await sha256Hex(bytes)) !== hash) {
+          return c.json({ error: 'blob/hash-mismatch' }, 500)
+        }
+        return new Response(bytes, {
+          status: 200,
+          headers: {
+            'content-type': 'application/octet-stream',
+            'content-length': String(bytes.byteLength),
+            'x-content-sha256': hash,
+          },
+        })
+      })
+      .put('/blobs/:hash', async (c) => {
+        const hash = c.req.param('hash')
+        if (!v.is(Sha256HexSchema, hash)) return c.json({ error: 'invalid-blob-hash' }, 400)
+
+        const bucket = this.env.SNAPSHOT_BUCKET
+        if (bucket === undefined) return c.text('Blob storage unavailable', 503)
+
+        const rejection = await this.authorizeHttpRequest(c, ['blob:write'])
+        if (rejection !== undefined) return rejection
+        const vaultId = this.vaultId
+        if (vaultId === undefined) return c.json({ error: 'vault-unavailable' }, 500)
+
+        const expectedSize = parseBlobSize(c.req.raw)
+        if (expectedSize === undefined) return c.json({ error: 'invalid-blob-size' }, 400)
+        if (expectedSize > BLOB_SINGLE_PUT_MAX_BYTES) {
+          return c.json({ error: 'blob-upload-url:multipart-unimplemented' }, 413)
+        }
+        const contentLength = parseContentLength(c.req.raw)
+        if (contentLength === undefined || contentLength > BLOB_SINGLE_PUT_MAX_BYTES) {
+          return c.json({ error: 'invalid-blob-size' }, 413)
+        }
+        const bytes = await readRequestBytesWithLimit(c.req.raw, BLOB_SINGLE_PUT_MAX_BYTES)
+        if (bytes === undefined) return c.json({ error: 'invalid-blob-size' }, 413)
+        if (bytes.byteLength !== expectedSize) return c.json({ error: 'blob/size-mismatch' }, 400)
+        if (makeSha256Hex(await sha256Hex(bytes)) !== hash) return c.json({ error: 'blob/hash-mismatch' }, 400)
+
+        await bucket.put(blobObjectKey(vaultId, hash), bytes)
+        return c.json({ status: 'stored', sha256: hash, size: bytes.byteLength }, 200)
+      })
+      .get('/blob-manifests/*', async (c) => {
+        const match = /^\/blob-manifests\/([^/]+)\.json$/.exec(c.req.path)
+        const hash = match !== null && v.is(Sha256HexSchema, match[1]) ? match[1] : undefined
+        if (hash === undefined) return c.json({ error: 'invalid-blob-manifest-hash' }, 400)
+
+        const rejection = await this.authorizeHttpRequest(c, ['blob:read'])
+        if (rejection !== undefined) return rejection
+        const vaultId = this.vaultId
+        if (vaultId === undefined) return c.json({ error: 'vault-unavailable' }, 500)
+
+        const object = await this.env.SNAPSHOT_BUCKET?.get(blobManifestObjectKey(vaultId, hash))
+        if (object === undefined) return c.text('Blob storage unavailable', 503)
+        if (object === null) return c.json({ error: 'blob-manifest-not-found' }, 404)
+
+        const bytes = new Uint8Array(await object.arrayBuffer())
+        if (makeSha256Hex(await sha256Hex(bytes)) !== hash) {
+          return c.json({ error: 'blob-manifest/hash-mismatch' }, 500)
+        }
+        return new Response(bytes, {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'content-length': String(bytes.byteLength),
+            'x-content-sha256': hash,
+          },
+        })
+      })
+      .put('/blob-manifests/*', async (c) => {
+        const match = /^\/blob-manifests\/([^/]+)\.json$/.exec(c.req.path)
+        const hash = match !== null && v.is(Sha256HexSchema, match[1]) ? match[1] : undefined
+        if (hash === undefined) return c.json({ error: 'invalid-blob-manifest-hash' }, 400)
+
+        const bucket = this.env.SNAPSHOT_BUCKET
+        if (bucket === undefined) return c.text('Blob storage unavailable', 503)
+
+        const rejection = await this.authorizeHttpRequest(c, ['blob:write'])
+        if (rejection !== undefined) return rejection
+        const vaultId = this.vaultId
+        if (vaultId === undefined) return c.json({ error: 'vault-unavailable' }, 500)
+
+        const contentLength = parseContentLength(c.req.raw)
+        if (contentLength === undefined || contentLength > BLOB_MANIFEST_MAX_BYTES) {
+          return c.json({ error: 'invalid-blob-manifest-size' }, 413)
+        }
+        const requestBytes = await readRequestBytesWithLimit(c.req.raw, BLOB_MANIFEST_MAX_BYTES)
+        if (requestBytes === undefined) return c.json({ error: 'invalid-blob-manifest-size' }, 413)
+
+        let body: unknown
+        try {
+          body = JSON.parse(new TextDecoder().decode(requestBytes))
+        } catch {
+          return c.json({ error: 'invalid-blob-manifest-json' }, 400)
+        }
+        if (!v.is(BlobManifestSchema, body)) return c.json({ error: 'invalid-blob-manifest-json' }, 400)
+
+        const canonicalBytes = encodeBlobManifestJson(body)
+        if (makeSha256Hex(await sha256Hex(canonicalBytes)) !== hash) {
+          return c.json({ error: 'blob-manifest/hash-mismatch' }, 400)
+        }
+
+        await bucket.put(blobManifestObjectKey(vaultId, hash), canonicalBytes)
+        return c.json({ status: 'stored', sha256: hash, size: canonicalBytes.byteLength }, 200)
+      })
+      .all('*', (c) => {
+        if (c.req.header('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE) {
+          return c.text('Expected WebSocket upgrade', 426)
+        }
+        if (typeof WebSocketPair === 'undefined') {
+          return c.text('WebSocketPair is not available', 500)
+        }
+
+        const pair = new WebSocketPair()
+        const client = pair[0]
+        const server = pair[1]
+        this.state.acceptWebSocket(server)
+        this.sessions.add(server)
+        this.rememberSocketToken(server, extractWebSocketBearerToken(c.req.raw))
+
+        const upgradeInit: WebSocketResponseInit = { status: 101, webSocket: client }
+        return new Response(null, upgradeInit)
+      })
+  }
+
+  private getDb(): Kysely<Database> | undefined {
+    const sql = this.state.storage.sql
+    return sql === undefined ? undefined : createDb(sql)
+  }
+
   fetch(request: Request): Response | Promise<Response> {
     this.rememberVaultId(request)
-    if (new URL(request.url).pathname === E2E_SETUP_TOKEN_PATH) {
-      return this.handleE2eSetupTokenSeed(request)
-    }
-    if (new URL(request.url).pathname === E2E_SNAPSHOT_PATH) {
-      return this.handleE2eSnapshotSeed(request)
-    }
-    if (new URL(request.url).pathname === '/setup/exchange') {
-      return this.handleSetupExchange(request)
-    }
-    if (new URL(request.url).pathname === '/auth/refresh') {
-      return this.handleAuthRefresh(request)
-    }
-    if (/^\/devices\/[^/]+\/revoke$/.test(new URL(request.url).pathname)) {
-      return this.handleRevokeDevice(request)
-    }
-    if (/^\/admin\/quarantine(?:\/[^/]+)?$/.test(new URL(request.url).pathname)) {
-      return this.handleQuarantineInspect(request)
-    }
-    if (new URL(request.url).pathname === '/blobs/head') {
-      return this.handleBlobHead(request)
-    }
-    if (new URL(request.url).pathname === '/blobs/upload-url') {
-      return this.handleBlobUploadUrl(request)
-    }
-    if (/^\/blobs\/[^/]+$/.test(new URL(request.url).pathname)) {
-      return this.handleBlobObject(request)
-    }
-    if (/^\/blob-manifests\/[^/]+\.json$/.test(new URL(request.url).pathname)) {
-      return this.handleBlobManifestObject(request)
-    }
-    if (request.headers.get('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE) {
-      return new Response('Expected WebSocket upgrade', { status: 426 })
-    }
-    if (typeof WebSocketPair === 'undefined') {
-      return new Response('WebSocketPair is not available', { status: 500 })
-    }
-
-    const pair = new WebSocketPair()
-    const client = pair[0]
-    const server = pair[1]
-    this.state.acceptWebSocket(server)
-    this.sessions.add(server)
-    this.rememberSocketToken(server, extractWebSocketBearerToken(request))
-
-    const init: WebSocketUpgradeResponseInit = { status: 101, webSocket: client }
-    return new Response(null, init)
+    return this.doRouter.fetch(request)
   }
 
-  private handleSetupExchange(request: Request): Promise<Response> {
-    return this.handleSetupExchangeAsync(request)
-  }
-
-  private async handleSetupExchangeAsync(request: Request): Promise<Response> {
-    if (request.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    const sql = this.state.storage.sql
-    const secret = this.env.DEVICE_TOKEN_SECRET
-    if (sql === undefined || secret === undefined) {
-      return new Response('Setup exchange unavailable', { status: 503 })
-    }
-    this.ensureSchema()
-
-    const body = await parseJsonBody(request)
-    if (!v.is(SetupExchangeRequestSchema, body)) {
-      return jsonResponse({ error: 'invalid-setup-exchange-request' }, 400)
-    }
-    if (this.vaultId !== undefined && body.vaultId !== this.vaultId) {
-      return jsonResponse({ error: 'vault-mismatch' }, 400)
-    }
-    this.vaultId = body.vaultId
-
-    const now = Date.now()
-    const setupTokenHash = makeSha256Hex(await sha256Text(body.setupToken))
-    const tokenDecision = decideSetupTokenConsume({
-      token: this.readSetupToken(setupTokenHash),
-      requestedVaultId: body.vaultId,
-      now,
-    })
-    if (tokenDecision.action === 'reject') {
-      return jsonResponse({ error: `setup-token:${tokenDecision.reason}` }, 403)
-    }
-
-    const existingDevice =
-      body.existingDeviceId === undefined
-        ? undefined
-        : this.readDeviceRegistryEntry(body.existingDeviceId)
-    const setupDecision = decideSetupExchange({
-      requestedDeviceId: body.existingDeviceId,
-      registry: {
-        existingDevice,
-        usedYClientIds: this.readUsedYClientIds(),
-      },
-      yClientIdRange: Y_CLIENT_ID_RANGE,
-    })
-    if (setupDecision.action === 'reject') {
-      return jsonResponse({ error: `setup-exchange:${setupDecision.reason}` }, 403)
-    }
-
-    const deviceId = body.existingDeviceId ?? makeGeneratedDeviceId()
-    const refreshToken = makeOpaqueToken()
-    const refreshTokenHash = makeSha256Hex(await sha256Text(refreshToken))
-    const credentialPlan = planSetupExchangeCredentials({
-      setupDecision,
-      deviceId,
-      refreshTokenHash,
-      now,
-      refreshTokenExpiresAt: now + SETUP_REFRESH_TOKEN_TTL_MS,
-    })
-    if (credentialPlan.action === 'reject') {
-      return jsonResponse({ error: `setup-credentials:${credentialPlan.reason}` }, 500)
-    }
-
-    const claims: DeviceTokenClaims = {
-      iss: 'kuroflare-worker',
-      aud: body.vaultId,
-      sub: credentialPlan.deviceId,
-      scope: ['sync:read', 'sync:write', 'blob:read', 'blob:write'],
-      iat: now,
-      exp: now + SETUP_ACCESS_TOKEN_TTL_MS,
-      tokenVersion: credentialPlan.tokenVersion,
-    }
-    const accessToken = await signHs256DeviceToken({ claims, secret })
-    const responsePlan = planSetupExchangeHttpResponse({
-      credentialPlan,
-      endpoint: new URL(request.url).origin,
-      vaultId: body.vaultId,
-      accessToken,
-      refreshToken,
-      accessTokenIssuedAt: claims.iat,
-      accessTokenExpiresAt: claims.exp,
-      protocolVersion: CURRENT_PROTOCOL_VERSION,
-      bootstrapMode: this.hasAnyPersistedDocs() ? 'join-existing' : 'new-vault',
-    })
-    if (responsePlan.action === 'reject') {
-      return jsonResponse({ error: `setup-response:${responsePlan.reason}` }, 500)
-    }
-
-    try {
-      this.withSqlTransaction(() => {
-        this.consumeSetupToken(setupTokenHash, tokenDecision.consumedAt)
-        this.persistSetupDevice(credentialPlan.deviceId, credentialPlan.yClientId, now)
-        this.persistRefreshToken(
-          credentialPlan.insertRefreshToken.tokenHash,
-          credentialPlan.insertRefreshToken.deviceId,
-          credentialPlan.insertRefreshToken.issuedAt,
-          credentialPlan.insertRefreshToken.expiresAt,
-        )
-      })
-    } catch (error) {
-      console.error('[kuroflare] setup exchange persist failed', error)
-      return jsonResponse({ error: 'setup-persist:transaction-failed' }, 500)
-    }
-
-    return jsonResponse(responsePlan.response, 200)
-  }
-
-  private handleE2eSetupTokenSeed(request: Request): Promise<Response> {
-    return this.handleE2eSetupTokenSeedAsync(request)
-  }
-
-  private async handleE2eSetupTokenSeedAsync(request: Request): Promise<Response> {
-    if (request.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
-      return new Response('E2E setup token seed unavailable', { status: 503 })
-    }
-    this.ensureSchema()
-
-    const body = await parseJsonBody(request)
-    if (!v.is(E2eSetupTokenSeedRequestSchema, body)) {
-      return jsonResponse({ error: 'invalid-e2e-setup-token-seed-request' }, 400)
-    }
-    if (this.vaultId !== undefined && body.vaultId !== this.vaultId) {
-      return jsonResponse({ error: 'vault-mismatch' }, 400)
-    }
-    this.vaultId = body.vaultId
-
-    const now = Date.now()
-    const expiresAt = now + (body.expiresInMs ?? 10 * 60 * 1_000)
-    const setupTokenHash = makeSha256Hex(await sha256Text(body.setupToken))
-    sql.exec(
-      `insert into setup_tokens
-        (token_hash, vault_id, issued_at, expires_at, consumed_at)
-       values (?, ?, ?, ?, null)
-       on conflict(token_hash) do update set
-         vault_id = excluded.vault_id,
-         issued_at = excluded.issued_at,
-         expires_at = excluded.expires_at,
-         consumed_at = null`,
-      setupTokenHash,
-      body.vaultId,
-      now,
-      expiresAt,
-    )
-
-    return jsonResponse(
-      {
-        ok: true,
-        vaultId: body.vaultId,
-        expiresAt,
-        tokenReadable: this.readSetupToken(setupTokenHash) !== undefined,
-      },
-      200,
-    )
-  }
-
-  private handleE2eSnapshotSeed(request: Request): Promise<Response> {
-    return this.handleE2eSnapshotSeedAsync(request)
-  }
-
-  private async handleE2eSnapshotSeedAsync(request: Request): Promise<Response> {
-    if (request.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    const sql = this.state.storage.sql
-    const bucket = this.env.SNAPSHOT_BUCKET
-    if (sql === undefined || bucket === undefined) {
-      return new Response('E2E snapshot seed unavailable', { status: 503 })
-    }
-    this.ensureSchema()
-
-    const body = await parseJsonBody(request)
-    if (!v.is(E2eSnapshotSeedRequestSchema, body)) {
-      return jsonResponse({ error: 'invalid-e2e-snapshot-seed-request' }, 400)
-    }
-    if (this.vaultId !== undefined && body.vaultId !== this.vaultId) {
-      return jsonResponse({ error: 'vault-mismatch' }, 400)
-    }
-    this.vaultId = body.vaultId
-
-    const update = decodeBase64(body.update)
-    if (update === null || !canApplyYjsUpdate(update)) {
-      return jsonResponse({ error: 'invalid-e2e-snapshot-update' }, 400)
-    }
-    const doc = new Y.Doc()
-    Y.applyUpdate(doc, update)
-    const stateVector = Y.encodeStateVector(doc)
-    doc.destroy()
-
-    const now = Date.now()
-    const latestSeq = body.latestSeq ?? 1
-    const snapshotKey = makeSnapshotObjectKey(body.vaultId, body.docId, latestSeq)
-    await bucket.put(snapshotKey, update)
-    sql.exec(
-      `insert into docs
-        (doc_id, kind, latest_seq, latest_snapshot_seq, latest_snapshot_key, latest_state_vector, min_retained_seq, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?)
-       on conflict(doc_id) do update set
-         latest_seq = excluded.latest_seq,
-         latest_snapshot_seq = excluded.latest_snapshot_seq,
-         latest_snapshot_key = excluded.latest_snapshot_key,
-         latest_state_vector = excluded.latest_state_vector,
-         min_retained_seq = excluded.min_retained_seq,
-         updated_at = excluded.updated_at`,
-      docKey(body.docId),
-      body.docId.kind,
-      latestSeq,
-      latestSeq,
-      snapshotKey,
-      stateVector,
-      0,
-      now,
-    )
-
-    return jsonResponse({ ok: true, vaultId: body.vaultId, docId: body.docId, snapshotKey }, 200)
-  }
-
-  private handleRevokeDevice(request: Request): Promise<Response> {
-    return this.handleRevokeDeviceAsync(request)
-  }
-
-  private async handleRevokeDeviceAsync(request: Request): Promise<Response> {
-    if (request.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    const sql = this.state.storage.sql
-    const secret = this.env.DEVICE_TOKEN_SECRET
-    if (sql === undefined || secret === undefined) {
-      return new Response('Device revoke unavailable', { status: 503 })
-    }
-    this.ensureSchema()
-
-    const targetDeviceId = parseRevokeDevicePath(request)
-    if (targetDeviceId === undefined) {
-      return jsonResponse({ error: 'invalid-device-id' }, 400)
-    }
-    const body = await parseJsonBody(request)
-    if (!v.is(RevokeDeviceRequestSchema, body)) {
-      return jsonResponse({ error: 'invalid-revoke-device-request' }, 400)
-    }
-    const claims = await this.verifyRequestClaims(request)
-    if (claims === undefined) {
-      return jsonResponse({ error: 'auth-reject:invalid-token' }, 401)
-    }
-    if (this.vaultId !== undefined && claims.aud !== this.vaultId) {
-      return jsonResponse({ error: 'vault-mismatch' }, 400)
-    }
-    this.vaultId = claims.aud
-
-    const actorDevice = this.readDeviceRegistryEntry(claims.sub)
-    const admission = decideAuthAdmission({
-      claims,
-      expectedVaultId: claims.aud,
-      device: actorDevice,
-      requiredScopes: ['sync:write'],
-      now: Date.now(),
-    })
-    if (admission.action === 'reject') {
-      return jsonResponse({ error: `auth-reject:${admission.reason}` }, 403)
-    }
-
-    const targetDevice = this.readDeviceRegistryEntry(targetDeviceId)
-    const revokeDecision = decideRevokeDevice({
-      device: targetDevice,
-      revokedAt: Date.now(),
-    })
-    if (revokeDecision.action === 'reject') {
-      return jsonResponse({ error: `revoke-device:${revokeDecision.reason}` }, 404)
-    }
-    const responsePlan = planRevokeDeviceHttpResponse({
-      revokeDecision,
-      deviceId: targetDeviceId,
-    })
-    if (responsePlan.action === 'reject') {
-      return jsonResponse({ error: `revoke-device-response:${responsePlan.reason}` }, 500)
-    }
-
-    if (revokeDecision.action === 'revoke-device') {
-      this.persistDeviceRevocation(
-        targetDeviceId,
-        revokeDecision.tokenVersion,
-        revokeDecision.revokedAt,
-      )
-    }
-
-    return jsonResponse(responsePlan.response, 200)
-  }
-
-  private handleAuthRefresh(request: Request): Promise<Response> {
-    return this.handleAuthRefreshAsync(request)
-  }
-
-  private async handleAuthRefreshAsync(request: Request): Promise<Response> {
-    if (request.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    const sql = this.state.storage.sql
-    const secret = this.env.DEVICE_TOKEN_SECRET
-    if (sql === undefined || secret === undefined) {
-      return new Response('Auth refresh unavailable', { status: 503 })
-    }
-    this.ensureSchema()
-
-    const body = await parseJsonBody(request)
-    if (!v.is(DeviceTokenRefreshRequestSchema, body)) {
-      return jsonResponse({ error: 'invalid-auth-refresh-request' }, 400)
-    }
-    if (this.vaultId !== undefined && body.vaultId !== this.vaultId) {
-      return jsonResponse({ error: 'vault-mismatch' }, 400)
-    }
-    this.vaultId = body.vaultId
-
-    const now = Date.now()
-    const currentTokenHash = makeSha256Hex(await sha256Text(body.refreshToken))
-    const device = this.readDeviceRegistryEntry(body.deviceId)
-    const refreshDecision = decideDeviceTokenRefresh({
-      device,
-      refreshToken: this.readRefreshToken(currentTokenHash),
-      previousTokenVersion: body.previousTokenVersion,
-      now,
-    })
-    if (refreshDecision.action === 'reject') {
-      return jsonResponse({ error: `auth-refresh:${refreshDecision.reason}` }, 403)
-    }
-
-    const nextRefreshToken = makeOpaqueToken()
-    const nextRefreshTokenHash = makeSha256Hex(await sha256Text(nextRefreshToken))
-    const rotationPlan = planDeviceRefreshTokenRotation({
-      refreshDecision,
-      currentTokenHash,
-      nextTokenHash: nextRefreshTokenHash,
-      deviceId: body.deviceId,
-      now,
-      nextExpiresAt: now + REFRESH_TOKEN_TTL_MS,
-    })
-    if (rotationPlan.action === 'reject') {
-      return jsonResponse({ error: `auth-refresh-rotation:${rotationPlan.reason}` }, 500)
-    }
-
-    const claims: DeviceTokenClaims = {
-      iss: 'kuroflare-worker',
-      aud: body.vaultId,
-      sub: body.deviceId,
-      scope: ['sync:read', 'sync:write', 'blob:read', 'blob:write'],
-      iat: now,
-      exp: now + REFRESH_ACCESS_TOKEN_TTL_MS,
-      tokenVersion: refreshDecision.tokenVersion,
-    }
-    const accessToken = await signHs256DeviceToken({ claims, secret })
-    const responsePlan = planDeviceTokenRefreshHttpResponse({
-      refreshDecision,
-      rotationPlan,
-      vaultId: body.vaultId,
-      accessToken,
-      refreshToken: nextRefreshToken,
-      accessTokenIssuedAt: claims.iat,
-      accessTokenExpiresAt: claims.exp,
-      protocolVersion: CURRENT_PROTOCOL_VERSION,
-    })
-    if (responsePlan.action === 'reject') {
-      return jsonResponse({ error: `auth-refresh-response:${responsePlan.reason}` }, 500)
-    }
-
-    try {
-      this.withSqlTransaction(() => {
-        this.revokeRefreshToken(rotationPlan.revoke.tokenHash, rotationPlan.revoke.revokedAt)
-        this.persistRefreshToken(
-          rotationPlan.insert.tokenHash,
-          rotationPlan.insert.deviceId,
-          rotationPlan.insert.issuedAt,
-          rotationPlan.insert.expiresAt,
-        )
-      })
-    } catch {
-      return jsonResponse({ error: 'auth-refresh-persist:transaction-failed' }, 500)
-    }
-
-    return jsonResponse(responsePlan.response, 200)
-  }
-
-  private handleQuarantineInspect(request: Request): Promise<Response> {
-    return this.handleQuarantineInspectAsync(request)
-  }
-
-  private async handleQuarantineInspectAsync(request: Request): Promise<Response> {
-    if (request.method !== 'GET') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    const sql = this.state.storage.sql
-    const secret = this.env.DEVICE_TOKEN_SECRET
-    if (sql === undefined || secret === undefined) {
-      return new Response('Quarantine inspect unavailable', { status: 503 })
-    }
-    this.ensureSchema()
-
-    const claims = await this.verifyRequestClaims(request)
-    if (claims === undefined) {
-      return jsonResponse({ error: 'auth-reject:invalid-token' }, 401)
-    }
-    if (this.vaultId !== undefined && claims.aud !== this.vaultId) {
-      return jsonResponse({ error: 'vault-mismatch' }, 400)
-    }
-    this.vaultId = claims.aud
-
-    const actorDevice = this.readDeviceRegistryEntry(claims.sub)
-    const admission = decideAuthAdmission({
-      claims,
-      expectedVaultId: claims.aud,
-      device: actorDevice,
-      requiredScopes: ['sync:write'],
-      now: Date.now(),
-    })
-    if (admission.action === 'reject') {
-      return jsonResponse({ error: `auth-reject:${admission.reason}` }, 403)
-    }
-
-    const quarantineId = parseQuarantineInspectPath(request)
-    if (quarantineId === undefined) {
-      return jsonResponse(buildQuarantinedUpdateListResponse(this.readQuarantinedUpdates()), 200)
-    }
-
-    const record = this.readQuarantinedUpdate(quarantineId)
-    if (record === undefined) {
-      return jsonResponse({ error: 'unknown-quarantine' }, 404)
-    }
-
-    return jsonResponse(
-      buildQuarantinedUpdateDetailResponse(
-        record,
-        encodeOptionalBase64(this.readQuarantinedUpdateBytes(quarantineId)),
-      ),
-      200,
-    )
-  }
-
-  private handleBlobHead(request: Request): Promise<Response> {
-    return this.handleBlobHeadAsync(request)
-  }
-
-  private async handleBlobHeadAsync(request: Request): Promise<Response> {
-    if (request.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    if (this.env.SNAPSHOT_BUCKET === undefined) {
-      return new Response('Blob storage unavailable', { status: 503 })
-    }
-
-    const admission = await this.authorizeHttpRequest(request, ['blob:read'])
-    if (admission !== undefined) {
-      return admission
-    }
-    const vaultId = this.vaultId
-    if (vaultId === undefined) {
-      return jsonResponse({ error: 'vault-unavailable' }, 500)
-    }
-
-    const body = await parseJsonBody(request)
-    if (!v.is(BlobHeadRequestSchema, body)) {
-      return jsonResponse({ error: 'invalid-blob-head-request' }, 400)
-    }
-
-    const objects: BlobHeadObjectEvidence[] = []
-    for (const hash of body.hashes) {
-      objects.push(await this.readBlobHeadEvidence(vaultId, hash))
-    }
-
-    const plan = planBlobHeadHttpResponse({ request: body, objects })
-    if (plan.action === 'reject') {
-      return jsonResponse({ error: `blob-head:${plan.reason}` }, 400)
-    }
-    return jsonResponse(plan.response, 200)
-  }
-
-  private handleBlobUploadUrl(request: Request): Promise<Response> {
-    return this.handleBlobUploadUrlAsync(request)
-  }
-
-  private async handleBlobUploadUrlAsync(request: Request): Promise<Response> {
-    if (request.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    if (this.env.SNAPSHOT_BUCKET === undefined) {
-      return new Response('Blob storage unavailable', { status: 503 })
-    }
-
-    const admission = await this.authorizeHttpRequest(request, ['blob:write'])
-    if (admission !== undefined) {
-      return admission
-    }
-
-    const body = await parseJsonBody(request)
-    if (!v.is(BlobUploadUrlRequestSchema, body)) {
-      return jsonResponse({ error: 'invalid-blob-upload-url-request' }, 400)
-    }
-    if (body.size > BLOB_SINGLE_PUT_MAX_BYTES || body.multipart === true) {
-      return jsonResponse({ error: 'blob-upload-url:multipart-unimplemented' }, 413)
-    }
-    const vaultId = this.vaultId
-    if (vaultId === undefined) {
-      return jsonResponse({ error: 'vault-unavailable' }, 500)
-    }
-
-    const now = Date.now()
-    const expiresAt = now + BLOB_UPLOAD_URL_TTL_MS
-    const uploadUrl = new URL(request.url)
-    uploadUrl.pathname = `/blobs/${body.sha256}`
-    uploadUrl.search = `?size=${body.size}`
-    const object = await this.readBlobUploadEvidence(vaultId, body.sha256)
-    const plan = planBlobUploadUrlHttpResponse({
-      request: body,
-      object,
-      now,
-      policy: { multipartThresholdBytes: BLOB_MULTIPART_THRESHOLD_BYTES },
-      singlePut: {
-        kind: 'single-put',
-        url: uploadUrl.toString(),
-        headers: {},
-        expiresAt,
-      },
-    })
-    if (plan.action === 'reject') {
-      const status = plan.reason === 'multipart-required' ? 413 : 400
-      return jsonResponse({ error: `blob-upload-url:${plan.reason}` }, status)
-    }
-    return jsonResponse(plan.response, 200)
-  }
-
-  private handleBlobObject(request: Request): Promise<Response> {
-    return this.handleBlobObjectAsync(request)
-  }
-
-  private async handleBlobObjectAsync(request: Request): Promise<Response> {
-    const hash = parseBlobObjectPath(request)
-    if (hash === undefined) {
-      return jsonResponse({ error: 'invalid-blob-hash' }, 400)
-    }
-
-    if (request.method === 'GET') {
-      const admission = await this.authorizeHttpRequest(request, ['blob:read'])
-      if (admission !== undefined) {
-        return admission
-      }
-      const vaultId = this.vaultId
-      if (vaultId === undefined) {
-        return jsonResponse({ error: 'vault-unavailable' }, 500)
-      }
-      const object = await this.env.SNAPSHOT_BUCKET?.get(blobObjectKey(vaultId, hash))
-      if (object === undefined) {
-        return new Response('Blob storage unavailable', { status: 503 })
-      }
-      if (object === null) {
-        return jsonResponse({ error: 'blob-not-found' }, 404)
-      }
-      const bytes = new Uint8Array(await object.arrayBuffer())
-      if (makeSha256Hex(await sha256Hex(bytes)) !== hash) {
-        return jsonResponse({ error: 'blob/hash-mismatch' }, 500)
-      }
-      return new Response(bytes, {
-        status: 200,
-        headers: {
-          'content-type': 'application/octet-stream',
-          'content-length': String(bytes.byteLength),
-          'x-content-sha256': hash,
-        },
-      })
-    }
-
-    if (request.method !== 'PUT') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    const bucket = this.env.SNAPSHOT_BUCKET
-    if (bucket === undefined) {
-      return new Response('Blob storage unavailable', { status: 503 })
-    }
-    const admission = await this.authorizeHttpRequest(request, ['blob:write'])
-    if (admission !== undefined) {
-      return admission
-    }
-    const vaultId = this.vaultId
-    if (vaultId === undefined) {
-      return jsonResponse({ error: 'vault-unavailable' }, 500)
-    }
-
-    const expectedSize = parseBlobSize(request)
-    if (expectedSize === undefined) {
-      return jsonResponse({ error: 'invalid-blob-size' }, 400)
-    }
-    if (expectedSize > BLOB_SINGLE_PUT_MAX_BYTES) {
-      return jsonResponse({ error: 'blob-upload-url:multipart-unimplemented' }, 413)
-    }
-    const contentLength = parseContentLength(request)
-    if (contentLength === undefined || contentLength > BLOB_SINGLE_PUT_MAX_BYTES) {
-      return jsonResponse({ error: 'invalid-blob-size' }, 413)
-    }
-    const bytes = await readRequestBytesWithLimit(request, BLOB_SINGLE_PUT_MAX_BYTES)
-    if (bytes === undefined) {
-      return jsonResponse({ error: 'invalid-blob-size' }, 413)
-    }
-    if (bytes.byteLength !== expectedSize) {
-      return jsonResponse({ error: 'blob/size-mismatch' }, 400)
-    }
-    if (makeSha256Hex(await sha256Hex(bytes)) !== hash) {
-      return jsonResponse({ error: 'blob/hash-mismatch' }, 400)
-    }
-
-    await bucket.put(blobObjectKey(vaultId, hash), bytes)
-    return jsonResponse({ status: 'stored', sha256: hash, size: bytes.byteLength }, 200)
-  }
-
-  private handleBlobManifestObject(request: Request): Promise<Response> {
-    return this.handleBlobManifestObjectAsync(request)
-  }
-
-  private async handleBlobManifestObjectAsync(request: Request): Promise<Response> {
-    const hash = parseBlobManifestObjectPath(request)
-    if (hash === undefined) {
-      return jsonResponse({ error: 'invalid-blob-manifest-hash' }, 400)
-    }
-
-    if (request.method === 'GET') {
-      const admission = await this.authorizeHttpRequest(request, ['blob:read'])
-      if (admission !== undefined) {
-        return admission
-      }
-      const vaultId = this.vaultId
-      if (vaultId === undefined) {
-        return jsonResponse({ error: 'vault-unavailable' }, 500)
-      }
-      const object = await this.env.SNAPSHOT_BUCKET?.get(blobManifestObjectKey(vaultId, hash))
-      if (object === undefined) {
-        return new Response('Blob storage unavailable', { status: 503 })
-      }
-      if (object === null) {
-        return jsonResponse({ error: 'blob-manifest-not-found' }, 404)
-      }
-      const bytes = new Uint8Array(await object.arrayBuffer())
-      if (makeSha256Hex(await sha256Hex(bytes)) !== hash) {
-        return jsonResponse({ error: 'blob-manifest/hash-mismatch' }, 500)
-      }
-      return new Response(bytes, {
-        status: 200,
-        headers: {
-          'content-type': 'application/json',
-          'content-length': String(bytes.byteLength),
-          'x-content-sha256': hash,
-        },
-      })
-    }
-
-    if (request.method !== 'PUT') {
-      return new Response('Method Not Allowed', { status: 405 })
-    }
-    const bucket = this.env.SNAPSHOT_BUCKET
-    if (bucket === undefined) {
-      return new Response('Blob storage unavailable', { status: 503 })
-    }
-    const admission = await this.authorizeHttpRequest(request, ['blob:write'])
-    if (admission !== undefined) {
-      return admission
-    }
-    const vaultId = this.vaultId
-    if (vaultId === undefined) {
-      return jsonResponse({ error: 'vault-unavailable' }, 500)
-    }
-    const contentLength = parseContentLength(request)
-    if (contentLength === undefined || contentLength > BLOB_MANIFEST_MAX_BYTES) {
-      return jsonResponse({ error: 'invalid-blob-manifest-size' }, 413)
-    }
-    const requestBytes = await readRequestBytesWithLimit(request, BLOB_MANIFEST_MAX_BYTES)
-    if (requestBytes === undefined) {
-      return jsonResponse({ error: 'invalid-blob-manifest-size' }, 413)
-    }
-    let body: unknown
-    try {
-      body = JSON.parse(new TextDecoder().decode(requestBytes))
-    } catch {
-      return jsonResponse({ error: 'invalid-blob-manifest-json' }, 400)
-    }
-    if (!v.is(BlobManifestSchema, body)) {
-      return jsonResponse({ error: 'invalid-blob-manifest-json' }, 400)
-    }
-    const canonicalBytes = encodeBlobManifestJson(body)
-    if (makeSha256Hex(await sha256Hex(canonicalBytes)) !== hash) {
-      return jsonResponse({ error: 'blob-manifest/hash-mismatch' }, 400)
-    }
-
-    await bucket.put(blobManifestObjectKey(vaultId, hash), canonicalBytes)
-    return jsonResponse({ status: 'stored', sha256: hash, size: canonicalBytes.byteLength }, 200)
-  }
-
-  /**
-   * Broadcasts an inbound update frame to every other connected socket.
-   *
-   * @param webSocket Sender socket supplied by the Durable Object runtime.
-   * @param message Text or binary WebSocket message.
-   */
   async webSocketMessage(
     webSocket: RuntimeWebSocket,
     message: string | ArrayBuffer,
   ): Promise<void> {
-    this.ensureSchema()
+    await this.ensureSchema()
     if (typeof message !== 'string') {
       const frame = decodeBinaryFrame(new Uint8Array(message))
       if (frame === null) {
@@ -1106,54 +922,32 @@ export class VaultRoom {
     }
   }
 
-  /**
-   * Removes closed sockets from the live-session index.
-   *
-   * @param webSocket Socket supplied by the Durable Object runtime.
-   */
   webSocketClose(webSocket: RuntimeWebSocket): void {
     this.sessions.delete(webSocket)
     this.sessionStates.delete(webSocket)
     this.socketTokens.delete(webSocket)
   }
 
-  /**
-   * Removes errored sockets from the live-session index.
-   *
-   * @param webSocket Socket supplied by the Durable Object runtime.
-   */
   webSocketError(webSocket: RuntimeWebSocket): void {
     this.sessions.delete(webSocket)
     this.sessionStates.delete(webSocket)
     this.socketTokens.delete(webSocket)
   }
 
-  /**
-   * Runs scheduled checkpoints for documents with uncheckpointed durable ops.
-   *
-   * @returns A promise that resolves after the current checkpoint batch finishes.
-   */
   async alarm(): Promise<void> {
-    this.ensureSchema()
+    await this.ensureSchema()
     await this.recoverOrphanedCheckpointRuns(CHECKPOINT_ALARM_DOC_LIMIT)
-    for (const docId of this.readCheckpointableDocIds(CHECKPOINT_ALARM_DOC_LIMIT)) {
+    for (const docId of await this.readCheckpointableDocIds(CHECKPOINT_ALARM_DOC_LIMIT)) {
       await this.checkpointDoc(docId)
     }
   }
 
-  /**
-   * Writes an active document snapshot to R2 and advances the SQLite snapshot pointer.
-   *
-   * @param docId Document to checkpoint.
-   * @param now Timestamp to store on checkpoint rows.
-   * @returns The checkpoint result or a skip reason.
-   */
   async checkpointDoc(docId: DocId, now = Date.now()): Promise<RuntimeCheckpointResult> {
-    this.ensureSchema()
-    const sql = this.state.storage.sql
+    await this.ensureSchema()
+    const db = this.getDb()
     const bucket = this.env.SNAPSHOT_BUCKET
     const vaultId = await this.resolveVaultId()
-    if (sql === undefined || bucket === undefined || vaultId === undefined) {
+    if (db === undefined || bucket === undefined || vaultId === undefined) {
       return { action: 'skipped', reason: 'runtime-unavailable' }
     }
 
@@ -1165,17 +959,17 @@ export class VaultRoom {
 
     const doc = this.docs.get(docKey(docId))
     const clock = await this.readDocClock(docId)
-    const snapshotSeq = this.readSnapshotSeq(docId)
+    const snapshotSeq = await this.readSnapshotSeq(docId)
     if (doc === undefined) {
       return { action: 'skipped', reason: 'doc-unavailable' }
     }
-    if (!v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), clock?.latestSeq)) {
+    if (clock === undefined || !v.is(PosIntSchema, clock.latestSeq)) {
       return { action: 'skipped', reason: 'invalid-clock' }
     }
 
     const snapshotKey = makeSnapshotObjectKey(vaultId, docId, clock.latestSeq)
     const decision = decideCheckpointWrite({
-      latestSeq: clock?.latestSeq,
+      latestSeq: clock.latestSeq,
       latestSnapshotSeq: snapshotSeq,
       snapshotKey,
       now,
@@ -1186,10 +980,8 @@ export class VaultRoom {
 
     const snapshotBytes = Y.encodeStateAsUpdate(doc)
     const stateVector = Y.encodeStateVector(doc)
-    sql.exec(
-      `insert into checkpoint_runs
-        (run_id, doc_id, upper_seq, snapshot_key, state_vector, status, created_at)
-       values (?, ?, ?, ?, ?, ?, ?)`,
+    await insertCheckpointRun(
+      db,
       decision.runId,
       docKey(docId),
       decision.upperSeq,
@@ -1199,21 +991,9 @@ export class VaultRoom {
       decision.createdAt,
     )
     await bucket.put(decision.snapshotKey, snapshotBytes)
-    sql.exec(
-      `update checkpoint_runs
-       set status = ?, r2_written_at = ?
-       where run_id = ?`,
-      'r2-written',
-      now,
-      decision.runId,
-    )
-    sql.exec(
-      `update docs
-       set latest_snapshot_seq = ?,
-           latest_snapshot_key = ?,
-           latest_state_vector = ?,
-           updated_at = ?
-       where doc_id = ? and latest_snapshot_seq <= ?`,
+    await updateCheckpointR2Written(db, decision.runId, now)
+    await updateDocSnapshotPointer(
+      db,
       decision.upperSeq,
       decision.snapshotKey,
       stateVector,
@@ -1221,14 +1001,7 @@ export class VaultRoom {
       docKey(docId),
       decision.upperSeq,
     )
-    sql.exec(
-      `update checkpoint_runs
-       set status = ?, pointer_updated_at = ?
-       where run_id = ?`,
-      'pointer-updated',
-      now,
-      decision.runId,
-    )
+    await updateCheckpointPointerUpdated(db, decision.runId, now)
     const compact = decideCheckpointCompact({
       status: 'pointer-updated',
       upperSeq: decision.upperSeq,
@@ -1236,31 +1009,16 @@ export class VaultRoom {
       now,
     })
     if (compact.action === 'compact') {
-      sql.exec(
-        'delete from op_log where doc_id = ? and seq <= ?',
-        docKey(docId),
-        compact.compactedSeq,
-      )
-      sql.exec(
-        `update docs
-         set min_retained_seq = ?,
-             horizon_state_vector = ?,
-             updated_at = ?
-         where doc_id = ? and min_retained_seq <= ?`,
+      await deleteOpLogBelowSeq(db, docKey(docId), compact.compactedSeq)
+      await updateDocCompact(
+        db,
         compact.compactedSeq,
         stateVector,
         compact.compactedAt,
         docKey(docId),
         compact.compactedSeq,
       )
-      sql.exec(
-        `update checkpoint_runs
-         set status = ?, compacted_at = ?
-         where run_id = ?`,
-        'compacted',
-        compact.compactedAt,
-        decision.runId,
-      )
+      await updateCheckpointCompacted(db, decision.runId, compact.compactedAt)
     }
 
     return {
@@ -1272,13 +1030,13 @@ export class VaultRoom {
   }
 
   private async recoverOrphanedCheckpointRuns(limit: number, now = Date.now()): Promise<void> {
-    const sql = this.state.storage.sql
+    const db = this.getDb()
     const bucket = this.env.SNAPSHOT_BUCKET
-    if (sql === undefined || bucket === undefined || limit <= 0) {
+    if (db === undefined || bucket === undefined || limit <= 0) {
       return
     }
 
-    for (const run of this.readRecoverableCheckpointRuns(limit)) {
+    for (const run of await this.readRecoverableCheckpointRuns(limit)) {
       await this.recoverOrphanedCheckpointRun(run, now)
     }
   }
@@ -1287,7 +1045,7 @@ export class VaultRoom {
     run: RuntimeCheckpointRunRecord,
     now: number,
   ): Promise<void> {
-    const doc = this.readCheckpointDocRecoveryState(run.docId)
+    const doc = await this.readCheckpointDocRecoveryState(run.docId)
     const snapshot = await this.readCheckpointSnapshotEvidence(run.snapshotKey)
     const pointerVerified = await this.checkpointPointerVerified(doc)
     const decision = decideOrphanedCheckpointRecovery({
@@ -1305,23 +1063,23 @@ export class VaultRoom {
         return
       case 'fail-run':
       case 'mark-stale':
-        this.markCheckpointRunFailed(run.runId)
+        await this.markCheckpointRunFailed(run.runId)
         return
       case 'mark-r2-written':
-        this.markCheckpointRunR2Written(run.runId, now)
+        await this.markCheckpointRunR2Written(run.runId, now)
         return
       case 'advance-pointer':
         if (run.snapshotKey === undefined || snapshot === undefined || !snapshot.verified) {
-          this.markCheckpointRunFailed(run.runId)
+          await this.markCheckpointRunFailed(run.runId)
           return
         }
-        this.advanceRecoveredCheckpointPointer(run, snapshot.stateVector, now)
+        await this.advanceRecoveredCheckpointPointer(run, snapshot.stateVector, now)
         return
       case 'compact-op-log':
         if (snapshot === undefined || !snapshot.verified || snapshot.stateVector === undefined) {
           return
         }
-        this.compactRecoveredCheckpointRun(run, snapshot.stateVector, now)
+        await this.compactRecoveredCheckpointRun(run, snapshot.stateVector, now)
         return
     }
   }
@@ -1336,7 +1094,7 @@ export class VaultRoom {
       return
     }
 
-    const device = this.readDeviceRegistryEntry(hello.deviceId)
+    const device = await this.readDeviceRegistryEntry(hello.deviceId)
     const tokenVersion = await this.authorizeHello(webSocket, hello, device)
     if (tokenVersion === undefined) {
       return
@@ -1413,9 +1171,9 @@ export class VaultRoom {
     return claims.tokenVersion
   }
 
-  private async verifyRequestClaims(request: Request): Promise<DeviceTokenClaims | undefined> {
+  private async verifyRequestClaims(c: Context): Promise<DeviceTokenClaims | undefined> {
     const secret = this.env.DEVICE_TOKEN_SECRET
-    const token = extractBearerToken(request.headers.get('Authorization'))
+    const token = extractBearerToken(c.req.header('Authorization') ?? null)
     if (secret === undefined || token === undefined) {
       return undefined
     }
@@ -1423,19 +1181,19 @@ export class VaultRoom {
   }
 
   private async authorizeHttpRequest(
-    request: Request,
+    c: Context,
     requiredScopes: readonly DeviceTokenScope[],
   ): Promise<Response | undefined> {
-    const claims = await this.verifyRequestClaims(request)
+    const claims = await this.verifyRequestClaims(c)
     if (claims === undefined) {
-      return jsonResponse({ error: 'auth-reject:invalid-token' }, 401)
+      return c.json({ error: 'auth-reject:invalid-token' }, 401)
     }
     if (this.vaultId !== undefined && claims.aud !== this.vaultId) {
-      return jsonResponse({ error: 'vault-mismatch' }, 400)
+      return c.json({ error: 'vault-mismatch' }, 400)
     }
     this.vaultId = claims.aud
 
-    const actorDevice = this.readDeviceRegistryEntry(claims.sub)
+    const actorDevice = await this.readDeviceRegistryEntry(claims.sub)
     const admission = decideAuthAdmission({
       claims,
       expectedVaultId: claims.aud,
@@ -1444,7 +1202,7 @@ export class VaultRoom {
       now: Date.now(),
     })
     if (admission.action === 'reject') {
-      return jsonResponse({ error: `auth-reject:${admission.reason}` }, 403)
+      return c.json({ error: `auth-reject:${admission.reason}` }, 403)
     }
     return undefined
   }
@@ -1724,16 +1482,13 @@ export class VaultRoom {
       readonly createdAt: number
     },
   ): Promise<void> {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+    const db = this.getDb()
+    if (db === undefined) {
       throw new Error('sql-unavailable')
     }
 
-    sql.exec(
-      `insert into quarantined_updates
-        (id, doc_id, message_id, device_id, reason, update_sha256, update_bytes, created_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?)
-       on conflict(id) do nothing`,
+    await insertQuarantinedUpdate(
+      db,
       row.id,
       docKey(row.docId),
       row.messageId,
@@ -1754,64 +1509,24 @@ export class VaultRoom {
     updateSha256: string,
     now: number,
   ): Promise<void> {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+    const db = this.getDb()
+    if (db === undefined) {
       throw new Error('sql-unavailable')
     }
 
     const docId = docKey(update.docId)
-    sql.exec(
-      `insert into op_log
-        (doc_id, seq, message_id, device_id, y_client_id, update_bytes, update_sha256, created_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?)`,
-      docId,
-      seq,
-      update.messageId,
-      update.deviceId,
-      yClientId,
-      updateBytes,
-      updateSha256,
-      now,
-    )
-    sql.exec(
-      `insert into docs (doc_id, kind, latest_seq, updated_at)
-       values (?, ?, ?, ?)
-       on conflict(doc_id) do update set
-         latest_seq = excluded.latest_seq,
-         updated_at = excluded.updated_at`,
-      docId,
-      update.docId.kind,
-      docPatch.latestSeq,
-      docPatch.updatedAt,
-    )
-    sql.exec(
-      `insert into message_dedup (doc_id, message_id, durable_seq, seen_at)
-       values (?, ?, ?, ?)
-       on conflict(doc_id, message_id) do update set seen_at = excluded.seen_at`,
-      docId,
-      update.messageId,
-      seq,
-      now,
-    )
+    await insertOpLog(db, docId, seq, update.messageId, update.deviceId, yClientId, updateBytes, updateSha256, now)
+    await upsertDocClock(db, docId, update.docId.kind, docPatch.latestSeq, docPatch.updatedAt)
+    await upsertMessageDedup(db, docId, update.messageId, seq, now)
   }
 
   private async persistDocClock(docId: DocId, docPatch: RuntimeDocClockRecord): Promise<void> {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+    const db = this.getDb()
+    if (db === undefined) {
       throw new Error('sql-unavailable')
     }
 
-    sql.exec(
-      `insert into docs (doc_id, kind, latest_seq, updated_at)
-       values (?, ?, ?, ?)
-       on conflict(doc_id) do update set
-         latest_seq = excluded.latest_seq,
-         updated_at = excluded.updated_at`,
-      docKey(docId),
-      docId.kind,
-      docPatch.latestSeq,
-      docPatch.updatedAt,
-    )
+    await upsertDocClock(db, docKey(docId), docId.kind, docPatch.latestSeq, docPatch.updatedAt)
   }
 
   private async persistDuplicate(
@@ -1820,20 +1535,12 @@ export class VaultRoom {
     durableSeq: number,
     now: number,
   ): Promise<void> {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+    const db = this.getDb()
+    if (db === undefined) {
       throw new Error('sql-unavailable')
     }
 
-    sql.exec(
-      `insert into message_dedup (doc_id, message_id, durable_seq, seen_at)
-       values (?, ?, ?, ?)
-       on conflict(doc_id, message_id) do update set seen_at = excluded.seen_at`,
-      docKey(docId),
-      messageId,
-      durableSeq,
-      now,
-    )
+    await upsertMessageDedup(db, docKey(docId), messageId, durableSeq, now)
   }
 
   private applyUpdate(docId: DocId, updateBytes: Uint8Array): void {
@@ -1867,8 +1574,8 @@ export class VaultRoom {
       return
     }
 
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+    const db = this.getDb()
+    if (db === undefined) {
       throw new Error('sql-unavailable')
     }
 
@@ -1888,11 +1595,7 @@ export class VaultRoom {
     }
 
     const minSeq = snapshot?.latestSnapshotSeq ?? 0
-    for (const row of sql.exec(
-      'select update_bytes as updateBytes from op_log where doc_id = ? and seq > ? order by seq asc',
-      key,
-      minSeq,
-    )) {
+    for (const row of await getOpLogUpdatesSince(db, key, minSeq)) {
       const updateBytes = readSqlUpdateBytes(row.updateBytes)
       if (updateBytes === undefined) {
         throw new Error('invalid op_log update_bytes')
@@ -1904,7 +1607,7 @@ export class VaultRoom {
   }
 
   private async chooseSnapshot(docId: DocId): Promise<RuntimeSnapshotPointerRecord | undefined> {
-    const pointer = this.readSnapshotPointer(docId)
+    const pointer = await this.readSnapshotPointer(docId)
     const listed = await this.listSnapshotCandidates(docId)
     if (listed.length === 0) {
       return pointer
@@ -1926,26 +1629,17 @@ export class VaultRoom {
     }
   }
 
-  private readSnapshotPointer(docId: DocId): RuntimeSnapshotPointerRecord | undefined {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async readSnapshotPointer(docId: DocId): Promise<RuntimeSnapshotPointerRecord | undefined> {
+    const db = this.getDb()
+    if (db === undefined) {
       return undefined
     }
 
-    const row = firstSqlRow(
-      sql.exec(
-        `select
-           latest_snapshot_seq as latestSnapshotSeq,
-           latest_snapshot_key as latestSnapshotKey
-         from docs
-         where doc_id = ?`,
-        docKey(docId),
-      ),
-    )
+    const row = await getDocSnapshotPointer(db, docKey(docId))
     const latestSnapshotSeq = row?.latestSnapshotSeq
     const latestSnapshotKey = row?.latestSnapshotKey
     if (
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), latestSnapshotSeq) ||
+      !v.is(PosIntSchema, latestSnapshotSeq) ||
       typeof latestSnapshotKey !== 'string' ||
       latestSnapshotKey.length === 0
     ) {
@@ -1955,39 +1649,27 @@ export class VaultRoom {
     return { latestSnapshotSeq, latestSnapshotKey }
   }
 
-  private readSnapshotSeq(docId: DocId): number {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async readSnapshotSeq(docId: DocId): Promise<number> {
+    const db = this.getDb()
+    if (db === undefined) {
       return 0
     }
 
-    const row = firstSqlRow(
-      sql.exec(
-        'select latest_snapshot_seq as latestSnapshotSeq from docs where doc_id = ?',
-        docKey(docId),
-      ),
-    )
+    const row = await getDocSnapshotSeq(db, docKey(docId))
     const latestSnapshotSeq = row?.latestSnapshotSeq
-    return v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), latestSnapshotSeq)
+    return v.is(NonNegIntSchema, latestSnapshotSeq)
       ? latestSnapshotSeq
       : 0
   }
 
-  private readCheckpointableDocIds(limit: number): readonly DocId[] {
-    const sql = this.state.storage.sql
-    if (sql === undefined || limit <= 0) {
+  private async readCheckpointableDocIds(limit: number): Promise<readonly DocId[]> {
+    const db = this.getDb()
+    if (db === undefined || limit <= 0) {
       return []
     }
 
     const docIds: DocId[] = []
-    for (const row of sql.exec(
-      `select doc_id as docId
-       from docs
-       where latest_seq > latest_snapshot_seq
-       order by updated_at asc
-       limit ?`,
-      limit,
-    )) {
+    for (const row of await getDocsNeedingCheckpoint(db, limit)) {
       const docId = docIdFromKey(row.docId)
       if (docId !== undefined) {
         docIds.push(docId)
@@ -1996,66 +1678,43 @@ export class VaultRoom {
     return docIds
   }
 
-  private readRecoverableCheckpointRuns(limit: number): readonly RuntimeCheckpointRunRecord[] {
-    const sql = this.state.storage.sql
-    if (sql === undefined || limit <= 0) {
+  private async readRecoverableCheckpointRuns(limit: number): Promise<readonly RuntimeCheckpointRunRecord[]> {
+    const db = this.getDb()
+    if (db === undefined || limit <= 0) {
       return []
     }
 
     const runs: RuntimeCheckpointRunRecord[] = []
-    for (const row of sql.exec(
-      `select
-         run_id as runId,
-         doc_id as docId,
-         status,
-         upper_seq as upperSeq,
-         snapshot_key as snapshotKey
-       from checkpoint_runs
-       where status in ('writing', 'r2-written', 'pointer-updated')
-       order by created_at asc
-       limit ?`,
-      limit,
-    )) {
+    for (const row of await getRecoverableCheckpointRuns(db, limit)) {
       const docId = docIdFromKey(row.docId)
       if (
         docId !== undefined &&
-        typeof row.runId === 'string' &&
         isCheckpointRunStatus(row.status) &&
-        v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), row.upperSeq) &&
-        (typeof row.snapshotKey === 'string' || row.snapshotKey === undefined)
+        v.is(PosIntSchema, row.upperSeq)
       ) {
         runs.push({
           runId: row.runId,
           docId,
           status: row.status,
           upperSeq: row.upperSeq,
-          snapshotKey: row.snapshotKey,
+          snapshotKey: row.snapshotKey ?? undefined,
         })
       }
     }
     return runs
   }
 
-  private readCheckpointDocRecoveryState(docId: DocId): RuntimeCheckpointDocRecoveryRecord {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async readCheckpointDocRecoveryState(docId: DocId): Promise<RuntimeCheckpointDocRecoveryRecord> {
+    const db = this.getDb()
+    if (db === undefined) {
       return { latestSnapshotSeq: 0, latestSnapshotKey: undefined }
     }
 
-    const row = firstSqlRow(
-      sql.exec(
-        `select
-           latest_snapshot_seq as latestSnapshotSeq,
-           latest_snapshot_key as latestSnapshotKey
-         from docs
-         where doc_id = ?`,
-        docKey(docId),
-      ),
-    )
+    const row = await getCheckpointDocRecoveryState(db, docKey(docId))
     const latestSnapshotSeq = row?.latestSnapshotSeq
     const latestSnapshotKey = row?.latestSnapshotKey
     return {
-      latestSnapshotSeq: v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), latestSnapshotSeq)
+      latestSnapshotSeq: v.is(NonNegIntSchema, latestSnapshotSeq)
         ? latestSnapshotSeq
         : 0,
       latestSnapshotKey: typeof latestSnapshotKey === 'string' ? latestSnapshotKey : undefined,
@@ -2096,46 +1755,34 @@ export class VaultRoom {
     return evidence?.verified === true
   }
 
-  private markCheckpointRunFailed(runId: string): void {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async markCheckpointRunFailed(runId: string): Promise<void> {
+    const db = this.getDb()
+    if (db === undefined) {
       return
     }
-    sql.exec('update checkpoint_runs set status = ? where run_id = ?', 'failed', runId)
+    await updateCheckpointFailed(db, runId)
   }
 
-  private markCheckpointRunR2Written(runId: string, now: number): void {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async markCheckpointRunR2Written(runId: string, now: number): Promise<void> {
+    const db = this.getDb()
+    if (db === undefined) {
       return
     }
-    sql.exec(
-      `update checkpoint_runs
-       set status = ?, r2_written_at = ?
-       where run_id = ?`,
-      'r2-written',
-      now,
-      runId,
-    )
+    await updateCheckpointR2Written(db, runId, now)
   }
 
-  private advanceRecoveredCheckpointPointer(
+  private async advanceRecoveredCheckpointPointer(
     run: RuntimeCheckpointRunRecord,
     stateVector: Uint8Array | undefined,
     now: number,
-  ): void {
-    const sql = this.state.storage.sql
-    if (sql === undefined || run.snapshotKey === undefined || stateVector === undefined) {
+  ): Promise<void> {
+    const db = this.getDb()
+    if (db === undefined || run.snapshotKey === undefined || stateVector === undefined) {
       return
     }
 
-    sql.exec(
-      `update docs
-       set latest_snapshot_seq = ?,
-           latest_snapshot_key = ?,
-           latest_state_vector = ?,
-           updated_at = ?
-       where doc_id = ? and latest_snapshot_seq <= ?`,
+    await updateDocSnapshotPointer(
+      db,
       run.upperSeq,
       run.snapshotKey,
       stateVector,
@@ -2143,47 +1790,29 @@ export class VaultRoom {
       docKey(run.docId),
       run.upperSeq,
     )
-    sql.exec(
-      `update checkpoint_runs
-       set status = ?, pointer_updated_at = ?
-       where run_id = ?`,
-      'pointer-updated',
-      now,
-      run.runId,
-    )
+    await updateCheckpointPointerUpdated(db, run.runId, now)
   }
 
-  private compactRecoveredCheckpointRun(
+  private async compactRecoveredCheckpointRun(
     run: RuntimeCheckpointRunRecord,
     horizonStateVector: Uint8Array,
     now: number,
-  ): void {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  ): Promise<void> {
+    const db = this.getDb()
+    if (db === undefined) {
       return
     }
 
-    sql.exec('delete from op_log where doc_id = ? and seq <= ?', docKey(run.docId), run.upperSeq)
-    sql.exec(
-      `update docs
-       set min_retained_seq = ?,
-           horizon_state_vector = ?,
-           updated_at = ?
-       where doc_id = ? and min_retained_seq <= ?`,
+    await deleteOpLogBelowSeq(db, docKey(run.docId), run.upperSeq)
+    await updateDocCompact(
+      db,
       run.upperSeq,
       horizonStateVector,
       now,
       docKey(run.docId),
       run.upperSeq,
     )
-    sql.exec(
-      `update checkpoint_runs
-       set status = ?, compacted_at = ?
-       where run_id = ?`,
-      'compacted',
-      now,
-      run.runId,
-    )
+    await updateCheckpointCompacted(db, run.runId, now)
   }
 
   private async listSnapshotCandidates(docId: DocId): Promise<readonly SnapshotCandidate[]> {
@@ -2201,16 +1830,14 @@ export class VaultRoom {
   }
 
   private async readDocClock(docId: DocId): Promise<SyncUpdateDocClock | undefined> {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+    const db = this.getDb()
+    if (db === undefined) {
       return undefined
     }
 
-    const row = firstSqlRow(
-      sql.exec('select latest_seq as latestSeq from docs where doc_id = ?', docKey(docId)),
-    )
+    const row = await getDocClock(db, docKey(docId))
     const latestSeq = row?.latestSeq
-    return v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), latestSeq)
+    return v.is(NonNegIntSchema, latestSeq)
       ? { latestSeq }
       : undefined
   }
@@ -2219,20 +1846,14 @@ export class VaultRoom {
     docId: DocId,
     messageId: MessageId,
   ): Promise<SyncUpdateDuplicateEvidence | undefined> {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+    const db = this.getDb()
+    if (db === undefined) {
       return undefined
     }
 
-    const row = firstSqlRow(
-      sql.exec(
-        'select durable_seq as durableSeq from message_dedup where doc_id = ? and message_id = ?',
-        docKey(docId),
-        messageId,
-      ),
-    )
+    const row = await getMessageDedupSeq(db, docKey(docId), messageId)
     const durableSeq = row?.durableSeq
-    return v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), durableSeq)
+    return v.is(PosIntSchema, durableSeq)
       ? { durableSeq }
       : undefined
   }
@@ -2246,28 +1867,18 @@ export class VaultRoom {
       > & { readonly horizonStateVector: Uint8Array | undefined })
     | undefined
   > {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+    const db = this.getDb()
+    if (db === undefined) {
       return undefined
     }
 
-    const row = firstSqlRow(
-      sql.exec(
-        `select
-           latest_seq as latestSeq,
-           min_retained_seq as minRetainedSeq,
-           horizon_state_vector as horizonStateVector
-         from docs
-         where doc_id = ?`,
-        docKey(docId),
-      ),
-    )
+    const row = await getDocRetention(db, docKey(docId))
     const latestSeq = row?.latestSeq
     const minRetainedSeq = row?.minRetainedSeq
     const horizonStateVector = readSqlUpdateBytes(row?.horizonStateVector)
     if (
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), latestSeq) ||
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), minRetainedSeq)
+      !v.is(NonNegIntSchema, latestSeq) ||
+      !v.is(NonNegIntSchema, minRetainedSeq)
     ) {
       return undefined
     }
@@ -2275,33 +1886,20 @@ export class VaultRoom {
     return { latestSeq, minRetainedSeq, horizonStateVector }
   }
 
-  /**
-   * Applies pending Durable Object schema migrations before any SQL-backed handler runs.
-   *
-   * The migration plan is decided by {@link decideSchemaMigration}; this method performs the
-   * SQL execution it omits. Idempotent: it runs at most once per live instance and every
-   * statement is `create ... if not exists`, so a crashed mid-migration instance re-applies safely.
-   */
-  private ensureSchema(): void {
+  private async ensureSchema(): Promise<void> {
     if (this.schemaReady) {
       return
     }
     const sql = this.state.storage.sql
-    if (sql === undefined) {
+    const db = this.getDb()
+    if (sql === undefined || db === undefined) {
       return
     }
 
-    sql.exec(
-      `create table if not exists schema_migrations (
-         version integer primary key,
-         applied_at integer not null
-       )`,
-    )
+    await createSchemaMigrationsTable(db)
     const appliedVersions = new Set<number>()
-    for (const row of sql.exec<{ readonly version: unknown }>(
-      'select version from schema_migrations',
-    )) {
-      if (v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), row.version)) {
+    for (const row of await getAppliedMigrations(db)) {
+      if (v.is(PosIntSchema, row.version)) {
         appliedVersions.add(row.version)
       }
     }
@@ -2314,94 +1912,51 @@ export class VaultRoom {
     if (decision.action === 'apply-migrations') {
       const now = Date.now()
       for (const migration of decision.migrations) {
-        for (const statement of migration.statements) {
-          sql.exec(statement)
-        }
-        sql.exec(
-          'insert into schema_migrations (version, applied_at) values (?, ?)',
-          migration.version,
-          now,
-        )
+        applyMigrationStatements(sql, migration.statements)
+        await insertMigration(db, migration.version, now)
       }
     }
 
     this.schemaReady = true
   }
 
-  private readDeviceRegistryEntry(
+  private async readDeviceRegistryEntry(
     deviceId: ClientHello['deviceId'],
-  ): DeviceRegistryEntry | undefined {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  ): Promise<DeviceRegistryEntry | undefined> {
+    const db = this.getDb()
+    if (db === undefined) {
       return undefined
     }
 
-    const row = firstSqlRow(
-      sql.exec(
-        `select
-           y_client_id as yClientId,
-           token_version as tokenVersion,
-           revoked_at as revokedAt
-         from devices
-         where device_id = ?`,
-        deviceId,
-      ),
-    )
+    const row = await getDevice(db, deviceId)
     const yClientId = row?.yClientId
     const tokenVersion = row?.tokenVersion
-    // SQLite returns NULL columns as `null`; the registry treats absent as `undefined`.
-    const revokedAt = nullToUndefined(row?.revokedAt)
-    if (
-      !isValidYClientId(yClientId) ||
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), tokenVersion)
-    ) {
-      return undefined
-    }
-    if (
-      revokedAt !== undefined &&
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), revokedAt)
-    ) {
+    const revokedAt = row?.revokedAt ?? undefined
+
+    if (!isValidYClientId(yClientId) || !v.is(PosIntSchema, tokenVersion)) {
       return undefined
     }
 
-    return {
-      deviceId,
-      yClientId,
-      tokenVersion,
-      revokedAt,
-    }
+    return { deviceId, yClientId, tokenVersion, revokedAt }
   }
 
-  private readSetupToken(tokenHash: string): SetupTokenEntry | undefined {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async readSetupToken(tokenHash: string): Promise<SetupTokenEntry | undefined> {
+    const db = this.getDb()
+    if (db === undefined) {
       return undefined
     }
 
-    const row = firstSqlRow(
-      sql.exec(
-        `select
-           vault_id as vaultId,
-           issued_at as issuedAt,
-           expires_at as expiresAt,
-           consumed_at as consumedAt
-         from setup_tokens
-         where token_hash = ?`,
-        tokenHash,
-      ),
-    )
+    const row = await getSetupToken(db, tokenHash)
     if (
-      !v.is(VaultIdSchema, row?.vaultId) ||
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), row.issuedAt) ||
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), row.expiresAt)
+      row === undefined ||
+      !v.is(VaultIdSchema, row.vaultId) ||
+      !v.is(NonNegIntSchema, row.issuedAt) ||
+      !v.is(NonNegIntSchema, row.expiresAt)
     ) {
       return undefined
     }
-    const consumedAt = nullToUndefined(row.consumedAt)
-    if (
-      consumedAt !== undefined &&
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), consumedAt)
-    ) {
+    const consumedAt = row.consumedAt ?? undefined
+    if (consumedAt !== undefined && !v.is(NonNegIntSchema, consumedAt)) {
       return undefined
     }
 
@@ -2413,14 +1968,14 @@ export class VaultRoom {
     }
   }
 
-  private readUsedYClientIds(): ReadonlySet<YClientId> {
-    const sql = this.state.storage.sql
+  private async readUsedYClientIds(): Promise<ReadonlySet<YClientId>> {
+    const db = this.getDb()
     const used = new Set<YClientId>()
-    if (sql === undefined) {
+    if (db === undefined) {
       return used
     }
 
-    for (const row of sql.exec('select y_client_id as yClientId from devices')) {
+    for (const row of await getAllDeviceYClientIds(db)) {
       if (isValidYClientId(row.yClientId)) {
         used.add(row.yClientId)
       }
@@ -2428,36 +1983,21 @@ export class VaultRoom {
     return used
   }
 
-  private readRefreshToken(tokenHash: string): DeviceRefreshTokenEvidence | undefined {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async readRefreshToken(tokenHash: string): Promise<DeviceRefreshTokenEvidence | undefined> {
+    const db = this.getDb()
+    if (db === undefined) {
       return undefined
     }
 
-    const row = firstSqlRow(
-      sql.exec(
-        `select
-           issued_at as issuedAt,
-           expires_at as expiresAt,
-           revoked_at as revokedAt
-         from device_refresh_tokens
-         where token_hash = ?`,
-        tokenHash,
-      ),
-    )
+    const row = await getRefreshToken(db, tokenHash)
     if (
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), row?.issuedAt) ||
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), row.expiresAt)
+      row === undefined ||
+      !v.is(NonNegIntSchema, row.issuedAt) ||
+      !v.is(NonNegIntSchema, row.expiresAt)
     ) {
       return undefined
     }
-    const revokedAt = row.revokedAt
-    if (
-      revokedAt !== undefined &&
-      !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), revokedAt)
-    ) {
-      return undefined
-    }
+    const revokedAt = row.revokedAt ?? undefined
 
     return {
       tokenHashMatches: true,
@@ -2467,158 +2007,102 @@ export class VaultRoom {
     }
   }
 
-  private readQuarantinedUpdates(): readonly QuarantinedUpdateRecord[] {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async readQuarantinedUpdates(): Promise<readonly QuarantinedUpdateRecord[]> {
+    const db = this.getDb()
+    if (db === undefined) {
       return []
     }
 
     return [
-      ...sql.exec(
-        `select
-         id,
-         doc_id as docId,
-         message_id as messageId,
-         device_id as deviceId,
-         reason,
-         update_sha256 as updateSha256,
-         update_bytes as updateBytes,
-         created_at as createdAt
-       from quarantined_updates
-       order by created_at asc
-       limit 1024`,
-      ),
+      ...await getQuarantinedUpdates(db),
     ]
       .map(quarantinedUpdateRecordFromSqlRow)
       .filter((record): record is QuarantinedUpdateRecord => record !== undefined)
   }
 
-  private readQuarantinedUpdate(id: string): QuarantinedUpdateRecord | undefined {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async readQuarantinedUpdate(id: string): Promise<QuarantinedUpdateRecord | undefined> {
+    const db = this.getDb()
+    if (db === undefined) {
       return undefined
     }
 
     return quarantinedUpdateRecordFromSqlRow(
-      firstSqlRow(
-        sql.exec(
-          `select
-         id,
-         doc_id as docId,
-         message_id as messageId,
-         device_id as deviceId,
-         reason,
-         update_sha256 as updateSha256,
-         update_bytes as updateBytes,
-         created_at as createdAt
-       from quarantined_updates
-       where id = ?`,
-          id,
-        ),
-      ),
+      await getQuarantinedUpdateById(db, id),
     )
   }
 
-  private readQuarantinedUpdateBytes(id: string): Uint8Array | undefined {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async readQuarantinedUpdateBytes(id: string): Promise<Uint8Array | undefined> {
+    const db = this.getDb()
+    if (db === undefined) {
       return undefined
     }
 
-    const row = firstSqlRow(
-      sql.exec('select update_bytes as updateBytes from quarantined_updates where id = ?', id),
-    )
+    const row = await getQuarantinedUpdateBytes(db, id)
     return readSqlUpdateBytes(row?.updateBytes)
   }
 
-  private hasAnyPersistedDocs(): boolean {
-    const sql = this.state.storage.sql
-    if (sql === undefined) {
+  private async hasAnyPersistedDocs(): Promise<boolean> {
+    const db = this.getDb()
+    if (db === undefined) {
       return false
     }
 
-    return firstSqlRow(sql.exec('select doc_id as docId from docs limit 1')) !== undefined
+    return (await getFirstDocId(db)) !== undefined
   }
 
-  private consumeSetupToken(tokenHash: string, consumedAt: number): void {
-    this.state.storage.sql?.exec(
-      'update setup_tokens set consumed_at = ? where token_hash = ?',
-      consumedAt,
-      tokenHash,
-    )
+  private async consumeSetupToken(tokenHash: string, consumedAt: number): Promise<void> {
+    const db = this.getDb()
+    if (db !== undefined) {
+      await consumeSetupToken(db, tokenHash, consumedAt)
+    }
   }
 
-  private persistSetupDevice(deviceId: DeviceId, yClientId: YClientId, now: number): void {
-    this.state.storage.sql?.exec(
-      `insert into devices
-        (device_id, y_client_id, token_version, created_at, last_seen_at)
-       values (?, ?, ?, ?, ?)
-       on conflict(device_id) do update set
-         last_seen_at = excluded.last_seen_at`,
-      deviceId,
-      yClientId,
-      1,
-      now,
-      now,
-    )
+  private async persistSetupDevice(deviceId: string, yClientId: YClientId, now: number): Promise<void> {
+    const db = this.getDb()
+    if (db !== undefined) {
+      await upsertDevice(db, deviceId, yClientId, now)
+    }
   }
 
-  private persistRefreshToken(
+  private async persistRefreshToken(
     tokenHash: string,
-    deviceId: DeviceId,
+    deviceId: string,
     issuedAt: number,
     expiresAt: number,
-  ): void {
-    this.state.storage.sql?.exec(
-      `insert into device_refresh_tokens
-        (token_hash, device_id, issued_at, expires_at)
-       values (?, ?, ?, ?)`,
-      tokenHash,
-      deviceId,
-      issuedAt,
-      expiresAt,
-    )
+  ): Promise<void> {
+    const db = this.getDb()
+    if (db !== undefined) {
+      await insertRefreshToken(db, tokenHash, deviceId, issuedAt, expiresAt)
+    }
   }
 
-  private revokeRefreshToken(tokenHash: string, revokedAt: number): void {
-    this.state.storage.sql?.exec(
-      'update device_refresh_tokens set revoked_at = ? where token_hash = ?',
-      revokedAt,
-      tokenHash,
-    )
+  private async revokeRefreshToken(tokenHash: string, revokedAt: number): Promise<void> {
+    const db = this.getDb()
+    if (db !== undefined) {
+      await updateRefreshTokenRevoked(db, tokenHash, revokedAt)
+    }
   }
 
-  private persistDeviceRevocation(
-    deviceId: DeviceId,
+  private async persistDeviceRevocation(
+    deviceId: string,
     tokenVersion: number,
     revokedAt: number,
-  ): void {
-    this.state.storage.sql?.exec(
-      `update devices
-       set token_version = ?,
-           revoked_at = ?,
-           last_seen_at = ?
-       where device_id = ?`,
-      tokenVersion,
-      revokedAt,
-      revokedAt,
-      deviceId,
-    )
+  ): Promise<void> {
+    const db = this.getDb()
+    if (db !== undefined) {
+      await updateDeviceRevoked(db, deviceId, tokenVersion, revokedAt)
+    }
   }
 
-  private withSqlTransaction(write: () => void): void {
+  private async withSqlTransaction(write: () => Promise<void>): Promise<void> {
     const sql = this.state.storage.sql
     if (sql === undefined) {
       throw new Error('sql-unavailable')
     }
-    if (this.state.storage.transactionSync !== undefined) {
-      this.state.storage.transactionSync(write)
-      return
-    }
 
     sql.exec('begin immediate')
     try {
-      write()
+      await write()
       sql.exec('commit')
     } catch (error) {
       try {
@@ -2710,7 +2194,7 @@ export class VaultRoom {
     latestSeq: number,
     now: number,
   ): Promise<void> {
-    const snapshotSeq = this.readSnapshotSeq(docId)
+    const snapshotSeq = await this.readSnapshotSeq(docId)
     const delay = latestSeq - snapshotSeq >= CHECKPOINT_OP_THRESHOLD ? 0 : CHECKPOINT_ALARM_DELAY_MS
     await this.scheduleCheckpointAlarm(now + delay)
   }
@@ -2761,150 +2245,132 @@ export class VaultRoom {
   }
 }
 
-/** Worker entrypoint that routes vault setup and WebSocket requests to `VaultRoom` Durable Objects. */
-export const workerEntrypoint = {
-  /**
-   * Routes setup exchange and `/ws/:vaultId` upgrade requests to the vault Durable Object.
-   *
-   * @param request Incoming Worker request.
-   * @param env Cloudflare Worker bindings.
-   * @returns The Durable Object response or an HTTP error response.
-   */
-  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
-    const url = new URL(request.url)
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders() })
-    }
-    if (url.pathname === E2E_SETUP_TOKEN_PATH) {
-      const secret = env.E2E_SETUP_TOKEN_SECRET
-      if (secret === undefined) {
-        return new Response('Not found', { status: 404 })
-      }
-      if (request.headers.get('x-kuroflare-e2e-secret') !== secret) {
-        return jsonResponse({ error: 'e2e-seed-forbidden' }, 403)
-      }
-      if (request.method !== 'POST') {
-        return new Response('Method Not Allowed', { status: 405 })
-      }
-      const body = await parseJsonBody(request.clone())
-      if (!v.is(E2eSetupTokenSeedRequestSchema, body)) {
-        return jsonResponse({ error: 'invalid-e2e-setup-token-seed-request' }, 400)
-      }
-      return routeVaultRoom(request, env, body.vaultId)
-    }
-    if (url.pathname === E2E_SNAPSHOT_PATH) {
-      const secret = env.E2E_SETUP_TOKEN_SECRET
-      if (secret === undefined) {
-        return new Response('Not found', { status: 404 })
-      }
-      if (request.headers.get('x-kuroflare-e2e-secret') !== secret) {
-        return jsonResponse({ error: 'e2e-seed-forbidden' }, 403)
-      }
-      if (request.method !== 'POST') {
-        return new Response('Method Not Allowed', { status: 405 })
-      }
-      const body = await parseJsonBody(request.clone())
-      if (!v.is(E2eSnapshotSeedRequestSchema, body)) {
-        return jsonResponse({ error: 'invalid-e2e-snapshot-seed-request' }, 400)
-      }
-      return routeVaultRoom(request, env, body.vaultId)
-    }
-    if (url.pathname === '/setup/exchange') {
-      if (request.method !== 'POST') {
-        return new Response('Method Not Allowed', { status: 405 })
-      }
-      const body = await parseJsonBody(request.clone())
-      if (!v.is(SetupExchangeRequestSchema, body)) {
-        return jsonResponse({ error: 'invalid-setup-exchange-request' }, 400)
-      }
-      return routeVaultRoom(request, env, body.vaultId)
-    }
-    if (url.pathname === '/auth/refresh') {
-      if (request.method !== 'POST') {
-        return new Response('Method Not Allowed', { status: 405 })
-      }
-      const body = await parseJsonBody(request.clone())
-      if (!v.is(DeviceTokenRefreshRequestSchema, body)) {
-        return jsonResponse({ error: 'invalid-auth-refresh-request' }, 400)
-      }
-      return routeVaultRoom(request, env, body.vaultId)
-    }
-    if (/^\/devices\/[^/]+\/revoke$/.test(url.pathname)) {
-      if (request.method !== 'POST') {
-        return new Response('Method Not Allowed', { status: 405 })
-      }
-      if (parseRevokeDevicePath(request) === undefined) {
-        return jsonResponse({ error: 'invalid-device-id' }, 400)
-      }
-      const body = await parseJsonBody(request.clone())
-      if (!v.is(RevokeDeviceRequestSchema, body)) {
-        return jsonResponse({ error: 'invalid-revoke-device-request' }, 400)
-      }
-      const secret = env.DEVICE_TOKEN_SECRET
-      const token = extractBearerToken(request.headers.get('Authorization'))
-      const claims =
-        secret === undefined || token === undefined
-          ? undefined
-          : await verifyHs256DeviceToken({ token, secret })
-      if (claims === undefined) {
-        return jsonResponse({ error: 'auth-reject:invalid-token' }, 401)
-      }
-      return routeVaultRoom(request, env, claims.aud)
-    }
-    if (/^\/admin\/quarantine(?:\/[^/]+)?$/.test(url.pathname)) {
-      if (request.method !== 'GET') {
-        return new Response('Method Not Allowed', { status: 405 })
-      }
-      const secret = env.DEVICE_TOKEN_SECRET
-      const token = extractBearerToken(request.headers.get('Authorization'))
-      const claims =
-        secret === undefined || token === undefined
-          ? undefined
-          : await verifyHs256DeviceToken({ token, secret })
-      if (claims === undefined) {
-        return jsonResponse({ error: 'auth-reject:invalid-token' }, 401)
-      }
-      return routeVaultRoom(request, env, claims.aud)
-    }
-    if (
-      url.pathname === '/blobs/head' ||
-      url.pathname === '/blobs/upload-url' ||
-      /^\/blobs\/[^/]+$/.test(url.pathname) ||
-      /^\/blob-manifests\/[^/]+\.json$/.test(url.pathname)
-    ) {
-      if (!['GET', 'POST', 'PUT'].includes(request.method)) {
-        return new Response('Method Not Allowed', { status: 405 })
-      }
-      const secret = env.DEVICE_TOKEN_SECRET
-      const token = extractBearerToken(request.headers.get('Authorization'))
-      const claims =
-        secret === undefined || token === undefined
-          ? undefined
-          : await verifyHs256DeviceToken({ token, secret })
-      if (claims === undefined) {
-        return jsonResponse({ error: 'auth-reject:invalid-token' }, 401)
-      }
-      return routeVaultRoom(request, env, claims.aud)
-    }
-
-    const match = /^\/ws\/([^/]+)$/.exec(url.pathname)
-    if (match === null) {
-      return new Response('Not found', { status: 404 })
-    }
-
-    const vaultId = match[1]
-    if (!v.is(VaultIdSchema, vaultId)) {
-      return new Response('Invalid vaultId', { status: 400 })
-    }
-    if (request.headers.get('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE) {
-      return new Response('Expected WebSocket upgrade', { status: 426 })
-    }
-
-    return routeVaultRoom(request, env, vaultId)
-  },
+async function verifyBearerToken(
+  env: WorkerEnv,
+  request: Request,
+): Promise<DeviceTokenClaims | undefined> {
+  const secret = env.DEVICE_TOKEN_SECRET
+  const token = extractBearerToken(request.headers.get('Authorization'))
+  if (secret === undefined || token === undefined) return undefined
+  return verifyHs256DeviceToken({ token, secret })
 }
 
-export default workerEntrypoint
+const workerApp = new Hono<{ Bindings: WorkerEnv }>()
+
+workerApp.use(
+  '*',
+  cors({
+    origin: '*',
+    allowHeaders: ['Authorization', 'Content-Type', 'x-kuroflare-e2e-secret'],
+    allowMethods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT'],
+  }),
+)
+
+workerApp.post(E2E_SETUP_TOKEN_PATH, async (c) => {
+  const secret = c.env.E2E_SETUP_TOKEN_SECRET
+  if (secret === undefined) return c.notFound()
+  if (c.req.header('x-kuroflare-e2e-secret') !== secret) {
+    return c.json({ error: 'e2e-seed-forbidden' }, 403)
+  }
+  const body: unknown = await c.req.raw.clone().json().catch(() => undefined)
+  if (!v.is(E2eSetupTokenSeedRequestSchema, body)) {
+    return c.json({ error: 'invalid-e2e-setup-token-seed-request' }, 400)
+  }
+  return routeVaultRoom(c.req.raw, c.env, body.vaultId)
+})
+
+workerApp.post(E2E_SNAPSHOT_PATH, async (c) => {
+  const secret = c.env.E2E_SETUP_TOKEN_SECRET
+  if (secret === undefined) return c.notFound()
+  if (c.req.header('x-kuroflare-e2e-secret') !== secret) {
+    return c.json({ error: 'e2e-seed-forbidden' }, 403)
+  }
+  const body: unknown = await c.req.raw.clone().json().catch(() => undefined)
+  if (!v.is(E2eSnapshotSeedRequestSchema, body)) {
+    return c.json({ error: 'invalid-e2e-snapshot-seed-request' }, 400)
+  }
+  return routeVaultRoom(c.req.raw, c.env, body.vaultId)
+})
+
+workerApp.post('/setup/exchange', async (c) => {
+  const body: unknown = await c.req.raw.clone().json().catch(() => undefined)
+  if (!v.is(SetupExchangeRequestSchema, body)) {
+    return c.json({ error: 'invalid-setup-exchange-request' }, 400)
+  }
+  return routeVaultRoom(c.req.raw, c.env, body.vaultId)
+})
+
+workerApp.post('/auth/refresh', async (c) => {
+  const body: unknown = await c.req.raw.clone().json().catch(() => undefined)
+  if (!v.is(DeviceTokenRefreshRequestSchema, body)) {
+    return c.json({ error: 'invalid-auth-refresh-request' }, 400)
+  }
+  return routeVaultRoom(c.req.raw, c.env, body.vaultId)
+})
+
+workerApp.post('/devices/:deviceId/revoke', async (c) => {
+  const rawDeviceId = c.req.param('deviceId')
+  if (!v.is(DeviceIdSchema, rawDeviceId)) {
+    return c.json({ error: 'invalid-device-id' }, 400)
+  }
+  const body: unknown = await c.req.raw.clone().json().catch(() => undefined)
+  if (!v.is(RevokeDeviceRequestSchema, body)) {
+    return c.json({ error: 'invalid-revoke-device-request' }, 400)
+  }
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  return routeVaultRoom(c.req.raw, c.env, claims.aud)
+})
+
+workerApp.get('/admin/quarantine', async (c) => {
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  return routeVaultRoom(c.req.raw, c.env, claims.aud)
+})
+
+workerApp.get('/admin/quarantine/:id', async (c) => {
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  return routeVaultRoom(c.req.raw, c.env, claims.aud)
+})
+
+workerApp.post('/blobs/head', async (c) => {
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  return routeVaultRoom(c.req.raw, c.env, claims.aud)
+})
+
+workerApp.post('/blobs/upload-url', async (c) => {
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  return routeVaultRoom(c.req.raw, c.env, claims.aud)
+})
+
+workerApp.on(['GET', 'PUT'], '/blobs/:hash', async (c) => {
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  return routeVaultRoom(c.req.raw, c.env, claims.aud)
+})
+
+workerApp.on(['GET', 'PUT'], '/blob-manifests/*', async (c) => {
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  return routeVaultRoom(c.req.raw, c.env, claims.aud)
+})
+
+workerApp.get('/ws/:vaultId', async (c) => {
+  const vaultId = c.req.param('vaultId')
+  if (!v.is(VaultIdSchema, vaultId)) {
+    return c.text('Invalid vaultId', 400)
+  }
+  if (c.req.header('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE) {
+    return c.text('Expected WebSocket upgrade', 426)
+  }
+  return routeVaultRoom(c.req.raw, c.env, vaultId)
+})
+
+export const workerEntrypoint = workerApp
+export default workerApp
 
 function routeVaultRoom(request: Request, env: WorkerEnv, vaultId: VaultId): Promise<Response> {
   const id = env.VAULT_ROOM.idFromName(vaultId)
@@ -2938,18 +2404,6 @@ function blobObjectKey(vaultId: VaultId, sha256: Sha256Hex): string {
 
 function blobManifestObjectKey(vaultId: VaultId, sha256: Sha256Hex): string {
   return `vaults/${vaultId}/blob-manifests/${sha256}.json`
-}
-
-function parseBlobObjectPath(request: Request): Sha256Hex | undefined {
-  const match = /^\/blobs\/([^/]+)$/.exec(new URL(request.url).pathname)
-  const hash = match?.[1]
-  return v.is(Sha256HexSchema, hash) ? hash : undefined
-}
-
-function parseBlobManifestObjectPath(request: Request): Sha256Hex | undefined {
-  const match = /^\/blob-manifests\/([^/]+)\.json$/.exec(new URL(request.url).pathname)
-  const hash = match?.[1]
-  return v.is(Sha256HexSchema, hash) ? hash : undefined
 }
 
 function parseBlobSize(request: Request): number | undefined {
@@ -3014,39 +2468,18 @@ function snapshotCandidateFromKey(prefix: string, key: string): SnapshotCandidat
   }
 
   const upperSeq = Number(seqText)
-  if (!v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), upperSeq)) {
+  if (!v.is(PosIntSchema, upperSeq)) {
     return undefined
   }
 
   return { key, upperSeq, healthy: true }
 }
 
-function firstSqlRow<T extends Record<string, unknown>>(rows: Iterable<T>): T | undefined {
-  for (const row of rows) {
-    return row
-  }
-  return undefined
-}
-
-/** Normalizes a SQLite `NULL` (returned as `null`) to the `undefined` absent-sentinel the runtime uses. */
-function nullToUndefined(value: unknown): unknown {
-  return value === null ? undefined : value
-}
-
-function readSqlUpdateBytes(value: unknown): Uint8Array | undefined {
-  if (value instanceof Uint8Array) {
-    return value
-  }
-  if (value instanceof ArrayBuffer) {
-    return new Uint8Array(value)
-  }
-  return undefined
-}
 
 function quarantinedUpdateRecordFromSqlRow(
-  row: Record<string, unknown> | undefined,
+  row: QuarantinedUpdateRow | undefined,
 ): QuarantinedUpdateRecord | undefined {
-  if (row === undefined || typeof row.id !== 'string' || row.id.length === 0) {
+  if (row === undefined) {
     return undefined
   }
 
@@ -3059,7 +2492,7 @@ function quarantinedUpdateRecordFromSqlRow(
     !isQuarantineReason(row.reason) ||
     !v.is(Sha256HexSchema, row.updateSha256) ||
     updateBytes === undefined ||
-    !v.is(v.pipe(v.number(), v.integer(), v.minValue(0)), row.createdAt)
+    !v.is(NonNegIntSchema, row.createdAt)
   ) {
     return undefined
   }
@@ -3155,29 +2588,6 @@ function encodeOptionalBase64(value: Uint8Array | undefined): string | undefined
   return value === undefined ? undefined : encodeBase64(value)
 }
 
-async function parseJsonBody(request: Request): Promise<unknown> {
-  try {
-    return (await request.json()) as unknown
-  } catch {
-    return undefined
-  }
-}
-
-function jsonResponse(value: unknown, status: number): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders() },
-  })
-}
-
-function corsHeaders(): Record<string, string> {
-  return {
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, x-kuroflare-e2e-secret',
-    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS, POST, PUT',
-    'Access-Control-Allow-Origin': '*',
-  }
-}
-
 function extractBearerToken(authorization: string | null): string | undefined {
   if (authorization === null) {
     return undefined
@@ -3221,25 +2631,6 @@ function extractWebSocketProtocolToken(protocolHeader: string | null): string | 
 
 function isCompactJwt(value: string | null): boolean {
   return value !== null && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
-}
-
-function parseRevokeDevicePath(request: Request): DeviceId | undefined {
-  const match = /^\/devices\/([^/]+)\/revoke$/.exec(new URL(request.url).pathname)
-  const deviceId = match?.[1]
-  return v.is(DeviceIdSchema, deviceId) ? deviceId : undefined
-}
-
-function parseQuarantineInspectPath(request: Request): string | undefined {
-  const pathname = new URL(request.url).pathname
-  if (pathname === '/admin/quarantine') {
-    return undefined
-  }
-
-  const match = /^\/admin\/quarantine\/([^/]+)$/.exec(pathname)
-  const quarantineId = match?.[1]
-  return quarantineId === undefined || quarantineId.length === 0
-    ? undefined
-    : decodeURIComponent(quarantineId)
 }
 
 function isWebSocketAttachment(value: unknown): value is WebSocketAttachment {

@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@kuroflare/core": "workspace:*",
-    "@kuroflare/protocol": "workspace:*",
     "valibot": "^1.4.1",
     "y-codemirror.next": "^0.3.5",
     "y-indexeddb": "^9.0.12",

@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict'
 
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/protocol'
+import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema.js'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema'
 import {
   createSyncRuntimeObsidianShellEvidencePort,
   createSyncRuntimeObsidianStartupEvidenceReader,
   planSyncRuntimeObsidianStartupInputFromEvidence,
-} from './obsidian-startup-evidence.js'
-import { type LocalSetupMetadataSnapshotDecision } from './setup-persist.js'
+} from './obsidian-startup-evidence'
+import { type LocalSetupMetadataSnapshotDecision } from './setup-persist'
 
 const vaultId = makeVaultId('startup-evidence-vault-1')
 const deviceId = makeDeviceId('startup-evidence-device-1')

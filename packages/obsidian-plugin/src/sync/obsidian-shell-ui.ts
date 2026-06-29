@@ -1,7 +1,7 @@
 import {
   type SyncRuntimeObsidianPresentationPlan,
   type SyncRuntimeObsidianRepairPresentation,
-} from './obsidian-shell-presentation.js'
+} from './obsidian-shell-presentation'
 
 /** Obsidian UI operations needed to render one sync shell presentation plan. */
 export interface SyncRuntimeObsidianShellUiPort {

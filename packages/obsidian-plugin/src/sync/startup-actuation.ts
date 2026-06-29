@@ -3,7 +3,7 @@ import {
   type DeviceTokenClaims,
   type DeviceTokenScope,
   type SetupExchangeResponse,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 
 import {
   applyLocalStoreIndexedDbOpenEffect,
@@ -11,17 +11,17 @@ import {
   type LocalStoreIndexedDbFactoryPort,
   type LocalStoreIndexedDbOpenEffectPlan,
   type LocalStoreIndexedDbSchemaDatabasePort,
-} from './local-store-indexeddb.js'
-import { type LocalStoreIndexedDbOpenEffect } from './local-store-schema.js'
+} from './local-store-indexeddb'
+import { type LocalStoreIndexedDbOpenEffect } from './local-store-schema'
 import {
   persistLocalSetupResponse,
   type LocalSetupPersistMetadataPort,
   type LocalSetupPersistRuntimeInput,
   type LocalSetupPersistRuntimePlan,
   type LocalSetupPersistSecretStoragePort,
-} from './setup-persist-runtime.js'
-import { type SyncRuntimeStartupEffect, type SyncRuntimeStartupPlan } from './startup-runtime.js'
-import { type SyncEngineStartupEffect } from './sync-engine.js'
+} from './setup-persist-runtime'
+import { type SyncRuntimeStartupEffect, type SyncRuntimeStartupPlan } from './startup-runtime'
+import { type SyncEngineStartupEffect } from './sync-engine'
 
 /** Stable status the plugin shell can expose in the status bar or settings UI. */
 export type SyncRuntimeShellStatus =

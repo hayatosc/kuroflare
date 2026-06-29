@@ -14,11 +14,11 @@ import {
   makeVaultId,
   makeYDocId,
   type DocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import * as v from 'valibot'
 import { test } from 'vitest'
 
-import { applyLocalStoreDriverTransaction } from './local-store-driver.js'
+import { applyLocalStoreDriverTransaction } from './local-store-driver'
 import {
   LOCAL_STORE_REPAIR_EXPORT_DIRECTORY,
   buildLocalStoreRepairExport,
@@ -28,8 +28,8 @@ import {
   planLocalStoreRepairImportStageTransaction,
   planLocalStoreRepairImportResume,
   planLocalStoreRepair,
-} from './local-store-repair.js'
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema.js'
+} from './local-store-repair'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from './local-store-schema'
 
 const vaultId = makeVaultId('repair-vault-1')
 const deviceId = makeDeviceId('repair-device-1')

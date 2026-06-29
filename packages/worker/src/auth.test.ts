@@ -5,11 +5,11 @@ import {
   makeDeviceId,
   makeVaultId,
   type DeviceTokenClaims,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { decideAuthAdmission } from './auth.js'
-import type { DeviceRegistryEntry } from './devices.js'
+import { decideAuthAdmission } from './auth'
+import type { DeviceRegistryEntry } from './devices'
 
 const vaultId = makeVaultId('vault-1')
 const otherVaultId = makeVaultId('vault-2')

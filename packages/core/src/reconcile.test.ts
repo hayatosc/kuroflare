@@ -10,11 +10,11 @@ import {
   type BinaryMetaFile,
   type FileId,
   type MetaFile,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import * as v from 'valibot'
 import { test } from 'vitest'
 
-import { applyMetaRepair, planDeleteVsEditRepairs, planPathConflictRepairs } from './index.js'
+import { applyMetaRepair, planDeleteVsEditRepairs, planPathConflictRepairs } from './index'
 
 const DEVICE_ID = makeDeviceId('repair')
 const OTHER_DEVICE_ID = makeDeviceId('other-device')

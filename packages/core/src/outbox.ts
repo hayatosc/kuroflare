@@ -1,16 +1,9 @@
-import {
-  type Ack,
-  type DeviceId,
-  type DocId,
-  type FileId,
-  type MessageId,
-  type NeedFullSnapshot,
-  type QuarantinedUpdateEntry,
-  type Sha256Hex,
-  type VaultId,
-} from '@kuroflare/protocol'
+import { type Ack, type NeedFullSnapshot } from './messages'
+import { type QuarantinedUpdateEntry } from './admin-http'
+import { type DeviceId, type DocId, type FileId, type MessageId, type VaultId } from './ids'
+import { type Sha256Hex } from './meta'
 
-import { decideClientAuthStart } from './auth.js'
+import { decideClientAuthStart } from './auth'
 
 /** Stable item ID assigned by the caller before persisting an outbox plan. */
 export type OutboxPlanItemId = string

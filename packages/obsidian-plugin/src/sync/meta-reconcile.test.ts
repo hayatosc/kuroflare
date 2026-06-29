@@ -10,11 +10,11 @@ import {
   type BinaryMetaFile,
   type FileId,
   type MetaFile,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 import * as Y from 'yjs'
 
-import { reconcileMetaDoc } from './meta-reconcile.js'
+import { reconcileMetaDoc } from './meta-reconcile'
 
 const REPAIR = makeDeviceId('repair')
 const DEVICE_A = makeDeviceId('device-a')

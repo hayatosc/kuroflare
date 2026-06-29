@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
 import { type ClientAuthMetadata } from '@kuroflare/core'
-import { makeDeviceId, type RevokeDeviceResponse } from '@kuroflare/protocol'
+import { makeDeviceId, type RevokeDeviceResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -9,7 +9,7 @@ import {
   persistLocalDeviceRevoke,
   type AuthRevokeMetadataPort,
   type AuthRevokeSecretStoragePort,
-} from './auth-revoke-runtime.js'
+} from './auth-revoke-runtime'
 import {
   type LocalStoreIndexedDbMetadataDatabasePort,
   type LocalStoreIndexedDbMetadataObjectStorePort,
@@ -17,8 +17,8 @@ import {
   type LocalStoreIndexedDbMetadataWriteOperation,
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
-} from './local-store-indexeddb.js'
-import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from './setup-persist.js'
+} from './local-store-indexeddb'
+import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from './setup-persist'
 
 const deviceId = makeDeviceId('auth-revoke-device-1')
 const otherDeviceId = makeDeviceId('auth-revoke-device-2')

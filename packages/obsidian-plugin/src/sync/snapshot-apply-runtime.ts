@@ -9,21 +9,21 @@ import {
   type DocId,
   type DocLatestSnapshotResponse,
   type MetaLatestSnapshotResponse,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 
 import {
   queueLocalStoreIndexedDbConcreteWrites,
   type LocalStoreIndexedDbObjectStorePort,
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
-} from './local-store-indexeddb.js'
-import { type LocalStoreOutboxRecord } from './local-store.js'
+} from './local-store-indexeddb'
+import { type LocalStoreOutboxRecord } from './local-store'
 import {
   planOutboxWorkerFullSnapshotRelease,
   planOutboxWorkerFullSnapshotReleaseIndexedDbWriteTransaction,
   type OutboxWorkerFullSnapshotReleasePlan,
   type OutboxWorkerIndexedDbWriteOperation,
-} from './outbox-worker.js'
+} from './outbox-worker'
 
 /** Verified full snapshot bytes accepted by the runtime planner. */
 export type VerifiedFullSnapshotBytes = Extract<

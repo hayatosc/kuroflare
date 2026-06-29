@@ -1,4 +1,4 @@
-import type { SchemaMigration } from './migrations.js'
+import type { SchemaMigration } from './migrations'
 
 /** SQLite table or index created by a schema migration. */
 export interface SqlObjectDefinition {

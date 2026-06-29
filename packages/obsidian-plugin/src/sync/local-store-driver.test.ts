@@ -12,7 +12,7 @@ import {
   makeVaultId,
   makeYDocId,
   type DocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -21,7 +21,7 @@ import {
   applyLocalStoreDriverWrites,
   planLocalStoreDriverReadSet,
   selectLocalStoreDriverSnapshot,
-} from './local-store-driver.js'
+} from './local-store-driver'
 import {
   planLocalStoreAckCompletionTransaction,
   planLocalStoreLeaseAcquireTransaction,
@@ -29,13 +29,13 @@ import {
   planLocalStoreSuccessCompletionTransaction,
   type LocalStoreOutboxRecord,
   type LocalStoreTransactionOperation,
-} from './local-store.js'
+} from './local-store'
 import {
   planOutboundQueueAckCompletion,
   planOutboundQueueLeaseAcquire,
   planOutboundQueueSuccessCompletion,
   planOutboundQueueTick,
-} from './outbound-queue.js'
+} from './outbound-queue'
 
 const yUpdateId = outboxId('driver-y-update-1')
 const pausedId = outboxId('driver-paused-1')

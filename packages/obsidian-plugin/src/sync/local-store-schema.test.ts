@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
 import { DEFAULT_LOCAL_STORE_OBJECT_STORES } from '@kuroflare/core'
-import { makeVaultId } from '@kuroflare/protocol'
+import { makeVaultId } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -10,7 +10,7 @@ import {
   localStoreIndexedDbName,
   planLocalStoreIndexedDbOpen,
   type LocalStoreIndexedDbOpenPlanInput,
-} from './local-store-schema.js'
+} from './local-store-schema'
 
 const vaultId = makeVaultId('schema-vault-1')
 const dbName = 'kuroflare:schema-vault-1'

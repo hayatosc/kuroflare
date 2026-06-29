@@ -13,7 +13,7 @@ import {
   makeVaultId,
   makeYDocId,
   type DocId,
-} from '@kuroflare/protocol'
+} from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -24,7 +24,7 @@ import {
   planOutboundQueueLeaseRenew,
   planOutboundQueueQuarantinePause,
   planOutboundQueueTick,
-} from './outbound-queue.js'
+} from './outbound-queue'
 
 const yUpdateId = outboxId('y-update-1')
 const blobPutId = outboxId('blob-put-1')

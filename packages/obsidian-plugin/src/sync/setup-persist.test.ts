@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/protocol'
+import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
@@ -12,7 +12,7 @@ import {
   planLocalSetupPersistSecretCleanup,
   type LocalSetupSecretWriteEffect,
   type SuccessfulLocalSetupPersistPlan,
-} from './setup-persist.js'
+} from './setup-persist'
 
 const vaultId = makeVaultId('setup-persist-vault-1')
 const deviceId = makeDeviceId('setup-persist-device-1')

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 
 import { type ClientStartupLocalState } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/protocol'
+import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { planSyncEngineStartup, startupStepPhase } from './sync-engine.js'
+import { planSyncEngineStartup, startupStepPhase } from './sync-engine'
 
 const vaultId = makeVaultId('vault-1')
 const deviceId = makeDeviceId('device-1')

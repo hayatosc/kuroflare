@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 
-import { makeVaultId } from '@kuroflare/protocol'
+import { makeVaultId } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { planSyncRuntimeObsidianPresentation } from './obsidian-shell-presentation.js'
+import { planSyncRuntimeObsidianPresentation } from './obsidian-shell-presentation'
 import {
   applySyncRuntimeShellCommands,
   INITIAL_SYNC_RUNTIME_SHELL_STATE,
-} from './startup-actuation.js'
-import { type SyncRuntimeStartupEffect } from './startup-runtime.js'
+} from './startup-actuation'
+import { type SyncRuntimeStartupEffect } from './startup-runtime'
 
 const resumeBackgroundQueuesEffect = {
   kind: 'run-sync-startup-effect',

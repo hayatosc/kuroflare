@@ -1,9 +1,5 @@
-import {
-  canonicalizeVaultPath,
-  type DeviceId,
-  type FileId,
-  type MetaFile,
-} from '@kuroflare/protocol'
+import { canonicalizeVaultPath, type MetaFile } from './meta'
+import { type DeviceId, type FileId } from './ids'
 
 export interface PathConflictRepair {
   readonly fileId: FileId
