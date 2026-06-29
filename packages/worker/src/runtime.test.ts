@@ -96,6 +96,7 @@ class MemoryStorage implements DurableObjectStorageBinding {
   private readonly values = new Map<string, unknown>()
 
   async get<T = unknown>(key: string): Promise<T | undefined> {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return this.values.get(key) as T | undefined
   }
 
@@ -222,6 +223,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       return []
     }
     if (normalized.includes('from schema_migrations')) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return [...this.migrationVersions].map((version) => ({ version })) as Iterable<T>
     }
     if (normalized.includes('insert into schema_migrations')) {
@@ -242,6 +244,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 consumedAt: token.consumedAt ?? null,
               },
             ]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from device_refresh_tokens')) {
@@ -257,10 +260,12 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 revokedAt: token.revokedAt,
               },
             ]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from devices')) {
       if (!normalized.includes('where device_id')) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
         return [...this.devices.values()].map((device) => ({
           yClientId: device.yClientId,
         })) as Iterable<T>
@@ -277,6 +282,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 revokedAt: device.revokedAt,
               },
             ]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('update setup_tokens')) {
@@ -353,6 +359,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 horizonStateVector: doc.horizonStateVector,
               },
             ]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (
@@ -365,17 +372,20 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         .sort(([, left], [, right]) => left.updatedAt - right.updatedAt)
         .slice(0, limit)
         .map(([docId]) => ({ docId }))
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('select latest_seq')) {
       const docId = expectString(bindings[0])
       const doc = this.docs.get(docId)
       const rows = doc === undefined ? [] : [{ latestSeq: doc.latestSeq }]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from docs') && normalized.includes('limit') && !normalized.includes('latest_seq > latest_snapshot_seq')) {
       const first = this.docs.keys().next()
       const rows = first.done === true ? [] : [{ docId: first.value }]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('select') && normalized.includes('latest_snapshot_seq')) {
@@ -390,6 +400,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
                 latestSnapshotKey: doc.latestSnapshotKey,
               },
             ]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (
@@ -403,6 +414,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         .filter((row) => row.seq > minSeq)
         .sort((left, right) => left.seq - right.seq)
         .map((row) => ({ updateBytes: row.updateBytes }))
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('select durable_seq as durableseq')) {
@@ -410,6 +422,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       const messageId = expectString(bindings[1])
       const row = this.messageDedup.get(`${docId}:${messageId}`)
       const rows = row === undefined ? [] : [{ durableSeq: row.durableSeq }]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from checkpoint_runs') && normalized.includes('status in')) {
@@ -430,6 +443,7 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
           upperSeq: run.upperSeq,
           snapshotKey: run.snapshotKey,
         }))
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('insert into op_log')) {
@@ -490,12 +504,14 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       const id = expectString(bindings[0])
       const row = this.quarantines.get(id)
       const rows = row === undefined ? [] : [quarantineSqlRow(row)]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('from quarantined_updates')) {
       const rows = [...this.quarantines.values()]
         .sort((left, right) => left.createdAt - right.createdAt)
         .map(quarantineSqlRow)
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return rows as Iterable<T>
     }
     if (normalized.includes('insert into checkpoint_runs')) {
@@ -665,6 +681,7 @@ class SqlOnlyStorage implements DurableObjectStorageBinding {
   private readonly values = new Map<string, unknown>()
 
   async get<T = unknown>(key: string): Promise<T | undefined> {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return this.values.get(key) as T | undefined
   }
 
@@ -1051,6 +1068,7 @@ test('VaultRoom exchanges setup tokens for device credentials', async () => {
   )
 
   assert.equal(response.status, 200)
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const body = (await response.json()) as {
     readonly endpoint?: unknown
     readonly vaultId?: unknown
@@ -1069,6 +1087,7 @@ test('VaultRoom exchanges setup tokens for device credentials', async () => {
   assert.equal(typeof body.deviceId, 'string')
   assert.equal(typeof body.accessToken, 'string')
   assert.equal(typeof body.refreshToken, 'string')
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   assert.equal((body.accessToken as string).split('.').length, 3)
   assert.equal(storage.sql.setupTokens.get(setupTokenHash)?.consumedAt !== undefined, true)
   assert.equal(storage.sql.refreshTokens.size, 1)
@@ -1136,6 +1155,7 @@ test('VaultRoom refreshes device access tokens and rotates refresh tokens', asyn
   )
 
   assert.equal(response.status, 200)
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const body = (await response.json()) as {
     readonly accessToken?: unknown
     readonly refreshToken?: unknown
@@ -1296,6 +1316,7 @@ test('VaultRoom serves authenticated blob head, upload, and download proxy reque
     }),
   )
   assert.equal(uploadUrlResponse.status, 200)
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const uploadUrlBody = (await uploadUrlResponse.json()) as {
     readonly kind?: unknown
     readonly url?: unknown
@@ -1303,15 +1324,19 @@ test('VaultRoom serves authenticated blob head, upload, and download proxy reque
   }
   assert.equal(uploadUrlBody.kind, 'single-put')
   assert.equal(typeof uploadUrlBody.url, 'string')
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   assert((uploadUrlBody.url as string).startsWith(`https://worker.example/blobs/${uploadHash}?`))
   assert.equal(
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     new URL(uploadUrlBody.url as string).searchParams.get('size'),
     String(uploadBytes.byteLength),
   )
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   assert.equal(new URL(uploadUrlBody.url as string).searchParams.get('expiresAt'), null)
   assert.deepEqual(uploadUrlBody.headers, {})
 
   const putResponse = await room.fetch(
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     new Request(uploadUrlBody.url as string, {
       method: 'PUT',
       headers: {
@@ -1516,9 +1541,9 @@ test('VaultRoom appends JSON sync updates, acks the sender, and broadcasts to pe
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
 
-    room.fetch(await makeAuthenticatedWebSocketRequest())
-    room.fetch(await makeAuthenticatedWebSocketRequest())
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
 
     const firstServer = state.accepted[0]
     const secondServer = state.accepted[1]
@@ -1539,6 +1564,7 @@ test('VaultRoom appends JSON sync updates, acks the sender, and broadcasts to pe
     if (typeof ack !== 'string') {
       throw new Error('expected ack string')
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(ack) as Ack, {
       type: 'ack',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -1559,6 +1585,7 @@ test('VaultRoom appends JSON sync updates, acks the sender, and broadcasts to pe
     if (typeof duplicateAck !== 'string') {
       throw new Error('expected duplicate ack string')
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(duplicateAck) as Ack, {
       type: 'ack',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -1587,8 +1614,8 @@ test('VaultRoom persists JSON sync updates through Durable Object SQL storage', 
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
     const request = await makeAuthenticatedWebSocketRequest()
 
-    room.fetch(request)
-    room.fetch(request)
+    void room.fetch(request)
+    void room.fetch(request)
 
     const firstServer = state.accepted[0]
     const secondServer = state.accepted[1]
@@ -1615,6 +1642,7 @@ test('VaultRoom persists JSON sync updates through Durable Object SQL storage', 
     if (typeof ack !== 'string') {
       throw new Error('expected SQL ack string')
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.equal((JSON.parse(ack) as Ack).durableSeq, 1)
 
     await room.webSocketMessage(firstServer, updateJson)
@@ -1623,6 +1651,7 @@ test('VaultRoom persists JSON sync updates through Durable Object SQL storage', 
     if (typeof duplicateAck !== 'string') {
       throw new Error('expected SQL duplicate ack string')
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.equal((JSON.parse(duplicateAck) as Ack).durableSeq, 1)
     assert.deepEqual(syncMessages(secondServer.sent), [
       JSON.stringify({ ...update, durableSeq: 1 }),
@@ -1641,7 +1670,7 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
 
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -1676,8 +1705,8 @@ test('VaultRoom serializes concurrent sync update appends per document', async (
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
 
-    room.fetch(await makeAuthenticatedWebSocketRequest())
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const firstServer = state.accepted[0]
     const secondServer = state.accepted[1]
     assert(firstServer instanceof FakeSocket)
@@ -1725,7 +1754,7 @@ test('VaultRoom acks snapshot-escape duplicates from message_dedup without reiss
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
 
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
 
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
@@ -1751,8 +1780,10 @@ test('VaultRoom acks snapshot-escape duplicates from message_dedup without reiss
       seenAt: storage.sql.messageDedup.get('file:large-file-doc:message-large-update')?.seenAt,
     })
     assert.equal(syncMessages(server.sent).length, 2)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.equal((JSON.parse(stringMessageAt(server.sent, 0)) as Ack).durableSeq, 1)
     assert.equal(
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       (JSON.parse(stringMessageAt(server.sent, 1)) as NeedFullSnapshot).reason,
       'large-update-snapshot',
     )
@@ -1760,6 +1791,7 @@ test('VaultRoom acks snapshot-escape duplicates from message_dedup without reiss
     await room.webSocketMessage(server, updateJson)
 
     assert.equal(syncMessages(server.sent).length, 3)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(stringMessageAt(server.sent, 2)) as Ack, {
       type: 'ack',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -1785,8 +1817,8 @@ test('VaultRoom requires hello before accepting binary sync frames', async () =>
       headers: { Upgrade: 'websocket' },
     })
 
-    room.fetch(request)
-    room.fetch(request)
+    void room.fetch(request)
+    void room.fetch(request)
     const firstServer = state.accepted[0]
     const secondServer = state.accepted[1]
     assert(firstServer instanceof FakeSocket)
@@ -1827,9 +1859,9 @@ test('VaultRoom persists binary sync frames before acking and broadcasting', asy
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
     const request = await makeAuthenticatedWebSocketRequest()
 
-    room.fetch(request)
-    room.fetch(request)
-    room.fetch(request)
+    void room.fetch(request)
+    void room.fetch(request)
+    void room.fetch(request)
     const firstServer = state.accepted[0]
     const secondServer = state.accepted[1]
     const unauthenticatedServer = state.accepted[2]
@@ -1862,6 +1894,7 @@ test('VaultRoom persists binary sync frames before acking and broadcasting', asy
     if (typeof ack !== 'string') {
       throw new Error('expected binary ack string')
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.equal((JSON.parse(ack) as Ack).durableSeq, 1)
     assert.equal(syncMessages(secondServer.sent).length, 1)
     const broadcast = syncMessages(secondServer.sent)[0]
@@ -1897,7 +1930,7 @@ test('VaultRoom restores WebSocket sessions from hibernation attachments', async
     const request = await makeAuthenticatedWebSocketRequest()
 
     const initialRoom = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
-    initialRoom.fetch(request)
+    void initialRoom.fetch(request)
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -1914,6 +1947,7 @@ test('VaultRoom restores WebSocket sessions from hibernation attachments', async
     if (typeof ack !== 'string') {
       throw new Error('expected resumed session ack string')
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(ack) as Ack, {
       type: 'ack',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -1941,7 +1975,7 @@ test('VaultRoom checkpoints an active document to R2 and advances the SQL snapsh
       state,
       makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
     )
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -1991,7 +2025,7 @@ test('VaultRoom schedules and runs checkpoint alarms after durable appends', asy
     const state = new FakeState(storage)
     const env = makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET)
     const room = new VaultRoom(state, env)
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2041,7 +2075,7 @@ test('VaultRoom schedules an immediate checkpoint alarm after the op threshold',
       horizonStateVector: undefined,
       updatedAt: 1,
     })
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2155,7 +2189,7 @@ test('VaultRoom answers sync requests with Yjs diffs and no-ops empty diffs', as
     const storage = new SqlOnlyStorage()
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2173,6 +2207,7 @@ test('VaultRoom answers sync requests with Yjs diffs and no-ops empty diffs', as
     if (typeof response !== 'string') {
       throw new Error('expected sync-request response string')
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     const parsed = JSON.parse(response) as SyncUpdate
     assert.equal(parsed.type, 'sync-update')
     assert.equal(parsed.messageId, makeMessageId('message-sync-request'))
@@ -2205,7 +2240,7 @@ test('VaultRoom requires a full snapshot when sync request state vector is older
       state,
       makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
     )
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2227,6 +2262,7 @@ test('VaultRoom requires a full snapshot when sync request state vector is older
     if (typeof response !== 'string') {
       throw new Error('expected need-full-snapshot response string')
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     assert.deepEqual(JSON.parse(response) as NeedFullSnapshot, {
       type: 'need-full-snapshot',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -2253,7 +2289,7 @@ test('VaultRoom hydrates active Y.Doc from SQL op_log after Durable Object resta
       firstState,
       makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
     )
-    firstRoom.fetch(request)
+    void firstRoom.fetch(request)
     const firstServer = firstState.accepted[0]
     assert(firstServer instanceof FakeSocket)
     await firstRoom.webSocketMessage(firstServer, JSON.stringify(makeHello()))
@@ -2268,7 +2304,7 @@ test('VaultRoom hydrates active Y.Doc from SQL op_log after Durable Object resta
       secondState,
       makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
     )
-    secondRoom.fetch(request)
+    void secondRoom.fetch(request)
     const secondServer = secondState.accepted[0]
     assert(secondServer instanceof FakeSocket)
     await secondRoom.webSocketMessage(secondServer, JSON.stringify(makeHello()))
@@ -2324,7 +2360,7 @@ test('VaultRoom hydrates active Y.Doc from R2 snapshot plus residual SQL op_log'
       state,
       makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
     )
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2365,7 +2401,7 @@ test('VaultRoom stops sync updates when the recorded R2 snapshot is missing', as
       state,
       makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
     )
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2413,7 +2449,7 @@ test('VaultRoom falls back from a missing snapshot pointer to the newest listed 
       state,
       makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
     )
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2442,7 +2478,7 @@ test('VaultRoom validates client hello against the SQL device registry', async (
     storage.sql.devices.delete('device-1')
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2464,8 +2500,8 @@ test('VaultRoom blocks reinstalled and revoked devices before normal sync', asyn
     const storage = new SqlOnlyStorage()
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
-    room.fetch(await makeAuthenticatedWebSocketRequest())
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const reinstalled = state.accepted[0]
     const revoked = state.accepted[1]
     assert(reinstalled instanceof FakeSocket)
@@ -2497,7 +2533,7 @@ test('VaultRoom rejects sync messages that do not match the accepted hello ident
     const storage = new SqlOnlyStorage()
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2528,12 +2564,12 @@ test('VaultRoom requires a valid signed device token when WS auth is configured'
     const storage = new SqlOnlyStorage()
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(secret))
-    room.fetch(
+    void room.fetch(
       new Request('https://worker.example/ws/vault-1', {
         headers: { Upgrade: 'websocket', Authorization: `Bearer ${token}` },
       }),
     )
-    room.fetch(
+    void room.fetch(
       new Request('https://worker.example/ws/vault-1', {
         headers: { Upgrade: 'websocket' },
       }),
@@ -2565,12 +2601,12 @@ test('VaultRoom accepts browser-compatible WebSocket token transports', async ()
     const storage = new SqlOnlyStorage()
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(secret))
-    room.fetch(
+    void room.fetch(
       new Request(`https://worker.example/ws/vault-1?access_token=${queryToken}`, {
         headers: { Upgrade: 'websocket' },
       }),
     )
-    room.fetch(
+    void room.fetch(
       new Request('https://worker.example/ws/vault-1', {
         headers: {
           Upgrade: 'websocket',
@@ -2601,7 +2637,7 @@ test('VaultRoom fails closed when SQL device auth is configured without a token 
     const storage = new SqlOnlyStorage()
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnv())
-    room.fetch(
+    void room.fetch(
       new Request('https://worker.example/ws/vault-1', {
         headers: { Upgrade: 'websocket' },
       }),
@@ -2634,7 +2670,7 @@ test('VaultRoom applies signed token scopes and tokenVersion to hello admission'
     })
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(secret))
-    room.fetch(
+    void room.fetch(
       new Request('https://worker.example/ws/vault-1', {
         headers: {
           Upgrade: 'websocket',
@@ -2642,7 +2678,7 @@ test('VaultRoom applies signed token scopes and tokenVersion to hello admission'
         },
       }),
     )
-    room.fetch(
+    void room.fetch(
       new Request('https://worker.example/ws/vault-1', {
         headers: {
           Upgrade: 'websocket',
@@ -2674,7 +2710,7 @@ test('VaultRoom requires hello before sync updates', async () => {
   try {
     const state = new FakeState()
     const room = new VaultRoom(state, makeEnv())
-    room.fetch(
+    void room.fetch(
       new Request('https://worker.example/ws/vault-1', {
         headers: { Upgrade: 'websocket' },
       }),
@@ -2700,8 +2736,8 @@ test('VaultRoom quarantines invalid Yjs updates without acking or broadcasting',
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
 
-    room.fetch(await makeAuthenticatedWebSocketRequest())
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
 
     const firstServer = state.accepted[0]
     const secondServer = state.accepted[1]
@@ -2747,7 +2783,7 @@ test('VaultRoom quarantines updates with mismatched wire hashes', async () => {
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
 
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
 
@@ -2776,7 +2812,7 @@ test('VaultRoom treats repeated quarantine inserts as idempotent', async () => {
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
 
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
 
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
@@ -2808,8 +2844,8 @@ test('VaultRoom quarantines meta updates that fail MetaFile schema validation', 
     const state = new FakeState(storage)
     const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
 
-    room.fetch(await makeAuthenticatedWebSocketRequest())
-    room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
 
     const firstServer = state.accepted[0]
     const secondServer = state.accepted[1]
@@ -3103,6 +3139,7 @@ function syncMessages(
     if (typeof message !== 'string') {
       return true
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return (JSON.parse(message) as { readonly type?: string }).type !== 'hello-accepted'
   })
 }
@@ -3234,6 +3271,7 @@ function installFakeUpgradeResponse(): unknown {
     Response: typeof Response
   }
   const previous = globalWithResponse.Response
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   globalWithResponse.Response = FakeUpgradeResponse as unknown as typeof Response
   return previous
 }
@@ -3246,6 +3284,7 @@ function restoreWebSocketPair(previous: unknown): void {
     delete globalWithPair.WebSocketPair
     return
   }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   globalWithPair.WebSocketPair = previous as typeof FakeWebSocketPair
 }
 
