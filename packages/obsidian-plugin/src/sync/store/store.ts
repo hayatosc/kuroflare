@@ -1,39 +1,26 @@
 import {
   type OutboxAckCompletionPatch,
-  type OutboxDependencyBlockPatch,
-  type OutboxDependencyDeadLetterPatch,
+  
+  
   type OutboxFailureTransition,
-  type OutboxFullSnapshotReleasePatch,
-  type OutboxLeaseReclaimPatch,
-  type LastMaterializedRecord,
+  
+  
+  
   type OutboxPlanItemId,
-  type OutboxQuarantinePausePatch,
-  type OutboxRetryKind,
-  type OutboxResumePatch,
-  type OutboxResumeCondition,
-  type OutboxRunningLease,
-} from '@kuroflare/core'
+  
+  
+  
+  
+  type OutboxRunningLease} from '@kuroflare/core'
 import {
-  type BlobManifest,
-  type DocId,
-  type FileId,
-  type MessageId,
-  type Sha256Hex,
-} from '@kuroflare/core'
-
-import {
-  type OutboundQueueAckCompletionPlan,
-  type OutboundQueueFullSnapshotReleasePlan,
-  type OutboundQueueFailureCompletionPlan,
-  type OutboundQueueLeaseAcquirePlan,
+  
+  
+  
+  
   type OutboundQueueLeaseDelete,
-  type OutboundQueueLeaseReleasePlan,
-  type OutboundQueueLeaseRenewPlan,
-  type OutboundQueueLeaseWrite,
-  type OutboundQueueQuarantinePausePlan,
-  type OutboundQueueSuccessCompletionPlan,
-  type OutboundQueueTickPlan,
-} from '../engine/queue'
+  
+  
+  type OutboundQueueLeaseWrite} from '../engine/queue'
 
 import type {
   LocalStoreOutboxPatch,
@@ -54,8 +41,7 @@ import type {
   SuccessfulOutboundQueueQuarantinePausePlan,
   SuccessfulOutboundQueueFullSnapshotReleasePlan,
   SuccessfulOutboundQueueFailureCompletionPlan,
-  SuccessfulOutboundQueueSuccessCompletionPlan,
-} from '../store/store.types'
+  SuccessfulOutboundQueueSuccessCompletionPlan} from '../store/store.types'
 
 export type {
   LocalStoreOutboxPatch,
@@ -76,8 +62,7 @@ export type {
   SuccessfulOutboundQueueQuarantinePausePlan,
   SuccessfulOutboundQueueFullSnapshotReleasePlan,
   SuccessfulOutboundQueueFailureCompletionPlan,
-  SuccessfulOutboundQueueSuccessCompletionPlan,
-}
+  SuccessfulOutboundQueueSuccessCompletionPlan}
 
 /**
  * Converts scheduler persist patches into ordered local-store transaction operations.
@@ -89,26 +74,22 @@ export function planLocalStoreOutboxSchedulerTransaction(
     ...plan.persist.resumePatches.map(
       (patch): LocalStoreTransactionOperation => ({
         kind: 'patch-outbox',
-        patch: { kind: 'resume', patch },
-      }),
+        patch: { kind: 'resume', patch }}),
     ),
     ...plan.persist.blockPatches.map(
       (patch): LocalStoreTransactionOperation => ({
         kind: 'patch-outbox',
-        patch: { kind: 'dependency-block', patch },
-      }),
+        patch: { kind: 'dependency-block', patch }}),
     ),
     ...plan.persist.deadLetterPatches.map(
       (patch): LocalStoreTransactionOperation => ({
         kind: 'patch-outbox',
-        patch: { kind: 'dependency-dead-letter', patch },
-      }),
+        patch: { kind: 'dependency-dead-letter', patch }}),
     ),
     ...plan.persist.leaseReclaims.map(
       (patch): LocalStoreTransactionOperation => ({
         kind: 'patch-outbox',
-        patch: { kind: 'lease-reclaim', patch },
-      }),
+        patch: { kind: 'lease-reclaim', patch }}),
     ),
   ]
 }
@@ -152,9 +133,7 @@ export function planLocalStoreAckCompletionTransaction(
       patch: {
         kind: 'ack-completion',
         itemId: plan.itemId,
-        patch: plan.patch,
-      },
-    },
+        patch: plan.patch}},
     deleteLeaseOperation(plan.leaseDelete),
   ]
 }
@@ -171,9 +150,7 @@ export function planLocalStoreQuarantinePauseTransaction(
       patch: {
         kind: 'quarantine-pause',
         itemId: plan.itemId,
-        patch: plan.patch,
-      },
-    },
+        patch: plan.patch}},
     deleteLeaseOperation(plan.leaseDelete),
   ]
 }
@@ -190,9 +167,7 @@ export function planLocalStoreFailureCompletionTransaction(
       patch: {
         kind: 'failure-completion',
         itemId: plan.itemId,
-        patch: plan.patch,
-      },
-    },
+        patch: plan.patch}},
     deleteLeaseOperation(plan.leaseDelete),
   ]
 }
@@ -209,9 +184,7 @@ export function planLocalStoreSuccessCompletionTransaction(
       patch: {
         kind: 'success-completion',
         itemId: plan.itemId,
-        patch: plan.patch,
-      },
-    },
+        patch: plan.patch}},
     deleteLeaseOperation(plan.leaseDelete),
   ]
 }
@@ -225,8 +198,7 @@ export function planLocalStoreFullSnapshotReleaseTransaction(
   return plan.releasePatches.map(
     (patch): LocalStoreTransactionOperation => ({
       kind: 'patch-outbox',
-      patch: { kind: 'full-snapshot-release', patch },
-    }),
+      patch: { kind: 'full-snapshot-release', patch }}),
   )
 }
 
@@ -321,8 +293,7 @@ export function planLocalStoreTransactionCommit(
     outboxPatchItemIds,
     leaseWrites,
     leaseDeletes,
-    nextLeaseRows: [...nextLeaseRows.values()],
-  }
+    nextLeaseRows: [...nextLeaseRows.values()]}
 }
 
 /**
@@ -346,18 +317,14 @@ export function applyLocalStoreOutboxPatch(
           status: patch.patch.status,
           nextAttemptAt: patch.patch.nextAttemptAt,
           resumeOn: undefined,
-          reason: undefined,
-        },
-      }
+          reason: undefined}}
     case 'dependency-block':
       return {
         ok: true,
         record: {
           ...record,
           status: patch.patch.status,
-          blockedBy: patch.patch.blockedBy,
-        },
-      }
+          blockedBy: patch.patch.blockedBy}}
     case 'dependency-dead-letter':
       return {
         ok: true,
@@ -367,9 +334,7 @@ export function applyLocalStoreOutboxPatch(
           reason: patch.patch.reason,
           deadLetterReason: patch.patch.deadLetterReason,
           deadLetteredBy: patch.patch.deadLetteredBy,
-          nextAttemptAt: undefined,
-        },
-      }
+          nextAttemptAt: undefined}}
     case 'lease-reclaim':
       return {
         ok: true,
@@ -377,9 +342,7 @@ export function applyLocalStoreOutboxPatch(
           ...record,
           status: patch.patch.status,
           nextAttemptAt: patch.patch.nextAttemptAt,
-          previousOwnerId: patch.patch.previousOwnerId,
-        },
-      }
+          previousOwnerId: patch.patch.previousOwnerId}}
     case 'repair-import-resume':
       return {
         ok: true,
@@ -388,9 +351,7 @@ export function applyLocalStoreOutboxPatch(
           status: patch.patch.status,
           nextAttemptAt: patch.patch.nextAttemptAt,
           resumeOn: undefined,
-          reason: undefined,
-        },
-      }
+          reason: undefined}}
     case 'ack-completion':
       return applyAckCompletionPatch(record, patch.patch)
     case 'quarantine-pause':
@@ -404,9 +365,7 @@ export function applyLocalStoreOutboxPatch(
           resumeOn: patch.patch.resumeOn,
           quarantineId: patch.patch.quarantineId,
           quarantineReason: patch.patch.quarantineReason,
-          docId: patch.patch.docId,
-        },
-      }
+          docId: patch.patch.docId}}
     case 'failure-completion':
       return applyFailureCompletionPatch(record, patch.patch)
     case 'success-completion':
@@ -415,9 +374,7 @@ export function applyLocalStoreOutboxPatch(
         record: {
           ...record,
           status: patch.patch.status,
-          nextAttemptAt: patch.patch.nextAttemptAt,
-        },
-      }
+          nextAttemptAt: patch.patch.nextAttemptAt}}
     case 'full-snapshot-release':
       return {
         ok: true,
@@ -426,9 +383,7 @@ export function applyLocalStoreOutboxPatch(
           status: patch.patch.status,
           nextAttemptAt: patch.patch.nextAttemptAt,
           completedBy: patch.patch.completedBy,
-          snapshotSeq: patch.patch.snapshotSeq,
-        },
-      }
+          snapshotSeq: patch.patch.snapshotSeq}}
   }
 }
 
@@ -441,8 +396,7 @@ export function applyLocalStoreTransactionSnapshot(
   const commit = planLocalStoreTransactionCommit({
     operations: input.operations,
     currentOutboxItemIds: input.currentOutboxRecords.map((record) => record.id),
-    currentLeaseRows: input.currentLeaseRows,
-  })
+    currentLeaseRows: input.currentLeaseRows})
   if (!commit.ok) {
     return { ok: false, reason: commit.reason, itemId: commit.itemId, commit }
   }
@@ -477,8 +431,7 @@ export function applyLocalStoreTransactionSnapshot(
       ...commit.outboxPutRecords.map((record) => recordsById.get(record.id) ?? record),
     ],
     leaseRows: commit.nextLeaseRows,
-    commit,
-  }
+    commit}
 }
 
 function applyFailureCompletionPatch(
@@ -493,9 +446,7 @@ function applyFailureCompletionPatch(
         status: patch.status,
         retryCount: patch.retryCount,
         nextAttemptAt: patch.nextAttemptAt,
-        lastError: patch.lastError,
-      },
-    }
+        lastError: patch.lastError}}
   }
   if (patch.status === 'paused') {
     return {
@@ -507,9 +458,7 @@ function applyFailureCompletionPatch(
         nextAttemptAt: patch.nextAttemptAt,
         lastError: patch.lastError,
         reason: patch.reason,
-        resumeOn: patch.resumeOn,
-      },
-    }
+        resumeOn: patch.resumeOn}}
   }
   return {
     ok: true,
@@ -520,16 +469,13 @@ function applyFailureCompletionPatch(
       nextAttemptAt: patch.nextAttemptAt,
       lastError: patch.lastError,
       reason: patch.reason,
-      deadLetterReason: patch.deadLetterReason,
-    },
-  }
+      deadLetterReason: patch.deadLetterReason}}
 }
 
 function putLeaseOperation(write: OutboundQueueLeaseWrite): LocalStoreTransactionOperation {
   return {
     kind: 'lease',
-    operation: { kind: 'put-lease', write },
-  }
+    operation: { kind: 'put-lease', write }}
 }
 
 function applyAckCompletionPatch(
@@ -543,9 +489,7 @@ function applyAckCompletionPatch(
         ...record,
         status: patch.status,
         nextAttemptAt: patch.nextAttemptAt,
-        durableSeq: patch.durableSeq,
-      },
-    }
+        durableSeq: patch.durableSeq}}
   }
   return {
     ok: true,
@@ -556,9 +500,7 @@ function applyAckCompletionPatch(
       reason: patch.reason,
       resumeOn: patch.resumeOn,
       snapshotReason: patch.snapshotReason,
-      docId: patch.docId,
-    },
-  }
+      docId: patch.docId}}
 }
 
 /**
@@ -601,6 +543,5 @@ function deleteLeaseOperation(
 ): LocalStoreTransactionOperation {
   return {
     kind: 'lease',
-    operation: { kind: 'delete-lease', delete: deletePlan },
-  }
+    operation: { kind: 'delete-lease', delete: deletePlan }}
 }

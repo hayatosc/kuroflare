@@ -18,7 +18,7 @@ import { type LocalStoreOutboxRecord } from '../store/store'
 import { type OutboxWorkerCompletionPlan } from '../engine/worker'
 import { type LocalSetupMetadata } from '../engine/setup'
 import { type SyncRuntimeWebSocketStepPort } from '../engine/actuation.types'
-import * as Y from 'yjs'
+import type * as Y from 'yjs'
 
 /** Minimal WebSocket surface needed by startup transport steps. */
 export interface SyncRuntimeWebSocketConnection {

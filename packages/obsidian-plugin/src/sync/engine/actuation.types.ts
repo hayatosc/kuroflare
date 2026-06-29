@@ -3,7 +3,7 @@ import {
   type DeviceTokenClaims,
   type DeviceTokenScope,
   type SetupExchangeResponse,
-  decideClientAuthRefresh,
+  type decideClientAuthRefresh,
 } from '@kuroflare/core'
 import {
   type LocalStoreIndexedDbExecutableOpenEffect,

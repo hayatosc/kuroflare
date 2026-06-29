@@ -1,15 +1,13 @@
 import {
   type Ack,
-  type DocId,
-  type DeviceId,
-  type MessageId,
-  type NeedFullSnapshot,
-  type Sha256Hex,
-  type SyncUpdate,
-} from '@kuroflare/core'
+  
+  
+  
+  
+  
+  type SyncUpdate} from '@kuroflare/core'
 import * as v from 'valibot'
 
-import type { YClientId } from '../devices'
 import type {
   SyncUpdateDuplicateEvidence,
   SyncUpdateDocClock,
@@ -20,8 +18,7 @@ import type {
   SyncUpdateAppendDecisionInput,
   SyncUpdateOpLogAppend,
   SyncUpdateDocPatch,
-  SyncUpdateAppendDecision,
-} from './update-types'
+  SyncUpdateAppendDecision} from './update-types'
 
 export type {
   SyncUpdateDuplicateEvidence,
@@ -33,8 +30,7 @@ export type {
   SyncUpdateAppendDecisionInput,
   SyncUpdateOpLogAppend,
   SyncUpdateDocPatch,
-  SyncUpdateAppendDecision,
-}
+  SyncUpdateAppendDecision}
 
 /**
  * Decides whether an inbound update must be quarantined before append planning.
@@ -72,8 +68,7 @@ export function decideSyncUpdateQuarantine(
   return {
     action: 'accept',
     updateBytesLength: input.updateBytesLength,
-    updateSha256: input.actualUpdateSha256,
-  }
+    updateSha256: input.actualUpdateSha256}
 }
 
 /**
@@ -117,8 +112,7 @@ export function decideSyncUpdateAppend(
 
     return {
       action: 'ack-duplicate',
-      ack: makeAck(input.update, input.duplicate.durableSeq),
-    }
+      ack: makeAck(input.update, input.duplicate.durableSeq)}
   }
 
   return makeNewUpdateDecision(input, input.doc.latestSeq + 1)
@@ -148,9 +142,7 @@ function makeNewUpdateDecision(
         vaultId: input.update.vaultId,
         deviceId: input.update.deviceId,
         docId: input.update.docId,
-        reason: 'large-update-snapshot',
-      },
-    }
+        reason: 'large-update-snapshot'}}
   }
 
   return {
@@ -162,11 +154,9 @@ function makeNewUpdateDecision(
       docId: input.update.docId,
       yClientId: input.yClientId,
       updateSha256: input.updateSha256,
-      createdAt: input.now,
-    },
+      createdAt: input.now},
     docPatch: { latestSeq: seq, updatedAt: input.now },
-    ack: makeAck(input.update, seq),
-  }
+    ack: makeAck(input.update, seq)}
 }
 
 function makeAck(update: SyncUpdate, durableSeq: number): Ack {
@@ -177,8 +167,7 @@ function makeAck(update: SyncUpdate, durableSeq: number): Ack {
     deviceId: update.deviceId,
     messageId: update.messageId,
     docId: update.docId,
-    durableSeq,
-  }
+    durableSeq}
 }
 
 function makeQuarantineDecision(
@@ -195,9 +184,7 @@ function makeQuarantineDecision(
       reason,
       updateSha256: input.actualUpdateSha256,
       updateBytesLength: input.updateBytesLength,
-      createdAt: input.now,
-    },
-  }
+      createdAt: input.now}}
 }
 
 function isValidQuarantineId(value: string): boolean {

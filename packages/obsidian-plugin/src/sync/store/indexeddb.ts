@@ -1,27 +1,23 @@
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
   type LocalStoreObjectStore,
-  type OutboxPlanItemId,
-  type OutboxRunningLease,
-} from '@kuroflare/core'
+  
+  type OutboxRunningLease} from '@kuroflare/core'
 
 import {
   applyLocalStoreDriverCommit,
   planLocalStoreDriverReadSet,
-  type LocalStoreDriverCommitPlan,
+  
   type LocalStoreDriverReadSet,
   type LocalStoreDriverSnapshot,
-  type LocalStoreDriverWriteOperation,
-} from '../store/driver'
-import { type LocalStoreIndexedDbOpenEffect } from '../store/schema'
-import { type LocalStoreOutboxRecord, type LocalStoreTransactionOperation } from '../store/store'
+  type LocalStoreDriverWriteOperation} from '../store/driver'
+import { type LocalStoreOutboxRecord } from '../store/store'
 import {
   LOCAL_AUTH_METADATA_KEY,
   LOCAL_SETUP_METADATA_KEY,
   planLocalSetupMetadataSnapshot,
   type LocalSetupMetadataPutOperation,
-  type LocalSetupMetadataSnapshotDecision,
-} from '../engine/setup'
+  type LocalSetupMetadataSnapshotDecision} from '../engine/setup'
 
 import type {
   LocalStoreIndexedDbStoreName,
@@ -63,8 +59,7 @@ import type {
   LocalStoreIndexedDbSchemaEvidencePlan,
   SuccessfulLocalStoreIndexedDbTransactionPlan,
   FailedLocalStoreIndexedDbTransactionPlan,
-  LocalStoreIndexedDbTransactionPlan,
-} from '../store/ports'
+  LocalStoreIndexedDbTransactionPlan} from '../store/ports'
 
 export type {
   LocalStoreIndexedDbStoreName,
@@ -106,8 +101,7 @@ export type {
   LocalStoreIndexedDbSchemaEvidencePlan,
   SuccessfulLocalStoreIndexedDbTransactionPlan,
   FailedLocalStoreIndexedDbTransactionPlan,
-  LocalStoreIndexedDbTransactionPlan,
-}
+  LocalStoreIndexedDbTransactionPlan}
 
 /**
  * Converts a local-store driver read set into ordered IndexedDB get operations.
@@ -123,8 +117,7 @@ export function planLocalStoreIndexedDbReads(
       (key): LocalStoreIndexedDbReadOperation => ({
         kind: 'get',
         storeName: 'running-leases',
-        key,
-      }),
+        key}),
     ),
   ]
 }
@@ -141,23 +134,20 @@ export function planLocalStoreIndexedDbWrites(
         kind: 'put',
         storeName: 'outbox',
         key: write.record.id,
-        value: write.record,
-      }
+        value: write.record}
     }
     if (write.kind === 'put-lease-row') {
       return {
         kind: 'put',
         storeName: 'running-leases',
         key: write.lease.itemId,
-        value: write.lease,
-      }
+        value: write.lease}
     }
     return {
       kind: 'delete',
       storeName: 'running-leases',
       key: write.itemId,
-      expectedLease: write.expectedLease,
-    }
+      expectedLease: write.expectedLease}
   })
 }
 
@@ -172,8 +162,7 @@ export function planLocalStoreIndexedDbMetadataWrites(
       kind: 'put',
       storeName: 'metadata',
       key: write.key,
-      value: write.value,
-    }),
+      value: write.value}),
   )
 }
 
@@ -198,8 +187,7 @@ export function createLocalStoreIndexedDbTransactionPort(
     },
     async deleteRunningLease(key) {
       await waitForIndexedDbRequest(stores.runningLeases.delete(key))
-    },
-  }
+    }}
 }
 
 /**
@@ -210,8 +198,7 @@ export function createLocalStoreIndexedDbTransactionPortFromIdbTransaction(
 ): LocalStoreIndexedDbTransactionPort {
   return createLocalStoreIndexedDbTransactionPort({
     outbox: transaction.objectStore('outbox'),
-    runningLeases: transaction.objectStore('running-leases'),
-  })
+    runningLeases: transaction.objectStore('running-leases')})
 }
 
 /**
@@ -226,12 +213,9 @@ export function createLocalStoreIndexedDbDatabasePort(
       return {
         stores: {
           outbox: transaction.objectStore('outbox'),
-          runningLeases: transaction.objectStore('running-leases'),
-        },
-        lifecycle: transaction,
-      }
-    },
-  }
+          runningLeases: transaction.objectStore('running-leases')},
+        lifecycle: transaction}
+    }}
 }
 
 /**
@@ -245,10 +229,8 @@ export function createLocalStoreIndexedDbMetadataDatabasePort(
       const transaction = database.transaction(['metadata'], mode)
       return {
         store: transaction.objectStore('metadata'),
-        lifecycle: transaction,
-      }
-    },
-  }
+        lifecycle: transaction}
+    }}
 }
 
 /**
@@ -284,9 +266,7 @@ export async function readLocalStoreIndexedDbSchemaEvidence<
         dbExists: false,
         currentVersion: undefined,
         presentStores: [],
-        pendingOutboxCount: 0,
-      },
-    }
+        pendingOutboxCount: 0}}
   }
 
   const listedVersion = matches[0]?.version
@@ -311,9 +291,7 @@ export async function readLocalStoreIndexedDbSchemaEvidence<
         dbExists: true,
         currentVersion: database.version,
         presentStores,
-        pendingOutboxCount,
-      },
-    }
+        pendingOutboxCount}}
   } finally {
     database.close()
   }
@@ -334,8 +312,7 @@ export async function applyLocalStoreIndexedDbOpenEffect<
       ok: true,
       kind: 'delete-database',
       dbName: effect.dbName,
-      reason: effect.reason,
-    }
+      reason: effect.reason}
   }
 
   const createdStores: LocalStoreObjectStore[] = []
@@ -357,8 +334,7 @@ export async function applyLocalStoreIndexedDbOpenEffect<
     mode: effect.mode,
     version: effect.version,
     database,
-    createdStores,
-  }
+    createdStores}
 }
 
 /**
@@ -510,8 +486,7 @@ export async function commitLocalStoreIndexedDbTransaction(
   const snapshot = await readLocalStoreIndexedDbSnapshot(input.port, reads)
   const commit = applyLocalStoreDriverCommit({
     operations: input.operations,
-    snapshot,
-  })
+    snapshot})
 
   if (!commit.ok) {
     return {
@@ -522,8 +497,7 @@ export async function commitLocalStoreIndexedDbTransaction(
       readSet,
       reads,
       snapshot,
-      commit,
-    }
+      commit}
   }
 
   const writes = planLocalStoreIndexedDbWrites(commit.writes)
@@ -535,8 +509,7 @@ export async function commitLocalStoreIndexedDbTransaction(
     reads,
     snapshot,
     commit,
-    writes,
-  }
+    writes}
 }
 
 /**
@@ -570,8 +543,7 @@ export async function commitLocalStoreIndexedDbQueuedTransaction(
       const snapshot = localStoreIndexedDbSnapshotFromQueuedReads(queuedReads)
       const commit = applyLocalStoreDriverCommit({
         operations: input.operations,
-        snapshot,
-      })
+        snapshot})
 
       if (!commit.ok) {
         plan = {
@@ -582,8 +554,7 @@ export async function commitLocalStoreIndexedDbQueuedTransaction(
           readSet,
           reads,
           snapshot,
-          commit,
-        }
+          commit}
         return
       }
 
@@ -600,8 +571,7 @@ export async function commitLocalStoreIndexedDbQueuedTransaction(
         reads,
         snapshot,
         commit,
-        writes,
-      }
+        writes}
     }
 
     input.transaction.lifecycle.oncomplete = () => {
@@ -652,8 +622,7 @@ export async function commitLocalStoreIndexedDbDatabaseTransaction(
   const transaction = input.database.openOutboxTransaction()
   return await commitLocalStoreIndexedDbQueuedTransaction({
     operations: input.operations,
-    transaction,
-  })
+    transaction})
 }
 
 /**

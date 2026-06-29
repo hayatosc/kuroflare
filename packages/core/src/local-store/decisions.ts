@@ -1,5 +1,5 @@
 import type { DocId } from '../utils/ids'
-import type { LocalOutboxRepairExportEntry, LocalOutboxRepairExport } from '../local-store/repair'
+import type { LocalOutboxRepairExportEntry } from '../local-store/repair'
 import type {
   LocalStoreObjectStore,
   LocalStoreSchemaDecisionInput,
@@ -11,8 +11,7 @@ import type {
   LocalOutboxRepairImportedYUpdate,
   LocalOutboxRepairImportSkip,
   LocalOutboxRepairResumeInput,
-  LocalOutboxRepairResumeDecision,
-} from './types'
+  LocalOutboxRepairResumeDecision} from './types'
 
 /**
  * Decides how the plugin should handle its local IndexedDB schema before sync starts.
@@ -51,8 +50,7 @@ export function decideLocalStoreSchema(
     return {
       action: 'create',
       version: input.targetVersion,
-      createStores: requiredStores,
-    }
+      createStores: requiredStores}
   }
 
   const currentVersion = input.currentVersion
@@ -70,8 +68,7 @@ export function decideLocalStoreSchema(
       action: 'rebuild',
       reason: 'store-version-too-old',
       targetVersion: input.targetVersion,
-      pendingOutboxCount: 0,
-    }
+      pendingOutboxCount: 0}
   }
 
   const missingStores = missingRequiredStores(input.presentStores, input.requiredStores)
@@ -80,8 +77,7 @@ export function decideLocalStoreSchema(
       action: 'upgrade',
       fromVersion: currentVersion,
       toVersion: input.targetVersion,
-      createStores: missingStores,
-    }
+      createStores: missingStores}
   }
   if (missingStores.length > 0) {
     if (input.pendingOutboxCount > 0) {
@@ -91,8 +87,7 @@ export function decideLocalStoreSchema(
       action: 'rebuild',
       reason: 'missing-required-store',
       targetVersion: input.targetVersion,
-      pendingOutboxCount: 0,
-    }
+      pendingOutboxCount: 0}
   }
 
   return { action: 'open', version: currentVersion }
@@ -133,8 +128,7 @@ export function decideLocalStoreRepair(
         action: 'export-pending-outbox',
         exportName: makeLocalStoreRepairExportName(input.now),
         includeOutbox: true,
-        includeMetadata: true,
-      }
+        includeMetadata: true}
     case 'rebuild-after-export':
       if (input.pendingOutboxCount > 0 && !input.exportCompleted) {
         return { action: 'reject', reason: 'export-required' }
@@ -143,8 +137,7 @@ export function decideLocalStoreRepair(
         action: 'rebuild',
         reason: input.pendingOutboxCount > 0 ? 'outbox-exported' : 'empty-outbox',
         targetVersion: input.targetVersion,
-        clearPendingOutbox: input.pendingOutboxCount > 0,
-      }
+        clearPendingOutbox: input.pendingOutboxCount > 0}
     case 'discard-and-rebuild':
       if (input.pendingOutboxCount > 0 && !input.discardConfirmed) {
         return { action: 'reject', reason: 'discard-confirmation-required' }
@@ -153,8 +146,7 @@ export function decideLocalStoreRepair(
         action: 'rebuild',
         reason: input.pendingOutboxCount > 0 ? 'outbox-discarded' : 'empty-outbox',
         targetVersion: input.targetVersion,
-        clearPendingOutbox: input.pendingOutboxCount > 0,
-      }
+        clearPendingOutbox: input.pendingOutboxCount > 0}
   }
 }
 
@@ -215,8 +207,7 @@ export function planLocalOutboxRepairImport(
       messageId,
       updateSha256,
       updateBytesBase64,
-      createdAt: entry.createdAt,
-    })
+      createdAt: entry.createdAt})
   }
 
   return { action: 'stage-import', imports, skipped }
@@ -258,9 +249,7 @@ export function decideLocalOutboxRepairResume(
     patch: {
       status: 'pending',
       nextAttemptAt: undefined,
-      resumeReason: 'user-confirmed-repair-import',
-    },
-  }
+      resumeReason: 'user-confirmed-repair-import'}}
 }
 
 function missingRequiredStores(

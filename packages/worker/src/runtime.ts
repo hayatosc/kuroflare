@@ -11,7 +11,7 @@ import {
   BlobUploadUrlRequestSchema,
   RevokeDeviceRequestSchema,
   SetupExchangeRequestSchema,
-  DocIdSchema,
+  
   MessageIdSchema,
   Sha256HexSchema,
   YDocIdSchema,
@@ -30,8 +30,7 @@ import {
   type Sha256Hex,
   type SyncRequest,
   type SyncUpdate,
-  type VaultId,
-} from '@kuroflare/core'
+  type VaultId} from '@kuroflare/core'
 import { VaultIdSchema } from '@kuroflare/core'
 import { type Context, Hono } from 'hono'
 import { cors } from 'hono/cors'
@@ -44,14 +43,12 @@ import {
   planBlobHeadHttpResponse,
   planBlobUploadUrlHttpResponse,
   type BlobHeadObjectEvidence,
-  type BlobUploadObjectEvidence,
-} from './http/blob'
+  type BlobUploadObjectEvidence} from './http/blob'
 import {
   decideCheckpointCompact,
   decideCheckpointWrite,
   decideOrphanedCheckpointRecovery,
-  type CheckpointRunStatus,
-} from './checkpoint/checkpoint'
+  type CheckpointRunStatus} from './checkpoint/checkpoint'
 import { planRevokeDeviceHttpResponse } from './http/device'
 import {
   decideDeviceTokenRefresh,
@@ -64,13 +61,11 @@ import {
   type DeviceRefreshTokenEvidence,
   type DeviceRegistryEntry,
   type YClientId,
-  type YClientIdRange,
-} from './devices'
+  type YClientIdRange} from './devices'
 import { decideSchemaMigration } from './db/migrations'
 import {
   buildQuarantinedUpdateDetailResponse,
-  buildQuarantinedUpdateListResponse,
-} from './http/quarantine'
+  buildQuarantinedUpdateListResponse} from './http/quarantine'
 import type { QuarantinedUpdateRecord } from './quarantine'
 import { SCHEMA_MIGRATIONS } from './db/schema'
 import { planSetupExchangeHttpResponse } from './http/setup'
@@ -79,20 +74,17 @@ import {
   chooseSnapshotForRestore,
   makeSnapshotListPrefix,
   makeSnapshotObjectKey,
-  type SnapshotCandidate,
-} from './sync/snapshots'
+  type SnapshotCandidate} from './sync/snapshots'
 import { decideSyncRequest, type SyncRequestDocState } from './sync/request'
 import {
   decideSyncUpdateAppend,
   decideSyncUpdateQuarantine,
   type SyncUpdateDocClock,
-  type SyncUpdateDuplicateEvidence,
-} from './sync/update'
+  type SyncUpdateDuplicateEvidence} from './sync/update'
 import {
   upsertSetupToken,
   getSetupToken,
-  consumeSetupToken,
-} from './db/setupRepo'
+  consumeSetupToken} from './db/setupRepo'
 import {
   getDevice,
   getAllDeviceYClientIds,
@@ -100,8 +92,7 @@ import {
   updateDeviceRevoked,
   getRefreshToken,
   insertRefreshToken,
-  updateRefreshTokenRevoked,
-} from './db/deviceRepo'
+  updateRefreshTokenRevoked} from './db/deviceRepo'
 import {
   insertDoc,
   upsertDocClock,
@@ -117,8 +108,7 @@ import {
   getMessageDedupSeq,
   updateDocSnapshotPointer,
   updateDocCompact,
-  deleteOpLogBelowSeq,
-} from './db/docRepo'
+  deleteOpLogBelowSeq} from './db/docRepo'
 import { readSqlUpdateBytes } from './db/helpers'
 import {
   insertCheckpointRun,
@@ -132,14 +122,12 @@ import {
   getQuarantinedUpdates,
   getQuarantinedUpdateById,
   getQuarantinedUpdateBytes,
-  type QuarantinedUpdateRow,
-} from './db/checkpointRepo'
+  type QuarantinedUpdateRow} from './db/checkpointRepo'
 import {
   createSchemaMigrationsTable,
   getAppliedMigrations,
   insertMigration,
-  applyMigrationStatements,
-} from './db/schemaRepo'
+  applyMigrationStatements} from './db/schemaRepo'
 import { createDb } from './db/db'
 export * from './runtime/types'
 import type { Kysely } from 'kysely'
@@ -147,20 +135,20 @@ import type { Database } from './db/types'
 
 import {
   type WorkerEnv,
-  type DurableObjectNamespaceBinding,
-  type DurableObjectIdBinding,
-  type DurableObjectStubBinding,
+  
+  
+  
   type DurableObjectStateBinding,
-  type DurableObjectStorageBinding,
-  type DurableObjectSqlStorageBinding,
-  type R2BucketBinding,
-  type R2ObjectMetadataBinding,
-  type R2ObjectBodyBinding,
-  type R2ListOptionsBinding,
-  type R2ObjectsBinding,
-  type R2ObjectBinding,
+  
+  
+  
+  
+  
+  
+  
+  
   type RuntimeWebSocket,
-  type RuntimeWebSocketPair,
+  
   type RuntimeWebSocketPairConstructor,
   type SessionState,
   type WebSocketAttachment,
@@ -174,8 +162,7 @@ import {
   PosIntSchema,
   NonNegIntSchema,
   E2eSetupTokenSeedRequestSchema,
-  E2eSnapshotSeedRequestSchema,
-} from './runtime/types'
+  E2eSnapshotSeedRequestSchema} from './runtime/types'
 
 declare const WebSocketPair: RuntimeWebSocketPairConstructor | undefined
 
@@ -238,8 +225,7 @@ export class VaultRoom {
             ok: true,
             vaultId: body.vaultId,
             expiresAt,
-            tokenReadable: (await this.readSetupToken(setupTokenHash)) !== undefined,
-          },
+            tokenReadable: (await this.readSetupToken(setupTokenHash)) !== undefined},
           200,
         )
       })
@@ -297,8 +283,7 @@ export class VaultRoom {
         const tokenDecision = decideSetupTokenConsume({
           token: await this.readSetupToken(setupTokenHash),
           requestedVaultId: body.vaultId,
-          now,
-        })
+          now})
         if (tokenDecision.action === 'reject') {
           return c.json({ error: `setup-token:${tokenDecision.reason}` }, 403)
         }
@@ -310,8 +295,7 @@ export class VaultRoom {
         const setupDecision = decideSetupExchange({
           requestedDeviceId: body.existingDeviceId,
           registry: { existingDevice, usedYClientIds: await this.readUsedYClientIds() },
-          yClientIdRange: Y_CLIENT_ID_RANGE,
-        })
+          yClientIdRange: Y_CLIENT_ID_RANGE})
         if (setupDecision.action === 'reject') {
           return c.json({ error: `setup-exchange:${setupDecision.reason}` }, 403)
         }
@@ -324,8 +308,7 @@ export class VaultRoom {
           deviceId,
           refreshTokenHash,
           now,
-          refreshTokenExpiresAt: now + SETUP_REFRESH_TOKEN_TTL_MS,
-        })
+          refreshTokenExpiresAt: now + SETUP_REFRESH_TOKEN_TTL_MS})
         if (credentialPlan.action === 'reject') {
           return c.json({ error: `setup-credentials:${credentialPlan.reason}` }, 500)
         }
@@ -337,8 +320,7 @@ export class VaultRoom {
           scope: ['sync:read', 'sync:write', 'blob:read', 'blob:write'],
           iat: now,
           exp: now + SETUP_ACCESS_TOKEN_TTL_MS,
-          tokenVersion: credentialPlan.tokenVersion,
-        }
+          tokenVersion: credentialPlan.tokenVersion}
         const accessToken = await signHs256DeviceToken({ claims, secret })
         const responsePlan = planSetupExchangeHttpResponse({
           credentialPlan,
@@ -349,8 +331,7 @@ export class VaultRoom {
           accessTokenIssuedAt: claims.iat,
           accessTokenExpiresAt: claims.exp,
           protocolVersion: CURRENT_PROTOCOL_VERSION,
-          bootstrapMode: (await this.hasAnyPersistedDocs()) ? 'join-existing' : 'new-vault',
-        })
+          bootstrapMode: (await this.hasAnyPersistedDocs()) ? 'join-existing' : 'new-vault'})
         if (responsePlan.action === 'reject') {
           return c.json({ error: `setup-response:${responsePlan.reason}` }, 500)
         }
@@ -395,8 +376,7 @@ export class VaultRoom {
           device,
           refreshToken: await this.readRefreshToken(currentTokenHash),
           previousTokenVersion: body.previousTokenVersion,
-          now,
-        })
+          now})
         if (refreshDecision.action === 'reject') {
           return c.json({ error: `auth-refresh:${refreshDecision.reason}` }, 403)
         }
@@ -409,8 +389,7 @@ export class VaultRoom {
           nextTokenHash: nextRefreshTokenHash,
           deviceId: body.deviceId,
           now,
-          nextExpiresAt: now + REFRESH_TOKEN_TTL_MS,
-        })
+          nextExpiresAt: now + REFRESH_TOKEN_TTL_MS})
         if (rotationPlan.action === 'reject') {
           return c.json({ error: `auth-refresh-rotation:${rotationPlan.reason}` }, 500)
         }
@@ -422,8 +401,7 @@ export class VaultRoom {
           scope: ['sync:read', 'sync:write', 'blob:read', 'blob:write'],
           iat: now,
           exp: now + REFRESH_ACCESS_TOKEN_TTL_MS,
-          tokenVersion: refreshDecision.tokenVersion,
-        }
+          tokenVersion: refreshDecision.tokenVersion}
         const accessToken = await signHs256DeviceToken({ claims, secret })
         const responsePlan = planDeviceTokenRefreshHttpResponse({
           refreshDecision,
@@ -433,8 +411,7 @@ export class VaultRoom {
           refreshToken: nextRefreshToken,
           accessTokenIssuedAt: claims.iat,
           accessTokenExpiresAt: claims.exp,
-          protocolVersion: CURRENT_PROTOCOL_VERSION,
-        })
+          protocolVersion: CURRENT_PROTOCOL_VERSION})
         if (responsePlan.action === 'reject') {
           return c.json({ error: `auth-refresh-response:${responsePlan.reason}` }, 500)
         }
@@ -569,8 +546,7 @@ export class VaultRoom {
           object,
           now,
           policy: { multipartThresholdBytes: BLOB_MULTIPART_THRESHOLD_BYTES },
-          singlePut: { kind: 'single-put', url: uploadUrl.toString(), headers: {}, expiresAt },
-        })
+          singlePut: { kind: 'single-put', url: uploadUrl.toString(), headers: {}, expiresAt }})
         if (plan.action === 'reject') {
           const status = plan.reason === 'multipart-required' ? 413 : 400
           return c.json({ error: `blob-upload-url:${plan.reason}` }, status)
@@ -599,9 +575,7 @@ export class VaultRoom {
           headers: {
             'content-type': 'application/octet-stream',
             'content-length': String(bytes.byteLength),
-            'x-content-sha256': hash,
-          },
-        })
+            'x-content-sha256': hash}})
       })
       .put('/blobs/:hash', async (c) => {
         const hash = c.req.param('hash')
@@ -655,9 +629,7 @@ export class VaultRoom {
           headers: {
             'content-type': 'application/json',
             'content-length': String(bytes.byteLength),
-            'x-content-sha256': hash,
-          },
-        })
+            'x-content-sha256': hash}})
       })
       .put('/blob-manifests/*', async (c) => {
         const match = /^\/blob-manifests\/([^/]+)\.json$/.exec(c.req.path)
@@ -738,8 +710,7 @@ export class VaultRoom {
       }
       const result = await this.handleSyncUpdate(webSocket, {
         ...frame.header,
-        update: encodeBase64(frame.payload),
-      })
+        update: encodeBase64(frame.payload)})
       if (result.action === 'broadcast') {
         this.broadcast(
           webSocket,
@@ -828,8 +799,7 @@ export class VaultRoom {
       latestSeq: clock.latestSeq,
       latestSnapshotSeq: snapshotSeq,
       snapshotKey,
-      now,
-    })
+      now})
     if (decision.action === 'skip') {
       return { action: 'skipped', reason: decision.reason }
     }
@@ -862,8 +832,7 @@ export class VaultRoom {
       status: 'pointer-updated',
       upperSeq: decision.upperSeq,
       latestSnapshotSeq: decision.upperSeq,
-      now,
-    })
+      now})
     if (compact.action === 'compact') {
       await deleteOpLogBelowSeq(db, docKey(docId), compact.compactedSeq)
       await updateDocCompact(
@@ -881,8 +850,7 @@ export class VaultRoom {
       action: 'checkpointed',
       snapshotKey: decision.snapshotKey,
       upperSeq: decision.upperSeq,
-      compactedSeq: compact.action === 'compact' ? compact.compactedSeq : undefined,
-    }
+      compactedSeq: compact.action === 'compact' ? compact.compactedSeq : undefined}
   }
 
   private async recoverOrphanedCheckpointRuns(limit: number, now = Date.now()): Promise<void> {
@@ -908,10 +876,8 @@ export class VaultRoom {
       run,
       doc: {
         latestSnapshotSeq: doc.latestSnapshotSeq,
-        pointerVerified,
-      },
-      snapshot,
-    })
+        pointerVerified},
+      snapshot})
 
     switch (decision.action) {
       case 'ignore-terminal':
@@ -958,8 +924,7 @@ export class VaultRoom {
     const registry = decideClientHelloRegistry({
       device,
       claimedYClientId: hello.yClientId,
-      tokenVersion,
-    })
+      tokenVersion})
     if (registry.action === 'reject') {
       webSocket.close(1008, `hello-reject:${registry.reason}`)
       return
@@ -972,8 +937,7 @@ export class VaultRoom {
     this.rememberSession(webSocket, {
       vaultId: hello.vaultId,
       deviceId: hello.deviceId,
-      yClientId: hello.yClientId,
-    })
+      yClientId: hello.yClientId})
     await this.persistVaultId(hello.vaultId)
     webSocket.send(
       JSON.stringify({
@@ -981,8 +945,7 @@ export class VaultRoom {
         protocolVersion: CURRENT_PROTOCOL_VERSION,
         vaultId: hello.vaultId,
         deviceId: hello.deviceId,
-        yClientId: hello.yClientId,
-      }),
+        yClientId: hello.yClientId}),
     )
   }
 
@@ -1017,8 +980,7 @@ export class VaultRoom {
       expectedVaultId: hello.vaultId,
       device,
       requiredScopes: ['sync:read', 'sync:write'],
-      now: Date.now(),
-    })
+      now: Date.now()})
     if (admission.action === 'reject') {
       webSocket.close(1008, `auth-reject:${admission.reason}`)
       return undefined
@@ -1055,8 +1017,7 @@ export class VaultRoom {
       expectedVaultId: claims.aud,
       device: actorDevice,
       requiredScopes,
-      now: Date.now(),
-    })
+      now: Date.now()})
     if (admission.action === 'reject') {
       return c.json({ error: `auth-reject:${admission.reason}` }, 403)
     }
@@ -1128,16 +1089,14 @@ export class VaultRoom {
             persisted.horizonStateVector,
           ),
           diffSourceAvailable: true,
-          diffUpdateBase64: isEmptyYjsUpdate(diffUpdate) ? undefined : encodeBase64(diffUpdate),
-        }
+          diffUpdateBase64: isEmptyYjsUpdate(diffUpdate) ? undefined : encodeBase64(diffUpdate)}
       }
     }
 
     const decision = decideSyncRequest({
       request,
       doc: docState,
-      serverProtocolVersion: CURRENT_PROTOCOL_VERSION,
-    })
+      serverProtocolVersion: CURRENT_PROTOCOL_VERSION})
 
     if (decision.action === 'send-update') {
       webSocket.send(JSON.stringify(decision.response))
@@ -1209,8 +1168,7 @@ export class VaultRoom {
         updateSha256,
         yClientId: session.yClientId,
         now,
-        largeUpdateThresholdBytes: LARGE_UPDATE_THRESHOLD_BYTES,
-      })
+        largeUpdateThresholdBytes: LARGE_UPDATE_THRESHOLD_BYTES})
       if (duplicateDecision.action === 'ack-duplicate') {
         webSocket.send(JSON.stringify(duplicateDecision.ack))
         return { action: 'stop' }
@@ -1239,8 +1197,7 @@ export class VaultRoom {
       ...(update.updateSha256 === undefined ? {} : { expectedUpdateSha256: update.updateSha256 }),
       yjsApplySucceeded,
       metaSchemaValid,
-      now,
-    })
+      now})
 
     if (quarantine.action === 'reject') {
       webSocket.close(1011, `quarantine-reject:${quarantine.reason}`)
@@ -1259,8 +1216,7 @@ export class VaultRoom {
       updateSha256: quarantine.updateSha256,
       yClientId: session.yClientId,
       now,
-      largeUpdateThresholdBytes: LARGE_UPDATE_THRESHOLD_BYTES,
-    })
+      largeUpdateThresholdBytes: LARGE_UPDATE_THRESHOLD_BYTES})
 
     if (append.action === 'reject') {
       webSocket.close(1011, `append-reject:${append.reason}`)
@@ -1275,8 +1231,7 @@ export class VaultRoom {
     if (append.action === 'snapshot-escape') {
       await this.persistDocClock(update.docId, {
         latestSeq: append.docPatch.latestSeq,
-        updatedAt: append.docPatch.updatedAt,
-      })
+        updatedAt: append.docPatch.updatedAt})
       await this.persistDuplicate(update.docId, update.messageId, append.seq, now)
       webSocket.send(JSON.stringify(append.ack))
       webSocket.send(JSON.stringify(append.boundary))
@@ -1289,8 +1244,7 @@ export class VaultRoom {
       append.opLogAppend.seq,
       {
         latestSeq: append.docPatch.latestSeq,
-        updatedAt: append.docPatch.updatedAt,
-      },
+        updatedAt: append.docPatch.updatedAt},
       session.yClientId,
       quarantine.updateSha256,
       now,
@@ -1475,14 +1429,12 @@ export class VaultRoom {
         : {
             key: pointer.latestSnapshotKey,
             upperSeq: pointer.latestSnapshotSeq,
-            healthy: true,
-          },
+            healthy: true},
       listed,
     )
     return {
       latestSnapshotKey: choice.key,
-      latestSnapshotSeq: choice.upperSeq,
-    }
+      latestSnapshotSeq: choice.upperSeq}
   }
 
   private async readSnapshotPointer(docId: DocId): Promise<RuntimeSnapshotPointerRecord | undefined> {
@@ -1553,8 +1505,7 @@ export class VaultRoom {
           docId,
           status: row.status,
           upperSeq: row.upperSeq,
-          snapshotKey: row.snapshotKey ?? undefined,
-        })
+          snapshotKey: row.snapshotKey ?? undefined})
       }
     }
     return runs
@@ -1573,8 +1524,7 @@ export class VaultRoom {
       latestSnapshotSeq: v.is(NonNegIntSchema, latestSnapshotSeq)
         ? latestSnapshotSeq
         : 0,
-      latestSnapshotKey: typeof latestSnapshotKey === 'string' ? latestSnapshotKey : undefined,
-    }
+      latestSnapshotKey: typeof latestSnapshotKey === 'string' ? latestSnapshotKey : undefined}
   }
 
   private async readCheckpointSnapshotEvidence(
@@ -1763,8 +1713,7 @@ export class VaultRoom {
     const decision = decideSchemaMigration({
       appliedVersions,
       availableMigrations: SCHEMA_MIGRATIONS,
-      failedMigration: undefined,
-    })
+      failedMigration: undefined})
     if (decision.action === 'apply-migrations') {
       const now = Date.now()
       for (const migration of decision.migrations) {
@@ -1820,8 +1769,7 @@ export class VaultRoom {
       vaultId: row.vaultId,
       issuedAt: row.issuedAt,
       expiresAt: row.expiresAt,
-      consumedAt,
-    }
+      consumedAt}
   }
 
   private async readUsedYClientIds(): Promise<ReadonlySet<YClientId>> {
@@ -1859,8 +1807,7 @@ export class VaultRoom {
       tokenHashMatches: true,
       issuedAt: row.issuedAt,
       expiresAt: row.expiresAt,
-      revokedAt,
-    }
+      revokedAt}
   }
 
   private async readQuarantinedUpdates(): Promise<readonly QuarantinedUpdateRecord[]> {
@@ -1981,8 +1928,7 @@ export class VaultRoom {
     this.socketTokens.set(webSocket, authToken)
     this.writeSocketAttachment(webSocket, {
       ...this.readSocketAttachment(webSocket),
-      ...(authToken === undefined ? {} : { authToken }),
-    })
+      ...(authToken === undefined ? {} : { authToken })})
   }
 
   private readSocketToken(webSocket: RuntimeWebSocket): string | undefined {
@@ -2003,8 +1949,7 @@ export class VaultRoom {
     this.sessionStates.set(webSocket, session)
     this.writeSocketAttachment(webSocket, {
       ...this.readSocketAttachment(webSocket),
-      session,
-    })
+      session})
   }
 
   private readSession(webSocket: RuntimeWebSocket): SessionState | undefined {
@@ -2118,8 +2063,7 @@ workerApp.use(
   cors({
     origin: '*',
     allowHeaders: ['Authorization', 'Content-Type', 'x-kuroflare-e2e-secret'],
-    allowMethods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT'],
-  }),
+    allowMethods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT']}),
 )
 
 workerApp.post(E2E_SETUP_TOKEN_PATH, async (c) => {
@@ -2361,8 +2305,7 @@ function quarantinedUpdateRecordFromSqlRow(
     reason: row.reason,
     updateSha256: row.updateSha256,
     updateBytesLength: updateBytes.byteLength,
-    createdAt: row.createdAt,
-  }
+    createdAt: row.createdAt}
 }
 
 function isQuarantineReason(value: unknown): value is QuarantinedUpdateRecord['reason'] {

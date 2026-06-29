@@ -3253,5 +3253,6 @@ function restoreResponse(previous: unknown): void {
   const globalWithResponse = globalThis as typeof globalThis & {
     Response: typeof Response
   }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   globalWithResponse.Response = previous as typeof Response
 }

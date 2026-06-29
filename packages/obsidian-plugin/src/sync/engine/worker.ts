@@ -1,38 +1,35 @@
 export * from '../engine/worker.types'
 
 import {
-  type OutboxRunningLease,
+  
   type OutboxRunError,
-  type OutboxSchedulerStart,
-  type LastMaterializedRecord,
+  
+  
   type BlobManifest,
-  type DeviceId,
-  type DocId,
-  type MessageId,
-  type QuarantinedUpdateEntry,
-  type VaultId,
-  type Ack,
-  type NeedFullSnapshot,
-  type OutboxFailureTransition,
-} from '@kuroflare/core'
+  
+  
+  
+  
+  
+  
+  
+  type OutboxFailureTransition} from '@kuroflare/core'
 
 import {
-  type LocalStoreDriverCommitPlan,
-  type LocalStoreDriverReadSet,
-  type LocalStoreDriverWriteOperation,
+  
+  
+  
   applyLocalStoreDriverCommit,
-  planLocalStoreDriverReadSet,
-} from '../store/driver'
+  planLocalStoreDriverReadSet} from '../store/driver'
 import {
-  type LocalStoreIndexedDbReadOperation,
-  type LocalStoreIndexedDbWriteOperation,
+  
+  
   planLocalStoreIndexedDbReads,
-  planLocalStoreIndexedDbWrites,
-} from '../store/indexeddb'
+  planLocalStoreIndexedDbWrites} from '../store/indexeddb'
 import {
   type LocalStoreOutboxRecord,
-  type LocalStoreTransactionApplyPlan,
-  type LocalStoreTransactionOperation,
+  
+  
   planLocalStoreFailureCompletionTransaction,
   planLocalStoreAckCompletionTransaction,
   planLocalStoreLeaseAcquireTransaction,
@@ -40,44 +37,42 @@ import {
   planLocalStoreFullSnapshotReleaseTransaction,
   planLocalStoreOutboxSchedulerTransaction,
   planLocalStoreQuarantinePauseTransaction,
-  planLocalStoreSuccessCompletionTransaction,
-} from '../store/store'
+  planLocalStoreSuccessCompletionTransaction} from '../store/store'
 import {
-  type OutboundQueueAckCompletionPlan,
-  type OutboundQueueFailureCompletionPlan,
-  type OutboundQueueFullSnapshotReleasePlan,
-  type OutboundQueueLeaseAcquirePlan,
-  type OutboundQueueLeaseRenewPlan,
-  type OutboundQueueQuarantinePausePlan,
-  type OutboundQueueSuccessCompletionPlan,
-  type OutboundQueueTickPlan,
+  
+  
+  
+  
+  
+  
+  
+  
   planOutboundQueueLeaseAcquire,
   planOutboundQueueLeaseRenew,
   planOutboundQueueAckCompletion,
   planOutboundQueueFullSnapshotRelease,
   planOutboundQueueFailureCompletion,
   planOutboundQueueQuarantinePause,
-  planOutboundQueueSuccessCompletion,
-} from '../engine/queue'
+  planOutboundQueueSuccessCompletion} from '../engine/queue'
 
 import {
-  type SuccessfulLocalStoreDriverCommitPlan,
-  type FailedLocalStoreDriverCommitPlan,
-  type OutboxWorkerIndexedDbReadOperation,
-  type OutboxWorkerIndexedDbWriteOperation,
+  
+  
+  
+  
   type OutboxWorkerTickInput,
   type OutboxWorkerLeaseAttempt,
   type OutboxWorkerStartEffect,
-  type OutboxWorkerHttpRequestPlan,
-  type OutboxWorkerBlobCacheReadPlan,
-  type OutboxWorkerBlobCacheWritePlan,
+  
+  
+  
   type OutboxWorkerMaterializeChunkReadPlan,
-  type OutboxWorkerMaterializeSideEffectPlan,
-  type OutboxWorkerBlobPutSideEffectPlan,
-  type OutboxWorkerBlobGetSideEffectPlan,
-  type OutboxWorkerManifestPutSideEffectPlan,
-  type OutboxWorkerMetaRefUpdateSideEffectPlan,
-  type OutboxWorkerSideEffectRejectPlan,
+  
+  
+  
+  
+  
+  
   type OutboxWorkerSideEffectPlanInput,
   type OutboxWorkerSideEffectPlan,
   type OutboxWorkerSideEffectResultEvidence,
@@ -93,8 +88,7 @@ import {
   type OutboxWorkerCompletionPlan,
   type OutboxWorkerLeaseRenewalPlan,
   type OutboxWorkerFullSnapshotReleasePlan,
-  type OutboxWorkerIndexedDbWriteTransaction,
-} from '../engine/worker.types'
+  type OutboxWorkerIndexedDbWriteTransaction} from '../engine/worker.types'
 
 /**
  * Splits a successful worker tick into ordered concrete IndexedDB write transactions.
@@ -111,8 +105,7 @@ export function planOutboxWorkerTickIndexedDbWriteTransactions(
       (attempt): OutboxWorkerIndexedDbWriteTransaction => ({
         kind: 'lease-acquire',
         start: attempt.start,
-        writes: attempt.indexedDbWrites,
-      }),
+        writes: attempt.indexedDbWrites}),
     ),
   ]
 }
@@ -171,8 +164,7 @@ export function planOutboxWorkerTick(input: OutboxWorkerTickInput): OutboxWorker
       ok: false,
       phase: 'scheduler',
       reason: input.tick.reason,
-      tick: input.tick,
-    }
+      tick: input.tick}
   }
 
   const schedulerOperations = planLocalStoreOutboxSchedulerTransaction(input.tick)
@@ -182,9 +174,7 @@ export function planOutboxWorkerTick(input: OutboxWorkerTickInput): OutboxWorker
     operations: schedulerOperations,
     snapshot: {
       outboxRecords: input.currentOutboxRecords,
-      leaseRows: input.currentLeaseRows,
-    },
-  })
+      leaseRows: input.currentLeaseRows}})
   if (!schedulerDriverCommit.ok) {
     return {
       ok: false,
@@ -193,8 +183,7 @@ export function planOutboxWorkerTick(input: OutboxWorkerTickInput): OutboxWorker
       schedulerReadSet,
       schedulerIndexedDbReads,
       schedulerDriverCommit,
-      apply: schedulerDriverCommit.apply,
-    }
+      apply: schedulerDriverCommit.apply}
   }
 
   const schedulerApply = schedulerDriverCommit.apply
@@ -211,15 +200,13 @@ export function planOutboxWorkerTick(input: OutboxWorkerTickInput): OutboxWorker
       ownerId: input.ownerId,
       now: input.now,
       leaseDurationMs: input.leaseDurationMs,
-      existingLease,
-    })
+      existingLease})
     if (!leaseAcquire.ok) {
       leaseAttempts.push({
         ok: false,
         start,
         reason: leaseAcquire.reason,
-        leaseAcquire,
-      })
+        leaseAcquire})
       continue
     }
 
@@ -230,9 +217,7 @@ export function planOutboxWorkerTick(input: OutboxWorkerTickInput): OutboxWorker
       operations,
       snapshot: {
         outboxRecords: nextOutboxRecords,
-        leaseRows: nextLeaseRows,
-      },
-    })
+        leaseRows: nextLeaseRows}})
     if (!driverCommit.ok) {
       leaseAttempts.push({
         ok: false,
@@ -240,8 +225,7 @@ export function planOutboxWorkerTick(input: OutboxWorkerTickInput): OutboxWorker
         reason: driverCommit.reason,
         readSet,
         driverCommit,
-        apply: driverCommit.apply,
-      })
+        apply: driverCommit.apply})
       continue
     }
 
@@ -259,13 +243,11 @@ export function planOutboxWorkerTick(input: OutboxWorkerTickInput): OutboxWorker
       indexedDbReads,
       indexedDbWrites: planLocalStoreIndexedDbWrites(driverCommit.writes),
       driverCommit,
-      apply,
-    })
+      apply})
     starts.push({
       kind: 'start-side-effect',
       start,
-      lease: leaseAcquire.write.nextLease,
-    })
+      lease: leaseAcquire.write.nextLease})
   }
 
   return {
@@ -281,8 +263,7 @@ export function planOutboxWorkerTick(input: OutboxWorkerTickInput): OutboxWorker
     starts,
     nextOutboxRecords,
     nextLeaseRows,
-    authRefresh: input.tick.authRefresh,
-  }
+    authRefresh: input.tick.authRefresh}
 }
 
 /**
@@ -324,8 +305,7 @@ export function planOutboxWorkerSideEffect(
 
   const headers = {
     authorization: `Bearer ${input.accessToken}`,
-    'content-type': 'application/json',
-  }
+    'content-type': 'application/json'}
   if (record.kind === 'manifest-put') {
     return planOutboxWorkerManifestPutSideEffect(input.effect, record, endpoint, headers)
   }
@@ -360,19 +340,15 @@ export function planOutboxWorkerSideEffect(
       blob: {
         sha256: record.blobSha256,
         size: record.blobSize,
-        localCacheKey: record.localCacheKey,
-      },
+        localCacheKey: record.localCacheKey},
       downloadRequest: {
         method: 'GET',
         url: new URL(`/blobs/${record.blobSha256}`, endpoint).toString(),
-        headers: { authorization: `Bearer ${input.accessToken}` },
-      },
+        headers: { authorization: `Bearer ${input.accessToken}` }},
       writeLocalCache: {
         key: record.localCacheKey,
         expectedSha256: record.blobSha256,
-        expectedSize: record.blobSize,
-      },
-    }
+        expectedSize: record.blobSize}}
   }
 
   const headUrl = new URL('/blobs/head', endpoint).toString()
@@ -385,32 +361,26 @@ export function planOutboxWorkerSideEffect(
     blob: {
       sha256: record.blobSha256,
       size: record.blobSize,
-      localCacheKey: record.localCacheKey,
-    },
+      localCacheKey: record.localCacheKey},
     readLocalCache: {
       key: record.localCacheKey,
       expectedSha256: record.blobSha256,
-      expectedSize: record.blobSize,
-    },
+      expectedSize: record.blobSize},
     headRequest: {
       method: 'POST',
       url: headUrl,
       headers,
-      bodyJson: { hashes: [record.blobSha256] },
-    },
+      bodyJson: { hashes: [record.blobSha256] }},
     uploadUrlRequest: {
       method: 'POST',
       url: uploadUrl,
       headers,
-      bodyJson: { sha256: record.blobSha256, size: record.blobSize },
-    },
+      bodyJson: { sha256: record.blobSha256, size: record.blobSize }},
     uploadPut: {
       method: 'PUT',
       urlSource: 'upload-url-response',
       authorization: 'device-access-token',
-      bodySource: 'local-cache',
-    },
-  }
+      bodySource: 'local-cache'}}
 }
 
 /**
@@ -429,15 +399,13 @@ export function planOutboxWorkerLeaseRenewal(
     ownerId: input.ownerId,
     now: input.now,
     leaseDurationMs: input.leaseDurationMs,
-    existingLease,
-  })
+    existingLease})
   if (!renewal.ok) {
     return {
       ok: false,
       phase: 'renewal',
       reason: renewal.reason,
-      renewal,
-    }
+      renewal}
   }
 
   const operations = planLocalStoreLeaseRenewTransaction(renewal)
@@ -447,9 +415,7 @@ export function planOutboxWorkerLeaseRenewal(
     operations,
     snapshot: {
       outboxRecords: input.currentOutboxRecords,
-      leaseRows: input.currentLeaseRows,
-    },
-  })
+      leaseRows: input.currentLeaseRows}})
   if (!driverCommit.ok) {
     return {
       ok: false,
@@ -458,8 +424,7 @@ export function planOutboxWorkerLeaseRenewal(
       readSet,
       indexedDbReads,
       driverCommit,
-      apply: driverCommit.apply,
-    }
+      apply: driverCommit.apply}
   }
 
   const apply = driverCommit.apply
@@ -474,8 +439,7 @@ export function planOutboxWorkerLeaseRenewal(
     apply,
     nextOutboxRecords: driverCommit.snapshot.outboxRecords,
     nextLeaseRows: driverCommit.snapshot.leaseRows,
-    renewal,
-  }
+    renewal}
 }
 
 /**
@@ -490,15 +454,13 @@ export function planOutboxWorkerFullSnapshotRelease(
   const release = planOutboundQueueFullSnapshotRelease({
     appliedDocId: input.appliedDocId,
     snapshotSeq: input.snapshotSeq,
-    items: input.currentOutboxRecords,
-  })
+    items: input.currentOutboxRecords})
   if (!release.ok) {
     return {
       ok: false,
       phase: 'release',
       reason: release.reason,
-      release,
-    }
+      release}
   }
 
   const operations = planLocalStoreFullSnapshotReleaseTransaction(release)
@@ -508,9 +470,7 @@ export function planOutboxWorkerFullSnapshotRelease(
     operations,
     snapshot: {
       outboxRecords: input.currentOutboxRecords,
-      leaseRows: input.currentLeaseRows,
-    },
-  })
+      leaseRows: input.currentLeaseRows}})
   if (!driverCommit.ok) {
     return {
       ok: false,
@@ -519,8 +479,7 @@ export function planOutboxWorkerFullSnapshotRelease(
       readSet,
       indexedDbReads,
       driverCommit,
-      apply: driverCommit.apply,
-    }
+      apply: driverCommit.apply}
   }
 
   const apply = driverCommit.apply
@@ -535,8 +494,7 @@ export function planOutboxWorkerFullSnapshotRelease(
     apply,
     nextOutboxRecords: driverCommit.snapshot.outboxRecords,
     nextLeaseRows: driverCommit.snapshot.leaseRows,
-    release,
-  }
+    release}
 }
 
 function planOutboxWorkerManifestPutSideEffect(
@@ -571,9 +529,7 @@ function planOutboxWorkerManifestPutSideEffect(
       url: new URL(`/blob-manifests/${record.blobManifestHash}.json`, endpoint).toString(),
       headers,
       bodyJson: record.blobManifest,
-      bodySource: 'canonical-blob-manifest-json',
-    },
-  }
+      bodySource: 'canonical-blob-manifest-json'}}
 }
 
 function planOutboxWorkerMetaRefUpdateSideEffect(
@@ -613,16 +569,13 @@ function planOutboxWorkerMetaRefUpdateSideEffect(
     fileId: record.fileId,
     binaryRef: {
       blobManifestHash: record.blobManifestHash,
-      blobChunks: record.blobManifest.chunks.map((chunk) => chunk.sha256),
-    },
+      blobChunks: record.blobManifest.chunks.map((chunk) => chunk.sha256)},
     sendSyncUpdate: {
       transport: 'active-sync-websocket',
       docId: record.docId,
       messageId: record.messageId,
       updateSha256: record.updateSha256,
-      updateBytesBase64: record.updateBytesBase64,
-    },
-  }
+      updateBytesBase64: record.updateBytesBase64}}
 }
 
 function planOutboxWorkerMaterializeSideEffect(
@@ -677,8 +630,7 @@ function planOutboxWorkerMaterializeSideEffect(
     readChunks.push({
       sha256: chunk.sha256,
       key: cached.localCacheKey,
-      expectedSize: chunk.size,
-    })
+      expectedSize: chunk.size})
   }
 
   return {
@@ -693,17 +645,13 @@ function planOutboxWorkerMaterializeSideEffect(
     readChunks,
     assemble: {
       expectedContentSha256: record.expectedHash,
-      expectedSize: record.blobManifest.size,
-    },
+      expectedSize: record.blobManifest.size},
     diskCas: {
       path: record.targetPath,
-      lastMaterialized: record.lastMaterialized,
-    },
+      lastMaterialized: record.lastMaterialized},
     writeVaultFile: {
       path: record.targetPath,
-      bodySource: 'assembled-blob',
-    },
-  }
+      bodySource: 'assembled-blob'}}
 }
 
 /**
@@ -721,8 +669,7 @@ export function classifyOutboxWorkerSideEffectCompletionEvidence(
       itemId: input.itemId,
       kind: input.kind,
       retryCount: input.retryCount,
-      error: outboxRunErrorFromSideEffectResult(input.result),
-    }
+      error: outboxRunErrorFromSideEffectResult(input.result)}
   }
 
   if (input.kind === 'y-update' || input.kind === 'meta-ref-update') {
@@ -731,16 +678,14 @@ export function classifyOutboxWorkerSideEffectCompletionEvidence(
       itemId: input.itemId,
       kind: input.kind,
       retryCount: input.retryCount,
-      error: { kind: 'invalid-payload' },
-    }
+      error: { kind: 'invalid-payload' }}
   }
 
   return {
     ok: true,
     itemId: input.itemId,
     kind: input.kind,
-    status: input.status,
-  }
+    status: input.status}
 }
 
 function outboxRunErrorFromSideEffectResult(
@@ -775,8 +720,7 @@ function outboxRunErrorFromHttpStatus(
     return outboxApiRunError({
       retryable: true,
       retryAfterMs: response.retryAfterMs,
-      code: response.code,
-    })
+      code: response.code})
   }
   return outboxApiRunError({ retryable: false, code: response.code })
 }
@@ -788,8 +732,7 @@ function outboxApiRunError(input: {
 }): OutboxRunError {
   const error: { kind: 'api'; retryable: boolean; retryAfterMs?: number; code?: string } = {
     kind: 'api',
-    retryable: input.retryable,
-  }
+    retryable: input.retryable}
   if (input.retryAfterMs !== undefined) {
     error.retryAfterMs = input.retryAfterMs
   }
@@ -821,15 +764,13 @@ export function planOutboxWorkerAckCompletion(
     message: input.message,
     ownerId: input.ownerId,
     now: input.now,
-    existingLease,
-  })
+    existingLease})
   if (!completion.ok) {
     return {
       ok: false,
       phase: 'completion',
       reason: completion.reason,
-      completion,
-    }
+      completion}
   }
 
   const operations = planLocalStoreAckCompletionTransaction(completion)
@@ -839,9 +780,7 @@ export function planOutboxWorkerAckCompletion(
     operations,
     snapshot: {
       outboxRecords: input.currentOutboxRecords,
-      leaseRows: input.currentLeaseRows,
-    },
-  })
+      leaseRows: input.currentLeaseRows}})
   if (!driverCommit.ok) {
     return {
       ok: false,
@@ -850,8 +789,7 @@ export function planOutboxWorkerAckCompletion(
       readSet,
       indexedDbReads,
       driverCommit,
-      apply: driverCommit.apply,
-    }
+      apply: driverCommit.apply}
   }
 
   const apply = driverCommit.apply
@@ -867,8 +805,7 @@ export function planOutboxWorkerAckCompletion(
     apply,
     nextOutboxRecords: driverCommit.snapshot.outboxRecords,
     nextLeaseRows: driverCommit.snapshot.leaseRows,
-    completion,
-  }
+    completion}
 }
 
 /**
@@ -892,15 +829,13 @@ export function planOutboxWorkerQuarantineCompletion(
     quarantine: input.quarantine,
     ownerId: input.ownerId,
     now: input.now,
-    existingLease,
-  })
+    existingLease})
   if (!completion.ok) {
     return {
       ok: false,
       phase: 'completion',
       reason: completion.reason,
-      completion,
-    }
+      completion}
   }
 
   const operations = planLocalStoreQuarantinePauseTransaction(completion)
@@ -910,9 +845,7 @@ export function planOutboxWorkerQuarantineCompletion(
     operations,
     snapshot: {
       outboxRecords: input.currentOutboxRecords,
-      leaseRows: input.currentLeaseRows,
-    },
-  })
+      leaseRows: input.currentLeaseRows}})
   if (!driverCommit.ok) {
     return {
       ok: false,
@@ -921,8 +854,7 @@ export function planOutboxWorkerQuarantineCompletion(
       readSet,
       indexedDbReads,
       driverCommit,
-      apply: driverCommit.apply,
-    }
+      apply: driverCommit.apply}
   }
 
   const apply = driverCommit.apply
@@ -938,8 +870,7 @@ export function planOutboxWorkerQuarantineCompletion(
     apply,
     nextOutboxRecords: driverCommit.snapshot.outboxRecords,
     nextLeaseRows: driverCommit.snapshot.leaseRows,
-    completion,
-  }
+    completion}
 }
 
 /**
@@ -958,15 +889,13 @@ export function planOutboxWorkerSuccessCompletion(
     status: input.status,
     ownerId: input.ownerId,
     now: input.now,
-    existingLease,
-  })
+    existingLease})
   if (!completion.ok) {
     return {
       ok: false,
       phase: 'completion',
       reason: completion.reason,
-      completion,
-    }
+      completion}
   }
 
   const operations = planLocalStoreSuccessCompletionTransaction(completion)
@@ -976,9 +905,7 @@ export function planOutboxWorkerSuccessCompletion(
     operations,
     snapshot: {
       outboxRecords: input.currentOutboxRecords,
-      leaseRows: input.currentLeaseRows,
-    },
-  })
+      leaseRows: input.currentLeaseRows}})
   if (!driverCommit.ok) {
     return {
       ok: false,
@@ -987,8 +914,7 @@ export function planOutboxWorkerSuccessCompletion(
       readSet,
       indexedDbReads,
       driverCommit,
-      apply: driverCommit.apply,
-    }
+      apply: driverCommit.apply}
   }
 
   const apply = driverCommit.apply
@@ -1004,8 +930,7 @@ export function planOutboxWorkerSuccessCompletion(
     apply,
     nextOutboxRecords: driverCommit.snapshot.outboxRecords,
     nextLeaseRows: driverCommit.snapshot.leaseRows,
-    completion,
-  }
+    completion}
 }
 
 /**
@@ -1026,15 +951,13 @@ export function planOutboxWorkerFailureCompletion(
     retryJitterMs: input.retryJitterMs,
     ownerId: input.ownerId,
     now: input.now,
-    existingLease,
-  })
+    existingLease})
   if (!completion.ok) {
     return {
       ok: false,
       phase: 'completion',
       reason: completion.reason,
-      completion,
-    }
+      completion}
   }
 
   const operations = planLocalStoreFailureCompletionTransaction(completion)
@@ -1044,9 +967,7 @@ export function planOutboxWorkerFailureCompletion(
     operations,
     snapshot: {
       outboxRecords: input.currentOutboxRecords,
-      leaseRows: input.currentLeaseRows,
-    },
-  })
+      leaseRows: input.currentLeaseRows}})
   if (!driverCommit.ok) {
     return {
       ok: false,
@@ -1055,8 +976,7 @@ export function planOutboxWorkerFailureCompletion(
       readSet,
       indexedDbReads,
       driverCommit,
-      apply: driverCommit.apply,
-    }
+      apply: driverCommit.apply}
   }
 
   const apply = driverCommit.apply
@@ -1072,8 +992,7 @@ export function planOutboxWorkerFailureCompletion(
     apply,
     nextOutboxRecords: driverCommit.snapshot.outboxRecords,
     nextLeaseRows: driverCommit.snapshot.leaseRows,
-    completion,
-  }
+    completion}
 }
 
 function outboxFailureCompletionAction(

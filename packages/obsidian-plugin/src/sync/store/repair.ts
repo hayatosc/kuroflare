@@ -4,40 +4,32 @@ import {
   decideLocalOutboxRepairResume,
   makeOutboxPlanItemId,
   planLocalOutboxRepairImport,
-  type LocalOutboxRepairImportDecision,
+  
   type LocalOutboxRepairImportedYUpdate,
-  type LocalOutboxRepairImportDurableMessage,
-  type LocalOutboxRepairImportQuarantinedMessage,
-  type LocalOutboxRepairResumeDecision,
-  type OutboxPlanItemId,
-  type LocalStoreObjectStore,
-  type LocalStoreRepairDecision,
-  type LocalStoreRepairRequest,
-  type LocalStoreSchemaDecision,
-} from '@kuroflare/core'
+  
+  
+  
+  
+  
+  
+  
+  type LocalStoreSchemaDecision} from '@kuroflare/core'
 import {
   LOCAL_OUTBOX_REPAIR_EXPORT_FORMAT,
   LOCAL_OUTBOX_REPAIR_EXPORT_VERSION,
   LocalOutboxRepairExportSchema,
   LocalOutboxRepairExportEntrySchema,
-  type DeviceId,
-  type DocId,
-  type FileId,
-  type LocalOutboxRepairExport,
-  type LocalOutboxRepairExportEntry,
-  type LocalOutboxRepairExportItemKind,
-  type LocalOutboxRepairExportItemStatus,
-  type MessageId,
-  type Sha256Hex,
-  type VaultId,
-} from '@kuroflare/core'
+  
+  
+  
+  
+  type LocalOutboxRepairExportEntry} from '@kuroflare/core'
 import * as v from 'valibot'
 
 import {
   LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
   localStoreIndexedDbName,
-  type LocalStoreIndexedDbOpenEffect,
-} from '../store/schema'
+  type LocalStoreIndexedDbOpenEffect} from '../store/schema'
 import { type LocalStoreTransactionOperation } from '../store/store'
 
 import type {
@@ -56,8 +48,7 @@ import type {
   LocalStoreRepairExportOutboxRecord,
   LocalStoreRepairExportMetadataInput,
   LocalStoreRepairExportBuildInput,
-  LocalStoreRepairExportBuildPlan,
-} from '../store/repair.types'
+  LocalStoreRepairExportBuildPlan} from '../store/repair.types'
 
 export type {
   LocalStoreRepairPlanInput,
@@ -75,8 +66,7 @@ export type {
   LocalStoreRepairExportOutboxRecord,
   LocalStoreRepairExportMetadataInput,
   LocalStoreRepairExportBuildInput,
-  LocalStoreRepairExportBuildPlan,
-}
+  LocalStoreRepairExportBuildPlan}
 
 /** Vault-relative directory used for degraded local-store repair exports. */
 export const LOCAL_STORE_REPAIR_EXPORT_DIRECTORY = '.obsidian/kuroflare/repair-exports'
@@ -102,8 +92,7 @@ export function planLocalStoreRepair(input: LocalStoreRepairPlanInput): LocalSto
     exportCompleted: input.exportCompleted,
     discardConfirmed: input.discardConfirmed,
     targetVersion,
-    now: input.now,
-  })
+    now: input.now})
 
   switch (decision.action) {
     case 'export-pending-outbox':
@@ -117,10 +106,8 @@ export function planLocalStoreRepair(input: LocalStoreRepairPlanInput): LocalSto
             kind: 'write-repair-export',
             path: localStoreRepairExportPath(decision.exportName),
             includeOutbox: decision.includeOutbox,
-            includeMetadata: decision.includeMetadata,
-          },
-        ],
-      }
+            includeMetadata: decision.includeMetadata},
+        ]}
     case 'rebuild':
       return {
         ok: true,
@@ -131,33 +118,28 @@ export function planLocalStoreRepair(input: LocalStoreRepairPlanInput): LocalSto
           {
             kind: 'delete-database',
             dbName,
-            reason: repairRebuildDeleteReason(input.schemaDecision),
-          },
+            reason: repairRebuildDeleteReason(input.schemaDecision)},
           {
             kind: 'open-database',
             mode: 'create',
             dbName,
             version: decision.targetVersion,
-            createStores: requiredStores,
-          },
-        ],
-      }
+            createStores: requiredStores},
+        ]}
     case 'keep-degraded':
       return {
         ok: true,
         action: 'keep-degraded',
         dbName,
         decision,
-        effects: [{ kind: 'keep-degraded', reason: decision.reason }],
-      }
+        effects: [{ kind: 'keep-degraded', reason: decision.reason }]}
     case 'reject':
       return {
         ok: false,
         action: 'reject',
         dbName,
         decision,
-        effects: [{ kind: 'reject-repair', reason: decision.reason }],
-      }
+        effects: [{ kind: 'reject-repair', reason: decision.reason }]}
   }
 }
 
@@ -197,8 +179,7 @@ export function buildLocalStoreRepairExport(
           exportedAt: input.exportedAt,
           vaultId: input.vaultId,
           metadata: input.metadata,
-          entries,
-        }
+          entries}
       : {
           format: LOCAL_OUTBOX_REPAIR_EXPORT_FORMAT,
           formatVersion: LOCAL_OUTBOX_REPAIR_EXPORT_VERSION,
@@ -206,8 +187,7 @@ export function buildLocalStoreRepairExport(
           vaultId: input.vaultId,
           deviceId: input.deviceId,
           metadata: input.metadata,
-          entries,
-        }
+          entries}
 
   if (!v.is(LocalOutboxRepairExportSchema, exportFile)) {
     return { ok: false, reason: 'invalid-export-payload' }
@@ -216,8 +196,7 @@ export function buildLocalStoreRepairExport(
   return {
     ok: true,
     exportFile,
-    exportedEntryIds: entries.map((entry) => entry.id),
-  }
+    exportedEntryIds: entries.map((entry) => entry.id)}
 }
 
 /**
@@ -232,16 +211,14 @@ export function planLocalStoreRepairImport(
     deviceId: input.deviceId,
     existingOutboxIds: input.existingOutboxIds,
     durableMessages: input.durableMessages,
-    quarantinedMessages: input.quarantinedMessages,
-  })
+    quarantinedMessages: input.quarantinedMessages})
 
   if (decision.action === 'reject') {
     return {
       ok: false,
       action: 'reject',
       reason: decision.reason,
-      decision,
-    }
+      decision}
   }
 
   const effects: LocalStoreRepairImportStageEffect[] = []
@@ -252,8 +229,7 @@ export function planLocalStoreRepairImport(
         ok: false,
         action: 'reject',
         reason: 'invalid-outbox-item-id',
-        itemId: item.id,
-      }
+        itemId: item.id}
     }
     effects.push({ kind: 'stage-repair-import', record })
   }
@@ -262,8 +238,7 @@ export function planLocalStoreRepairImport(
     ok: true,
     action: 'stage-import',
     decision,
-    effects,
-  }
+    effects}
 }
 
 /**
@@ -283,12 +258,10 @@ export function planLocalStoreRepairImportResume(
       messageId: input.record.messageId,
       updateSha256: input.record.updateSha256,
       updateBytesBase64: input.record.updateBytesBase64,
-      createdAt: input.record.createdAt,
-    },
+      createdAt: input.record.createdAt},
     userConfirmed: input.userConfirmed,
     durableMessages: input.durableMessages,
-    quarantinedMessages: input.quarantinedMessages,
-  })
+    quarantinedMessages: input.quarantinedMessages})
 
   switch (decision.action) {
     case 'resume':
@@ -296,22 +269,19 @@ export function planLocalStoreRepairImportResume(
         ok: true,
         action: 'resume',
         decision,
-        effects: [{ kind: 'resume-repair-import', itemId: input.record.id, patch: decision.patch }],
-      }
+        effects: [{ kind: 'resume-repair-import', itemId: input.record.id, patch: decision.patch }]}
     case 'wait':
       return {
         ok: true,
         action: 'wait',
         decision,
-        effects: [],
-      }
+        effects: []}
     case 'reject':
       return {
         ok: false,
         action: 'reject',
         decision,
-        effects: [],
-      }
+        effects: []}
   }
 }
 
@@ -324,8 +294,7 @@ export function planLocalStoreRepairImportStageTransaction(
   return plan.effects.map(
     (effect): LocalStoreTransactionOperation => ({
       kind: 'put-outbox',
-      put: { record: effect.record },
-    }),
+      put: { record: effect.record }}),
   )
 }
 
@@ -341,9 +310,7 @@ export function planLocalStoreRepairImportResumeTransaction(
       patch: {
         kind: 'repair-import-resume',
         itemId: effect.itemId,
-        patch: effect.patch,
-      },
-    }),
+        patch: effect.patch}}),
   )
 }
 
@@ -386,8 +353,7 @@ function buildLocalStoreRepairExportEntry(
     status: record.status,
     dependsOn: [...record.dependsOn],
     createdAt: record.createdAt,
-    retryCount,
-  }
+    retryCount}
   if (record.docId !== undefined) {
     entry = { ...entry, docId: record.docId }
   }
@@ -441,6 +407,5 @@ function convertImportedYUpdateToOutboxRecord(
     docId: item.docId,
     messageId: item.messageId,
     updateSha256: item.updateSha256,
-    updateBytesBase64: item.updateBytesBase64,
-  }
+    updateBytesBase64: item.updateBytesBase64}
 }

@@ -1,5 +1,5 @@
 import type {
-  LocalOutboxRepairImportedYUpdate,
+  
   LocalOutboxRepairImportDurableMessage,
   LocalOutboxRepairImportQuarantinedMessage,
   LocalOutboxRepairResumeDecision,
@@ -8,8 +8,7 @@ import type {
   LocalStoreObjectStore,
   LocalStoreRepairDecision,
   LocalStoreRepairRequest,
-  LocalStoreSchemaDecision,
-} from '@kuroflare/core'
+  LocalStoreSchemaDecision} from '@kuroflare/core'
 import type {
   DeviceId,
   DocId,
@@ -19,8 +18,7 @@ import type {
   LocalOutboxRepairExportItemStatus,
   MessageId,
   Sha256Hex,
-  VaultId,
-} from '@kuroflare/core'
+  VaultId} from '@kuroflare/core'
 import type { LocalStoreIndexedDbOpenEffect } from '../store/schema'
 
 /** Input for planning a plugin-side degraded local-store repair action. */

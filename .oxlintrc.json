@@ -10,16 +10,11 @@
   "ignorePatterns": ["dist/**", "node_modules/**", "packages/obsidian-plugin/main.js"],
   "overrides": [
     {
-      "files": ["packages/worker/src/runtime.test.ts", "packages/worker/test/e2e/**/*.ts"],
+      "files": ["**/*.test.ts", "**/test/**/*.ts"],
       "rules": {
         "typescript/no-floating-promises": "off",
         "typescript/no-unsafe-type-assertion": "off",
-        "typescript/no-base-to-string": "off"
-      }
-    },
-    {
-      "files": ["packages/worker/src/quarantine-http.test.ts"],
-      "rules": {
+        "typescript/no-base-to-string": "off",
         "typescript/no-non-null-assertion": "off"
       }
     }

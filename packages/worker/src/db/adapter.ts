@@ -22,6 +22,7 @@ class DurableObjectSqlConnection implements DatabaseConnection {
     yield await this.executeQuery<R>(compiledQuery)
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async #rawQuery(compiledQuery: CompiledQuery): Promise<QueryResult<any>> {
     const rows = [...this.sql.exec(compiledQuery.sql, ...compiledQuery.parameters)]
     return { rows }
@@ -76,6 +77,7 @@ export class DurableObjectSqlDialect implements Dialect {
     return new SqliteAdapter()
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   createIntrospector(db: Kysely<any>): SqliteIntrospector {
     return new SqliteIntrospector(db)
   }

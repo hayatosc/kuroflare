@@ -5,35 +5,28 @@ import {
   decideClientAuthRefreshStart,
   decideClientAuthRefreshStaleStartRecovery,
   type ClientAuthMetadata,
-  type ClientAuthMetadataPatchDecision,
-  type ClientAuthRefreshAttemptDecision,
-  type ClientAuthRefreshDecision,
+  
+  
+  
   type ClientAuthRefreshPermanentFailure,
-  type ClientAuthRefreshStartDecision,
-  type ClientAuthRefreshStaleStartRecoveryDecision,
-  type ClientAuthRefreshRetryableFailure,
-  type OutboxAuthRefreshRequestDecision,
-} from '@kuroflare/core'
+  
+  
+  type ClientAuthRefreshRetryableFailure} from '@kuroflare/core'
 import {
   DeviceTokenRefreshResponseSchema,
-  type DeviceTokenClaims,
+  
   type DeviceTokenRefreshRequest,
-  type DeviceTokenRefreshResponse,
-  type DeviceTokenScope,
-  type VaultId,
-} from '@kuroflare/core'
+  type DeviceTokenRefreshResponse} from '@kuroflare/core'
 import * as v from 'valibot'
 
 import {
   commitLocalStoreIndexedDbMetadataTransaction,
   planLocalStoreIndexedDbMetadataWrites,
-  type LocalStoreIndexedDbMetadataDatabasePort,
-} from '../store/indexeddb'
+  type LocalStoreIndexedDbMetadataDatabasePort} from '../store/indexeddb'
 import {
   LOCAL_AUTH_METADATA_KEY,
   type LocalSetupMetadataPutOperation,
-  type LocalSetupSecretWriteEffect,
-} from '../engine/setup'
+  type LocalSetupSecretWriteEffect} from '../engine/setup'
 
 import type {
   AuthRefreshSecretStoragePort,
@@ -55,8 +48,7 @@ import type {
   FailedAuthRefreshMetadataCommitRuntimePlan,
   AuthRefreshRuntimePlan,
   AuthRefreshStartRuntimePlan,
-  AuthRefreshStaleStartRecoveryRuntimePlan,
-} from '../auth/refresh.types'
+  AuthRefreshStaleStartRecoveryRuntimePlan} from '../auth/refresh.types'
 
 export type {
   AuthRefreshSecretStoragePort,
@@ -78,8 +70,7 @@ export type {
   FailedAuthRefreshMetadataCommitRuntimePlan,
   AuthRefreshRuntimePlan,
   AuthRefreshStartRuntimePlan,
-  AuthRefreshStaleStartRecoveryRuntimePlan,
-}
+  AuthRefreshStaleStartRecoveryRuntimePlan}
 
 /**
  * Adapts the concrete IndexedDB metadata transaction runner to the auth refresh runtime port.
@@ -91,8 +82,7 @@ export function createAuthRefreshIndexedDbMetadataPort(
     async commit(write) {
       const writes = planLocalStoreIndexedDbMetadataWrites([write])
       await commitLocalStoreIndexedDbMetadataTransaction({ database, writes })
-    },
-  }
+    }}
 }
 
 /**
@@ -106,14 +96,12 @@ export async function persistAuthRefreshStart(
       ok: false,
       phase: 'request',
       reason: input.request.action,
-      request: input.request,
-    }
+      request: input.request}
   }
 
   const refreshStart = decideClientAuthRefreshStart({
     metadata: input.metadata,
-    requestedAt: input.request.requestedAt,
-  })
+    requestedAt: input.request.requestedAt})
   if (refreshStart.action === 'reject') {
     return { ok: false, phase: 'refresh-start', refreshStart }
   }
@@ -121,8 +109,7 @@ export async function persistAuthRefreshStart(
   const metadataPut: LocalSetupMetadataPutOperation = {
     kind: 'put-metadata-record',
     key: LOCAL_AUTH_METADATA_KEY,
-    value: refreshStart.metadata,
-  }
+    value: refreshStart.metadata}
   try {
     await input.metadataStore.commit(metadataPut)
   } catch (error: unknown) {
@@ -141,8 +128,7 @@ export async function recoverStaleAuthRefreshStart(
   const recovery = decideClientAuthRefreshStaleStartRecovery({
     metadata: input.metadata,
     now: input.now,
-    staleAfterMs: input.staleAfterMs,
-  })
+    staleAfterMs: input.staleAfterMs})
   if (recovery.action !== 'recover') {
     return { ok: false, phase: 'recovery', recovery }
   }
@@ -150,8 +136,7 @@ export async function recoverStaleAuthRefreshStart(
   const metadataPut: LocalSetupMetadataPutOperation = {
     kind: 'put-metadata-record',
     key: LOCAL_AUTH_METADATA_KEY,
-    value: recovery.metadata,
-  }
+    value: recovery.metadata}
   try {
     await input.metadataStore.commit(metadataPut)
   } catch (error: unknown) {
@@ -189,24 +174,21 @@ export async function runAuthRefreshAttempt(
     vaultId: input.vaultId,
     deviceId: input.metadata.deviceId,
     refreshToken: previousSecrets.refreshToken,
-    previousTokenVersion: input.metadata.tokenVersion,
-  }
+    previousTokenVersion: input.metadata.tokenVersion}
   const httpResult = await input.http.refresh(request)
   if (!httpResult.ok) {
     return await persistFailedRefreshAttempt(input, {
       status: 'retryable-or-permanent',
       reason: httpResult.reason,
       retryAfterMs: httpResult.retryAfterMs,
-      phase: 'http',
-    })
+      phase: 'http'})
   }
 
   if (!v.is(DeviceTokenRefreshResponseSchema, httpResult.response)) {
     return await persistFailedRefreshAttempt(input, {
       status: 'permanent',
       reason: 'invalid-refresh-response',
-      phase: 'response',
-    })
+      phase: 'response'})
   }
   const response = httpResult.response
 
@@ -215,8 +197,7 @@ export async function runAuthRefreshAttempt(
     return await persistFailedRefreshAttempt(input, {
       status: 'permanent',
       reason: 'invalid-refresh-response',
-      phase: 'claims',
-    })
+      phase: 'claims'})
   }
 
   const refreshDecision = decideClientAuthRefresh({
@@ -225,30 +206,26 @@ export async function runAuthRefreshAttempt(
     expectedDeviceId: input.metadata.deviceId,
     requiredScopes: input.requiredScopes,
     previousTokenVersion: input.metadata.tokenVersion,
-    now: input.now,
-  })
+    now: input.now})
   if (refreshDecision.action === 'reject') {
     return await persistFailedRefreshAttempt(input, {
       status: 'permanent',
       reason: 'invalid-refresh-response',
       phase: 'refresh-decision',
-      reasonDetail: refreshDecision.reason,
-    })
+      reasonDetail: refreshDecision.reason})
   }
 
   const attemptDecision = decideClientAuthRefreshAttempt({
     now: input.now,
     retryCount: input.metadata.retryCount,
-    result: { status: 'accepted', patch: refreshDecision.patch },
-  })
+    result: { status: 'accepted', patch: refreshDecision.patch }})
   if (attemptDecision.action !== 'complete') {
     return { ok: false, phase: 'attempt-decision', attemptDecision }
   }
 
   const metadataPatch = applyClientAuthMetadataRefreshAttemptPatch({
     metadata: input.metadata,
-    decision: attemptDecision,
-  })
+    decision: attemptDecision})
   if (metadataPatch.action !== 'apply') {
     return { ok: false, phase: 'metadata-patch', attemptDecision, metadataPatch }
   }
@@ -260,8 +237,7 @@ export async function runAuthRefreshAttempt(
       await input.secretStorage.set(secretWrite.key, secretWrite.value)
       completedSecretWrites.push({
         write: secretWrite,
-        previousValue: previousSecretValue(previousSecrets, secretWrite.token),
-      })
+        previousValue: previousSecretValue(previousSecrets, secretWrite.token)})
     } catch (error: unknown) {
       const cleanup = planAuthRefreshSecretRollback(completedSecretWrites)
       return {
@@ -272,16 +248,14 @@ export async function runAuthRefreshAttempt(
         secretWrites: completedSecretWrites.map((completed) => completed.write),
         cleanup,
         cleanupFailures: await runAuthRefreshSecretRollback(input.secretStorage, cleanup),
-        error,
-      }
+        error}
     }
   }
 
   const metadataPut: LocalSetupMetadataPutOperation = {
     kind: 'put-metadata-record',
     key: LOCAL_AUTH_METADATA_KEY,
-    value: metadataPatch.metadata,
-  }
+    value: metadataPatch.metadata}
   try {
     await input.metadataStore.commit(metadataPut)
   } catch (error: unknown) {
@@ -297,8 +271,7 @@ export async function runAuthRefreshAttempt(
       secretWrites: completedSecretWrites.map((completed) => completed.write),
       cleanup,
       cleanupFailures: await runAuthRefreshSecretRollback(input.secretStorage, cleanup),
-      error,
-    }
+      error}
   }
 
   return {
@@ -309,8 +282,7 @@ export async function runAuthRefreshAttempt(
     metadataPatch,
     secretWrites: completedSecretWrites.map((completed) => completed.write),
     metadataPut,
-    emitResumeEvent: attemptDecision.patch.emitResumeEvent,
-  }
+    emitResumeEvent: attemptDecision.patch.emitResumeEvent}
 }
 
 interface AuthRefreshSecretSnapshot {
@@ -364,31 +336,27 @@ async function persistFailedRefreshAttempt(
     now: input.now,
     retryCount: input.metadata.retryCount,
     retryAfterMs: failure.status === 'retryable-or-permanent' ? failure.retryAfterMs : undefined,
-    result,
-  })
+    result})
   if (attemptDecision.action === 'reject') {
     return { ok: false, phase: 'attempt-decision', attemptDecision, reason: failure.reasonDetail }
   }
 
   const metadataPatch = applyClientAuthMetadataRefreshAttemptPatch({
     metadata: input.metadata,
-    decision: attemptDecision,
-  })
+    decision: attemptDecision})
   if (metadataPatch.action !== 'apply') {
     return {
       ok: false,
       phase: 'metadata-patch',
       attemptDecision,
       metadataPatch,
-      reason: failure.reasonDetail,
-    }
+      reason: failure.reasonDetail}
   }
 
   const metadataPut: LocalSetupMetadataPutOperation = {
     kind: 'put-metadata-record',
     key: LOCAL_AUTH_METADATA_KEY,
-    value: metadataPatch.metadata,
-  }
+    value: metadataPatch.metadata}
   try {
     await input.metadataStore.commit(metadataPut)
   } catch (error: unknown) {
@@ -399,8 +367,7 @@ async function persistFailedRefreshAttempt(
       metadataPatch,
       metadataPut,
       error,
-      reason: failure.reasonDetail ?? failure.reason,
-    }
+      reason: failure.reasonDetail ?? failure.reason}
   }
   return {
     ok: false,
@@ -408,8 +375,7 @@ async function persistFailedRefreshAttempt(
     attemptDecision,
     metadataPatch,
     metadataPut,
-    reason: failure.reasonDetail ?? failure.reason,
-  }
+    reason: failure.reasonDetail ?? failure.reason}
 }
 
 function planAuthRefreshSecretWrites(
@@ -426,16 +392,14 @@ function planAuthRefreshSecretWrites(
       kind: 'write-secret',
       key: accessTokenSecretKey,
       value: response.accessToken,
-      token: 'access',
-    },
+      token: 'access'},
   ]
   if (response.refreshToken !== undefined) {
     writes.push({
       kind: 'write-secret',
       key: refreshTokenSecretKey,
       value: response.refreshToken,
-      token: 'refresh',
-    })
+      token: 'refresh'})
   }
   return writes
 }
@@ -449,14 +413,12 @@ function planAuthRefreshSecretRollback(
         kind: 'restore-secret',
         key: completed.write.key,
         value: completed.previousValue,
-        token: completed.write.token,
-      }
+        token: completed.write.token}
     }
     return {
       kind: 'delete-secret',
       key: completed.write.key,
-      token: completed.write.token,
-    }
+      token: completed.write.token}
   })
 }
 

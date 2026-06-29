@@ -1,25 +1,18 @@
-import {
-  type Ack,
-  type NeedFullSnapshot,
-} from '../sync/messages'
-import { type QuarantinedUpdateEntry } from '../http/admin'
-import { type DocId, type FileId, type VaultId, type DeviceId } from '../utils/ids'
-import { type Sha256Hex } from '../sync/meta'
 import { decideClientAuthStart } from '../auth'
 
 import {
   type OutboxPlanItemId,
   type OutboxRetryKind,
-  type OutboxRunError,
+  
   type OutboxRetryPolicy,
-  type OutboxItemStatus,
+  
   type OutboxDependencyState,
   type OutboxResumeEvent,
-  type OutboxResumeCondition,
+  
   type OutboxRuntimeProfile,
   type OutboxConcurrencyLane,
-  type BinaryUploadChunkInput,
-  type BinaryDownloadChunkInput,
+  
+  
   type BinaryUploadOutboxPlanInput,
   type BinaryDownloadOutboxPlanInput,
   type OutboxRetryDecisionInput,
@@ -29,7 +22,7 @@ import {
   type OutboxResumeDecisionInput,
   type OutboxAckCompletionInput,
   type OutboxQuarantinePauseInput,
-  type OutboxFullSnapshotPausedItem,
+  
   type OutboxFullSnapshotReleaseInput,
   type OutboxDependencyGraphItem,
   type OutboxSchedulerItem,
@@ -39,9 +32,9 @@ import {
   type OutboxLeaseReleaseInput,
   type OutboxLeaseRenewInput,
   type BinaryOutboxPlanItem,
-  type BinaryUploadOutboxPlan,
-  type BinaryDownloadOutboxPlan,
-  type BinaryOutboxPlanBuildError,
+  
+  
+  
   type BinaryUploadOutboxPlanBuildResult,
   type BinaryDownloadOutboxPlanBuildResult,
   type OutboxRetryDecision,
@@ -49,9 +42,9 @@ import {
   type OutboxConcurrencyDecision,
   type OutboxFailureTransition,
   type OutboxResumeDecision,
-  type OutboxAckCompletionPatch,
+  
   type OutboxAckCompletionDecision,
-  type OutboxQuarantinePausePatch,
+  
   type OutboxQuarantinePauseDecision,
   type OutboxFullSnapshotReleasePatch,
   type OutboxFullSnapshotReleasePlan,
@@ -60,10 +53,10 @@ import {
   type OutboxDependencyDeadLetterPatch,
   type OutboxDependencyBlockPlan,
   type OutboxSchedulerStart,
-  type OutboxAuthStartEstimate,
-  type OutboxSchedulerAuthGateInput,
+  
+  
   type OutboxAuthStartRefreshBlock,
-  type OutboxAuthRefreshState,
+  
   type OutboxAuthRefreshRequestInput,
   type OutboxAuthRefreshRequestDecision,
   type OutboxLeaseReclaimPatch,
@@ -73,8 +66,7 @@ import {
   type OutboxSchedulerTickPlan,
   Y_UPDATE_RETRY_POLICY,
   BLOB_RETRY_POLICY,
-  MATERIALIZE_RETRY_POLICY,
-} from './types'
+  MATERIALIZE_RETRY_POLICY} from './types'
 
 import {
   isNonNegativeSafeInteger,
@@ -83,8 +75,7 @@ import {
   hasDuplicateIds,
   sameDocId,
   validateOutboxSchedulerAuthGate,
-  mapAuthStartRejectReason,
-} from './validation'
+  mapAuthStartRejectReason} from './validation'
 
 /**
  * Brands a caller-assigned outbox item ID after checking it is non-empty.
@@ -117,8 +108,7 @@ export function buildBinaryUploadOutboxPlan(
       fileId: input.fileId,
       sha256: chunk.sha256,
       localCacheKey: chunk.localCacheKey,
-      size: chunk.size,
-    }),
+      size: chunk.size}),
   )
   const chunkPutIds = chunkPuts.map((item) => item.id)
   const manifestPut: BinaryOutboxPlanItem = {
@@ -126,15 +116,13 @@ export function buildBinaryUploadOutboxPlan(
     id: input.manifestPutId,
     dependsOn: chunkPutIds,
     fileId: input.fileId,
-    blobManifestHash: input.blobManifestHash,
-  }
+    blobManifestHash: input.blobManifestHash}
   const metaRefUpdate: BinaryOutboxPlanItem = {
     kind: 'meta-ref-update',
     id: input.metaRefUpdateId,
     dependsOn: [...chunkPutIds, input.manifestPutId],
     fileId: input.fileId,
-    blobManifestHash: input.blobManifestHash,
-  }
+    blobManifestHash: input.blobManifestHash}
 
   return {
     ok: true,
@@ -143,9 +131,7 @@ export function buildBinaryUploadOutboxPlan(
       items: [...chunkPuts, manifestPut, metaRefUpdate],
       chunkPuts: chunkPutIds,
       manifestPut: input.manifestPutId,
-      metaRefUpdate: input.metaRefUpdateId,
-    },
-  }
+      metaRefUpdate: input.metaRefUpdateId}}
 }
 
 /**
@@ -172,8 +158,7 @@ export function buildBinaryDownloadOutboxPlan(
       fileId: input.fileId,
       sha256: chunk.sha256,
       localCacheKey: chunk.localCacheKey,
-      size: chunk.size,
-    }),
+      size: chunk.size}),
   )
   const chunkGetIds = chunkGets.map((item) => item.id)
   const materialize: BinaryOutboxPlanItem = {
@@ -181,8 +166,7 @@ export function buildBinaryDownloadOutboxPlan(
     id: input.materializeId,
     dependsOn: chunkGetIds,
     fileId: input.fileId,
-    expectedHash: input.expectedHash,
-  }
+    expectedHash: input.expectedHash}
 
   return {
     ok: true,
@@ -190,9 +174,7 @@ export function buildBinaryDownloadOutboxPlan(
       fileId: input.fileId,
       items: [...chunkGets, materialize],
       chunkGets: chunkGetIds,
-      materialize: input.materializeId,
-    },
-  }
+      materialize: input.materializeId}}
 }
 
 /**
@@ -242,9 +224,7 @@ export function decideOutboxAckCompletion(
         reason: 'full-snapshot-required',
         resumeOn: 'manual',
         snapshotReason: input.message.reason,
-        docId: input.message.docId,
-      },
-    }
+        docId: input.message.docId}}
   }
 
   if (input.message.messageId !== input.messageId) {
@@ -266,9 +246,7 @@ export function decideOutboxAckCompletion(
     patch: {
       status: 'done',
       nextAttemptAt: undefined,
-      durableSeq: input.message.durableSeq,
-    },
-  }
+      durableSeq: input.message.durableSeq}}
 }
 
 /**
@@ -305,9 +283,7 @@ export function decideOutboxQuarantinePause(
       resumeOn: 'manual',
       quarantineId: input.quarantine.id,
       quarantineReason: input.quarantine.reason,
-      docId: input.quarantine.docId,
-    },
-  }
+      docId: input.quarantine.docId}}
 }
 
 /**
@@ -337,8 +313,7 @@ export function planOutboxFullSnapshotRelease(
       status: 'done',
       nextAttemptAt: undefined,
       completedBy: 'full-snapshot-apply',
-      snapshotSeq: input.snapshotSeq,
-    })
+      snapshotSeq: input.snapshotSeq})
   }
 
   return { ok: true, releasePatches }
@@ -389,8 +364,7 @@ export function planOutboxDependencyBlocks(
         status: 'failed',
         reason: 'dead-letter',
         deadLetterReason: 'dependency-dead-letter',
-        deadLetteredBy: dependencyFailures.deadLetteredBy,
-      })
+        deadLetteredBy: dependencyFailures.deadLetteredBy})
       plannedDeadLetterIds.add(item.id)
       continue
     }
@@ -420,14 +394,12 @@ export function planOutboxResumePatches(
       const decision = decideOutboxResume({
         status: item.status,
         resumeOn: item.resumeOn,
-        event,
-      })
+        event})
       if (decision.action === 'resume') {
         patches.push({
           id: item.id,
           status: decision.status,
-          nextAttemptAt: decision.nextAttemptAt,
-        })
+          nextAttemptAt: decision.nextAttemptAt})
         break
       }
     }
@@ -507,8 +479,7 @@ export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): Outbox
       status,
       dependencies,
       nextAttemptAt: item.nextAttemptAt,
-      now: input.now,
-    })
+      now: input.now})
     if (runDecision.action !== 'run') {
       continue
     }
@@ -518,8 +489,7 @@ export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): Outbox
     const concurrencyDecision = decideOutboxConcurrency({
       kind: item.kind,
       profile: input.profile,
-      runningInLane,
-    })
+      runningInLane})
     if (concurrencyDecision.action !== 'start') {
       continue
     }
@@ -530,14 +500,12 @@ export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): Outbox
         tokenExpiresAt: authGate.auth.tokenExpiresAt,
         refreshMarginMs: authGate.auth.refreshMarginMs,
         estimatedDurationMs:
-          authGate.estimateById.get(item.id) ?? authGate.auth.defaultEstimatedDurationMs,
-      })
+          authGate.estimateById.get(item.id) ?? authGate.auth.defaultEstimatedDurationMs})
       if (authDecision.action === 'reject') {
         return {
           ok: false,
           reason: mapAuthStartRejectReason(authDecision.reason),
-          id: item.id,
-        }
+          id: item.id}
       }
       if (authDecision.action === 'refresh-first') {
         authRefreshBlocks.push({
@@ -546,8 +514,7 @@ export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): Outbox
           lane,
           reason: authDecision.reason,
           remainingMs: authDecision.remainingMs,
-          requiredRemainingMs: authDecision.requiredRemainingMs,
-        })
+          requiredRemainingMs: authDecision.requiredRemainingMs})
         continue
       }
     }
@@ -562,14 +529,12 @@ export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): Outbox
     blockPatches: blockPlan.blockPatches,
     deadLetterPatches: blockPlan.deadLetterPatches,
     leaseReclaims: leasePlan.reclaimPatches,
-    starts,
-  } satisfies Extract<OutboxSchedulerTickPlan, { readonly ok: true }>
+    starts} satisfies Extract<OutboxSchedulerTickPlan, { readonly ok: true }>
   if (authRefreshBlocks.length > 0) {
     return { ...basePlan, authRefreshBlocks }
   }
   return {
-    ...basePlan,
-  }
+    ...basePlan}
 }
 
 /**
@@ -618,8 +583,7 @@ export function decideOutboxAuthRefreshRequest(
     return {
       action: 'wait',
       reason: 'refresh-already-running',
-      blockedItemIds,
-    }
+      blockedItemIds}
   }
   if (
     input.refreshState.status === 'backing-off' &&
@@ -629,16 +593,14 @@ export function decideOutboxAuthRefreshRequest(
       action: 'wait',
       reason: 'refresh-backoff',
       nextAllowedRefreshAt: input.refreshState.nextAllowedRefreshAt,
-      blockedItemIds,
-    }
+      blockedItemIds}
   }
 
   return {
     action: 'request-refresh',
     reason: strongestReason,
     requestedAt: input.now,
-    blockedItemIds,
-  }
+    blockedItemIds}
 }
 
 /**
@@ -661,8 +623,7 @@ export function decideOutboxLeaseAcquire(
     itemId: input.itemId,
     kind: input.kind,
     ownerId: input.ownerId,
-    leaseExpiresAt: input.now + input.leaseDurationMs,
-  }
+    leaseExpiresAt: input.now + input.leaseDurationMs}
 
   if (input.existingLease === undefined) {
     return { action: 'acquire', lease: nextLease, previousOwnerId: undefined }
@@ -683,8 +644,7 @@ export function decideOutboxLeaseAcquire(
   return {
     action: 'take-over-expired',
     lease: nextLease,
-    previousOwnerId: input.existingLease.ownerId,
-  }
+    previousOwnerId: input.existingLease.ownerId}
 }
 
 /**
@@ -755,9 +715,7 @@ export function decideOutboxLeaseRenew(input: OutboxLeaseRenewInput): OutboxLeas
       itemId: input.itemId,
       kind: input.kind,
       ownerId: input.ownerId,
-      leaseExpiresAt: input.now + input.leaseDurationMs,
-    },
-  }
+      leaseExpiresAt: input.now + input.leaseDurationMs}}
 }
 
 /**
@@ -781,8 +739,7 @@ export function decideOutboxRetry(input: OutboxRetryDecisionInput): OutboxRetryD
       return {
         action: 'pause',
         reason: 'dependency-or-local-state',
-        resumeOn: 'local-state-change',
-      }
+        resumeOn: 'local-state-change'}
     case 'invalid-payload':
       return { action: 'dead-letter', reason: 'invalid-payload' }
     case 'auth':
@@ -803,8 +760,7 @@ export function transitionOutboxFailure(
       nextAttemptAt: undefined,
       lastError: input.error,
       reason: 'manual-intervention-required',
-      resumeOn: 'manual',
-    }
+      resumeOn: 'manual'}
   }
 
   const retryDecision = decideOutboxRetry(input)
@@ -815,8 +771,7 @@ export function transitionOutboxFailure(
         status: 'retrying',
         retryCount: input.retryCount + 1,
         nextAttemptAt: input.now + retryDecision.delayMs + retryJitterMs,
-        lastError: input.error,
-      }
+        lastError: input.error}
     case 'pause':
       return {
         status: 'paused',
@@ -824,8 +779,7 @@ export function transitionOutboxFailure(
         nextAttemptAt: undefined,
         lastError: input.error,
         reason: retryDecision.reason,
-        resumeOn: retryDecision.resumeOn,
-      }
+        resumeOn: retryDecision.resumeOn}
     case 'dead-letter':
       return {
         status: 'failed',
@@ -833,8 +787,7 @@ export function transitionOutboxFailure(
         nextAttemptAt: undefined,
         lastError: input.error,
         reason: 'dead-letter',
-        deadLetterReason: retryDecision.reason,
-      }
+        deadLetterReason: retryDecision.reason}
   }
 }
 
@@ -965,8 +918,7 @@ function retryWithPolicy(
   return {
     action: 'retry',
     delayMs: Math.max(scheduledDelayMs, retryAfterDelayMs),
-    jitterRatio: policy.jitterRatio,
-  }
+    jitterRatio: policy.jitterRatio}
 }
 
 function selectedRetryJitterMs(
@@ -1041,8 +993,7 @@ function dependencyFailureAncestors(
 
   return {
     deadLetteredBy: [...new Set(deadLetteredBy)],
-    blockedBy: [...new Set(blockedBy)],
-  }
+    blockedBy: [...new Set(blockedBy)]}
 }
 
 type EffectiveLeasePlan =
@@ -1085,8 +1036,7 @@ function planEffectiveLeases(
         id: lease.itemId,
         previousOwnerId: lease.ownerId,
         status: 'retrying',
-        nextAttemptAt: undefined,
-      })
+        nextAttemptAt: undefined})
       continue
     }
 
