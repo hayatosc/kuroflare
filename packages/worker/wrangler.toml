@@ -1,0 +1,15 @@
+name = "kuroflare-worker"
+main = "src/index.ts"
+compatibility_date = "2026-06-12"
+
+[[durable_objects.bindings]]
+name = "VAULT_ROOM"
+class_name = "VaultRoom"
+
+[[r2_buckets]]
+binding = "SNAPSHOT_BUCKET"
+bucket_name = "kuroflare-snapshots"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["VaultRoom"]

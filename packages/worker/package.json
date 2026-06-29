@@ -1,0 +1,32 @@
+{
+  "name": "@kuroflare/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "typecheck": "tsgo --noEmit",
+    "dev": "tsdown --watch",
+    "dev:local": "wrangler dev --local --ip 127.0.0.1 --port 8787 --persist-to /tmp/kuroflare-worker-miniflare-state --var DEVICE_TOKEN_SECRET:e2e-device-token-secret --var E2E_SETUP_TOKEN_SECRET:e2e-seed-secret",
+    "typecheck:compat": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kuroflare/protocol": "workspace:*",
+    "valibot": "^1.4.1",
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.16.20",
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.105.0"
+  }
+}

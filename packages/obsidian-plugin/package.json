@@ -1,0 +1,33 @@
+{
+  "name": "@kuroflare/obsidian-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "NODE_ENV=production tsdown && mv main.cjs main.js",
+    "dev": "tsdown --watch",
+    "test": "vitest run",
+    "test:e2e:obsidian": "NODE_ENV=production tsdown && mv main.cjs main.js && node scripts/obsidian-cli-smoke.mjs",
+    "test:e2e:obsidian:miniflare": "NODE_ENV=production tsdown && mv main.cjs main.js && node scripts/obsidian-miniflare-smoke.mjs",
+    "typecheck": "tsgo --noEmit",
+    "typecheck:compat": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kuroflare/core": "workspace:*",
+    "@kuroflare/protocol": "workspace:*",
+    "valibot": "^1.4.1",
+    "y-codemirror.next": "^0.3.5",
+    "y-indexeddb": "^9.0.12",
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {
+    "@codemirror/state": "6.5.0",
+    "@codemirror/view": "6.38.6",
+    "@types/jsdom": "^28.0.3",
+    "@types/node": "^22.15.30",
+    "builtin-modules": "^5.0.0",
+    "jsdom": "^29.1.1",
+    "obsidian": "1.13.0",
+    "typescript": "^5.8.3"
+  }
+}

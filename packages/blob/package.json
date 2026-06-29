@@ -1,0 +1,28 @@
+{
+  "name": "@kuroflare/blob",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "typecheck": "tsgo --noEmit",
+    "dev": "tsdown --watch",
+    "typecheck:compat": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kuroflare/core": "workspace:*",
+    "@kuroflare/protocol": "workspace:*",
+    "valibot": "^1.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3"
+  }
+}

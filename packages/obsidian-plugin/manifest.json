@@ -1,0 +1,10 @@
+{
+  "id": "kuroflare",
+  "name": "Kuroflare",
+  "version": "0.0.0",
+  "minAppVersion": "1.8.0",
+  "description": "CM6/Yjs/disk spike for a local-first Cloudflare sync experiment.",
+  "author": "Hayato",
+  "authorUrl": "https://github.com/hayatosc",
+  "isDesktopOnly": false
+}

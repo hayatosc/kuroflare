@@ -1,0 +1,22 @@
+{
+  "name": "@kuroflare/model-tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo 'no build needed'",
+    "test": "vitest run",
+    "typecheck": "tsgo --noEmit",
+    "dev": "tsdown --watch",
+    "typecheck:compat": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kuroflare/protocol": "workspace:*",
+    "@kuroflare/worker": "workspace:*",
+    "valibot": "^1.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "options": {
+    "typeAware": true
+  },
+  "categories": {
+    "correctness": "error"
+  },
+  "ignorePatterns": ["dist/**", "node_modules/**", "packages/obsidian-plugin/main.js"],
+  "overrides": [
+    {
+      "files": ["packages/worker/src/runtime.test.ts", "packages/worker/test/e2e/**/*.ts"],
+      "rules": {
+        "typescript/no-floating-promises": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+        "typescript/no-base-to-string": "off"
+      }
+    },
+    {
+      "files": ["packages/worker/src/quarantine-http.test.ts"],
+      "rules": {
+        "typescript/no-non-null-assertion": "off"
+      }
+    }
+  ],
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "typescript/no-unsafe-type-assertion": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/consistent-type-imports": [
+      "error",
+      {
+        "prefer": "type-imports",
+        "fixStyle": "separate-type-imports",
+        "disallowTypeAnnotations": true
+      }
+    ],
+    "typescript/no-unused-vars": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/switch-exhaustiveness-check": [
+      "warn",
+      {
+        "allowDefaultCaseForExhaustiveSwitch": true,
+        "considerDefaultExhaustiveForUnions": false,
+        "requireDefaultForNonUnion": false
+      }
+    ],
+    "typescript/consistent-type-assertions": "warn",
+    "typescript/no-non-null-assertion": "warn"
+  },
+  "env": {
+    "builtin": true
+  }
+}
