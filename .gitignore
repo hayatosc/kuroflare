@@ -6,3 +6,6 @@ packages/obsidian-plugin/main.js
 
 # Local machine-specific config (mise *.local.toml は端末固有の上書き)
 mise.local.toml
+
+# wrangler dev local state
+packages/*/.wrangler/

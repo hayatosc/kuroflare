@@ -2221,15 +2221,15 @@ MVP との関係:
 
 ### 未検証・未配線の「長い棒」
 
-> 2026-06-29 更新で 1・2・4 の一部が解消した。下記は更新後の状態。
+> 2026-06-29 更新で 1・2・4・7 が解消した（実 Linux Obsidian app + obsidian-cli を実機で回せるようになった）。下記は更新後の状態。
 
-1. **Worker 実機 e2e は MVP-1 範囲で検証済み**。`packages/worker/vitest.e2e.config.ts` + `test/e2e/sync.e2e.test.ts` が `@cloudflare/vitest-pool-workers`（real workerd / DO SQLite / R2）上で、JWT 認証付き hello → 単一 update の durable ack、2 クライアントの同段落並行編集の収束、後続参加者の sync-request 再構成、R2 checkpoint、DO eviction → op_log からの cold-start 復元を通す。**残り**: plugin 側ランタイムを実際に繋いだ plugin↔Worker のフル e2e（現状の e2e は wire を JSON で直接駆動）。
-2. **ワークスペース全体ビルド・typecheck・lint・format は全て通過**。`pnpm typecheck` / `oxlint .` / `oxfmt --check .` / `pnpm build` が green。node 単体 633 + worker e2e 5。
+1. **plugin↔Worker のフル e2e を実機で検証済み**。`packages/worker/vitest.e2e.config.ts` + `test/e2e/sync.e2e.test.ts` の workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集収束、後続参加者の sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）に加え、`packages/obsidian-plugin/scripts/obsidian-miniflare-smoke.mjs` が **実 Linux Obsidian + miniflare Worker** 上で setup token 交換 → R2 snapshot→Obsidian disk 反映 → 別デバイスのリモート編集→disk 反映 → Obsidian ローカル編集→リモートへブロードキャスト → plugin reload 後の再接続まで、dev:errors なしで通す（`pnpm --filter @kuroflare/worker dev:local` + `pnpm --filter @kuroflare/obsidian-plugin test:e2e:obsidian:miniflare`）。
+2. **ワークスペース全体ビルド・typecheck・lint・format は全て通過**。`pnpm typecheck` / `oxlint .` / `oxfmt --check .` / `pnpm build` が green。node 単体 635 + worker e2e 5。
 3. **終端状態の actuation 未配線**。`enter-auth-blocked` / `enter-degraded` は shell command 化までは実装済みだが、実 Obsidian の UI / repair flow へは未接続。
-4. **CM6 ⇄ Y.Text の双方向 binding は headless 検証済み**。`src/obsidian/editor-binding.test.ts`（jsdom + 実 CodeMirror6 + 実 yjs/y-codemirror.next）で local 編集→YText、remote YText→editor、`replaceYText` 最小差分、2 editor の収束、full replace を通す。**残り**: disk materialize / watcher echo を含む実 Obsidian シェル上の往復（MVP-0 受け入れ）。これは real Obsidian app が要るため [obsidian-e2e](https://github.com/chhoumann/obsidian-e2e)（Obsidian CLI + 実 vault が前提）を実機で回す想定。
+4. **CM6 ⇄ Y.Text ⇄ disk の往復を実 Obsidian シェルで検証済み（MVP-0 受け入れ）**。headless の `src/obsidian/editor-binding.test.ts`（jsdom + 実 CodeMirror6 + 実 yjs/y-codemirror.next）に加え、`scripts/obsidian-cli-smoke.mjs` が [obsidian-cli](https://github.com/chhoumann/obsidian-e2e)（実 Linux Obsidian + 実 vault）上で binding seed → remote insert→YText→disk flush（materialize CAS 経由）と、外部 disk 編集→watcher hash gate→YText 取り込みの両レグを dev:errors なしで通す（`pnpm --filter @kuroflare/obsidian-plugin test:e2e:obsidian`）。**残り**: watcher を意図的に落とした際の materialize CAS conflict-copy 退避を実機 e2e 化（core 決定層 + plugin 単体では検証済み）。
 5. **MVP-2 / MVP-3 の実ランタイム配線が部分的**。meta YDoc の path repair、CDC バイナリチャンク、初回フルシンク（snapshot 直 PUT）はプランナ/プロトコルはあるが配線が途中。
 6. **UI 全般が未着手**。conflict UI・手動エスケープハッチ・Setup URI フロー・設定タブは spike コマンドのみ。
-7. **git 未コミット**。全ファイル untracked。CI もデプロイ検証もない。
+7. **git 初期コミット済み + CI 雛形あり**。`.github/workflows/ci.yml` が push(main)/PR で format:check → lint → typecheck → unit test → worker e2e を回す。実 Obsidian e2e は実機（display + Obsidian app）依存のため CI 外の手動/ローカル実行。デプロイ検証は未。
 
 > e2e 立ち上げで顕在化し修正した実バグ 2 件（fake が隠していた）:
 >
@@ -2238,11 +2238,11 @@ MVP との関係:
 
 ### MVP チェックリスト（§11.1 対応）
 
-- [ ] MVP-0: local editor loop（実 Obsidian で CM6 ⇄ Y.Text ⇄ disk を往復）— binding は headless 証明済み、実シェル往復は未（obsidian-e2e 想定）
-- [x] MVP-1: one file remote sync（real workerd e2e で hello 認証・2 クライアント収束・DO restart→cold-start を証明。plugin ランタイム結線は残）
+- [x] MVP-0: local editor loop（実 Linux Obsidian + obsidian-cli で CM6 ⇄ Y.Text ⇄ disk の両レグを往復。`test:e2e:obsidian`）— watcher-drop CAS の実機 e2e 化のみ残
+- [x] MVP-1: one file remote sync（workerd e2e に加え、実 Linux Obsidian + miniflare で plugin↔Worker フル同期・リモート並行編集・再接続を証明。`test:e2e:obsidian:miniflare`）
 - [~] MVP-2: meta YDoc + path repair（decision 層あり、実ランタイム配線が部分的）
 - [ ] MVP-3: initial sync + binary（protocol/planner あり、配線途中）
 
 ### 推奨する次の縦切り
 
-(a) 完了: 全体ビルド通過。(b) 完了: miniflare で MVP-1 の 1 ファイル同期 e2e。(c) plugin の startup ランタイムを実 transport に繋ぎ、obsidian-e2e で MVP-0（実 Obsidian での CM6 往復 + disk materialize）を受け入れる → (d) MVP-2/3 のランタイム配線。
+(a) 完了: 全体ビルド通過。(b) 完了: miniflare で MVP-1 の 1 ファイル同期 e2e。(c) 完了: 実 Linux Obsidian + obsidian-cli で MVP-0（CM6 往復 + disk materialize + 外部編集取り込み）と MVP-1（plugin↔Worker フル同期）を実機受け入れ。**次は (d) MVP-2/3 のランタイム配線**: meta YDoc の path repair を実 runtime に通し（rename が delete+create にならない / 同一 path 競合の deterministic rename 収束）、続けて CDC バイナリ（blob PUT→meta 参照公開）と初回フルシンク（snapshot 直 PUT）を配線する。あわせて watcher-drop CAS conflict-copy の実機 e2e 化を残タスクとして拾う。

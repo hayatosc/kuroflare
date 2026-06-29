@@ -41,6 +41,19 @@ async function waitForFileIncludes(path, expected) {
   return readFileSync(path, 'utf8')
 }
 
+async function waitForEvalIncludes(code, expected) {
+  const deadline = Date.now() + 5000
+  let output = ''
+  while (Date.now() < deadline) {
+    output = obsidian(['eval', `code=${code}`])
+    if (output.includes(expected)) {
+      return output
+    }
+    await sleep(100)
+  }
+  return output
+}
+
 function copyPlugin(vaultPath) {
   const targetDir = join(vaultPath, '.obsidian', 'plugins', pluginId)
   mkdirSync(targetDir, { recursive: true })
@@ -95,6 +108,17 @@ obsidian(['command', 'id=kuroflare:kuroflare-spike-flush-ytext-to-disk'])
 const diskContent = await waitForFileIncludes(noteFile, 'remote ')
 requireIncludes(diskContent, initialContent, 'disk content')
 requireIncludes(diskContent, 'remote ', 'disk content')
+
+// Other round-trip leg: an external disk edit (git pull / another app) is imported
+// into YText via the vault watcher + hash gate, not overwritten by stale YText.
+const externalMarker = 'external edit applied'
+writeFileSync(noteFile, `${initialContent}\n${externalMarker}`)
+
+const importedYText = await waitForEvalIncludes(
+  'code=JSON.stringify({yText: app.plugins.plugins.kuroflare?.ytext?.toJSON?.()})',
+  externalMarker,
+)
+requireIncludes(importedYText, externalMarker, 'YText after external disk edit')
 
 const errors = obsidian(['dev:errors'])
 requireIncludes(errors, 'No errors captured.', 'dev errors')
