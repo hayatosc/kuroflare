@@ -1,7 +1,7 @@
-import type { DeviceId, VaultId } from '../ids'
-import type { DeviceTokenClaims, DeviceTokenScope } from '../token-schemas'
-import type { RevokeDeviceResponse } from '../device-http'
-import type { SetupExchangeResponse } from '../setup'
+import type { DeviceId, VaultId } from '../utils/ids'
+import type { DeviceTokenClaims, DeviceTokenScope } from '../sync/schemas'
+import type { RevokeDeviceResponse } from '../http/device'
+import type { SetupExchangeResponse } from '../sync/setup'
 
 /** Input for deciding whether a refreshed device token may unblock auth-paused local queues. */
 export interface ClientAuthRefreshDecisionInput {

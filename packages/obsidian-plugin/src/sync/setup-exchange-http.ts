@@ -13,8 +13,8 @@ import {
   createSyncRuntimeSetupExchangePort,
   type SyncRuntimeSetupExchangePort,
   type SyncRuntimeSetupExchangeReplanRequest,
-} from './startup-actuation'
-import { type SyncEngineStartupEffect } from './sync-engine'
+} from './engine/actuation'
+import { type SyncEngineStartupEffect } from './engine/engine'
 
 /** Startup setup exchange effect accepted by the HTTP-backed setup exchange port. */
 export type SetupExchangeStartupEffect = Extract<

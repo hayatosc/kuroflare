@@ -42,19 +42,19 @@ import {
   getEditorView,
   replaceYText,
 } from './obsidian/editor-binding'
-import { applyFileCreate, applyFileDelete, applyFileRename } from './sync/meta-file-tree'
-import { reconcileMetaDoc } from './sync/meta-reconcile'
+import { applyFileCreate, applyFileDelete, applyFileRename } from './sync/meta/tree'
+import { reconcileMetaDoc } from './sync/meta/reconcile'
 import {
   createSyncRuntimeObsidianComposition,
   type SyncRuntimeObsidianComposition,
-} from './sync/obsidian-runtime-composition'
-import { type SyncRuntimeObsidianRepairPresentation } from './sync/obsidian-shell-presentation'
-import { createSyncRuntimeObsidianSetupExchangeEvidenceReader } from './sync/obsidian-startup-settings'
+} from './sync/obsidian/composition'
+import { type SyncRuntimeObsidianRepairPresentation } from './sync/obsidian/presentation'
+import { createSyncRuntimeObsidianSetupExchangeEvidenceReader } from './sync/obsidian/settings'
 import {
   createEvidenceBackedHttpSyncRuntimeSetupExchangePort,
   type SetupExchangeStartupEffect,
 } from './sync/setup-exchange-http'
-import { type SyncRuntimeStartupStepEffectPort } from './sync/startup-actuation'
+import { type SyncRuntimeStartupStepEffectPort } from './sync/engine/actuation'
 
 import type { KuroflareSettings, FileDocId, LoadedTextDoc } from './main-types'
 

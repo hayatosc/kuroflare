@@ -1,7 +1,7 @@
 import * as v from 'valibot'
 
-import { NonNegativeSafeIntegerSchema } from './_shared'
-import { ProtocolVersionSchema } from './version'
+import { NonNegativeSafeIntegerSchema } from './utils/shared'
+import { ProtocolVersionSchema } from './utils/version'
 
 export const HealthStatusSchema = v.union([v.literal('ok'), v.literal('degraded')])
 export type HealthStatus = v.InferInput<typeof HealthStatusSchema>

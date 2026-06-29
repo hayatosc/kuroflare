@@ -18,7 +18,7 @@ export {
   decideAuthAdmission,
   type AuthAdmissionDecision,
   type AuthAdmissionDecisionInput,
-} from './auth'
+} from './http/auth'
 export {
   AUTH_REFRESH_DEVICE_TOKEN_SCOPES,
   planDeviceTokenRefreshHttpResponse,
@@ -44,7 +44,7 @@ export {
   type DurableObjectSyncAdmissionDecision,
   type DurableObjectSyncAdmissionInput,
   type WorkerHealthDecisionInput,
-} from './health'
+} from './http/health'
 export {
   planRevokeDeviceHttpResponse,
   type RevokeDeviceHttpResponsePlan,
@@ -57,7 +57,7 @@ export {
   type SchemaMigration,
   type SchemaMigrationDecision,
   type SchemaMigrationDecisionInput,
-} from './migrations'
+} from './db/migrations'
 export {
   collectSqlObjectNames,
   INITIAL_SCHEMA_INDEXES,
@@ -66,13 +66,13 @@ export {
   migrationStatements,
   SCHEMA_MIGRATIONS,
   type SqlObjectDefinition,
-} from './schema'
+} from './db/schema'
 export {
   decideSetupTokenConsume,
   type SetupTokenConsumeDecision,
   type SetupTokenConsumeDecisionInput,
   type SetupTokenEntry,
-} from './setupTokens'
+} from './devices/tokens'
 export {
   planSetupExchangeHttpResponse,
   SETUP_EXCHANGE_DEVICE_TOKEN_SCOPES,
@@ -92,7 +92,7 @@ export {
   type SnapshotDocPrefix,
   type SnapshotManifest,
   type SnapshotRestoreChoice,
-} from './snapshots'
+} from './sync/snapshots'
 export {
   decideSyncRequest,
   type SyncRequestDecision,
@@ -146,14 +146,14 @@ export {
   type CheckpointSnapshotEvidence,
   type OrphanedCheckpointRecoveryDecision,
   type OrphanedCheckpointRecoveryInput,
-} from './checkpoint'
+} from './checkpoint/checkpoint'
 export {
   planSnapshotRetention,
   type SnapshotRetentionCandidate,
   type SnapshotRetentionCheckpointRun,
   type SnapshotRetentionPlan,
   type SnapshotRetentionPlanInput,
-} from './retention'
+} from './db/retention'
 export {
   decideClientHelloRegistry,
   decideDeviceTokenRefresh,

@@ -39,7 +39,7 @@ import * as v from 'valibot'
 import * as Y from 'yjs'
 
 import { planDeviceTokenRefreshHttpResponse } from './http/authRefresh'
-import { decideAuthAdmission } from './auth'
+import { decideAuthAdmission } from './http/auth'
 import {
   planBlobHeadHttpResponse,
   planBlobUploadUrlHttpResponse,
@@ -51,7 +51,7 @@ import {
   decideCheckpointWrite,
   decideOrphanedCheckpointRecovery,
   type CheckpointRunStatus,
-} from './checkpoint'
+} from './checkpoint/checkpoint'
 import { planRevokeDeviceHttpResponse } from './http/device'
 import {
   decideDeviceTokenRefresh,
@@ -66,21 +66,21 @@ import {
   type YClientId,
   type YClientIdRange,
 } from './devices'
-import { decideSchemaMigration } from './migrations'
+import { decideSchemaMigration } from './db/migrations'
 import {
   buildQuarantinedUpdateDetailResponse,
   buildQuarantinedUpdateListResponse,
 } from './http/quarantine'
 import type { QuarantinedUpdateRecord } from './quarantine'
-import { SCHEMA_MIGRATIONS } from './schema'
+import { SCHEMA_MIGRATIONS } from './db/schema'
 import { planSetupExchangeHttpResponse } from './http/setup'
-import { decideSetupTokenConsume, type SetupTokenEntry } from './setupTokens'
+import { decideSetupTokenConsume, type SetupTokenEntry } from './devices/tokens'
 import {
   chooseSnapshotForRestore,
   makeSnapshotListPrefix,
   makeSnapshotObjectKey,
   type SnapshotCandidate,
-} from './snapshots'
+} from './sync/snapshots'
 import { decideSyncRequest, type SyncRequestDocState } from './sync/request'
 import {
   decideSyncUpdateAppend,
@@ -141,107 +141,41 @@ import {
   applyMigrationStatements,
 } from './db/schemaRepo'
 import { createDb } from './db/db'
+export * from './runtime/types'
 import type { Kysely } from 'kysely'
 import type { Database } from './db/types'
 
-/** Environment bindings required by the Worker entrypoint. */
-export interface WorkerEnv {
-  readonly VAULT_ROOM: DurableObjectNamespaceBinding
-  readonly SNAPSHOT_BUCKET?: R2BucketBinding
-  readonly DEVICE_TOKEN_SECRET?: string
-  readonly E2E_SETUP_TOKEN_SECRET?: string
-}
-
-/** Minimal Durable Object namespace surface used by the Worker shell. */
-export interface DurableObjectNamespaceBinding {
-  idFromName(name: string): DurableObjectIdBinding
-  get(id: DurableObjectIdBinding): DurableObjectStubBinding
-}
-
-/** Opaque Durable Object id returned by the runtime. */
-export interface DurableObjectIdBinding {
-  readonly toString?: () => string
-}
-
-/** Minimal Durable Object stub surface used by the Worker shell. */
-export interface DurableObjectStubBinding {
-  fetch(request: Request): Response | Promise<Response>
-}
-
-/** Minimal Durable Object state surface used by `VaultRoom`. */
-export interface DurableObjectStateBinding {
-  readonly storage: DurableObjectStorageBinding
-  acceptWebSocket(webSocket: RuntimeWebSocket): void
-  getWebSockets?(): readonly RuntimeWebSocket[]
-}
-
-/** Minimal Durable Object storage surface reserved for op-log wiring. */
-export interface DurableObjectStorageBinding {
-  readonly sql?: DurableObjectSqlStorageBinding
-  get<T = unknown>(key: string): Promise<T | undefined>
-  put<T>(key: string, value: T): Promise<void>
-  setAlarm?(scheduledTime: number | Date): Promise<void>
-  transactionSync?<T>(closure: () => T): T
-}
-
-/** Minimal SQLite surface used by the Durable Object runtime shell. */
-export interface DurableObjectSqlStorageBinding {
-  exec<T extends Record<string, unknown> = Record<string, unknown>>(
-    query: string,
-    ...bindings: readonly unknown[]
-  ): Iterable<T>
-}
-
-/** Minimal R2 bucket surface used by cold-start snapshot hydration. */
-export interface R2BucketBinding {
-  get(key: string): Promise<R2ObjectBodyBinding | null>
-  head(key: string): Promise<R2ObjectMetadataBinding | null>
-  list(options: R2ListOptionsBinding): Promise<R2ObjectsBinding>
-  put(key: string, value: Uint8Array): Promise<void>
-}
-
-/** Minimal R2 object metadata used by blob HEAD planning. */
-export interface R2ObjectMetadataBinding {
-  readonly size: number
-}
-
-/** Minimal R2 object body surface used by cold-start snapshot hydration. */
-export interface R2ObjectBodyBinding {
-  arrayBuffer(): Promise<ArrayBuffer>
-}
-
-/** Minimal R2 list options used by cold-start snapshot fallback. */
-export interface R2ListOptionsBinding {
-  readonly prefix: string
-}
-
-/** Minimal R2 list result used by cold-start snapshot fallback. */
-export interface R2ObjectsBinding {
-  readonly objects: readonly R2ObjectBinding[]
-}
-
-/** Minimal R2 listed object metadata used by cold-start snapshot fallback. */
-export interface R2ObjectBinding {
-  readonly key: string
-}
-
-/** WebSocket methods used by the Worker shell and tests. */
-export interface RuntimeWebSocket {
-  accept?: () => void
-  send(message: string | ArrayBuffer): void
-  close(code?: number, reason?: string): void
-  serializeAttachment?: (attachment: unknown) => void
-  deserializeAttachment?: () => unknown
-}
-
-interface RuntimeWebSocketPair {
-  readonly 0: RuntimeWebSocket
-  readonly 1: RuntimeWebSocket
-}
-
-interface RuntimeWebSocketPairConstructor {
-  new (): RuntimeWebSocketPair
-}
+import {
+  type WorkerEnv,
+  type DurableObjectNamespaceBinding,
+  type DurableObjectIdBinding,
+  type DurableObjectStubBinding,
+  type DurableObjectStateBinding,
+  type DurableObjectStorageBinding,
+  type DurableObjectSqlStorageBinding,
+  type R2BucketBinding,
+  type R2ObjectMetadataBinding,
+  type R2ObjectBodyBinding,
+  type R2ListOptionsBinding,
+  type R2ObjectsBinding,
+  type R2ObjectBinding,
+  type RuntimeWebSocket,
+  type RuntimeWebSocketPair,
+  type RuntimeWebSocketPairConstructor,
+  type SessionState,
+  type WebSocketAttachment,
+  type WebSocketResponseInit,
+  type RuntimeDocClockRecord,
+  type RuntimeSnapshotPointerRecord,
+  type RuntimeCheckpointRunRecord,
+  type RuntimeCheckpointDocRecoveryRecord,
+  type RuntimeCheckpointSnapshotEvidence,
+  type RuntimeCheckpointResult,
+  PosIntSchema,
+  NonNegIntSchema,
+  E2eSetupTokenSeedRequestSchema,
+  E2eSnapshotSeedRequestSchema,
+} from './runtime/types'
 
 declare const WebSocketPair: RuntimeWebSocketPairConstructor | undefined
 
@@ -262,84 +196,6 @@ const VAULT_ID_STORAGE_KEY = 'vault:id'
 const Y_CLIENT_ID_RANGE: YClientIdRange = { min: 1, max: 2_147_483_647 }
 const E2E_SETUP_TOKEN_PATH = '/__e2e/setup-token'
 const E2E_SNAPSHOT_PATH = '/__e2e/snapshot'
-
-const PosIntSchema = v.pipe(v.number(), v.integer(), v.minValue(1))
-const NonNegIntSchema = v.pipe(v.number(), v.integer(), v.minValue(0))
-
-const E2eSetupTokenSeedRequestSchema = v.object({
-  vaultId: VaultIdSchema,
-  setupToken: v.pipe(v.string(), v.minLength(1)),
-  expiresInMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(86_400_000))),
-})
-
-const E2eSnapshotSeedRequestSchema = v.object({
-  vaultId: VaultIdSchema,
-  docId: DocIdSchema,
-  update: v.pipe(v.string(), v.minLength(1)),
-  latestSeq: v.optional(PosIntSchema),
-})
-
-interface SessionState {
-  readonly vaultId: VaultId
-  readonly deviceId: ClientHello['deviceId']
-  readonly yClientId: YClientId
-}
-
-interface WebSocketAttachment {
-  readonly authToken?: string
-  readonly session?: SessionState
-}
-
-interface WebSocketResponseInit extends ResponseInit {
-  readonly webSocket: RuntimeWebSocket
-}
-
-interface RuntimeDocClockRecord {
-  readonly latestSeq: number
-  readonly updatedAt: number
-}
-
-interface RuntimeSnapshotPointerRecord {
-  readonly latestSnapshotSeq: number
-  readonly latestSnapshotKey: string
-}
-
-interface RuntimeCheckpointRunRecord {
-  readonly runId: string
-  readonly docId: DocId
-  readonly status: CheckpointRunStatus
-  readonly upperSeq: number
-  readonly snapshotKey: string | undefined
-}
-
-interface RuntimeCheckpointDocRecoveryRecord {
-  readonly latestSnapshotSeq: number
-  readonly latestSnapshotKey: string | undefined
-}
-
-interface RuntimeCheckpointSnapshotEvidence {
-  readonly exists: boolean
-  readonly verified: boolean
-  readonly stateVector: Uint8Array | undefined
-}
-
-/** Result of attempting to checkpoint one active document. */
-export type RuntimeCheckpointResult =
-  | {
-      readonly action: 'checkpointed'
-      readonly snapshotKey: string
-      readonly upperSeq: number
-      readonly compactedSeq: number | undefined
-    }
-  | {
-      readonly action: 'skipped'
-      readonly reason:
-        | 'runtime-unavailable'
-        | 'doc-unavailable'
-        | 'invalid-clock'
-        | 'no-new-ops'
-        | 'hydrate-failed'
-    }
 
 /** Cloudflare Durable Object shell for one vault room. */
 export class VaultRoom {

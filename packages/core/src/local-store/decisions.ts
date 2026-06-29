@@ -1,5 +1,5 @@
-import type { DocId } from '../ids'
-import type { LocalOutboxRepairExportEntry, LocalOutboxRepairExport } from '../local-repair'
+import type { DocId } from '../utils/ids'
+import type { LocalOutboxRepairExportEntry, LocalOutboxRepairExport } from '../local-store/repair'
 import type {
   LocalStoreObjectStore,
   LocalStoreSchemaDecisionInput,

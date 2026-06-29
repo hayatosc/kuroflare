@@ -1,6 +1,6 @@
-import { type DeviceId, type DocId, type MessageId, type VaultId } from '../ids'
-import { type LocalOutboxRepairExport, type LocalOutboxRepairExportEntry } from '../local-repair'
-import { type Sha256Hex } from '../meta'
+import { type DeviceId, type DocId, type MessageId, type VaultId } from '../utils/ids'
+import { type LocalOutboxRepairExport, type LocalOutboxRepairExportEntry } from '../local-store/repair'
+import { type Sha256Hex } from '../sync/meta'
 
 /** IndexedDB object store owned by the Obsidian plugin local sync database. */
 export type LocalStoreObjectStore =

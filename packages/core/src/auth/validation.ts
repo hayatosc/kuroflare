@@ -1,5 +1,7 @@
+import { isNonNegativeSafeInteger, isPositiveSafeInteger } from '../utils/shared'
+export { isNonNegativeSafeInteger, isPositiveSafeInteger }
 import * as v from 'valibot'
-import { DeviceIdSchema } from '../ids'
+import { DeviceIdSchema } from '../utils/ids'
 import type { ClientAuthMetadata } from './types'
 
 export function isClientAuthMetadata(value: unknown): value is ClientAuthMetadata {
@@ -29,14 +31,6 @@ export function isClientAuthMetadata(value: unknown): value is ClientAuthMetadat
     (value.refreshTokenSecretKey === undefined ||
       isBoundedNonEmptyString(value.refreshTokenSecretKey, 256))
   )
-}
-
-export function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-}
-
-export function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 export function isBoundedNonEmptyString(value: unknown, maxLength: number): value is string {
