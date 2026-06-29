@@ -164,8 +164,11 @@ class TestClient {
       if (typeof event.data !== 'string') {
         return
       }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-      const message = JSON.parse(event.data) as ControlMessage
+      const parsed = JSON.parse(event.data)
+      if (typeof parsed !== 'object' || parsed === null || typeof parsed.type !== 'string') {
+        return
+      }
+      const message: ControlMessage = parsed
       const waiterIndex = this.waiters.findIndex((waiter) => waiter.predicate(message))
       if (waiterIndex === -1) {
         this.inbox.push(message)
@@ -317,15 +320,16 @@ test('two clients editing the same paragraph concurrently both survive', async (
     (message) => message.type === 'sync-update' && message.messageId === 'alice-1',
   )
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  Y.applyUpdate(aliceDoc, fromBase64(broadcastToAlice.update as string))
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  Y.applyUpdate(bobDoc, fromBase64(broadcastToBob.update as string))
+  const receivedAliceUpdate = broadcastToAlice.update
+  const receivedBobUpdate = broadcastToBob.update
+  if (typeof receivedAliceUpdate !== 'string' || typeof receivedBobUpdate !== 'string') {
+    throw new Error('Expected update strings')
+  }
+  Y.applyUpdate(aliceDoc, fromBase64(receivedAliceUpdate))
+  Y.applyUpdate(bobDoc, fromBase64(receivedBobUpdate))
 
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  const aliceText = aliceDoc.getText('content').toString()
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  const bobText = bobDoc.getText('content').toString()
+  const aliceText = aliceDoc.getText('content').toJSON()
+  const bobText = bobDoc.getText('content').toJSON()
   expect(aliceText).toBe(bobText)
   expect(aliceText).toContain('Alpha')
   expect(aliceText).toContain('Bravo')
@@ -335,10 +339,12 @@ test('two clients editing the same paragraph concurrently both survive', async (
   carol.sendSyncRequest('carol-sr', CONCURRENT_DOC_ID, Y.encodeStateVector(new Y.Doc()))
   const delta = await carol.waitFor((message) => message.type === 'sync-update')
   const carolDoc = new Y.Doc()
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  Y.applyUpdate(carolDoc, fromBase64(delta.update as string))
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  expect(carolDoc.getText('content').toString()).toBe(aliceText)
+  const deltaUpdate = delta.update
+  if (typeof deltaUpdate !== 'string') {
+    throw new Error('Expected delta update string')
+  }
+  Y.applyUpdate(carolDoc, fromBase64(deltaUpdate))
+  expect(carolDoc.getText('content').toJSON()).toBe(aliceText)
 
   alice.close()
   bob.close()
@@ -363,8 +369,11 @@ test('meta YDoc updates broadcast across clients and late joiners reconstruct th
   )
 
   const bobDoc = new Y.Doc()
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  Y.applyUpdate(bobDoc, fromBase64(baseBroadcast.update as string))
+  const baseUpdate = baseBroadcast.update
+  if (typeof baseUpdate !== 'string') {
+    throw new Error('Expected baseUpdate string')
+  }
+  Y.applyUpdate(bobDoc, fromBase64(baseUpdate))
   const aliceBaseVector = Y.encodeStateVector(aliceDoc)
   const bobBaseVector = Y.encodeStateVector(bobDoc)
 
@@ -386,10 +395,13 @@ test('meta YDoc updates broadcast across clients and late joiners reconstruct th
   const aliceRenameForBob = await bob.waitFor(
     (message) => message.type === 'sync-update' && message.messageId === 'meta-alice-rename',
   )
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  Y.applyUpdate(aliceDoc, fromBase64(bobRenameForAlice.update as string))
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  Y.applyUpdate(bobDoc, fromBase64(aliceRenameForBob.update as string))
+  const bobUpdateForAlice = bobRenameForAlice.update
+  const aliceUpdateForBob = aliceRenameForBob.update
+  if (typeof bobUpdateForAlice !== 'string' || typeof aliceUpdateForBob !== 'string') {
+    throw new Error('Expected update strings')
+  }
+  Y.applyUpdate(aliceDoc, fromBase64(bobUpdateForAlice))
+  Y.applyUpdate(bobDoc, fromBase64(aliceUpdateForBob))
 
   expect(metaPaths(aliceDoc)).toEqual(metaPaths(bobDoc))
   expect(metaPaths(aliceDoc)).toEqual([
@@ -401,8 +413,11 @@ test('meta YDoc updates broadcast across clients and late joiners reconstruct th
   carol.sendSyncRequest('meta-carol-sr', META_DOC_ID, Y.encodeStateVector(new Y.Doc()))
   const delta = await carol.waitFor((message) => message.type === 'sync-update')
   const carolDoc = new Y.Doc()
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  Y.applyUpdate(carolDoc, fromBase64(delta.update as string))
+  const deltaUpdate = delta.update
+  if (typeof deltaUpdate !== 'string') {
+    throw new Error('Expected delta update string')
+  }
+  Y.applyUpdate(carolDoc, fromBase64(deltaUpdate))
   expect(metaPaths(carolDoc)).toEqual(metaPaths(aliceDoc))
 
   alice.close()
@@ -449,10 +464,12 @@ test('a cold-started Durable Object rebuilds document state from its durable op 
   rejoin.sendSyncRequest('cold-sr', COLD_START_DOC_ID, Y.encodeStateVector(new Y.Doc()))
   const delta = await rejoin.waitFor((message) => message.type === 'sync-update')
   const restored = new Y.Doc()
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  Y.applyUpdate(restored, fromBase64(delta.update as string))
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  expect(restored.getText('content').toString()).toBe('durable text')
+  const deltaUpdate = delta.update
+  if (typeof deltaUpdate !== 'string') {
+    throw new Error('Expected delta update string')
+  }
+  Y.applyUpdate(restored, fromBase64(deltaUpdate))
+  expect(restored.getText('content').toJSON()).toBe('durable text')
 
   rejoin.close()
 })

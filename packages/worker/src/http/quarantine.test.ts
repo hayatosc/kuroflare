@@ -37,8 +37,11 @@ const record: QuarantinedUpdateRecord = {
 test('quarantine HTTP builders produce protocol-guarded list and detail responses', () => {
   const list = buildQuarantinedUpdateListResponse([record])
   assert.equal(v.is(QuarantinedUpdateListResponseSchema, list), true)
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  assert.equal('updateBytesBase64' in list.entries[0]!, false)
+  const firstEntry = list.entries[0]
+  if (!firstEntry) {
+    throw new Error('Expected first entry to exist')
+  }
+  assert.equal('updateBytesBase64' in firstEntry, false)
 
   const detail = buildQuarantinedUpdateDetailResponse(record, 'AQID')
   assert.equal(v.is(QuarantinedUpdateDetailResponseSchema, detail), true)

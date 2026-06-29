@@ -3132,6 +3132,10 @@ function findAckForMessage(
   return undefined
 }
 
+function hasTypeProperty(obj: unknown): obj is { type: unknown } {
+  return typeof obj === 'object' && obj !== null && 'type' in obj
+}
+
 function syncMessages(
   messages: readonly (string | ArrayBuffer)[],
 ): readonly (string | ArrayBuffer)[] {
@@ -3139,8 +3143,11 @@ function syncMessages(
     if (typeof message !== 'string') {
       return true
     }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    return (JSON.parse(message) as { readonly type?: string }).type !== 'hello-accepted'
+    const parsed: unknown = JSON.parse(message)
+    if (hasTypeProperty(parsed) && typeof parsed.type === 'string') {
+      return parsed.type !== 'hello-accepted'
+    }
+    return true
   })
 }
 
@@ -3258,40 +3265,25 @@ function expectUint8Array(value: unknown): Uint8Array {
 }
 
 function installFakeWebSocketPair(): unknown {
-  const globalWithPair = globalThis as typeof globalThis & {
-    WebSocketPair?: typeof FakeWebSocketPair
-  }
-  const previous = globalWithPair.WebSocketPair
-  globalWithPair.WebSocketPair = FakeWebSocketPair
+  const previous = Reflect.get(globalThis, 'WebSocketPair')
+  Reflect.set(globalThis, 'WebSocketPair', FakeWebSocketPair)
   return previous
 }
 
 function installFakeUpgradeResponse(): unknown {
-  const globalWithResponse = globalThis as typeof globalThis & {
-    Response: typeof Response
-  }
-  const previous = globalWithResponse.Response
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  globalWithResponse.Response = FakeUpgradeResponse as unknown as typeof Response
+  const previous = Reflect.get(globalThis, 'Response')
+  Reflect.set(globalThis, 'Response', FakeUpgradeResponse)
   return previous
 }
 
 function restoreWebSocketPair(previous: unknown): void {
-  const globalWithPair = globalThis as typeof globalThis & {
-    WebSocketPair?: typeof FakeWebSocketPair
-  }
   if (previous === undefined) {
-    delete globalWithPair.WebSocketPair
+    Reflect.deleteProperty(globalThis, 'WebSocketPair')
     return
   }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  globalWithPair.WebSocketPair = previous as typeof FakeWebSocketPair
+  Reflect.set(globalThis, 'WebSocketPair', previous)
 }
 
 function restoreResponse(previous: unknown): void {
-  const globalWithResponse = globalThis as typeof globalThis & {
-    Response: typeof Response
-  }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  globalWithResponse.Response = previous as typeof Response
+  Reflect.set(globalThis, 'Response', previous)
 }
