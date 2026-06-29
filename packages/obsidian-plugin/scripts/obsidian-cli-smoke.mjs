@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -7,7 +7,9 @@ const pluginDir = dirname(fileURLToPath(import.meta.url))
 const packageDir = resolve(pluginDir, '..')
 const pluginId = 'kuroflare'
 const notePath = 'e2e-smoke.md'
+const secondNotePath = 'e2e-smoke-second.md'
 const initialContent = 'initial smoke'
+const secondContent = 'second smoke'
 
 function obsidian(args) {
   return execFileSync('obsidian', args, {
@@ -54,6 +56,30 @@ async function waitForEvalIncludes(code, expected) {
   return output
 }
 
+function evalInObsidian(code) {
+  return JSON.parse(obsidian(['eval', `code=${code}`]).replace(/^=>\s*/, ''))
+}
+
+function listConflictCopies(vaultPath, basename) {
+  return readdirSync(vaultPath)
+    .filter((name) => name.startsWith(`${basename} (kuroflare conflict `) && name.endsWith('.md'))
+    .sort()
+}
+
+async function waitForNewConflictCopy(vaultPath, basename, before) {
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    const after = listConflictCopies(vaultPath, basename)
+    const created = after.filter((path) => !before.includes(path))
+    if (created.length > 0) {
+      return { after, created }
+    }
+    await sleep(100)
+  }
+  const after = listConflictCopies(vaultPath, basename)
+  return { after, created: after.filter((path) => !before.includes(path)) }
+}
+
 function copyPlugin(vaultPath) {
   const targetDir = join(vaultPath, '.obsidian', 'plugins', pluginId)
   mkdirSync(targetDir, { recursive: true })
@@ -65,7 +91,7 @@ function copyPlugin(vaultPath) {
 function clearSpikeIndexedDb() {
   obsidian([
     'eval',
-    "code=new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase('kuroflare-cm6-spike'); request.onsuccess = () => resolve('deleted'); request.onerror = () => reject(request.error); request.onblocked = () => resolve('blocked'); })",
+    "code=(async () => { const databases = typeof indexedDB.databases === 'function' ? await indexedDB.databases() : [{ name: 'kuroflare-cm6-spike' }]; const names = databases.map((database) => database.name).filter((name) => name === 'kuroflare-cm6-spike' || name?.startsWith('kuroflare-file:')); await Promise.all(names.map((name) => new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase(name); request.onsuccess = () => resolve('deleted'); request.onerror = () => reject(request.error); request.onblocked = () => resolve('blocked'); }))); return 'deleted'; })()",
   ])
 }
 
@@ -74,6 +100,8 @@ copyPlugin(vaultPath)
 
 const noteFile = join(vaultPath, notePath)
 writeFileSync(noteFile, initialContent)
+const secondNoteFile = join(vaultPath, secondNotePath)
+writeFileSync(secondNoteFile, secondContent)
 
 obsidian(['dev:debug', 'on'])
 obsidian(['dev:errors', 'clear'])
@@ -88,10 +116,10 @@ const commands = obsidian(['commands', 'filter=kuroflare'])
 requireIncludes(commands, 'kuroflare:kuroflare-spike-simulate-remote-insert', 'commands')
 requireIncludes(commands, 'kuroflare:kuroflare-spike-flush-ytext-to-disk', 'commands')
 
-const state = obsidian([
-  'eval',
+const state = await waitForEvalIncludes(
   'code=JSON.stringify({activeFile: app.workspace.getActiveFile()?.path, targetPath: app.plugins.plugins.kuroflare?.targetPath, yText: app.plugins.plugins.kuroflare?.ytext?.toJSON?.()})',
-])
+  initialContent,
+)
 requireIncludes(state, `"activeFile":"${notePath}"`, 'plugin state')
 requireIncludes(state, `"targetPath":"${notePath}"`, 'plugin state')
 requireIncludes(state, `"yText":"${initialContent}"`, 'plugin state')
@@ -119,6 +147,78 @@ const importedYText = await waitForEvalIncludes(
   externalMarker,
 )
 requireIncludes(importedYText, externalMarker, 'YText after external disk edit')
+
+obsidian(['open', `path=${secondNotePath}`])
+const secondState = await waitForEvalIncludes(
+  'code=JSON.stringify({activeFile: app.workspace.getActiveFile()?.path, targetPath: app.plugins.plugins.kuroflare?.targetPath, yText: app.plugins.plugins.kuroflare?.ytext?.toJSON?.()})',
+  secondContent,
+)
+requireIncludes(secondState, `"activeFile":"${secondNotePath}"`, 'second file state')
+requireIncludes(secondState, `"targetPath":"${secondNotePath}"`, 'second file state')
+requireIncludes(secondState, `"yText":"${secondContent}"`, 'second file state')
+
+obsidian(['command', 'id=kuroflare:kuroflare-spike-simulate-remote-insert'])
+const secondAfterInsert = await waitForEvalIncludes(
+  'code=JSON.stringify({yText: app.plugins.plugins.kuroflare?.ytext?.toJSON?.()})',
+  'remote ',
+)
+requireIncludes(secondAfterInsert, secondContent, 'second YText after insert')
+
+obsidian(['open', `path=${notePath}`])
+const firstRestored = await waitForEvalIncludes(
+  'code=JSON.stringify({activeFile: app.workspace.getActiveFile()?.path, yText: app.plugins.plugins.kuroflare?.ytext?.toJSON?.()})',
+  externalMarker,
+)
+requireIncludes(firstRestored, `"activeFile":"${notePath}"`, 'first file restored state')
+requireIncludes(firstRestored, externalMarker, 'first file restored state')
+if (firstRestored.includes(secondContent)) {
+  throw new Error(`first file YText contains second file content: ${firstRestored}`)
+}
+
+const conflictCopiesBefore = listConflictCopies(vaultPath, 'e2e-smoke')
+evalInObsidian(`(() => {
+  const plugin = app.plugins.plugins.kuroflare;
+  if (!plugin?.fileModifyRef) return JSON.stringify({ disabled: false });
+  app.vault.offref(plugin.fileModifyRef);
+  plugin.fileModifyRef = null;
+  return JSON.stringify({ disabled: true });
+})()`)
+const watcherDropMarker = 'watcher drop external edit'
+writeFileSync(noteFile, `${initialContent}\n${watcherDropMarker}`)
+evalInObsidian(`(() => {
+  const plugin = app.plugins.plugins.kuroflare;
+  plugin.lastMaterialized.set(${JSON.stringify(notePath)}, {
+    diskHash: 'stale-disk-hash',
+    ydocHash: 'stale-ydoc-hash',
+    path: ${JSON.stringify(notePath)},
+    writtenAt: Date.now(),
+  });
+  return JSON.stringify('stale-last-materialized');
+})()`)
+obsidian(['command', 'id=kuroflare:kuroflare-spike-simulate-remote-insert'])
+obsidian(['command', 'id=kuroflare:kuroflare-spike-flush-ytext-to-disk'])
+
+const diskAfterBlockedFlush = readFileSync(noteFile, 'utf8')
+requireIncludes(diskAfterBlockedFlush, watcherDropMarker, 'disk after watcher-drop flush')
+if (diskAfterBlockedFlush.includes('remote ')) {
+  throw new Error(`watcher-drop flush overwrote disk with stale YText: ${diskAfterBlockedFlush}`)
+}
+
+const { after: conflictCopiesAfter, created: newConflictCopies } = await waitForNewConflictCopy(
+  vaultPath,
+  'e2e-smoke',
+  conflictCopiesBefore,
+)
+if (newConflictCopies.length !== 1) {
+  throw new Error(
+    `expected one new conflict copy after watcher-drop flush: ${JSON.stringify({
+      before: conflictCopiesBefore,
+      after: conflictCopiesAfter,
+    })}`,
+  )
+}
+const conflictContent = readFileSync(join(vaultPath, newConflictCopies[0]), 'utf8')
+requireIncludes(conflictContent, watcherDropMarker, 'watcher-drop conflict copy')
 
 const errors = obsidian(['dev:errors'])
 requireIncludes(errors, 'No errors captured.', 'dev errors')

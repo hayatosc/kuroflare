@@ -1,9 +1,15 @@
 import {
+  canonicalizeVaultPath,
   CURRENT_PROTOCOL_VERSION,
   makeDeviceId,
+  makeFileId,
   makeVaultId,
+  makeYDocId,
   signHs256DeviceToken,
   type DeviceTokenScope,
+  type FileId,
+  type MetaFile,
+  type YDocId,
 } from '@kuroflare/protocol'
 import { env, evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { expect, test } from 'vitest'
@@ -18,6 +24,7 @@ const DEVICE_TOKEN_SECRET = 'e2e-device-token-secret'
 // across tests (only durable storage is isolated per test), so sharing one id leaks state.
 const SINGLE_DOC_ID = { kind: 'file', ydocId: 'ydoc-single' } as const
 const CONCURRENT_DOC_ID = { kind: 'file', ydocId: 'ydoc-concurrent' } as const
+const META_DOC_ID = { kind: 'meta' } as const
 const CHECKPOINT_DOC_ID = { kind: 'file', ydocId: 'ydoc-checkpoint' } as const
 const COLD_START_DOC_ID = { kind: 'file', ydocId: 'ydoc-coldstart' } as const
 const ACCESS_SCOPES: readonly DeviceTokenScope[] = [
@@ -51,6 +58,38 @@ function fromBase64(value: string): Uint8Array {
     bytes[index] = binary.charCodeAt(index)
   }
   return bytes
+}
+
+function metaFile(
+  fileId: FileId,
+  path: string,
+  ydocId: YDocId,
+  deviceId: string,
+  now: number,
+): MetaFile {
+  const guardedDeviceId = makeDeviceId(deviceId)
+  return {
+    schemaVersion: 1,
+    fileId,
+    path,
+    canonicalPath: canonicalizeVaultPath(path),
+    type: 'text',
+    ydocId,
+    deleted: false,
+    createdAt: now,
+    createdBy: guardedDeviceId,
+    contentUpdatedAt: now,
+    contentUpdatedBy: guardedDeviceId,
+    updatedAt: now,
+    updatedBy: guardedDeviceId,
+    mtime: now,
+  }
+}
+
+function metaPaths(doc: Y.Doc): readonly (readonly [string, string])[] {
+  return [...doc.getMap<MetaFile>('meta').entries()]
+    .map(([fileId, value]) => [fileId, value.path] as const)
+    .sort(([left], [right]) => left.localeCompare(right))
 }
 
 function roomStub() {
@@ -293,6 +332,67 @@ test('two clients editing the same paragraph concurrently both survive', async (
   const carolDoc = new Y.Doc()
   Y.applyUpdate(carolDoc, fromBase64(delta.update as string))
   expect(carolDoc.getText('content').toString()).toBe(aliceText)
+
+  alice.close()
+  bob.close()
+  carol.close()
+})
+
+test('meta YDoc updates broadcast across clients and late joiners reconstruct the tree', async () => {
+  await seedDevices([DEVICE_A, DEVICE_B, DEVICE_C])
+  const alice = await TestClient.connect(DEVICE_A)
+  const bob = await TestClient.connect(DEVICE_B)
+
+  const aliceDoc = new Y.Doc()
+  const aliceMap = aliceDoc.getMap<unknown>('meta')
+  const fileA = makeFileId('meta-file-a')
+  const fileB = makeFileId('meta-file-b')
+  aliceMap.set(fileA, metaFile(fileA, 'a.md', makeYDocId('meta-doc-a'), DEVICE_A.deviceId, 1))
+  aliceMap.set(fileB, metaFile(fileB, 'b.md', makeYDocId('meta-doc-b'), DEVICE_A.deviceId, 2))
+  alice.sendUpdate('meta-base', META_DOC_ID, Y.encodeStateAsUpdate(aliceDoc))
+  await alice.waitFor((message) => message.type === 'ack' && message.messageId === 'meta-base')
+  const baseBroadcast = await bob.waitFor(
+    (message) => message.type === 'sync-update' && message.messageId === 'meta-base',
+  )
+
+  const bobDoc = new Y.Doc()
+  Y.applyUpdate(bobDoc, fromBase64(baseBroadcast.update as string))
+  const aliceBaseVector = Y.encodeStateVector(aliceDoc)
+  const bobBaseVector = Y.encodeStateVector(bobDoc)
+
+  aliceMap.set(fileA, metaFile(fileA, 'Shared.md', makeYDocId('meta-doc-a'), DEVICE_A.deviceId, 10))
+  bobDoc
+    .getMap<unknown>('meta')
+    .set(fileB, metaFile(fileB, 'Shared.md', makeYDocId('meta-doc-b'), DEVICE_B.deviceId, 10))
+
+  alice.sendUpdate(
+    'meta-alice-rename',
+    META_DOC_ID,
+    Y.encodeStateAsUpdate(aliceDoc, aliceBaseVector),
+  )
+  bob.sendUpdate('meta-bob-rename', META_DOC_ID, Y.encodeStateAsUpdate(bobDoc, bobBaseVector))
+
+  const bobRenameForAlice = await alice.waitFor(
+    (message) => message.type === 'sync-update' && message.messageId === 'meta-bob-rename',
+  )
+  const aliceRenameForBob = await bob.waitFor(
+    (message) => message.type === 'sync-update' && message.messageId === 'meta-alice-rename',
+  )
+  Y.applyUpdate(aliceDoc, fromBase64(bobRenameForAlice.update as string))
+  Y.applyUpdate(bobDoc, fromBase64(aliceRenameForBob.update as string))
+
+  expect(metaPaths(aliceDoc)).toEqual(metaPaths(bobDoc))
+  expect(metaPaths(aliceDoc)).toEqual([
+    ['meta-file-a', 'Shared.md'],
+    ['meta-file-b', 'Shared.md'],
+  ])
+
+  const carol = await TestClient.connect(DEVICE_C)
+  carol.sendSyncRequest('meta-carol-sr', META_DOC_ID, Y.encodeStateVector(new Y.Doc()))
+  const delta = await carol.waitFor((message) => message.type === 'sync-update')
+  const carolDoc = new Y.Doc()
+  Y.applyUpdate(carolDoc, fromBase64(delta.update as string))
+  expect(metaPaths(carolDoc)).toEqual(metaPaths(aliceDoc))
 
   alice.close()
   bob.close()

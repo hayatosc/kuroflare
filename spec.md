@@ -676,6 +676,59 @@ MVP-3: initial sync + binary
 - join は remote meta を先に読んで fileId adopt する。
 - binary は blob PUT 完了後に meta 参照を公開する。
 - 初回 seed は WS/op_log に大量投入せず snapshot 直 PUT にする。
+- 現在の e2e は、Worker/R2 に seed 済みの meta snapshot と file YDoc snapshot から、空の Obsidian vault に Markdown 本文を materialize できることを固定している。
+- 現在の e2e は、binary chunk PUT、manifest PUT、meta 参照公開、Worker からの manifest/chunk 再取得と content hash 検証まで固定している。
+
+### 11.2 コード確認後の残タスク
+
+2026-06-30 時点の実装を確認した結果、設計の危険仮説は e2e でかなり潰せているが、まだ「製品として完成」ではない。残りは大きく、production runtime への接続、初回同期 API の一般化、binary/materialize の常用化、運用 UI の 4 群に分かれる。
+
+P0: production startup pipeline を no-op から実処理へつなぐ。
+
+- `packages/obsidian-plugin/src/main.ts` の `createStartupStepPort()` では `fetch-remote-meta-snapshot`、`apply-remote-meta-snapshot`、`adopt-local-files-after-remote-meta`、`enqueue-missing-downloads`、`load-indexeddb-ydocs`、`resume-background-queues` がまだ実質 no-op。`packages/core/src/startup.ts` と `packages/obsidian-plugin/src/sync/startup-actuation.ts` には step と port 境界があるので、`main.ts` の ad-hoc 実装をそこへ寄せる。
+- `packages/obsidian-plugin/src/sync/obsidian-runtime-composition.ts` には unwired fail-fast port が残る。production composition root で local-store open/rebuild、startup step、outbox worker、WebSocket session を実 port へ接続する。
+- `setup` persistence は `packages/obsidian-plugin/src/sync/setup-persist-runtime.ts` に SecretStorage + IndexedDB metadata の実行境界があるが、`main.ts` はまだ `setupResponse`、`accessToken`、`refreshToken` を `data.json` へ保存する簡易経路を持つ。token material は `data.json` から外し、SecretStorage と metadata store を source にする。
+- `packages/obsidian-plugin/src/sync/websocket-runtime.ts` には subprotocol token、hello admission、session、inbound dispatcher があるが、`main.ts` は独自 `openWorkerWebSocket()` / query token 経路を使っている。runtime 側の WebSocket port を実際の plugin lifecycle に採用する。
+
+P0: full snapshot の production 経路を完成させる。
+
+- `packages/protocol/src/snapshot-http.ts` と `packages/obsidian-plugin/src/sync/snapshot-apply-runtime.ts` には latest snapshot response と local apply transaction があるが、`packages/worker/src/runtime.ts` には production `GET latest snapshot` route がなく、存在するのは e2e seed 用 `POST /__e2e/snapshot` だけ。`NeedFullSnapshot` を受けた client が HTTP で対象 doc の snapshot を取得できる route を追加する。
+- `NeedFullSnapshot(reason="state-vector-too-old")` は Worker から返るが、plugin 側は `handleWorkerMessage()` で警告するだけ。`snapshot-apply-runtime.ts` を使い、active editor / pending outbox / doc mismatch / hash mismatch の gate を通して local YDoc、remote cursor、outbox release を同一 IndexedDB transaction に保存する。
+- join-existing の e2e は meta/file snapshot seed から materialize できるが、現在は Worker の e2e seed API に依存している。通常の bootstrap/import flow で snapshot direct PUT、pointer 作成、meta 公開までできる CLI または plugin flow を作る。
+
+P0: outbox worker を実 side effect runner として動かす。
+
+- `packages/obsidian-plugin/src/sync/outbox-worker.ts`、`outbound-queue.ts`、`local-store.ts`、`local-store-driver.ts`、`local-store-indexeddb.ts` は lease、CAS、completion、IndexedDB transaction plan まで持つが、plugin lifecycle から scheduler tick を継続実行する runner がまだ接続されていない。
+- `blob-put`、`blob-get`、`manifest-put`、`materialize`、`meta-ref-update` の side effect plan はある。実 runner は local blob cache read/write、HTTP fetch、Vault write、WebSocket send、completion classification、lease renew/release を順番に実行し、成功/失敗を local store transaction に戻す。
+- `y-update` / `meta-ref-update` は server `Ack` で完了する。`packages/obsidian-plugin/src/sync/websocket-runtime.ts` の inbound dispatcher と outbox completion port を production local store に接続し、ad-hoc `sendDocUpdateToWorker()` 直送を outbox 経由へ寄せる。
+
+P1: binary を e2e 専用から通常機能へ上げる。
+
+- `packages/worker/src/runtime.ts` は `/blobs/head`、`/blobs/upload-url`、single PUT `/blobs/:sha256`、`/blob-manifests/:hash.json` を持つが、multipart は `blob-upload-url:multipart-unimplemented` で拒否する。大きい添付を扱うなら multipart create/part/complete/abort と R2 lifecycle を実装する。
+- `packages/blob/src/manifest.ts` と `packages/core/src/outbox.ts` には CDC、manifest、binary upload/download outbox plan がある。Obsidian の vault watcher から binary create/modify/delete を検出し、chunk cache、manifest PUT、meta ref update、download materialize を通常 outbox に積む。
+- 現在の binary e2e は remote peer が HTTP で PUT して meta を公開する形。Obsidian plugin 自身が binary file を upload/download/materialize する e2e を追加する。
+
+P1: meta materialize の残りを埋める。
+
+- `packages/obsidian-plugin/src/main.ts` は remote meta の text entry から欠損 Markdown を作れるが、親フォルダがない path はまだ扱わない。remote path の親フォルダ作成、既存 folder/file 衝突、invalid path quarantine を実装する。
+- active file が remote で rename/delete された場合の UX は spec にあるが、`main.ts` は active binding 維持・安全な rename/delete materialize まで未接続。active editor を直接 `Vault.modify` しない制約を守ったまま、path 更新と tombstone 表示を実装する。
+- `packages/obsidian-plugin/src/sync/meta-reconcile.ts` は delete-vs-edit repair を持つが、restorable binary set は production では未算出。binary manifest/chunk 検証を走らせ、復活可能な binary だけを restore する。
+- `keep-deleted` や invalid meta entry は repair-log / UI に出す必要がある。今は repair 結果を返す境界はあるが、ユーザーが確認できる persistent repair log と panel はまだない。
+
+P1: local store degraded / repair flow を UI へつなぐ。
+
+- `packages/core/src/local-store.ts`、`packages/obsidian-plugin/src/sync/local-store-schema.ts`、`local-store-repair.ts` は schema gate、degraded、export、discard/rebuild、repair import staging を持つ。Obsidian settings/repair panel から export、discard、import、manual resume を実行できる UI が必要。
+- IndexedDB directory API がない環境、schema too new、pending outbox あり rebuild などの状態を status bar と Notice だけでなく、誤操作しにくい repair panel に出す。
+- repair export/import は token material を含めず、protocol guard を通った outbox evidence だけを扱うことを e2e で固定する。
+
+P2: 運用・配布に必要な面を足す。
+
+- `packages/worker/src/retention.ts` は snapshot retention plan を持つが、定期実行・監査ログ・削除失敗 retry が production path に薄い。checkpoint 後の retention cleanup と admin visibility を足す。
+- quarantine admin は Worker HTTP にあるが、plugin 側の inspection / discard / force-apply UI がない。dangerous action は確認付きにする。
+- auth refresh/revoke runtime はあるが、plugin lifecycle の foreground/resume、token expiry 前 refresh、revoked device の local shutdown に接続する。
+- iOS/Android の foreground resume で必ず WS 再接続 + state vector 交換する。background 中は queue を無理に進めない。
+- presence/awareness は WebSocket capability の型とテスト片があるだけで、editor binding には未接続。MVP 外なら残してよいが、実装するなら `createYTextEditorExtension` へ awareness injection する。
+- 配布前に settings UI、Setup URI/QR、ログの secret redaction、migration/backward-incompatible policy、manual escape hatch（local truth / remote truth / rebuild）を整える。
 
 MVP を越えるまでやらないこと:
 
@@ -2221,13 +2274,13 @@ MVP との関係:
 
 ### 未検証・未配線の「長い棒」
 
-> 2026-06-29 更新で 1・2・4・7 が解消した（実 Linux Obsidian app + obsidian-cli を実機で回せるようになった）。下記は更新後の状態。
+> 2026-06-29 更新で 1・2・4・7 が解消した（実 Linux Obsidian app + obsidian-cli を実機で回せるようになった）。2026-06-30 更新で MVP-2 の Worker 経由 meta 同期と text 本文 per-file YDoc 化を実機 e2e に載せた。下記は更新後の状態。
 
-1. **plugin↔Worker のフル e2e を実機で検証済み**。`packages/worker/vitest.e2e.config.ts` + `test/e2e/sync.e2e.test.ts` の workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集収束、後続参加者の sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）に加え、`packages/obsidian-plugin/scripts/obsidian-miniflare-smoke.mjs` が **実 Linux Obsidian + miniflare Worker** 上で setup token 交換 → R2 snapshot→Obsidian disk 反映 → 別デバイスのリモート編集→disk 反映 → Obsidian ローカル編集→リモートへブロードキャスト → plugin reload 後の再接続まで、dev:errors なしで通す（`pnpm --filter @kuroflare/worker dev:local` + `pnpm --filter @kuroflare/obsidian-plugin test:e2e:obsidian:miniflare`）。
-2. **ワークスペース全体ビルド・typecheck・lint・format は全て通過**。`pnpm typecheck` / `oxlint .` / `oxfmt --check .` / `pnpm build` が green。node 単体 635 + worker e2e 5。
+1. **plugin↔Worker のフル e2e を実機で検証済み**。`packages/worker/vitest.e2e.config.ts` + `test/e2e/sync.e2e.test.ts` の workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集収束、meta YDoc broadcast + late join 復元、後続参加者の sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）に加え、`packages/obsidian-plugin/scripts/obsidian-miniflare-smoke.mjs` が **実 Linux Obsidian + miniflare Worker** 上で setup token 交換 → R2 snapshot→Obsidian disk 反映 → 別デバイスのリモート編集→disk 反映 → Obsidian ローカル編集→リモートへブロードキャスト → meta YDoc の cross-device concurrent rename → deterministic conflict repair → disk materialize → plugin reload 後の再接続まで、dev:errors なしで通す（`pnpm --filter @kuroflare/worker dev:local` + `pnpm --filter @kuroflare/obsidian-plugin test:e2e:obsidian:miniflare`）。
+2. **ワークスペース全体ビルド・typecheck・lint・format は全て通過**。`pnpm typecheck` / `oxlint .` / `oxfmt --check .` / `pnpm build` が green。node 単体 647 + worker e2e 6。
 3. **終端状態の actuation 未配線**。`enter-auth-blocked` / `enter-degraded` は shell command 化までは実装済みだが、実 Obsidian の UI / repair flow へは未接続。
-4. **CM6 ⇄ Y.Text ⇄ disk の往復を実 Obsidian シェルで検証済み（MVP-0 受け入れ）**。headless の `src/obsidian/editor-binding.test.ts`（jsdom + 実 CodeMirror6 + 実 yjs/y-codemirror.next）に加え、`scripts/obsidian-cli-smoke.mjs` が [obsidian-cli](https://github.com/chhoumann/obsidian-e2e)（実 Linux Obsidian + 実 vault）上で binding seed → remote insert→YText→disk flush（materialize CAS 経由）と、外部 disk 編集→watcher hash gate→YText 取り込みの両レグを dev:errors なしで通す（`pnpm --filter @kuroflare/obsidian-plugin test:e2e:obsidian`）。**残り**: watcher を意図的に落とした際の materialize CAS conflict-copy 退避を実機 e2e 化（core 決定層 + plugin 単体では検証済み）。
-5. **MVP-2 の path repair / file-tree は live 配線済み（cross-device 同期のみ残）。MVP-3 は配線途中**。plugin に live meta YDoc を持たせ、vault create/rename/delete を `applyFileCreate/Rename/Delete`（`src/sync/meta-file-tree.ts`）へ、meta afterTransaction を `reconcileMetaDoc`（`src/sync/meta-reconcile.ts`）へ接続。収束した rename は `materializedPaths` 経由で `app.fileManager.renameFile` により disk へ反映する。`test:e2e:obsidian:mvp2` が実 Linux Obsidian で「rename が同一 fileId の path 更新（delete+create にならない）」を実証。**残り**: meta YDoc を Worker（`docId.kind='meta'`）へ同期して 2 端末の concurrent rename を deterministic に収束させる実機 e2e、text 本文の per-file YDoc 化。CDC バイナリ（blob PUT→meta 参照公開）・初回フルシンク（snapshot 直 PUT）は planner/protocol どまり。
+4. **CM6 ⇄ Y.Text ⇄ disk の往復を実 Obsidian シェルで検証済み（MVP-0 受け入れ）**。headless の `src/obsidian/editor-binding.test.ts`（jsdom + 実 CodeMirror6 + 実 yjs/y-codemirror.next）に加え、`scripts/obsidian-cli-smoke.mjs` が [obsidian-cli](https://github.com/chhoumann/obsidian-e2e)（実 Linux Obsidian + 実 vault）上で binding seed → remote insert→YText→disk flush（materialize CAS 経由）、外部 disk 編集→watcher hash gate→YText 取り込み、2 つの Markdown file を開き分けても text YDoc が混ざらない per-file YDoc レグ、watcher を意図的に落とした際の materialize CAS conflict-copy 退避を dev:errors なしで通す（`pnpm --filter @kuroflare/obsidian-plugin test:e2e:obsidian`）。
+5. **MVP-2 の path repair / file-tree は live 配線済み、Worker 経由の cross-device 同期も実機 e2e 済み。MVP-3 の危険仮説も実機 e2e に載った**。plugin に live meta YDoc を持たせ、vault create/rename/delete を `applyFileCreate/Rename/Delete`（`src/sync/meta-file-tree.ts`）へ、meta afterTransaction を `reconcileMetaDoc`（`src/sync/meta-reconcile.ts`）へ接続。収束した rename は `materializedPaths` 経由で `app.fileManager.renameFile` により disk へ反映する。`test:e2e:obsidian:mvp2` が実 Linux Obsidian で「rename が同一 fileId の path 更新（delete+create にならない）」を実証し、`test:e2e:obsidian:miniflare` が meta YDoc を Worker（`docId.kind='meta'`）へ同期して remote peer との concurrent rename を deterministic に収束・materialize する。text 本文は active file ごとに別 YDoc / IndexedDB persistence を持つ。バイナリは実 Worker の blob proxy に chunk PUT、blob manifest PUT、meta 参照公開、manifest/chunk GET、content hash reassemble まで載った。初回フルシンクは Worker/R2 に seed 済みの meta snapshot と file YDoc snapshot から、空の Obsidian vault に Markdown 本文を materialize するところまで載った。ただし production latest snapshot API、通常 bootstrap/import flow、outbox runner 常用化は §11.2 の残タスク。
 6. **UI 全般が未着手**。conflict UI・手動エスケープハッチ・Setup URI フロー・設定タブは spike コマンドのみ。
 7. **git 初期コミット済み + CI 雛形あり**。`.github/workflows/ci.yml` が push(main)/PR で format:check → lint → typecheck → unit test → worker e2e を回す。実 Obsidian e2e は実機（display + Obsidian app）依存のため CI 外の手動/ローカル実行。デプロイ検証は未。
 
@@ -2238,11 +2291,11 @@ MVP との関係:
 
 ### MVP チェックリスト（§11.1 対応）
 
-- [x] MVP-0: local editor loop（実 Linux Obsidian + obsidian-cli で CM6 ⇄ Y.Text ⇄ disk の両レグを往復。`test:e2e:obsidian`）— watcher-drop CAS の実機 e2e 化のみ残
+- [x] MVP-0: local editor loop（実 Linux Obsidian + obsidian-cli で CM6 ⇄ Y.Text ⇄ disk の両レグ、per-file YDoc、watcher-drop CAS conflict-copy を往復。`test:e2e:obsidian`）
 - [x] MVP-1: one file remote sync（workerd e2e に加え、実 Linux Obsidian + miniflare で plugin↔Worker フル同期・リモート並行編集・再接続を証明。`test:e2e:obsidian:miniflare`）
-- [~] MVP-2: meta YDoc + path repair（decision + live 配線済み。rename=path 更新を実 Obsidian で実証。残: meta の Worker 同期で cross-device concurrent rename 収束を実機 e2e 化、text 本文 per-file 化）
-- [ ] MVP-3: initial sync + binary（protocol/planner あり、配線途中）
+- [x] MVP-2: meta YDoc + path repair（decision + live 配線済み。rename=path 更新、Worker 経由 cross-device concurrent rename 収束、text 本文 per-file YDoc 化を実 Obsidian e2e で実証）
+- [x] MVP-3: initial sync + binary（binary blob PUT→meta 参照公開、manifest/chunk 再取得、初回 meta/file snapshot からの Markdown materialize を実機 e2e で証明。production API/UX 化は §11.2 に残す）
 
 ### 推奨する次の縦切り
 
-(a) 完了: 全体ビルド通過。(b) 完了: miniflare で MVP-1 の 1 ファイル同期 e2e。(c) 完了: 実 Linux Obsidian + obsidian-cli で MVP-0（CM6 往復 + disk materialize + 外部編集取り込み）と MVP-1（plugin↔Worker フル同期）を実機受け入れ。(d) 進行中: MVP-2 の path repair / file-tree を live 配線し、`test:e2e:obsidian:mvp2` で rename=path 更新を実機実証。**次は (e)**: meta YDoc を Worker（`docId.kind='meta'`）へ同期して 2 端末の concurrent rename → deterministic 収束を実機 e2e 化 → text 本文を per-file YDoc 化 → MVP-3 の CDC バイナリ（blob PUT→meta 参照公開）と初回フルシンク（snapshot 直 PUT）。あわせて watcher-drop CAS conflict-copy の実機 e2e 化を残タスクとして拾う。
+(a) 完了: 全体ビルド通過。(b) 完了: miniflare で MVP-1 の 1 ファイル同期 e2e。(c) 完了: 実 Linux Obsidian + obsidian-cli で MVP-0（CM6 往復 + disk materialize + 外部編集取り込み + watcher-drop CAS conflict-copy）と MVP-1（plugin↔Worker フル同期）を実機受け入れ。(d) 完了: MVP-2 の path repair / file-tree を live 配線し、`test:e2e:obsidian:mvp2` と `test:e2e:obsidian:miniflare` で rename=path 更新、Worker 経由 concurrent rename 収束、text 本文 per-file YDoc 化を実機実証。(e) 完了: MVP-3 の CDC バイナリ（blob PUT→meta 参照公開）と初回フルシンク（meta/file snapshot から Markdown materialize）を実機 e2e 化。**次は §11.2 の P0**: startup pipeline、production snapshot API、outbox runner を ad-hoc 実装から production runtime へ接続する。

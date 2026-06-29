@@ -56,9 +56,9 @@ import {
 } from './sync/setup-exchange-http.js'
 import { type SyncRuntimeStartupStepEffectPort } from './sync/startup-actuation.js'
 
-const SPIKE_DOC_NAME = 'kuroflare-cm6-spike'
 const SPIKE_TEXT_NAME = 'fixed-file'
 const META_DOC_NAME = 'kuroflare-meta'
+const META_SYNC_DOC_ID = { kind: 'meta' } satisfies DocId
 const DISK_ORIGIN = 'kuroflare:disk'
 const REMOTE_ORIGIN = 'kuroflare:remote-simulated'
 const WORKER_ORIGIN = 'kuroflare:worker'
@@ -78,6 +78,15 @@ interface KuroflareSettings {
   readonly refreshToken?: string | undefined
 }
 
+type FileDocId = Extract<DocId, { readonly kind: 'file' }>
+
+interface LoadedTextDoc {
+  readonly docId: FileDocId
+  readonly doc: Y.Doc
+  readonly text: Y.Text
+  persistence: IndexeddbPersistence | null
+}
+
 const DEFAULT_SETTINGS: KuroflareSettings = {
   endpoint: 'http://127.0.0.1:8787',
   setupVaultId: '',
@@ -92,11 +101,12 @@ function isPartialSettings(value: unknown): value is Partial<KuroflareSettings> 
 
 /** Spike-only Obsidian plugin for validating CM6/Yjs/disk behavior. */
 export default class KuroflareSpikePlugin extends Plugin {
-  private readonly ydoc = new Y.Doc()
-  private readonly ytext = this.ydoc.getText(SPIKE_TEXT_NAME)
+  private ydoc = new Y.Doc()
+  private ytext = this.ydoc.getText(SPIKE_TEXT_NAME)
   private readonly cmCompartment = new Compartment()
   private readonly lastMaterialized = new Map<string, LastMaterializedRecord>()
-  private persistence: IndexeddbPersistence | null = null
+  private readonly loadedTextDocs = new Map<string, LoadedTextDoc>()
+  private activeTextDoc: LoadedTextDoc | null = null
   private statusEl: HTMLElement | null = null
   private syncStatusEl: HTMLElement | null = null
   private syncRuntime: SyncRuntimeObsidianComposition | null = null
@@ -116,6 +126,8 @@ export default class KuroflareSpikePlugin extends Plugin {
   private metaPersistence: IndexeddbPersistence | null = null
   // Last on-disk path materialized per file ID, so a converged meta rename can move the real file.
   private readonly materializedPaths = new Map<FileId, string>()
+  // Remote text files discovered from meta before their file YDoc has arrived.
+  private readonly pendingRemoteTextFiles = new Map<string, string>()
   // Canonical paths whose vault rename we initiated, to ignore the resulting watcher echo.
   private readonly pendingFsRenames = new Set<string>()
 
@@ -129,16 +141,6 @@ export default class KuroflareSpikePlugin extends Plugin {
 
     this.addSettingTab(new KuroflareSettingTab(this.app, this))
     this.registerEditorExtension(this.cmCompartment.of([]))
-    this.ydoc.on('update', (update: Uint8Array, origin: unknown) => {
-      if (origin === DISK_ORIGIN || origin === REMOTE_ORIGIN || origin === WORKER_ORIGIN) {
-        return
-      }
-      void this.sendYjsUpdateToWorker(update, 'local-update')
-    })
-    void this.openPersistence().catch((error: unknown) => {
-      console.error('[kuroflare] failed to open IndexedDB persistence', error)
-      this.setStatus('persistence error')
-    })
     void this.openMetaPersistence().catch((error: unknown) => {
       console.error('[kuroflare] failed to open meta IndexedDB persistence', error)
     })
@@ -148,6 +150,12 @@ export default class KuroflareSpikePlugin extends Plugin {
         return
       }
       void this.reconcileAndMaterializeMeta()
+    })
+    this.metaDoc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === WORKER_ORIGIN) {
+        return
+      }
+      void this.sendDocUpdateToWorker(META_SYNC_DOC_ID, update, 'meta-update')
     })
     this.syncRuntime = this.createSyncRuntime()
     this.registerCommands()
@@ -170,13 +178,16 @@ export default class KuroflareSpikePlugin extends Plugin {
       this.fileModifyRef = null
     }
 
-    void this.persistence?.destroy()
-    this.persistence = null
+    for (const loaded of this.loadedTextDocs.values()) {
+      void loaded.persistence?.destroy()
+      loaded.doc.destroy()
+    }
+    this.loadedTextDocs.clear()
+    this.activeTextDoc = null
     void this.metaPersistence?.destroy()
     this.metaPersistence = null
     this.workerSocket?.close(1000, 'plugin-unload')
     this.workerSocket = null
-    this.ydoc.destroy()
     this.metaDoc.destroy()
   }
 
@@ -194,13 +205,36 @@ export default class KuroflareSpikePlugin extends Plugin {
     }
   }
 
-  private async openPersistence(): Promise<void> {
-    this.persistence = new IndexeddbPersistence(SPIKE_DOC_NAME, this.ydoc)
-    await this.persistence.whenSynced
-  }
-
   private get metaMap(): Y.Map<unknown> {
     return this.metaDoc.getMap<unknown>('meta')
+  }
+
+  private async loadTextDoc(docId: FileDocId): Promise<LoadedTextDoc> {
+    const existing = this.loadedTextDocs.get(docId.ydocId)
+    if (existing !== undefined) {
+      return existing
+    }
+
+    const doc = new Y.Doc()
+    const text = doc.getText(SPIKE_TEXT_NAME)
+    const loaded: LoadedTextDoc = { docId, doc, text, persistence: null }
+    doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === DISK_ORIGIN || origin === REMOTE_ORIGIN || origin === WORKER_ORIGIN) {
+        return
+      }
+      void this.sendDocUpdateToWorker(docId, update, 'local-update')
+    })
+    const persistence = new IndexeddbPersistence(`kuroflare-file:${docId.ydocId}`, doc)
+    loaded.persistence = persistence
+    this.loadedTextDocs.set(docId.ydocId, loaded)
+    await persistence.whenSynced
+    return loaded
+  }
+
+  private setActiveTextDoc(loaded: LoadedTextDoc): void {
+    this.activeTextDoc = loaded
+    this.ydoc = loaded.doc
+    this.ytext = loaded.text
   }
 
   private async openMetaPersistence(): Promise<void> {
@@ -247,10 +281,12 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
     const fileId = makeFileId(crypto.randomUUID())
+    const activeYDocId =
+      this.activeFile?.path === file.path ? this.activeTextDoc?.docId.ydocId : undefined
     applyFileCreate(this.metaMap, {
       fileId,
       path: file.path,
-      ydocId: makeYDocId(`file-${fileId}`),
+      ydocId: activeYDocId ?? makeYDocId(`file-${fileId}`),
       deviceId: this.fileTreeDeviceId(),
       now: Date.now(),
       origin: FILE_TREE_ORIGIN,
@@ -318,6 +354,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       }
       this.materializedPaths.set(value.fileId, value.path)
       if (known === undefined) {
+        await this.requestMissingRemoteTextFile(value)
         continue
       }
       const file = this.app.vault.getAbstractFileByPath(known)
@@ -337,6 +374,27 @@ export default class KuroflareSpikePlugin extends Plugin {
         })
       }
     }
+  }
+
+  private async requestMissingRemoteTextFile(value: {
+    readonly type: unknown
+    readonly path: string
+    readonly ydocId?: unknown
+  }): Promise<void> {
+    if (value.type !== 'text' || typeof value.ydocId !== 'string') {
+      return
+    }
+    if (this.app.vault.getAbstractFileByPath(value.path) instanceof TFile) {
+      return
+    }
+    const docId: FileDocId = { kind: 'file', ydocId: makeYDocId(value.ydocId) }
+    const loaded = await this.loadTextDoc(docId)
+    this.pendingRemoteTextFiles.set(docId.ydocId, value.path)
+    await this.requestDocFromWorker(
+      docId,
+      Y.encodeStateVector(loaded.doc),
+      'meta-missing-text-file',
+    )
   }
 
   private registerCommands(): void {
@@ -475,7 +533,7 @@ export default class KuroflareSpikePlugin extends Plugin {
                     },
                   },
                 },
-          hasMetaYDoc: this.ydoc.getMap('meta').size > 0,
+          hasMetaYDoc: this.metaMap.size > 0,
           hasLocalVaultFiles: this.app.vault.getMarkdownFiles().length > 0,
           setupResponse: this.kuroflareSettings.setupResponse,
         }),
@@ -523,9 +581,14 @@ export default class KuroflareSpikePlugin extends Plugin {
           case 'sync-active-file-state-vector':
             await this.requestActiveFileFromWorker(`startup:${effect.step}`)
             return
-          case 'send-meta-update':
           case 'enqueue-initial-file-uploads':
             await this.sendCurrentYDocToWorker(`startup:${effect.step}`)
+            return
+          case 'send-meta-update':
+            await this.sendMetaDocToWorker(`startup:${effect.step}`)
+            return
+          case 'sync-meta-state-vector':
+            await this.requestMetaDocFromWorker(`startup:${effect.step}`)
             return
           case 'scan-local-vault':
           case 'create-local-meta-ydoc':
@@ -534,7 +597,6 @@ export default class KuroflareSpikePlugin extends Plugin {
           case 'adopt-local-files-after-remote-meta':
           case 'enqueue-missing-downloads':
           case 'load-indexeddb-ydocs':
-          case 'sync-meta-state-vector':
           case 'resume-background-queues':
             return
         }
@@ -657,20 +719,52 @@ export default class KuroflareSpikePlugin extends Plugin {
     )
     await accepted
     this.syncStatusEl?.setText(`Kuroflare sync: connected ${setup.vaultId}`)
+    await this.requestMetaDocFromWorker('hello-accepted')
     await this.requestActiveFileFromWorker('hello-accepted')
+    await this.requestPendingRemoteTextFilesFromWorker('hello-accepted')
   }
 
   private async sendCurrentYDocToWorker(reason: string): Promise<void> {
-    await this.sendYjsUpdateToWorker(Y.encodeStateAsUpdate(this.ydoc), reason)
+    const loaded = this.activeTextDoc
+    if (loaded === null) {
+      return
+    }
+    await this.sendDocUpdateToWorker(loaded.docId, Y.encodeStateAsUpdate(loaded.doc), reason)
+  }
+
+  private async sendMetaDocToWorker(reason: string): Promise<void> {
+    await this.sendDocUpdateToWorker(META_SYNC_DOC_ID, Y.encodeStateAsUpdate(this.metaDoc), reason)
   }
 
   private async requestActiveFileFromWorker(reason: string): Promise<void> {
+    const loaded = this.activeTextDoc
+    if (loaded === null) {
+      return
+    }
+    await this.requestDocFromWorker(loaded.docId, Y.encodeStateVector(loaded.doc), reason)
+  }
+
+  private async requestMetaDocFromWorker(reason: string): Promise<void> {
+    await this.requestDocFromWorker(META_SYNC_DOC_ID, Y.encodeStateVector(this.metaDoc), reason)
+  }
+
+  private async requestPendingRemoteTextFilesFromWorker(reason: string): Promise<void> {
+    for (const ydocId of this.pendingRemoteTextFiles.keys()) {
+      const docId: FileDocId = { kind: 'file', ydocId: makeYDocId(ydocId) }
+      const loaded = await this.loadTextDoc(docId)
+      await this.requestDocFromWorker(docId, Y.encodeStateVector(loaded.doc), reason)
+    }
+  }
+
+  private async requestDocFromWorker(
+    docId: DocId,
+    stateVector: Uint8Array,
+    reason: string,
+  ): Promise<void> {
     if (!this.workerHelloAccepted || this.workerSocket?.readyState !== WebSocket.OPEN) {
       return
     }
     const setup = this.requireSetupResponse()
-    const docId = await this.activeDocId()
-    const stateVector = Y.encodeStateVector(this.ydoc)
     const message: SyncRequest = {
       type: 'sync-request',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
@@ -689,11 +783,22 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async sendYjsUpdateToWorker(update: Uint8Array, reason: string): Promise<void> {
+    const loaded = this.activeTextDoc
+    if (loaded === null) {
+      return
+    }
+    await this.sendDocUpdateToWorker(loaded.docId, update, reason)
+  }
+
+  private async sendDocUpdateToWorker(
+    docId: DocId,
+    update: Uint8Array,
+    reason: string,
+  ): Promise<void> {
     if (!this.workerHelloAccepted || this.workerSocket?.readyState !== WebSocket.OPEN) {
       return
     }
     const setup = this.requireSetupResponse()
-    const docId = await this.activeDocId()
     const updateSha256 = await this.sha256Hex(update)
     const message: SyncUpdate = {
       type: 'sync-update',
@@ -744,16 +849,48 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async applyWorkerSyncUpdate(message: SyncUpdate): Promise<void> {
-    if (!sameDocId(message.docId, await this.activeDocId())) {
-      return
-    }
     const update = decodeBase64(message.update)
     if (update === null) {
       console.warn('[kuroflare] dropped invalid base64 worker update')
       return
     }
-    Y.applyUpdate(this.ydoc, update, WORKER_ORIGIN)
-    await this.flushYTextToDisk('worker-update')
+    if (message.docId.kind === 'meta') {
+      Y.applyUpdate(this.metaDoc, update, WORKER_ORIGIN)
+      return
+    }
+    const loaded = await this.loadTextDoc(message.docId)
+    Y.applyUpdate(loaded.doc, update, WORKER_ORIGIN)
+    await this.materializePendingRemoteTextFile(loaded)
+    if (sameDocId(message.docId, await this.activeDocId())) {
+      await this.flushYTextToDisk('worker-update')
+    }
+  }
+
+  private async materializePendingRemoteTextFile(loaded: LoadedTextDoc): Promise<void> {
+    const path = this.pendingRemoteTextFiles.get(loaded.docId.ydocId)
+    if (path === undefined) {
+      return
+    }
+    const existing = this.app.vault.getAbstractFileByPath(path)
+    if (existing instanceof TFile) {
+      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+      return
+    }
+    if (existing !== null) {
+      return
+    }
+
+    const content = loaded.text.toJSON()
+    await this.app.vault.create(path, content)
+    const textHash = await hashCanonicalText(content)
+    this.lastMaterialized.set(path, {
+      diskHash: textHash,
+      ydocHash: textHash,
+      path,
+      writtenAt: Date.now(),
+    })
+    this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+    console.info('[kuroflare] materialized remote text file', { path, docId: loaded.docId })
   }
 
   private async answerWorkerSyncRequest(message: SyncRequest): Promise<void> {
@@ -761,14 +898,15 @@ export default class KuroflareSpikePlugin extends Plugin {
     if (socket === null || socket.readyState !== WebSocket.OPEN) {
       return
     }
-    if (!sameDocId(message.docId, await this.activeDocId())) {
-      return
-    }
     const stateVector = decodeBase64(message.stateVector)
     if (stateVector === null) {
       return
     }
-    const update = Y.encodeStateAsUpdate(this.ydoc, stateVector)
+    const doc = await this.loadedDocFor(message.docId)
+    if (doc === undefined) {
+      return
+    }
+    const update = Y.encodeStateAsUpdate(doc, stateVector)
     const setup = this.requireSetupResponse()
     socket.send(
       JSON.stringify({
@@ -783,6 +921,13 @@ export default class KuroflareSpikePlugin extends Plugin {
         baseStateVector: message.stateVector,
       } satisfies SyncUpdate),
     )
+  }
+
+  private async loadedDocFor(docId: DocId): Promise<Y.Doc | undefined> {
+    if (docId.kind === 'meta') {
+      return this.metaDoc
+    }
+    return this.loadedTextDocs.get(docId.ydocId)?.doc
   }
 
   private requireSetupResponse(): SetupExchangeResponse {
@@ -812,6 +957,17 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   private async activeDocId(): Promise<DocId> {
     const path = this.activeFile?.path ?? this.targetPath ?? 'active-file.md'
+    return await this.fileDocIdForPath(path)
+  }
+
+  private async fileDocIdForPath(path: string): Promise<FileDocId> {
+    const fileId = this.findActiveFileId(path)
+    if (fileId !== undefined) {
+      const value = this.metaMap.get(fileId)
+      if (isMetaFile(value, fileId) && value.type === 'text') {
+        return { kind: 'file', ydocId: value.ydocId }
+      }
+    }
     const hash = await this.sha256Hex(new TextEncoder().encode(path))
     return { kind: 'file', ydocId: `file-${hash.slice(0, 32)}` }
   }
@@ -868,18 +1024,6 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
 
-    if (this.targetPath && this.targetPath !== file.path) {
-      this.activeFile = null
-      this.activeView = null
-      this.setStatus('different file')
-      console.info('[kuroflare] skipped non-target file', {
-        path: file.path,
-        targetPath: this.targetPath,
-        reason,
-      })
-      return
-    }
-
     const editorView = getEditorView(markdownView)
     if (!editorView) {
       this.setStatus('no cm view')
@@ -887,6 +1031,9 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
 
+    const docId = await this.fileDocIdForPath(file.path)
+    const loaded = await this.loadTextDoc(docId)
+    this.setActiveTextDoc(loaded)
     this.targetPath = file.path
     this.activeFile = file
     this.activeView = editorView
@@ -894,9 +1041,10 @@ export default class KuroflareSpikePlugin extends Plugin {
     editorView.dispatch({
       effects: this.cmCompartment.reconfigure(this.createEditorExtension()),
     })
+    await this.requestActiveFileFromWorker(`bind:${reason}`)
 
     this.setStatus(`bound: ${file.basename}`)
-    console.info('[kuroflare] bound active editor', { path: file.path, reason })
+    console.info('[kuroflare] bound active editor', { path: file.path, docId, reason })
   }
 
   private createEditorExtension(): Extension {

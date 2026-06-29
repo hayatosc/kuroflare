@@ -120,7 +120,9 @@ if (renamed.path !== renamedPath) {
 
 const oldStillActive = readActiveMetaEntry(notePath)
 if (oldStillActive !== null) {
-  throw new Error(`old path still has an active entry after rename: ${JSON.stringify(oldStillActive)}`)
+  throw new Error(
+    `old path still has an active entry after rename: ${JSON.stringify(oldStillActive)}`,
+  )
 }
 
 const errors = obsidian(['dev:errors'])
