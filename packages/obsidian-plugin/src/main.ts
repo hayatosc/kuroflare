@@ -9,9 +9,16 @@ import {
   type LastMaterializedRecord,
 } from '@kuroflare/core'
 import {
+  canonicalizeVaultPath,
   CURRENT_PROTOCOL_VERSION,
+  isMetaFile,
+  makeDeviceId,
+  makeFileId,
+  makeYDocId,
   parseControlMessage,
+  type DeviceId,
   type DocId,
+  type FileId,
   type SetupExchangeResponse,
   type SyncRequest,
   type SyncUpdate,
@@ -35,6 +42,8 @@ import {
   getEditorView,
   replaceYText,
 } from './obsidian/editor-binding.js'
+import { applyFileCreate, applyFileDelete, applyFileRename } from './sync/meta-file-tree.js'
+import { reconcileMetaDoc } from './sync/meta-reconcile.js'
 import {
   createSyncRuntimeObsidianComposition,
   type SyncRuntimeObsidianComposition,
@@ -49,9 +58,14 @@ import { type SyncRuntimeStartupStepEffectPort } from './sync/startup-actuation.
 
 const SPIKE_DOC_NAME = 'kuroflare-cm6-spike'
 const SPIKE_TEXT_NAME = 'fixed-file'
+const META_DOC_NAME = 'kuroflare-meta'
 const DISK_ORIGIN = 'kuroflare:disk'
 const REMOTE_ORIGIN = 'kuroflare:remote-simulated'
 const WORKER_ORIGIN = 'kuroflare:worker'
+const FILE_TREE_ORIGIN = 'kuroflare:file-tree'
+const REPAIR_ORIGIN = 'kuroflare:repair'
+const REPAIR_DEVICE = makeDeviceId('repair')
+const MARKDOWN_EXTENSION = 'md'
 
 interface KuroflareSettings {
   readonly endpoint: string
@@ -97,6 +111,14 @@ export default class KuroflareSpikePlugin extends Plugin {
   private targetPath: string | null = null
   private fileModifyRef: EventRef | null = null
 
+  // File-tree subsystem (MVP-2): the meta YDoc holds fileId -> MetaFile for the whole vault.
+  private readonly metaDoc = new Y.Doc()
+  private metaPersistence: IndexeddbPersistence | null = null
+  // Last on-disk path materialized per file ID, so a converged meta rename can move the real file.
+  private readonly materializedPaths = new Map<FileId, string>()
+  // Canonical paths whose vault rename we initiated, to ignore the resulting watcher echo.
+  private readonly pendingFsRenames = new Set<string>()
+
   /** Set up the CM6 spike lifecycle. */
   override async onload(): Promise<void> {
     await this.loadSettings()
@@ -117,9 +139,20 @@ export default class KuroflareSpikePlugin extends Plugin {
       console.error('[kuroflare] failed to open IndexedDB persistence', error)
       this.setStatus('persistence error')
     })
+    void this.openMetaPersistence().catch((error: unknown) => {
+      console.error('[kuroflare] failed to open meta IndexedDB persistence', error)
+    })
+    // Repair + materialize whenever the meta YDoc converges from a non-repair source.
+    this.metaDoc.on('afterTransaction', (transaction: Y.Transaction) => {
+      if (transaction.origin === REPAIR_ORIGIN) {
+        return
+      }
+      void this.reconcileAndMaterializeMeta()
+    })
     this.syncRuntime = this.createSyncRuntime()
     this.registerCommands()
     this.registerVaultWatcher()
+    this.registerFileTreeWatcher()
     this.registerWorkspaceEvents()
 
     this.app.workspace.onLayoutReady(() => {
@@ -139,9 +172,12 @@ export default class KuroflareSpikePlugin extends Plugin {
 
     void this.persistence?.destroy()
     this.persistence = null
+    void this.metaPersistence?.destroy()
+    this.metaPersistence = null
     this.workerSocket?.close(1000, 'plugin-unload')
     this.workerSocket = null
     this.ydoc.destroy()
+    this.metaDoc.destroy()
   }
 
   async updateSettings(patch: Partial<KuroflareSettings>): Promise<void> {
@@ -161,6 +197,146 @@ export default class KuroflareSpikePlugin extends Plugin {
   private async openPersistence(): Promise<void> {
     this.persistence = new IndexeddbPersistence(SPIKE_DOC_NAME, this.ydoc)
     await this.persistence.whenSynced
+  }
+
+  private get metaMap(): Y.Map<unknown> {
+    return this.metaDoc.getMap<unknown>('meta')
+  }
+
+  private async openMetaPersistence(): Promise<void> {
+    this.metaPersistence = new IndexeddbPersistence(META_DOC_NAME, this.metaDoc)
+    await this.metaPersistence.whenSynced
+    for (const [fileId, value] of this.metaMap.entries()) {
+      if (isMetaFile(value, fileId) && !value.deleted) {
+        this.materializedPaths.set(value.fileId, value.path)
+      }
+    }
+    await this.reconcileAndMaterializeMeta()
+  }
+
+  private fileTreeDeviceId(): DeviceId {
+    return makeDeviceId(this.kuroflareSettings.setupResponse?.deviceId ?? 'local-device')
+  }
+
+  private registerFileTreeWatcher(): void {
+    this.registerEvent(
+      this.app.vault.on('create', (file) => {
+        if (file instanceof TFile && file.extension === MARKDOWN_EXTENSION) {
+          this.handleVaultCreate(file)
+        }
+      }),
+    )
+    this.registerEvent(
+      this.app.vault.on('rename', (file, oldPath) => {
+        if (file instanceof TFile && file.extension === MARKDOWN_EXTENSION) {
+          this.handleVaultRename(file, oldPath)
+        }
+      }),
+    )
+    this.registerEvent(
+      this.app.vault.on('delete', (file) => {
+        if (file instanceof TFile && file.extension === MARKDOWN_EXTENSION) {
+          this.handleVaultDelete(file)
+        }
+      }),
+    )
+  }
+
+  private handleVaultCreate(file: TFile): void {
+    if (this.findActiveFileId(file.path) !== undefined) {
+      return
+    }
+    const fileId = makeFileId(crypto.randomUUID())
+    applyFileCreate(this.metaMap, {
+      fileId,
+      path: file.path,
+      ydocId: makeYDocId(`file-${fileId}`),
+      deviceId: this.fileTreeDeviceId(),
+      now: Date.now(),
+      origin: FILE_TREE_ORIGIN,
+    })
+    this.materializedPaths.set(fileId, file.path)
+  }
+
+  private handleVaultRename(file: TFile, oldPath: string): void {
+    // Ignore the watcher echo from a rename we materialized ourselves.
+    if (this.pendingFsRenames.delete(canonicalizeVaultPath(file.path))) {
+      return
+    }
+    const result = applyFileRename(this.metaMap, {
+      fromPath: oldPath,
+      toPath: file.path,
+      deviceId: this.fileTreeDeviceId(),
+      now: Date.now(),
+      origin: FILE_TREE_ORIGIN,
+    })
+    if (result.action === 'renamed') {
+      this.materializedPaths.set(result.fileId, file.path)
+    }
+  }
+
+  private handleVaultDelete(file: TFile): void {
+    const result = applyFileDelete(this.metaMap, {
+      path: file.path,
+      deviceId: this.fileTreeDeviceId(),
+      now: Date.now(),
+      origin: FILE_TREE_ORIGIN,
+    })
+    if (result.action === 'deleted') {
+      this.materializedPaths.delete(result.fileId)
+    }
+  }
+
+  private findActiveFileId(path: string): FileId | undefined {
+    const canonical = canonicalizeVaultPath(path)
+    for (const [fileId, value] of this.metaMap.entries()) {
+      if (isMetaFile(value, fileId) && !value.deleted && value.canonicalPath === canonical) {
+        return value.fileId
+      }
+    }
+    return undefined
+  }
+
+  private async reconcileAndMaterializeMeta(): Promise<void> {
+    reconcileMetaDoc(this.metaMap, {
+      updatedAt: Date.now(),
+      updatedBy: REPAIR_DEVICE,
+      origin: REPAIR_ORIGIN,
+    })
+    await this.materializeMetaRenames()
+  }
+
+  /** Moves real vault files to match meta entries whose path converged elsewhere. */
+  private async materializeMetaRenames(): Promise<void> {
+    for (const [fileId, value] of this.metaMap.entries()) {
+      if (!isMetaFile(value, fileId) || value.deleted) {
+        continue
+      }
+      const known = this.materializedPaths.get(value.fileId)
+      if (known === value.path) {
+        continue
+      }
+      this.materializedPaths.set(value.fileId, value.path)
+      if (known === undefined) {
+        continue
+      }
+      const file = this.app.vault.getAbstractFileByPath(known)
+      if (!(file instanceof TFile)) {
+        continue
+      }
+      const canonicalTarget = canonicalizeVaultPath(value.path)
+      this.pendingFsRenames.add(canonicalTarget)
+      try {
+        await this.app.fileManager.renameFile(file, value.path)
+      } catch (error: unknown) {
+        this.pendingFsRenames.delete(canonicalTarget)
+        console.error('[kuroflare] failed to materialize meta rename', {
+          from: known,
+          to: value.path,
+          error,
+        })
+      }
+    }
   }
 
   private registerCommands(): void {

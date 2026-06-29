@@ -8,6 +8,7 @@
     "dev": "tsdown --watch",
     "test": "vitest run",
     "test:e2e:obsidian": "NODE_ENV=production tsdown && mv main.cjs main.js && node scripts/obsidian-cli-smoke.mjs",
+    "test:e2e:obsidian:mvp2": "NODE_ENV=production tsdown && mv main.cjs main.js && node scripts/obsidian-mvp2-smoke.mjs",
     "test:e2e:obsidian:miniflare": "NODE_ENV=production tsdown && mv main.cjs main.js && node scripts/obsidian-miniflare-smoke.mjs",
     "typecheck": "tsgo --noEmit",
     "typecheck:compat": "tsc --noEmit"
