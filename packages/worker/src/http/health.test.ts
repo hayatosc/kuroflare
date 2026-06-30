@@ -11,6 +11,8 @@ import {
   healthAcceptsSync,
 } from '../http/health'
 
+const noopMigration = async (): Promise<void> => {}
+
 test('worker health is ok when all subsystems and migrations are ready', () => {
   const health = decideWorkerHealth({
     durableObjectAvailable: true,
@@ -39,7 +41,7 @@ test('worker health is degraded while migrations are pending', () => {
         {
           version: 2,
           name: 'add-devices',
-          statements: ['create table devices (device_id text primary key)'],
+          migrate: noopMigration,
         },
       ],
     },
@@ -137,7 +139,7 @@ test('durable object sync admission is local to sqlite and migrations', () => {
           {
             version: 2,
             name: 'add-devices',
-            statements: ['create table devices (device_id text primary key)'],
+            migrate: noopMigration,
           },
         ],
       },

@@ -196,7 +196,23 @@ evalInObsidian(`(() => {
   return JSON.stringify('stale-last-materialized');
 })()`)
 obsidian(['command', 'id=kuroflare:kuroflare-spike-simulate-remote-insert'])
-obsidian(['command', 'id=kuroflare:kuroflare-spike-flush-ytext-to-disk'])
+evalInObsidian(`(async () => {
+  const plugin = app.plugins.plugins.kuroflare;
+  const warn = console.warn;
+  plugin.lastMaterialized.set(${JSON.stringify(notePath)}, {
+    diskHash: 'stale-disk-hash',
+    ydocHash: 'stale-ydoc-hash',
+    path: ${JSON.stringify(notePath)},
+    writtenAt: Date.now(),
+  });
+  console.warn = () => {};
+  try {
+    await plugin.flushYTextToDisk('e2e-watcher-drop');
+  } finally {
+    console.warn = warn;
+  }
+  return JSON.stringify('flushed');
+})()`)
 
 const diskAfterBlockedFlush = readFileSync(noteFile, 'utf8')
 requireIncludes(diskAfterBlockedFlush, watcherDropMarker, 'disk after watcher-drop flush')

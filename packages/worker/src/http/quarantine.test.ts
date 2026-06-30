@@ -13,6 +13,7 @@ import {
 import * as v from 'valibot'
 import { test } from 'vitest'
 
+import type { QuarantinedUpdateRecord } from '../quarantine'
 import {
   buildQuarantinedUpdateDetailResponse,
   buildQuarantinedUpdateListResponse,
@@ -20,7 +21,6 @@ import {
   planQuarantinedUpdateActionHttp,
   quarantineConfirmationSubject,
 } from './quarantine'
-import type { QuarantinedUpdateRecord } from '../quarantine'
 
 const docId: DocId = { kind: 'file', ydocId: makeYDocId('doc-a') }
 const record: QuarantinedUpdateRecord = {

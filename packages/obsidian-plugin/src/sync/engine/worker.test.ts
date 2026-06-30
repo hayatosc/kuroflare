@@ -18,7 +18,6 @@ import {
 } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { type LocalStoreOutboxRecord } from '../store/store'
 import { planOutboundQueueTick } from '../engine/queue'
 import {
   classifyOutboxWorkerSideEffectCompletionEvidence,
@@ -37,6 +36,7 @@ import {
   planOutboxWorkerTick,
   planOutboxWorkerTickIndexedDbWriteTransactions,
 } from '../engine/worker'
+import { type LocalStoreOutboxRecord } from '../store/store'
 
 const yUpdateId = outboxId('worker-y-update-1')
 const blobPutId = outboxId('worker-blob-put-1')

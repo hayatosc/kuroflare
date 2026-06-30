@@ -1,213 +1,152 @@
-import type { SchemaMigration } from '../db/migrations'
+import type { Kysely } from 'kysely'
 
-/** SQLite table or index created by a schema migration. */
-export interface SqlObjectDefinition {
-  readonly kind: 'table' | 'index'
-  readonly name: string
-  readonly sql: string
-}
-
-/** Names of tables required by the initial Durable Object schema. */
-export const INITIAL_SCHEMA_TABLES: readonly string[] = [
-  'schema_migrations',
-  'setup_tokens',
-  'devices',
-  'device_refresh_tokens',
-  'docs',
-  'op_log',
-  'message_dedup',
-  'checkpoint_runs',
-  'connected_devices',
-  'quarantined_updates',
-]
-
-/** Names of indexes required by the initial Durable Object schema. */
-export const INITIAL_SCHEMA_INDEXES: readonly string[] = [
-  'idx_setup_tokens_vault_expires',
-  'idx_device_refresh_tokens_device_expires',
-  'idx_op_log_doc_seq',
-  'idx_checkpoint_runs_doc_status',
-]
-
-/** Structured SQLite objects created by migration 1. */
-export const INITIAL_SCHEMA_OBJECTS: readonly SqlObjectDefinition[] = [
-  {
-    kind: 'table',
-    name: 'schema_migrations',
-    sql: `create table if not exists schema_migrations (
-  version integer primary key,
-  applied_at integer not null
-)`,
-  },
-  {
-    kind: 'table',
-    name: 'setup_tokens',
-    sql: `create table if not exists setup_tokens (
-  token_hash text primary key,
-  vault_id text not null,
-  issued_at integer not null,
-  expires_at integer not null,
-  consumed_at integer
-)`,
-  },
-  {
-    kind: 'index',
-    name: 'idx_setup_tokens_vault_expires',
-    sql: 'create index if not exists idx_setup_tokens_vault_expires on setup_tokens (vault_id, expires_at)',
-  },
-  {
-    kind: 'table',
-    name: 'devices',
-    sql: `create table if not exists devices (
-  device_id text primary key,
-  y_client_id integer not null unique,
-  token_version integer not null default 1,
-  revoked_at integer,
-  created_at integer not null,
-  last_seen_at integer
-)`,
-  },
-  {
-    kind: 'table',
-    name: 'device_refresh_tokens',
-    sql: `create table if not exists device_refresh_tokens (
-  token_hash text primary key,
-  device_id text not null references devices(device_id),
-  issued_at integer not null,
-  expires_at integer not null,
-  revoked_at integer
-)`,
-  },
-  {
-    kind: 'index',
-    name: 'idx_device_refresh_tokens_device_expires',
-    sql: 'create index if not exists idx_device_refresh_tokens_device_expires on device_refresh_tokens (device_id, expires_at)',
-  },
-  {
-    kind: 'table',
-    name: 'docs',
-    sql: `create table if not exists docs (
-  doc_id text primary key,
-  kind text not null,
-  latest_seq integer not null default 0,
-  latest_snapshot_seq integer not null default 0,
-  latest_snapshot_key text,
-  latest_state_vector blob,
-  min_retained_seq integer not null default 0,
-  horizon_state_vector blob,
-  updated_at integer not null
-)`,
-  },
-  {
-    kind: 'table',
-    name: 'op_log',
-    sql: `create table if not exists op_log (
-  doc_id text not null,
-  seq integer not null,
-  message_id text not null,
-  device_id text not null,
-  y_client_id integer not null,
-  update_bytes blob not null,
-  update_sha256 text not null,
-  created_at integer not null,
-  primary key (doc_id, seq),
-  unique (doc_id, message_id)
-)`,
-  },
-  {
-    kind: 'index',
-    name: 'idx_op_log_doc_seq',
-    sql: 'create index if not exists idx_op_log_doc_seq on op_log (doc_id, seq)',
-  },
-  {
-    kind: 'table',
-    name: 'message_dedup',
-    sql: `create table if not exists message_dedup (
-  doc_id text not null,
-  message_id text not null,
-  durable_seq integer not null,
-  seen_at integer not null,
-  primary key (doc_id, message_id)
-)`,
-  },
-  {
-    kind: 'table',
-    name: 'checkpoint_runs',
-    sql: `create table if not exists checkpoint_runs (
-  run_id text primary key,
-  doc_id text not null,
-  upper_seq integer not null,
-  snapshot_key text,
-  state_vector blob,
-  status text not null,
-  error text,
-  created_at integer not null,
-  r2_written_at integer,
-  pointer_updated_at integer,
-  compacted_at integer
-)`,
-  },
-  {
-    kind: 'index',
-    name: 'idx_checkpoint_runs_doc_status',
-    sql: 'create index if not exists idx_checkpoint_runs_doc_status on checkpoint_runs (doc_id, status)',
-  },
-  {
-    kind: 'table',
-    name: 'connected_devices',
-    sql: `create table if not exists connected_devices (
-  device_id text primary key,
-  y_client_id integer,
-  last_seen_at integer not null,
-  user_agent text,
-  protocol_version integer not null
-)`,
-  },
-  {
-    kind: 'table',
-    name: 'quarantined_updates',
-    sql: `create table if not exists quarantined_updates (
-  id text primary key,
-  doc_id text not null,
-  message_id text not null,
-  device_id text not null,
-  reason text not null,
-  update_sha256 text not null,
-  update_bytes blob not null,
-  created_at integer not null
-)`,
-  },
-]
+import type { SchemaMigration } from './migrations'
+import type { Database } from './types'
 
 /** Bundled schema migrations applied by the Durable Object during startup. */
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
     name: 'initial-schema',
-    statements: INITIAL_SCHEMA_OBJECTS.map((definition) => definition.sql),
+    migrate: buildInitialSchema,
   },
 ]
 
-/**
- * Collects SQL object names of a specific kind from a structured schema definition.
- *
- * @param objects Structured SQL object definitions.
- * @param kind Object kind to collect.
- * @returns Object names in declaration order.
- */
-export function collectSqlObjectNames(
-  objects: readonly SqlObjectDefinition[],
-  kind: SqlObjectDefinition['kind'],
-): readonly string[] {
-  return objects.filter((object) => object.kind === kind).map((object) => object.name)
-}
+async function buildInitialSchema(db: Kysely<Database>): Promise<void> {
+  await db.schema
+    .createTable('setup_tokens')
+    .ifNotExists()
+    .addColumn('token_hash', 'text', (col) => col.primaryKey())
+    .addColumn('vault_id', 'text', (col) => col.notNull())
+    .addColumn('issued_at', 'integer', (col) => col.notNull())
+    .addColumn('expires_at', 'integer', (col) => col.notNull())
+    .addColumn('consumed_at', 'integer')
+    .execute()
 
-/**
- * Returns the SQL statements for a schema migration.
- *
- * @param migration Migration definition from the Worker bundle.
- * @returns SQL statements in transaction order.
- */
-export function migrationStatements(migration: SchemaMigration): readonly string[] {
-  return migration.statements
+  await db.schema
+    .createIndex('idx_setup_tokens_vault_expires')
+    .ifNotExists()
+    .on('setup_tokens')
+    .columns(['vault_id', 'expires_at'])
+    .execute()
+
+  await db.schema
+    .createTable('devices')
+    .ifNotExists()
+    .addColumn('device_id', 'text', (col) => col.primaryKey())
+    .addColumn('y_client_id', 'integer', (col) => col.notNull().unique())
+    .addColumn('token_version', 'integer', (col) => col.notNull().defaultTo(1))
+    .addColumn('revoked_at', 'integer')
+    .addColumn('created_at', 'integer', (col) => col.notNull())
+    .addColumn('last_seen_at', 'integer')
+    .execute()
+
+  await db.schema
+    .createTable('device_refresh_tokens')
+    .ifNotExists()
+    .addColumn('token_hash', 'text', (col) => col.primaryKey())
+    .addColumn('device_id', 'text', (col) => col.notNull().references('devices.device_id'))
+    .addColumn('issued_at', 'integer', (col) => col.notNull())
+    .addColumn('expires_at', 'integer', (col) => col.notNull())
+    .addColumn('revoked_at', 'integer')
+    .execute()
+
+  await db.schema
+    .createIndex('idx_device_refresh_tokens_device_expires')
+    .ifNotExists()
+    .on('device_refresh_tokens')
+    .columns(['device_id', 'expires_at'])
+    .execute()
+
+  await db.schema
+    .createTable('docs')
+    .ifNotExists()
+    .addColumn('doc_id', 'text', (col) => col.primaryKey())
+    .addColumn('kind', 'text', (col) => col.notNull())
+    .addColumn('latest_seq', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('latest_snapshot_seq', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('latest_snapshot_key', 'text')
+    .addColumn('latest_state_vector', 'blob')
+    .addColumn('min_retained_seq', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('horizon_state_vector', 'blob')
+    .addColumn('updated_at', 'integer', (col) => col.notNull())
+    .execute()
+
+  await db.schema
+    .createTable('op_log')
+    .ifNotExists()
+    .addColumn('doc_id', 'text', (col) => col.notNull())
+    .addColumn('seq', 'integer', (col) => col.notNull())
+    .addColumn('message_id', 'text', (col) => col.notNull())
+    .addColumn('device_id', 'text', (col) => col.notNull())
+    .addColumn('y_client_id', 'integer', (col) => col.notNull())
+    .addColumn('update_bytes', 'blob', (col) => col.notNull())
+    .addColumn('update_sha256', 'text', (col) => col.notNull())
+    .addColumn('created_at', 'integer', (col) => col.notNull())
+    .addPrimaryKeyConstraint('op_log_pk', ['doc_id', 'seq'])
+    .addUniqueConstraint('op_log_doc_message_unique', ['doc_id', 'message_id'])
+    .execute()
+
+  await db.schema
+    .createIndex('idx_op_log_doc_seq')
+    .ifNotExists()
+    .on('op_log')
+    .columns(['doc_id', 'seq'])
+    .execute()
+
+  await db.schema
+    .createTable('message_dedup')
+    .ifNotExists()
+    .addColumn('doc_id', 'text', (col) => col.notNull())
+    .addColumn('message_id', 'text', (col) => col.notNull())
+    .addColumn('durable_seq', 'integer', (col) => col.notNull())
+    .addColumn('seen_at', 'integer', (col) => col.notNull())
+    .addPrimaryKeyConstraint('message_dedup_pk', ['doc_id', 'message_id'])
+    .execute()
+
+  await db.schema
+    .createTable('checkpoint_runs')
+    .ifNotExists()
+    .addColumn('run_id', 'text', (col) => col.primaryKey())
+    .addColumn('doc_id', 'text', (col) => col.notNull())
+    .addColumn('upper_seq', 'integer', (col) => col.notNull())
+    .addColumn('snapshot_key', 'text')
+    .addColumn('state_vector', 'blob')
+    .addColumn('status', 'text', (col) => col.notNull())
+    .addColumn('error', 'text')
+    .addColumn('created_at', 'integer', (col) => col.notNull())
+    .addColumn('r2_written_at', 'integer')
+    .addColumn('pointer_updated_at', 'integer')
+    .addColumn('compacted_at', 'integer')
+    .execute()
+
+  await db.schema
+    .createIndex('idx_checkpoint_runs_doc_status')
+    .ifNotExists()
+    .on('checkpoint_runs')
+    .columns(['doc_id', 'status'])
+    .execute()
+
+  await db.schema
+    .createTable('connected_devices')
+    .ifNotExists()
+    .addColumn('device_id', 'text', (col) => col.primaryKey())
+    .addColumn('y_client_id', 'integer')
+    .addColumn('last_seen_at', 'integer', (col) => col.notNull())
+    .addColumn('user_agent', 'text')
+    .addColumn('protocol_version', 'integer', (col) => col.notNull())
+    .execute()
+
+  await db.schema
+    .createTable('quarantined_updates')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('doc_id', 'text', (col) => col.notNull())
+    .addColumn('message_id', 'text', (col) => col.notNull())
+    .addColumn('device_id', 'text', (col) => col.notNull())
+    .addColumn('reason', 'text', (col) => col.notNull())
+    .addColumn('update_sha256', 'text', (col) => col.notNull())
+    .addColumn('update_bytes', 'blob', (col) => col.notNull())
+    .addColumn('created_at', 'integer', (col) => col.notNull())
+    .execute()
 }

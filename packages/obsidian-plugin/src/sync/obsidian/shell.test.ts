@@ -8,16 +8,6 @@ import {
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
-import {
-  INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE,
-  runSyncRuntimeObsidianShellDriverSetupExchangeTick,
-  runSyncRuntimeObsidianShellDriverStartupStepTick,
-  runSyncRuntimeObsidianShellDriverTick,
-  runSyncRuntimeObsidianShellDriverTransportTick,
-  type SyncRuntimeObsidianShellEvidenceReadResult,
-  type SyncRuntimeObsidianShellEvidencePort,
-} from '../obsidian/shell'
 import {
   createSyncRuntimeSetupExchangePort,
   type SyncRuntimeShellEffectExecutor,
@@ -28,6 +18,16 @@ import {
   type SyncRuntimeStartupEffect,
   type SyncRuntimeStartupFromSchemaEvidenceInput,
 } from '../engine/startup'
+import {
+  INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE,
+  runSyncRuntimeObsidianShellDriverSetupExchangeTick,
+  runSyncRuntimeObsidianShellDriverStartupStepTick,
+  runSyncRuntimeObsidianShellDriverTick,
+  runSyncRuntimeObsidianShellDriverTransportTick,
+  type SyncRuntimeObsidianShellEvidenceReadResult,
+  type SyncRuntimeObsidianShellEvidencePort,
+} from '../obsidian/shell'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
 
 const vaultId = makeVaultId('driver-vault-1')
 const deviceId = makeDeviceId('driver-device-1')

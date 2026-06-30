@@ -1,6 +1,7 @@
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from '../utils/shared'
 export { isNonNegativeSafeInteger, isPositiveSafeInteger }
 import * as v from 'valibot'
+
 import { DeviceIdSchema } from '../utils/ids'
 import type { ClientAuthMetadata } from './types'
 

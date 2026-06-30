@@ -1,12 +1,6 @@
 import { type SetupExchangeResponse } from '@kuroflare/core'
 
 import {
-  commitLocalStoreIndexedDbMetadataTransaction,
-  planLocalStoreIndexedDbMetadataWrites,
-  type LocalStoreIndexedDbMetadataDatabasePort,
-  type LocalStoreIndexedDbMetadataWriteOperation,
-} from '../store/indexeddb'
-import {
   planLocalSetupPersist,
   planLocalSetupPersistSecretCleanup,
   type LocalSetupPersistPlan,
@@ -14,6 +8,12 @@ import {
   type LocalSetupSecretWriteEffect,
   type SuccessfulLocalSetupPersistPlan,
 } from '../engine/setup'
+import {
+  commitLocalStoreIndexedDbMetadataTransaction,
+  planLocalStoreIndexedDbMetadataWrites,
+  type LocalStoreIndexedDbMetadataDatabasePort,
+  type LocalStoreIndexedDbMetadataWriteOperation,
+} from '../store/indexeddb'
 
 /** SecretStorage surface required by setup persistence. */
 export interface LocalSetupPersistSecretStoragePort {

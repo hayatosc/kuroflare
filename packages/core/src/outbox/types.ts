@@ -1,7 +1,7 @@
-import { type Ack, type NeedFullSnapshot } from '../sync/messages'
 import { type QuarantinedUpdateEntry } from '../http/admin'
-import { type DeviceId, type DocId, type FileId, type MessageId, type VaultId } from '../utils/ids'
+import { type Ack, type NeedFullSnapshot } from '../sync/messages'
 import { type Sha256Hex } from '../sync/meta'
+import { type DeviceId, type DocId, type FileId, type MessageId, type VaultId } from '../utils/ids'
 
 /** Stable item ID assigned by the caller before persisting an outbox plan. */
 export type OutboxPlanItemId = string

@@ -4,14 +4,6 @@ import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflar
 import { test } from 'vitest'
 
 import {
-  type LocalStoreIndexedDbMetadataDatabasePort,
-  type LocalStoreIndexedDbMetadataObjectStorePort,
-  type LocalStoreIndexedDbMetadataTransactionHandle,
-  type LocalStoreIndexedDbMetadataWriteOperation,
-  type LocalStoreIndexedDbRequest,
-  type LocalStoreIndexedDbTransactionLifecycle,
-} from '../store/indexeddb'
-import {
   createLocalSetupPersistIndexedDbMetadataPort,
   persistLocalSetupResponse,
   type LocalSetupPersistMetadataPort,
@@ -22,6 +14,14 @@ import {
   LOCAL_SETUP_METADATA_KEY,
   type LocalSetupMetadataPutOperation,
 } from '../engine/setup'
+import {
+  type LocalStoreIndexedDbMetadataDatabasePort,
+  type LocalStoreIndexedDbMetadataObjectStorePort,
+  type LocalStoreIndexedDbMetadataTransactionHandle,
+  type LocalStoreIndexedDbMetadataWriteOperation,
+  type LocalStoreIndexedDbRequest,
+  type LocalStoreIndexedDbTransactionLifecycle,
+} from '../store/indexeddb'
 
 const vaultId = makeVaultId('setup-runtime-vault-1')
 const deviceId = makeDeviceId('setup-runtime-device-1')

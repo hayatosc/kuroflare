@@ -1,9 +1,7 @@
-import {
-  type ClientHello,
-  type DocId,
-  type VaultId} from '@kuroflare/core'
+import { type ClientHello, type DocId, type VaultId } from '@kuroflare/core'
 import { VaultIdSchema, DocIdSchema } from '@kuroflare/core'
 import * as v from 'valibot'
+
 import { type CheckpointRunStatus } from '../checkpoint/checkpoint'
 import { type YClientId } from '../devices'
 
@@ -44,6 +42,7 @@ export interface DurableObjectStorageBinding {
   get<T = unknown>(key: string): Promise<T | undefined>
   put<T>(key: string, value: T): Promise<void>
   setAlarm?(scheduledTime: number | Date): Promise<void>
+  transaction<T>(closure: () => T | Promise<T>): Promise<T>
   transactionSync?<T>(closure: () => T): T
 }
 
@@ -174,10 +173,12 @@ export const NonNegIntSchema = v.pipe(v.number(), v.integer(), v.minValue(0))
 export const E2eSetupTokenSeedRequestSchema = v.object({
   vaultId: VaultIdSchema,
   setupToken: v.pipe(v.string(), v.minLength(1)),
-  expiresInMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(86_400_000)))})
+  expiresInMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(86_400_000))),
+})
 
 export const E2eSnapshotSeedRequestSchema = v.object({
   vaultId: VaultIdSchema,
   docId: DocIdSchema,
   update: v.pipe(v.string(), v.minLength(1)),
-  latestSeq: v.optional(PosIntSchema)})
+  latestSeq: v.optional(PosIntSchema),
+})

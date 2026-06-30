@@ -16,10 +16,8 @@ import type {
   DeviceTokenScope,
   VaultId,
 } from '@kuroflare/core'
-import type {
-  LocalSetupMetadataPutOperation,
-  LocalSetupSecretWriteEffect,
-} from '../engine/setup'
+
+import type { LocalSetupMetadataPutOperation, LocalSetupSecretWriteEffect } from '../engine/setup'
 
 /** SecretStorage surface required by auth refresh persistence. */
 export interface AuthRefreshSecretStoragePort {

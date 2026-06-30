@@ -5,13 +5,8 @@ import {
   type SetupExchangeResponse,
   type decideClientAuthRefresh,
 } from '@kuroflare/core'
-import {
-  type LocalStoreIndexedDbExecutableOpenEffect,
-  type LocalStoreIndexedDbFactoryPort,
-  type LocalStoreIndexedDbOpenEffectPlan,
-  type LocalStoreIndexedDbSchemaDatabasePort,
-} from '../store/indexeddb'
-import { type LocalStoreIndexedDbOpenEffect } from '../store/schema'
+
+import { type SyncEngineStartupEffect } from '../engine/engine'
 import {
   type LocalSetupPersistMetadataPort,
   type LocalSetupPersistRuntimeInput,
@@ -19,7 +14,13 @@ import {
   type LocalSetupPersistSecretStoragePort,
 } from '../engine/persist'
 import { type SyncRuntimeStartupEffect, type SyncRuntimeStartupPlan } from '../engine/startup'
-import { type SyncEngineStartupEffect } from '../engine/engine'
+import {
+  type LocalStoreIndexedDbExecutableOpenEffect,
+  type LocalStoreIndexedDbFactoryPort,
+  type LocalStoreIndexedDbOpenEffectPlan,
+  type LocalStoreIndexedDbSchemaDatabasePort,
+} from '../store/indexeddb'
+import { type LocalStoreIndexedDbOpenEffect } from '../store/schema'
 
 /** Stable status the plugin shell can expose in the status bar or settings UI. */
 export type SyncRuntimeShellStatus =
@@ -205,7 +206,7 @@ export interface SyncRuntimeIndexedDbLocalStoreEffectState<
 /** Input for creating an IndexedDB-backed local-store schema effect port. */
 export interface SyncRuntimeIndexedDbLocalStoreEffectPortInput<
   Database extends LocalStoreIndexedDbSchemaDatabasePort,
- > {
+> {
   readonly indexedDb: LocalStoreIndexedDbFactoryPort<Database>
 }
 

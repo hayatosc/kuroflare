@@ -106,6 +106,10 @@ class MemoryStorage implements DurableObjectStorageBinding {
   async setAlarm(scheduledTime: number | Date): Promise<void> {
     this.alarms.push(scheduledTime)
   }
+
+  async transaction<T>(closure: () => T | Promise<T>): Promise<T> {
+    return closure()
+  }
 }
 
 interface RecordedDocRow {
@@ -373,7 +377,11 @@ class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       const rows = doc === undefined ? [] : [{ latestSeq: doc.latestSeq }]
       return rows as Iterable<T>
     }
-    if (normalized.includes('from docs') && normalized.includes('limit') && !normalized.includes('latest_seq > latest_snapshot_seq')) {
+    if (
+      normalized.includes('from docs') &&
+      normalized.includes('limit') &&
+      !normalized.includes('latest_seq > latest_snapshot_seq')
+    ) {
       const first = this.docs.keys().next()
       const rows = first.done === true ? [] : [{ docId: first.value }]
       return rows as Iterable<T>
@@ -674,6 +682,72 @@ class SqlOnlyStorage implements DurableObjectStorageBinding {
 
   async setAlarm(scheduledTime: number | Date): Promise<void> {
     this.alarms.push(scheduledTime)
+  }
+
+  async transaction<T>(closure: () => T | Promise<T>): Promise<T> {
+    const snapshot = this.snapshotSql()
+    this.sql.queries.push('transaction begin')
+    try {
+      const result = await closure()
+      this.sql.queries.push('transaction commit')
+      return result
+    } catch (error) {
+      this.restoreSql(snapshot)
+      this.sql.queries.push('transaction rollback')
+      throw error
+    }
+  }
+
+  private snapshotSql(): RecordingSqlSnapshot {
+    return {
+      docs: new Map(this.sql.docs),
+      opLog: new Map(this.sql.opLog),
+      messageDedup: new Map(this.sql.messageDedup),
+      quarantines: new Map(this.sql.quarantines),
+      checkpointRuns: new Map(this.sql.checkpointRuns),
+      setupTokens: new Map(this.sql.setupTokens),
+      refreshTokens: new Map(this.sql.refreshTokens),
+      devices: new Map(this.sql.devices),
+      migrationVersions: new Set(this.sql.migrationVersions),
+    }
+  }
+
+  private restoreSql(snapshot: RecordingSqlSnapshot): void {
+    replaceMap(this.sql.docs, snapshot.docs)
+    replaceMap(this.sql.opLog, snapshot.opLog)
+    replaceMap(this.sql.messageDedup, snapshot.messageDedup)
+    replaceMap(this.sql.quarantines, snapshot.quarantines)
+    replaceMap(this.sql.checkpointRuns, snapshot.checkpointRuns)
+    replaceMap(this.sql.setupTokens, snapshot.setupTokens)
+    replaceMap(this.sql.refreshTokens, snapshot.refreshTokens)
+    replaceMap(this.sql.devices, snapshot.devices)
+    replaceSet(this.sql.migrationVersions, snapshot.migrationVersions)
+  }
+}
+
+interface RecordingSqlSnapshot {
+  readonly docs: Map<string, RecordedDocRow>
+  readonly opLog: Map<string, RecordedOpLogRow>
+  readonly messageDedup: Map<string, RecordedMessageDedupRow>
+  readonly quarantines: Map<string, RecordedQuarantineRow>
+  readonly checkpointRuns: Map<string, RecordedCheckpointRunRow>
+  readonly setupTokens: Map<string, RecordedSetupTokenRow>
+  readonly refreshTokens: Map<string, RecordedRefreshTokenRow>
+  readonly devices: Map<string, RecordedDeviceRow>
+  readonly migrationVersions: Set<number>
+}
+
+function replaceMap<K, V>(target: Map<K, V>, source: ReadonlyMap<K, V>): void {
+  target.clear()
+  for (const [key, value] of source) {
+    target.set(key, value)
+  }
+}
+
+function replaceSet<T>(target: Set<T>, source: ReadonlySet<T>): void {
+  target.clear()
+  for (const value of source) {
+    target.add(value)
   }
 }
 
@@ -1073,9 +1147,9 @@ test('VaultRoom exchanges setup tokens for device credentials', async () => {
   assert.equal(storage.sql.setupTokens.get(setupTokenHash)?.consumedAt !== undefined, true)
   assert.equal(storage.sql.refreshTokens.size, 1)
   assert.equal(storage.sql.devices.size, 2)
-  assert(storage.sql.queries.includes('begin immediate'))
-  assert(storage.sql.queries.includes('commit'))
-  assert.equal(storage.sql.queries.includes('rollback'), false)
+  assert(storage.sql.queries.includes('transaction begin'))
+  assert(storage.sql.queries.includes('transaction commit'))
+  assert.equal(storage.sql.queries.includes('transaction rollback'), false)
 })
 
 test('VaultRoom rolls back setup exchange persistence failures', async () => {
@@ -1105,9 +1179,9 @@ test('VaultRoom rolls back setup exchange persistence failures', async () => {
 
   assert.equal(response.status, 500)
   assert.deepEqual(await response.json(), { error: 'setup-persist:transaction-failed' })
-  assert(storage.sql.queries.includes('begin immediate'))
-  assert(storage.sql.queries.includes('rollback'))
-  assert.equal(storage.sql.queries.includes('commit'), false)
+  assert(storage.sql.queries.includes('transaction begin'))
+  assert(storage.sql.queries.includes('transaction rollback'))
+  assert.equal(storage.sql.queries.includes('transaction commit'), false)
 })
 
 test('VaultRoom refreshes device access tokens and rotates refresh tokens', async () => {
@@ -1150,8 +1224,8 @@ test('VaultRoom refreshes device access tokens and rotates refresh tokens', asyn
   assert.equal(typeof body.expiresAt, 'number')
   assert.equal(storage.sql.refreshTokens.get(refreshTokenHash)?.revokedAt !== undefined, true)
   assert.equal(storage.sql.refreshTokens.size, 2)
-  assert(storage.sql.queries.includes('begin immediate'))
-  assert(storage.sql.queries.includes('commit'))
+  assert(storage.sql.queries.includes('transaction begin'))
+  assert(storage.sql.queries.includes('transaction commit'))
 })
 
 test('VaultRoom rolls back auth refresh rotation failures', async () => {
@@ -1184,9 +1258,9 @@ test('VaultRoom rolls back auth refresh rotation failures', async () => {
   assert.deepEqual(await response.json(), {
     error: 'auth-refresh-persist:transaction-failed',
   })
-  assert(storage.sql.queries.includes('begin immediate'))
-  assert(storage.sql.queries.includes('rollback'))
-  assert.equal(storage.sql.queries.includes('commit'), false)
+  assert(storage.sql.queries.includes('transaction begin'))
+  assert(storage.sql.queries.includes('transaction rollback'))
+  assert.equal(storage.sql.queries.includes('transaction commit'), false)
 })
 
 test('VaultRoom revokes devices through authenticated HTTP requests', async () => {

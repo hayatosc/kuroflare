@@ -8,21 +8,19 @@ import {
   type ClientCapability,
   type ClientHello,
   type ControlMessage,
-  
   type DocId,
-  
-  
-  type SyncUpdate} from '@kuroflare/core'
+  type SyncUpdate,
+} from '@kuroflare/core'
 import * as Y from 'yjs'
 
+import { type SyncRuntimeStartupStepEffect } from '../engine/actuation'
+import { type LocalSetupMetadata } from '../engine/setup'
+import { planOutboxWorkerAckCompletion } from '../engine/worker'
 import {
   type LocalStoreIndexedDbRequest,
-  type LocalStoreIndexedDbTransactionLifecycle} from '../store/indexeddb'
+  type LocalStoreIndexedDbTransactionLifecycle,
+} from '../store/indexeddb'
 import { type LocalStoreOutboxRecord } from '../store/store'
-import { planOutboxWorkerAckCompletion } from '../engine/worker'
-import { type LocalSetupMetadata } from '../engine/setup'
-import {
-  type SyncRuntimeStartupStepEffect} from '../engine/actuation'
 
 const OPEN_READY_STATE = 1
 
@@ -30,12 +28,8 @@ import {
   type SyncRuntimeWebSocketConnection,
   type SyncRuntimeWebSocketFactoryPort,
   type SyncRuntimeBrowserWebSocketConstructor,
-  
-  
   type SyncRuntimeWebSocketUrlInput,
   type SyncRuntimeWebSocketStepPortInput,
-  
-  
   type SyncRuntimeWebSocketInboundMessage,
   type SyncRuntimeWebSocketInboundRouteInput,
   type SyncRuntimeWebSocketInboundRoute,
@@ -44,11 +38,7 @@ import {
   type SyncRuntimeWebSocketInboundRoutePorts,
   type SyncRuntimeWebSocketInboundDispatchInput,
   type SyncRuntimeWebSocketInboundDispatchResult,
-  
   type SyncRuntimeWebSocketSessionPort,
-  
-  
-  
   type SyncRuntimeWebSocketOutboxCompletionInput,
   type SyncRuntimeWebSocketOutboxCompletionPlan,
   type SyncRuntimeWebSocketOutboxCompletionPortInput,
@@ -56,33 +46,24 @@ import {
   type SyncRuntimeWebSocketOutboxSendPlan,
   type SyncRuntimeWebSocketOutboxSendPortInput,
   type SyncRuntimeWebSocketOutboxSendPort,
-  
   type SyncRuntimeWebSocketAppliedYDocState,
   type SyncRuntimeWebSocketRemoteUpdateCommitInput,
   type SyncRuntimeWebSocketRemoteUpdateDecodePlan,
   type SyncRuntimeWebSocketRemoteUpdateYDocApplyPort,
   type SyncRuntimeWebSocketRemoteUpdateCommitPort,
   type SyncRuntimeWebSocketRemoteUpdateYDocWrite,
-  
-  
-  
   type SyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction,
-  
-  
   type SyncRuntimeWebSocketRemoteUpdateIndexedDbObjectStorePorts,
-  
   type SyncRuntimeWebSocketRemoteUpdateIndexedDbDatabasePort,
   type SyncRuntimeWebSocketRemoteUpdateIndexedDbCommitInput,
-  
   type SyncRuntimeWebSocketRemoteUpdateApplyPortInput,
-  
   type SyncRuntimeWebSocketYjsRemoteUpdateApplyPortInput,
   type SyncRuntimeWebSocketSyncRequestAnswerInput,
   type SyncRuntimeWebSocketSyncRequestAnswerPlan,
-  
   type SyncRuntimeWebSocketSyncRequestAnswerPortInput,
   type SyncRuntimeWebSocketInboundMessageHandler,
-  type SyncRuntimeWebSocketStartupStepPort} from '../engine/websocket.types'
+  type SyncRuntimeWebSocketStartupStepPort,
+} from '../engine/websocket.types'
 
 /**
  * Builds the browser-compatible worker WebSocket URL for one vault.
@@ -128,7 +109,8 @@ export function createBrowserSyncRuntimeWebSocketFactory(
   return {
     connect(url, protocols) {
       return new BrowserSyncRuntimeWebSocketConnection(new WebSocketCtor(url, protocols))
-    }}
+    },
+  }
 }
 
 /**
@@ -159,8 +141,10 @@ export function createSyncRuntimeWebSocketSession(): SyncRuntimeWebSocketSession
     snapshot() {
       return {
         hasConnection: connection !== undefined,
-        readyState: connection?.readyState}
-    }}
+        readyState: connection?.readyState,
+      }
+    },
+  }
 }
 
 /**
@@ -318,7 +302,8 @@ export function planSyncRuntimeWebSocketOutboxCompletion(
     ownerId: input.ownerId,
     now: input.now,
     currentOutboxRecords: input.snapshot.outboxRecords,
-    currentLeaseRows: input.snapshot.leaseRows})
+    currentLeaseRows: input.snapshot.leaseRows,
+  })
   if (!completion.ok) {
     return { ok: false, reason: completion.reason, candidates, completion }
   }
@@ -342,12 +327,14 @@ export function createSyncRuntimeWebSocketOutboxCompletionPort(
         ownerId: input.ownerId,
         now: input.now(),
         snapshot: await input.snapshot.read(),
-        minDurableSeqExclusive: input.minDurableSeqExclusive})
+        minDurableSeqExclusive: input.minDurableSeqExclusive,
+      })
       if (!plan.ok) {
         return
       }
       await input.commit.commit(plan.completion)
-    }}
+    },
+  }
 }
 
 /**
@@ -380,7 +367,8 @@ export function planSyncRuntimeWebSocketOutboxSend(
     deviceId: input.deviceId,
     messageId: record.messageId,
     docId: record.docId,
-    update: record.updateBytesBase64}
+    update: record.updateBytesBase64,
+  }
   if (record.updateSha256 !== undefined) {
     message.updateSha256 = record.updateSha256
   }
@@ -404,7 +392,8 @@ export function createSyncRuntimeWebSocketOutboxSendPort(
       }
       input.session.send(plan.frame)
       return plan
-    }}
+    },
+  }
 }
 
 /**
@@ -435,7 +424,9 @@ export async function decodeSyncRuntimeWebSocketRemoteUpdate(
     apply: {
       message,
       updateBytes,
-      actualUpdateSha256}}
+      actualUpdateSha256,
+    },
+  }
 }
 
 /**
@@ -456,7 +447,8 @@ export function createSyncRuntimeWebSocketRemoteUpdateApplyPort(
       }
       const appliedState = await input.ydoc.applyRemoteUpdate(decoded.apply)
       await input.commit.commitRemoteUpdate({ ...decoded.apply, appliedState })
-    }}
+    },
+  }
 }
 
 /**
@@ -478,8 +470,10 @@ export function createSyncRuntimeWebSocketYjsRemoteUpdateApplyPort(
       return {
         docId: applyInput.message.docId,
         updateBytes: Y.encodeStateAsUpdate(doc),
-        stateVectorBase64: encodeBase64Bytes(Y.encodeStateVector(doc))}
-    }}
+        stateVectorBase64: encodeBase64Bytes(Y.encodeStateVector(doc)),
+      }
+    },
+  }
 }
 
 /**
@@ -506,7 +500,10 @@ export function planSyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction(
       value: {
         docId: input.message.docId,
         remoteCursorSeq: durableSeq,
-        stateVectorBase64: input.appliedState.stateVectorBase64}}}
+        stateVectorBase64: input.appliedState.stateVectorBase64,
+      },
+    },
+  }
 }
 
 /**
@@ -528,9 +525,12 @@ export function createSyncRuntimeWebSocketRemoteUpdateIndexedDbDatabasePort(
         stores: {
           metaYDoc: transaction.objectStore('meta-ydoc'),
           fileYDocs: transaction.objectStore('file-ydocs'),
-          remoteCursors: transaction.objectStore('remote-cursors')},
-        lifecycle: transaction}
-    }}
+          remoteCursors: transaction.objectStore('remote-cursors'),
+        },
+        lifecycle: transaction,
+      }
+    },
+  }
 }
 
 /**
@@ -568,8 +568,10 @@ export function createSyncRuntimeWebSocketRemoteUpdateIndexedDbCommitPort(
     async commitRemoteUpdate(input) {
       await commitSyncRuntimeWebSocketRemoteUpdateIndexedDbTransaction({
         database,
-        transaction: planSyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction(input)})
-    }}
+        transaction: planSyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction(input),
+      })
+    },
+  }
 }
 
 /**
@@ -602,7 +604,8 @@ export async function planSyncRuntimeWebSocketSyncRequestAnswer(
     docId: input.request.docId,
     update,
     updateSha256,
-    baseStateVector: input.request.stateVector}
+    baseStateVector: input.request.stateVector,
+  }
   return { ok: true, message, frame: JSON.stringify(message) }
 }
 
@@ -620,13 +623,15 @@ export function createSyncRuntimeWebSocketSyncRequestAnswerPort(
       const plan = await planSyncRuntimeWebSocketSyncRequestAnswer({
         request,
         deviceId: input.deviceId,
-        registry: input.registry})
+        registry: input.registry,
+      })
       if (!plan.ok) {
         await input.reject?.rejectSyncRequestAnswer(request, plan.reason)
         return
       }
       input.session.send(plan.frame)
-    }}
+    },
+  }
 }
 
 function decodeBase64Bytes(value: string): Uint8Array | null {
@@ -651,7 +656,8 @@ function remoteUpdateYDocWrite(
 ): SyncRuntimeWebSocketRemoteUpdateYDocWrite {
   const value = {
     docId: appliedState.docId,
-    updateBytes: appliedState.updateBytes}
+    updateBytes: appliedState.updateBytes,
+  }
   if (appliedState.docId.kind === 'meta') {
     return { kind: 'put', storeName: 'meta-ydoc', key: 'meta', value }
   }
@@ -778,7 +784,8 @@ export function createSyncRuntimeWebSocketStartupStepPort(
 
       const url = buildSyncRuntimeWebSocketUrl({
         endpoint: input.metadata.setup.endpoint,
-        vaultId: input.metadata.setup.vaultId})
+        vaultId: input.metadata.setup.vaultId,
+      })
       connectionUrl = redactWebSocketUrlToken(url)
       socket = input.webSocket.connect(url, [...buildSyncRuntimeWebSocketProtocols(accessToken)])
       input.session?.attach(socket)
@@ -786,7 +793,8 @@ export function createSyncRuntimeWebSocketStartupStepPort(
         if (pendingHelloAdmission !== undefined) {
           const admission = planSyncRuntimeWebSocketHelloAdmission({
             inbound: message,
-            metadata: input.metadata.setup})
+            metadata: input.metadata.setup,
+          })
           if (admission.action === 'accepted') {
             const pending = pendingHelloAdmission
             pendingHelloAdmission = undefined
@@ -809,7 +817,8 @@ export function createSyncRuntimeWebSocketStartupStepPort(
       hello = clientHelloFromStartupEffect({
         effect,
         metadata: input.metadata.setup,
-        capabilities: input.capabilities})
+        capabilities: input.capabilities,
+      })
       const admission = waitForHelloAccepted(
         socket,
         (pending) => {
@@ -826,8 +835,10 @@ export function createSyncRuntimeWebSocketStartupStepPort(
       return {
         connectionUrl,
         hello,
-        socketReadyState: socket?.readyState}
-    }}
+        socketReadyState: socket?.readyState,
+      }
+    },
+  }
 }
 
 async function waitForHelloAccepted(
@@ -847,7 +858,8 @@ async function waitForHelloAccepted(
       reject(error) {
         clear()
         reject(error)
-      }})
+      },
+    })
     socket.onerror = () => {
       clear()
       reject(new Error('websocket-hello-admission-failed'))
@@ -881,7 +893,8 @@ function clientHelloFromStartupEffect(input: {
     vaultId: input.metadata.vaultId,
     deviceId: input.metadata.deviceId,
     yClientId: input.metadata.yClientId,
-    capabilities: [...(input.capabilities ?? ['binary-v1'])]}
+    capabilities: [...(input.capabilities ?? ['binary-v1'])],
+  }
 }
 
 async function waitForWebSocketOpen(socket: SyncRuntimeWebSocketConnection): Promise<void> {

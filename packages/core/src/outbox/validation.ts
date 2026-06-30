@@ -1,4 +1,6 @@
+import { decideClientAuthStart } from '../auth'
 import { type DocId } from '../utils/ids'
+import { isNonNegativeSafeInteger, isPositiveSafeInteger } from '../utils/shared'
 import {
   type BinaryDownloadChunkInput,
   type BinaryUploadChunkInput,
@@ -7,8 +9,6 @@ import {
   type OutboxSchedulerTickPlan,
   type OutboxPlanItemId,
 } from './types'
-import { decideClientAuthStart } from '../auth'
-import { isNonNegativeSafeInteger, isPositiveSafeInteger } from '../utils/shared'
 export { isNonNegativeSafeInteger, isPositiveSafeInteger }
 
 export function validateBinaryChunks(

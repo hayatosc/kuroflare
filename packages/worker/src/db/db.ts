@@ -1,4 +1,5 @@
 import { Kysely } from 'kysely'
+
 import type { DurableObjectSqlStorageBinding } from '../runtime'
 import { DurableObjectSqlDialect } from './adapter'
 import type { Database } from './types'

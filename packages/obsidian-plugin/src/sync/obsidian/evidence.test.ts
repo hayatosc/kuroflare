@@ -3,13 +3,13 @@ import assert from 'node:assert/strict'
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
+import { type LocalSetupMetadataSnapshotDecision } from '../engine/setup'
 import {
   createSyncRuntimeObsidianShellEvidencePort,
   createSyncRuntimeObsidianStartupEvidenceReader,
   planSyncRuntimeObsidianStartupInputFromEvidence,
 } from '../obsidian/evidence'
-import { type LocalSetupMetadataSnapshotDecision } from '../engine/setup'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
 
 const vaultId = makeVaultId('startup-evidence-vault-1')
 const deviceId = makeDeviceId('startup-evidence-device-1')

@@ -12,18 +12,18 @@ import {
 } from '@kuroflare/core'
 
 import {
+  planOutboxWorkerFullSnapshotRelease,
+  planOutboxWorkerFullSnapshotReleaseIndexedDbWriteTransaction,
+  type OutboxWorkerFullSnapshotReleasePlan,
+  type OutboxWorkerIndexedDbWriteOperation,
+} from '../engine/worker'
+import {
   queueLocalStoreIndexedDbConcreteWrites,
   type LocalStoreIndexedDbObjectStorePort,
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
 } from '../store/indexeddb'
 import { type LocalStoreOutboxRecord } from '../store/store'
-import {
-  planOutboxWorkerFullSnapshotRelease,
-  planOutboxWorkerFullSnapshotReleaseIndexedDbWriteTransaction,
-  type OutboxWorkerFullSnapshotReleasePlan,
-  type OutboxWorkerIndexedDbWriteOperation,
-} from '../engine/worker'
 
 /** Verified full snapshot bytes accepted by the runtime planner. */
 export type VerifiedFullSnapshotBytes = Extract<

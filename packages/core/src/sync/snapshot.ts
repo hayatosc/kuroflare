@@ -1,8 +1,7 @@
-import { type DocId } from '../utils/ids'
 import { type DocLatestSnapshotResponse, type MetaLatestSnapshotResponse } from '../http/snapshot'
 import { makeSha256Hex, type Sha256Hex } from '../sync/meta'
-
 import { hashBytesSha256 } from '../utils/hashing'
+import { type DocId } from '../utils/ids'
 
 /** Input for deciding whether a fetched full snapshot may replace local doc state. */
 export interface FullSnapshotApplyInput {

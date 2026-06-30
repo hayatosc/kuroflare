@@ -1,29 +1,28 @@
 import {
-  planSyncRuntimeObsidianPresentation} from '../obsidian/presentation'
-import {
-  applySyncRuntimeSetupExchangeShellReplan,
-  type SyncRuntimeSetupExchangeShellReplan} from '../engine/replan'
-import {
   applySyncRuntimeShellCommands,
   executeRunnableSyncRuntimeShellEffects,
   INITIAL_SYNC_RUNTIME_SHELL_STATE,
   planSyncRuntimeNoNetworkEffectPump,
   planSyncRuntimeStartupActuation,
-  
   type SyncRuntimeShellCommand,
   type SyncRuntimeShellEffectExecutor,
   type SyncRuntimeShellState,
-  
-  type SyncRuntimeStartupStepEffectPort} from '../engine/actuation'
+  type SyncRuntimeStartupStepEffectPort,
+} from '../engine/actuation'
+import { type SyncEngineStartupEffect } from '../engine/engine'
+import {
+  applySyncRuntimeSetupExchangeShellReplan,
+  type SyncRuntimeSetupExchangeShellReplan,
+} from '../engine/replan'
 import {
   planSyncRuntimeStartupFromSchemaEvidence,
   type SyncRuntimeLocalStateEvidencePlan,
   type SyncRuntimeStartupEffect,
   type SyncRuntimeStartupInput,
   type SyncRuntimeStartupFromSchemaEvidenceInput,
-  type SyncRuntimeStartupPlan} from '../engine/startup'
-import { type SyncEngineStartupEffect } from '../engine/engine'
-
+  type SyncRuntimeStartupPlan,
+} from '../engine/startup'
+import { planSyncRuntimeObsidianPresentation } from '../obsidian/presentation'
 import type {
   SyncRuntimeObsidianShellEvidenceReadResult,
   SyncRuntimeObsidianShellEvidencePort,
@@ -32,7 +31,8 @@ import type {
   SyncRuntimeObsidianShellDriverSetupExchangeTickInput,
   SyncRuntimeObsidianShellDriverStartupStepTickInput,
   SyncRuntimeObsidianShellDriverTransportTickInput,
-  SyncRuntimeObsidianShellDriverTickResult} from '../obsidian/shell.types'
+  SyncRuntimeObsidianShellDriverTickResult,
+} from '../obsidian/shell.types'
 
 export type {
   SyncRuntimeObsidianShellEvidenceReadResult,
@@ -42,19 +42,20 @@ export type {
   SyncRuntimeObsidianShellDriverSetupExchangeTickInput,
   SyncRuntimeObsidianShellDriverStartupStepTickInput,
   SyncRuntimeObsidianShellDriverTransportTickInput,
-  SyncRuntimeObsidianShellDriverTickResult}
+  SyncRuntimeObsidianShellDriverTickResult,
+}
 
 type SyncRuntimeSetupExchangeRuntimeEffect = Extract<
   SyncRuntimeStartupEffect,
   { readonly kind: 'run-sync-startup-effect' }
- > & {
+> & {
   readonly effect: Extract<SyncEngineStartupEffect, { readonly kind: 'run-setup-exchange' }>
 }
 
 type SyncRuntimeStartupStepRuntimeEffect = Extract<
   SyncRuntimeStartupEffect,
   { readonly kind: 'run-sync-startup-effect' }
- > & {
+> & {
   readonly effect: Extract<SyncEngineStartupEffect, { readonly kind: 'run-startup-step' }>
 }
 
@@ -64,7 +65,8 @@ export const INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE: SyncRuntimeObsidi
     shell: INITIAL_SYNC_RUNTIME_SHELL_STATE,
     presentation: { shownNoticeCount: 0 },
     startupPlan: undefined,
-    startupInput: undefined}
+    startupInput: undefined,
+  }
 
 /**
  * Runs one no-network startup tick for the Obsidian plugin shell.
@@ -78,12 +80,14 @@ export async function runSyncRuntimeObsidianShellDriverTick(
 
   const pumpPlan = planSyncRuntimeNoNetworkEffectPump({
     state: shell,
-    maxEffects: input.maxLocalEffects})
+    maxEffects: input.maxLocalEffects,
+  })
   if (pumpPlan.executableEffectCount > 0) {
     const executed = await executeRunnableSyncRuntimeShellEffects({
       state: shell,
       executor: input.executor,
-      maxEffects: pumpPlan.executableEffectCount})
+      maxEffects: pumpPlan.executableEffectCount,
+    })
     shell = executed.state
   }
   const deferredEffect =
@@ -93,21 +97,24 @@ export async function runSyncRuntimeObsidianShellDriverTick(
 
   const presentation = planSyncRuntimeObsidianPresentation({
     state: shell,
-    previous: previous.presentation})
+    previous: previous.presentation,
+  })
 
   return {
     state: {
       shell,
       presentation: presentation.nextSnapshot,
       startupPlan: planned.startupPlan,
-      startupInput: planned.startupInput ?? previous.startupInput},
+      startupInput: planned.startupInput ?? previous.startupInput,
+    },
     startupPlan: planned.startupPlan,
     presentation,
     deferredEffect,
     executedLocalEffectCount: pumpPlan.executableEffectCount,
     executedStartupStepCount: 0,
     setupExchangeReplan: undefined,
-    evidenceFailure: planned.evidenceFailure}
+    evidenceFailure: planned.evidenceFailure,
+  }
 }
 
 /**
@@ -126,7 +133,8 @@ export async function runSyncRuntimeObsidianShellDriverSetupExchangeTick(
   const beforeSetup = await pumpLocalEffects({
     shell,
     executor: input.executor,
-    maxLocalEffects: input.maxLocalEffects})
+    maxLocalEffects: input.maxLocalEffects,
+  })
   shell = beforeSetup.shell
   executedLocalEffectCount += beforeSetup.executedLocalEffectCount
 
@@ -143,7 +151,8 @@ export async function runSyncRuntimeObsidianShellDriverSetupExchangeTick(
           state: shell,
           request: completed,
           current: startupReplanCurrentFromEvidenceInput(startupInput),
-          expectedBootstrapMode: startupInput.expectedBootstrapMode})
+          expectedBootstrapMode: startupInput.expectedBootstrapMode,
+        })
         shell = setupExchangeReplan.state
         startupPlan = setupExchangeReplan.replan.startup
       } catch (error: unknown) {
@@ -151,7 +160,8 @@ export async function runSyncRuntimeObsidianShellDriverSetupExchangeTick(
           {
             kind: 'fail-runtime-effect',
             effect: setupRuntimeEffect,
-            reason: runtimeDriverFailureReason('setup-exchange', error)},
+            reason: runtimeDriverFailureReason('setup-exchange', error),
+          },
         ])
       }
     }
@@ -163,28 +173,32 @@ export async function runSyncRuntimeObsidianShellDriverSetupExchangeTick(
     maxLocalEffects:
       input.maxLocalEffects === undefined
         ? undefined
-        : Math.max(0, input.maxLocalEffects - executedLocalEffectCount)})
+        : Math.max(0, input.maxLocalEffects - executedLocalEffectCount),
+  })
   shell = afterSetup.shell
   executedLocalEffectCount += afterSetup.executedLocalEffectCount
 
   const deferredEffect = planSyncRuntimeNoNetworkEffectPump({ state: shell }).deferredEffect
   const presentation = planSyncRuntimeObsidianPresentation({
     state: shell,
-    previous: previous.presentation})
+    previous: previous.presentation,
+  })
 
   return {
     state: {
       shell,
       presentation: presentation.nextSnapshot,
       startupPlan,
-      startupInput},
+      startupInput,
+    },
     startupPlan,
     presentation,
     deferredEffect,
     executedLocalEffectCount,
     executedStartupStepCount: 0,
     setupExchangeReplan,
-    evidenceFailure: planned.evidenceFailure}
+    evidenceFailure: planned.evidenceFailure,
+  }
 }
 
 /**
@@ -202,7 +216,8 @@ export async function runSyncRuntimeObsidianShellDriverStartupStepTick(
   const local = await pumpLocalEffects({
     shell,
     executor: input.executor,
-    maxLocalEffects: input.maxLocalEffects})
+    maxLocalEffects: input.maxLocalEffects,
+  })
   shell = local.shell
   executedLocalEffectCount += local.executedLocalEffectCount
 
@@ -210,7 +225,8 @@ export async function runSyncRuntimeObsidianShellDriverStartupStepTick(
     const startupSteps = await pumpStartupStepEffects({
       shell,
       startupStep: input.startupStep,
-      maxStartupSteps: input.maxStartupSteps})
+      maxStartupSteps: input.maxStartupSteps,
+    })
     shell = startupSteps.shell
     executedStartupStepCount = startupSteps.executedStartupStepCount
   }
@@ -218,21 +234,24 @@ export async function runSyncRuntimeObsidianShellDriverStartupStepTick(
   const deferredEffect = planSyncRuntimeNoNetworkEffectPump({ state: shell }).deferredEffect
   const presentation = planSyncRuntimeObsidianPresentation({
     state: shell,
-    previous: previous.presentation})
+    previous: previous.presentation,
+  })
 
   return {
     state: {
       shell,
       presentation: presentation.nextSnapshot,
       startupPlan: planned.startupPlan,
-      startupInput: planned.startupInput ?? previous.startupInput},
+      startupInput: planned.startupInput ?? previous.startupInput,
+    },
     startupPlan: planned.startupPlan,
     presentation,
     deferredEffect,
     executedLocalEffectCount,
     executedStartupStepCount,
     setupExchangeReplan: undefined,
-    evidenceFailure: planned.evidenceFailure}
+    evidenceFailure: planned.evidenceFailure,
+  }
 }
 
 /**
@@ -253,7 +272,8 @@ export async function runSyncRuntimeObsidianShellDriverTransportTick(
   const beforeSetup = await pumpLocalEffects({
     shell,
     executor: input.executor,
-    maxLocalEffects: remainingLocalEffectLimit(input.maxLocalEffects, executedLocalEffectCount)})
+    maxLocalEffects: remainingLocalEffectLimit(input.maxLocalEffects, executedLocalEffectCount),
+  })
   shell = beforeSetup.shell
   executedLocalEffectCount += beforeSetup.executedLocalEffectCount
 
@@ -269,7 +289,8 @@ export async function runSyncRuntimeObsidianShellDriverTransportTick(
           state: shell,
           request: completed,
           current: startupReplanCurrentFromEvidenceInput(startupInput),
-          expectedBootstrapMode: startupInput.expectedBootstrapMode})
+          expectedBootstrapMode: startupInput.expectedBootstrapMode,
+        })
         shell = setupExchangeReplan.state
         startupPlan = setupExchangeReplan.replan.startup
       } catch (error: unknown) {
@@ -277,7 +298,8 @@ export async function runSyncRuntimeObsidianShellDriverTransportTick(
           {
             kind: 'fail-runtime-effect',
             effect: setupRuntimeEffect,
-            reason: runtimeDriverFailureReason('setup-exchange', error)},
+            reason: runtimeDriverFailureReason('setup-exchange', error),
+          },
         ])
       }
     }
@@ -286,7 +308,8 @@ export async function runSyncRuntimeObsidianShellDriverTransportTick(
   const afterSetup = await pumpLocalEffects({
     shell,
     executor: input.executor,
-    maxLocalEffects: remainingLocalEffectLimit(input.maxLocalEffects, executedLocalEffectCount)})
+    maxLocalEffects: remainingLocalEffectLimit(input.maxLocalEffects, executedLocalEffectCount),
+  })
   shell = afterSetup.shell
   executedLocalEffectCount += afterSetup.executedLocalEffectCount
 
@@ -294,7 +317,8 @@ export async function runSyncRuntimeObsidianShellDriverTransportTick(
     const startupSteps = await pumpStartupStepEffects({
       shell,
       startupStep: input.startupStep,
-      maxStartupSteps: input.maxStartupSteps})
+      maxStartupSteps: input.maxStartupSteps,
+    })
     shell = startupSteps.shell
     executedStartupStepCount = startupSteps.executedStartupStepCount
   }
@@ -302,21 +326,24 @@ export async function runSyncRuntimeObsidianShellDriverTransportTick(
   const deferredEffect = planSyncRuntimeNoNetworkEffectPump({ state: shell }).deferredEffect
   const presentation = planSyncRuntimeObsidianPresentation({
     state: shell,
-    previous: previous.presentation})
+    previous: previous.presentation,
+  })
 
   return {
     state: {
       shell,
       presentation: presentation.nextSnapshot,
       startupPlan,
-      startupInput},
+      startupInput,
+    },
     startupPlan,
     presentation,
     deferredEffect,
     executedLocalEffectCount,
     executedStartupStepCount,
     setupExchangeReplan,
-    evidenceFailure: planned.evidenceFailure}
+    evidenceFailure: planned.evidenceFailure,
+  }
 }
 
 async function planShellWhenIdle(
@@ -336,7 +363,8 @@ async function planShellWhenIdle(
         shell: state.shell,
         startupPlan: state.startupPlan,
         startupInput: state.startupInput,
-        evidenceFailure: undefined}
+        evidenceFailure: undefined,
+      }
     }
     const read = await evidence.readStartupInput()
     if (!read.ok) {
@@ -347,13 +375,15 @@ async function planShellWhenIdle(
         ),
         startupPlan: undefined,
         startupInput: undefined,
-        evidenceFailure: read.localState}
+        evidenceFailure: read.localState,
+      }
     }
     return {
       shell: state.shell,
       startupPlan: planSyncRuntimeStartupFromSchemaEvidence(read.startupInput),
       startupInput: read.startupInput,
-      evidenceFailure: undefined}
+      evidenceFailure: undefined,
+    }
   }
 
   const read = await evidence.readStartupInput()
@@ -365,7 +395,8 @@ async function planShellWhenIdle(
       ),
       startupPlan: undefined,
       startupInput: undefined,
-      evidenceFailure: read.localState}
+      evidenceFailure: read.localState,
+    }
   }
 
   const startupPlan = planSyncRuntimeStartupFromSchemaEvidence(read.startupInput)
@@ -376,7 +407,8 @@ async function planShellWhenIdle(
     ),
     startupPlan,
     startupInput: read.startupInput,
-    evidenceFailure: undefined}
+    evidenceFailure: undefined,
+  }
 }
 
 async function pumpLocalEffects(input: {
@@ -389,17 +421,20 @@ async function pumpLocalEffects(input: {
 }> {
   const pumpPlan = planSyncRuntimeNoNetworkEffectPump({
     state: input.shell,
-    maxEffects: input.maxLocalEffects})
+    maxEffects: input.maxLocalEffects,
+  })
   if (pumpPlan.executableEffectCount === 0) {
     return { shell: input.shell, executedLocalEffectCount: 0 }
   }
   const executed = await executeRunnableSyncRuntimeShellEffects({
     state: input.shell,
     executor: input.executor,
-    maxEffects: pumpPlan.executableEffectCount})
+    maxEffects: pumpPlan.executableEffectCount,
+  })
   return {
     shell: executed.state,
-    executedLocalEffectCount: pumpPlan.executableEffectCount}
+    executedLocalEffectCount: pumpPlan.executableEffectCount,
+  }
 }
 
 function nextSetupExchangeRuntimeEffect(
@@ -441,7 +476,8 @@ async function pumpStartupStepEffects(input: {
       const command: SyncRuntimeShellCommand = {
         kind: 'fail-runtime-effect',
         effect,
-        reason: runtimeDriverFailureReason('startup-step', error)}
+        reason: runtimeDriverFailureReason('startup-step', error),
+      }
       shell = applySyncRuntimeShellCommands(shell, [command])
       break
     }
@@ -472,13 +508,15 @@ function startupReplanCurrentFromEvidenceInput(
         dbExists: input.localStoreEvidence.evidence.dbExists,
         currentVersion: input.localStoreEvidence.evidence.currentVersion,
         presentStores: input.localStoreEvidence.evidence.presentStores,
-        pendingOutboxCount: input.localStoreEvidence.evidence.pendingOutboxCount}
+        pendingOutboxCount: input.localStoreEvidence.evidence.pendingOutboxCount,
+      }
     : undefined
 
   return {
     intent: input.intent,
     local: input.local,
-    localStore}
+    localStore,
+  }
 }
 
 function remainingLocalEffectLimit(
@@ -507,11 +545,13 @@ function shellCommandsForEvidenceFailure(
         {
           kind: 'set-status',
           status: 'local-store-blocked',
-          reason: failure.localStoreReason ?? failure.reason},
+          reason: failure.localStoreReason ?? failure.reason,
+        },
         {
           kind: 'show-repair-entry',
           entry: 'local-store-schema',
-          reason: failure.localStoreReason ?? failure.reason},
+          reason: failure.localStoreReason ?? failure.reason,
+        },
         { kind: 'show-notice', notice: 'local-store-blocked' },
       ] as const
     case 'invalid-local-metadata':
@@ -521,11 +561,13 @@ function shellCommandsForEvidenceFailure(
         {
           kind: 'set-status',
           status: 'rejected',
-          reason: failure.metadataReason ?? failure.reason},
+          reason: failure.metadataReason ?? failure.reason,
+        },
         {
           kind: 'show-repair-entry',
           entry: 'startup-rejected',
-          reason: failure.metadataReason ?? failure.reason},
+          reason: failure.metadataReason ?? failure.reason,
+        },
         { kind: 'show-notice', notice: 'startup-rejected' },
       ] as const
   }

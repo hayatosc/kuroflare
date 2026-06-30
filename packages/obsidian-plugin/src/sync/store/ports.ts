@@ -1,20 +1,14 @@
-import type {
-  OutboxPlanItemId,
-  OutboxRunningLease} from '@kuroflare/core'
-import type {
-  LocalStoreOutboxRecord,
-  LocalStoreTransactionOperation} from '../store/store'
-import type {
-  LocalStoreObjectStore} from '@kuroflare/core'
-import type {
-  LocalSetupMetadataPutOperation} from '../engine/setup'
-import type {
-  LocalStoreIndexedDbOpenEffect} from '../store/schema'
+import type { OutboxPlanItemId, OutboxRunningLease } from '@kuroflare/core'
+import type { LocalStoreObjectStore } from '@kuroflare/core'
+
+import type { LocalSetupMetadataPutOperation } from '../engine/setup'
 import type {
   LocalStoreDriverSnapshot,
   LocalStoreDriverReadSet,
-  
-  LocalStoreDriverCommitPlan} from '../store/driver.types'
+  LocalStoreDriverCommitPlan,
+} from '../store/driver.types'
+import type { LocalStoreIndexedDbOpenEffect } from '../store/schema'
+import type { LocalStoreOutboxRecord, LocalStoreTransactionOperation } from '../store/store'
 
 /** IndexedDB object stores owned by the outbox local-store driver. */
 export type LocalStoreIndexedDbStoreName = 'outbox' | 'running-leases'

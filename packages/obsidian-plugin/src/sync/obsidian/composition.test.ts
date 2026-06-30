@@ -4,13 +4,13 @@ import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type ClientStartupLocalState } from 
 import { makeDeviceId, makeVaultId } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
-import { createSyncRuntimeObsidianComposition } from '../obsidian/composition'
-import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
 import {
   type SyncRuntimeLocalStoreEffectPort,
   type SyncRuntimeStartupStepEffectPort,
 } from '../engine/actuation'
+import { createSyncRuntimeObsidianComposition } from '../obsidian/composition'
+import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
 
 const vaultId = makeVaultId('composition-vault-1')
 const deviceId = makeDeviceId('composition-device-1')

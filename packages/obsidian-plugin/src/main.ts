@@ -36,14 +36,16 @@ import {
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
+import type { KuroflareSettings, FileDocId, LoadedTextDoc } from './main-types'
 import {
   createYTextEditorExtension,
   dispatchFullDocumentReplace,
   getEditorView,
   replaceYText,
 } from './obsidian/editor-binding'
-import { applyFileCreate, applyFileDelete, applyFileRename } from './sync/meta/tree'
+import { type SyncRuntimeStartupStepEffectPort } from './sync/engine/actuation'
 import { reconcileMetaDoc } from './sync/meta/reconcile'
+import { applyFileCreate, applyFileDelete, applyFileRename } from './sync/meta/tree'
 import {
   createSyncRuntimeObsidianComposition,
   type SyncRuntimeObsidianComposition,
@@ -54,9 +56,6 @@ import {
   createEvidenceBackedHttpSyncRuntimeSetupExchangePort,
   type SetupExchangeStartupEffect,
 } from './sync/setup-exchange-http'
-import { type SyncRuntimeStartupStepEffectPort } from './sync/engine/actuation'
-
-import type { KuroflareSettings, FileDocId, LoadedTextDoc } from './main-types'
 
 const SPIKE_TEXT_NAME = 'fixed-file'
 const META_DOC_NAME = 'kuroflare-meta'

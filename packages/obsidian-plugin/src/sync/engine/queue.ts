@@ -8,14 +8,9 @@ import {
   planOutboxFullSnapshotRelease,
   planOutboxSchedulerTick,
   transitionOutboxFailure,
-  
-  
-  
-  
-  
-  
-  
-  type OutboxFailureTransitionInput} from '@kuroflare/core'
+  type OutboxFailureTransitionInput,
+} from '@kuroflare/core'
+
 import type {
   OutboundQueuePersistPlan,
   OutboundQueueTickInput,
@@ -37,7 +32,8 @@ import type {
   OutboundQueueSuccessCompletionPlan,
   OutboundQueueFailureCompletionPlan,
   OutboundQueueFullSnapshotReleaseInput,
-  OutboundQueueFullSnapshotReleasePlan} from '../engine/queue.types'
+  OutboundQueueFullSnapshotReleasePlan,
+} from '../engine/queue.types'
 
 export type {
   OutboundQueuePersistPlan,
@@ -60,7 +56,8 @@ export type {
   OutboundQueueSuccessCompletionPlan,
   OutboundQueueFailureCompletionPlan,
   OutboundQueueFullSnapshotReleaseInput,
-  OutboundQueueFullSnapshotReleasePlan}
+  OutboundQueueFullSnapshotReleasePlan,
+}
 
 /**
  * Plans one outbound queue tick for the Obsidian plugin.
@@ -73,27 +70,31 @@ export function planOutboundQueueTick(input: OutboundQueueTickInput): OutboundQu
     resumeEvents: input.resumeEvents,
     leases: input.leases,
     maxStarts: input.maxStarts,
-    auth: input.auth})
+    auth: input.auth,
+  })
 
   if (!schedulerPlan.ok) {
     return {
       ok: false,
       reason: schedulerPlan.reason,
       id: schedulerPlan.id,
-      schedulerPlan}
+      schedulerPlan,
+    }
   }
 
   const authRefresh = decideOutboxAuthRefreshRequest({
     refreshBlocks: schedulerPlan.authRefreshBlocks,
     refreshState: input.authRefreshState,
-    now: input.now})
+    now: input.now,
+  })
 
   if (authRefresh.action === 'reject') {
     return {
       ok: false,
       reason: authRefresh.reason,
       id: authRefresh.id,
-      authRefresh}
+      authRefresh,
+    }
   }
 
   return {
@@ -102,10 +103,12 @@ export function planOutboundQueueTick(input: OutboundQueueTickInput): OutboundQu
       resumePatches: schedulerPlan.resumePatches,
       blockPatches: schedulerPlan.blockPatches,
       deadLetterPatches: schedulerPlan.deadLetterPatches,
-      leaseReclaims: schedulerPlan.leaseReclaims},
+      leaseReclaims: schedulerPlan.leaseReclaims,
+    },
     leaseCandidates: schedulerPlan.starts,
     authRefresh,
-    schedulerPlan}
+    schedulerPlan,
+  }
 }
 
 /**
@@ -120,7 +123,8 @@ export function planOutboundQueueLeaseAcquire(
     ownerId: input.ownerId,
     now: input.now,
     leaseDurationMs: input.leaseDurationMs,
-    existingLease: input.existingLease})
+    existingLease: input.existingLease,
+  })
 
   if (decision.action === 'reject') {
     return { ok: false, reason: decision.reason }
@@ -132,8 +136,10 @@ export function planOutboundQueueLeaseAcquire(
     write: {
       itemId: input.start.id,
       expectedLease: input.existingLease,
-      nextLease: decision.lease},
-    previousOwnerId: decision.previousOwnerId}
+      nextLease: decision.lease,
+    },
+    previousOwnerId: decision.previousOwnerId,
+  }
 }
 
 /**
@@ -148,7 +154,8 @@ export function planOutboundQueueLeaseRenew(
     ownerId: input.ownerId,
     now: input.now,
     leaseDurationMs: input.leaseDurationMs,
-    existingLease: input.existingLease})
+    existingLease: input.existingLease,
+  })
 
   if (decision.action === 'reject') {
     return { ok: false, reason: decision.reason }
@@ -159,7 +166,9 @@ export function planOutboundQueueLeaseRenew(
     write: {
       itemId: input.itemId,
       expectedLease: input.existingLease,
-      nextLease: decision.lease}}
+      nextLease: decision.lease,
+    },
+  }
 }
 
 /**
@@ -173,7 +182,8 @@ export function planOutboundQueueLeaseRelease(
     itemId: input.itemId,
     ownerId: input.ownerId,
     now: input.now,
-    existingLease})
+    existingLease,
+  })
 
   if (decision.action === 'reject') {
     return { ok: false, reason: decision.reason }
@@ -186,7 +196,9 @@ export function planOutboundQueueLeaseRelease(
     ok: true,
     delete: {
       itemId: input.itemId,
-      expectedLease: existingLease}}
+      expectedLease: existingLease,
+    },
+  }
 }
 
 /**
@@ -203,25 +215,29 @@ export function planOutboundQueueAckCompletion(
     docId: input.docId,
     messageId: input.messageId,
     minDurableSeqExclusive: input.minDurableSeqExclusive,
-    message: input.message})
+    message: input.message,
+  })
 
   if (ackDecision.action === 'reject') {
     return {
       ok: false,
       reason: ackDecision.reason,
-      ackDecision}
+      ackDecision,
+    }
   }
 
   const leaseRelease = planOutboundQueueLeaseRelease({
     itemId: input.itemId,
     ownerId: input.ownerId,
     now: input.now,
-    existingLease: input.existingLease})
+    existingLease: input.existingLease,
+  })
   if (!leaseRelease.ok) {
     return {
       ok: false,
       reason: leaseRelease.reason,
-      leaseRelease}
+      leaseRelease,
+    }
   }
 
   return {
@@ -229,7 +245,8 @@ export function planOutboundQueueAckCompletion(
     action: ackDecision.action,
     itemId: input.itemId,
     patch: ackDecision.patch,
-    leaseDelete: leaseRelease.delete}
+    leaseDelete: leaseRelease.delete,
+  }
 }
 
 /**
@@ -245,32 +262,37 @@ export function planOutboundQueueQuarantinePause(
     docId: input.docId,
     messageId: input.messageId,
     updateSha256: input.updateSha256,
-    quarantine: input.quarantine})
+    quarantine: input.quarantine,
+  })
 
   if (quarantineDecision.action === 'reject') {
     return {
       ok: false,
       reason: quarantineDecision.reason,
-      quarantineDecision}
+      quarantineDecision,
+    }
   }
 
   const leaseRelease = planOutboundQueueLeaseRelease({
     itemId: input.itemId,
     ownerId: input.ownerId,
     now: input.now,
-    existingLease: input.existingLease})
+    existingLease: input.existingLease,
+  })
   if (!leaseRelease.ok) {
     return {
       ok: false,
       reason: leaseRelease.reason,
-      leaseRelease}
+      leaseRelease,
+    }
   }
 
   return {
     ok: true,
     itemId: input.itemId,
     patch: quarantineDecision.patch,
-    leaseDelete: leaseRelease.delete}
+    leaseDelete: leaseRelease.delete,
+  }
 }
 
 /**
@@ -290,12 +312,14 @@ export function planOutboundQueueSuccessCompletion(
     itemId: input.itemId,
     ownerId: input.ownerId,
     now: input.now,
-    existingLease: input.existingLease})
+    existingLease: input.existingLease,
+  })
   if (!leaseRelease.ok) {
     return {
       ok: false,
       reason: leaseRelease.reason,
-      leaseRelease}
+      leaseRelease,
+    }
   }
 
   return {
@@ -304,8 +328,10 @@ export function planOutboundQueueSuccessCompletion(
     kind: input.kind,
     patch: {
       status: 'done',
-      nextAttemptAt: undefined},
-    leaseDelete: leaseRelease.delete}
+      nextAttemptAt: undefined,
+    },
+    leaseDelete: leaseRelease.delete,
+  }
 }
 
 /**
@@ -319,25 +345,29 @@ export function planOutboundQueueFailureCompletion(
     retryCount: input.retryCount,
     error: input.error,
     now: input.now,
-    ...(input.retryJitterMs === undefined ? {} : { retryJitterMs: input.retryJitterMs })}
+    ...(input.retryJitterMs === undefined ? {} : { retryJitterMs: input.retryJitterMs }),
+  }
   const patch = transitionOutboxFailure(failureInput)
   const leaseRelease = planOutboundQueueLeaseRelease({
     itemId: input.itemId,
     ownerId: input.ownerId,
     now: input.now,
-    existingLease: input.existingLease})
+    existingLease: input.existingLease,
+  })
   if (!leaseRelease.ok) {
     return {
       ok: false,
       reason: leaseRelease.reason,
-      leaseRelease}
+      leaseRelease,
+    }
   }
 
   return {
     ok: true,
     itemId: input.itemId,
     patch,
-    leaseDelete: leaseRelease.delete}
+    leaseDelete: leaseRelease.delete,
+  }
 }
 
 /**
@@ -349,5 +379,6 @@ export function planOutboundQueueFullSnapshotRelease(
   return planOutboxFullSnapshotRelease({
     appliedDocId: input.appliedDocId,
     snapshotSeq: input.snapshotSeq,
-    items: input.items})
+    items: input.items,
+  })
 }

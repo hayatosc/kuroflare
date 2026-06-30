@@ -1,6 +1,7 @@
 import { type Kysely } from 'kysely'
-import type { Database } from './types'
+
 import { toArrayBuffer } from './helpers'
+import type { Database } from './types'
 
 export interface CheckpointRunRow {
   readonly runId: string
@@ -90,10 +91,7 @@ export async function updateCheckpointCompacted(
     .execute()
 }
 
-export async function updateCheckpointFailed(
-  db: Kysely<Database>,
-  runId: string,
-): Promise<void> {
+export async function updateCheckpointFailed(db: Kysely<Database>, runId: string): Promise<void> {
   await db
     .updateTable('checkpoint_runs')
     .set({ status: 'failed' })
@@ -161,9 +159,7 @@ export async function insertQuarantinedUpdate(
     .execute()
 }
 
-export async function getQuarantinedUpdates(
-  db: Kysely<Database>,
-): Promise<QuarantinedUpdateRow[]> {
+export async function getQuarantinedUpdates(db: Kysely<Database>): Promise<QuarantinedUpdateRow[]> {
   return db
     .selectFrom('quarantined_updates')
     .select((eb) => [

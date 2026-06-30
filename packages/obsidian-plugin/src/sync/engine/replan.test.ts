@@ -5,18 +5,18 @@ import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflar
 import { test } from 'vitest'
 
 import {
-  LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
-  type LocalStoreIndexedDbOpenPlanInput,
-} from '../store/schema'
+  applySyncRuntimeShellCommands,
+  INITIAL_SYNC_RUNTIME_SHELL_STATE,
+  type SyncRuntimeSetupExchangeReplanRequest,
+} from '../engine/actuation'
 import {
   applySyncRuntimeSetupExchangeShellReplan,
   planSyncRuntimeStartupAfterSetupExchange,
 } from '../engine/replan'
 import {
-  applySyncRuntimeShellCommands,
-  INITIAL_SYNC_RUNTIME_SHELL_STATE,
-  type SyncRuntimeSetupExchangeReplanRequest,
-} from '../engine/actuation'
+  LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+  type LocalStoreIndexedDbOpenPlanInput,
+} from '../store/schema'
 
 const vaultId = makeVaultId('setup-replan-vault-1')
 const deviceId = makeDeviceId('setup-replan-device-1')

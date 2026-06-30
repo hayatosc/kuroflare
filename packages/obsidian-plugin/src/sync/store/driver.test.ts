@@ -16,6 +16,12 @@ import {
 import { test } from 'vitest'
 
 import {
+  planOutboundQueueAckCompletion,
+  planOutboundQueueLeaseAcquire,
+  planOutboundQueueSuccessCompletion,
+  planOutboundQueueTick,
+} from '../engine/queue'
+import {
   applyLocalStoreDriverCommit,
   applyLocalStoreDriverTransaction,
   applyLocalStoreDriverWrites,
@@ -30,12 +36,6 @@ import {
   type LocalStoreOutboxRecord,
   type LocalStoreTransactionOperation,
 } from '../store/store'
-import {
-  planOutboundQueueAckCompletion,
-  planOutboundQueueLeaseAcquire,
-  planOutboundQueueSuccessCompletion,
-  planOutboundQueueTick,
-} from '../engine/queue'
 
 const yUpdateId = outboxId('driver-y-update-1')
 const pausedId = outboxId('driver-paused-1')

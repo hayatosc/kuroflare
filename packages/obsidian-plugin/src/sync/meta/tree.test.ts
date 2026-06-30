@@ -1,17 +1,11 @@
 import assert from 'node:assert/strict'
 
-import {
-  isMetaFile,
-  makeDeviceId,
-  makeFileId,
-  makeYDocId,
-  type MetaFile,
-} from '@kuroflare/core'
+import { isMetaFile, makeDeviceId, makeFileId, makeYDocId, type MetaFile } from '@kuroflare/core'
 import { test } from 'vitest'
 import * as Y from 'yjs'
 
-import { applyFileCreate, applyFileDelete, applyFileRename } from '../meta/tree'
 import { reconcileMetaDoc } from '../meta/reconcile'
+import { applyFileCreate, applyFileDelete, applyFileRename } from '../meta/tree'
 
 const DEVICE_A = makeDeviceId('device-a')
 const DEVICE_B = makeDeviceId('device-b')

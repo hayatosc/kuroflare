@@ -9,6 +9,7 @@ import {
   SqliteIntrospector,
   SqliteQueryCompiler,
 } from 'kysely'
+
 import type { DurableObjectSqlStorageBinding } from '../runtime'
 
 class DurableObjectSqlConnection implements DatabaseConnection {
@@ -42,7 +43,7 @@ class DurableObjectSqlDriver implements Driver {
   }
 
   async beginTransaction(_connection: DatabaseConnection): Promise<void> {
-    // Transaction control is handled by withSqlTransaction (manual BEGIN IMMEDIATE/COMMIT/ROLLBACK)
+    // Durable Object SQL transactions must go through state.storage.transaction().
   }
 
   async commitTransaction(_connection: DatabaseConnection): Promise<void> {}

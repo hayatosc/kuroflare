@@ -4,14 +4,12 @@ import { test } from 'vitest'
 
 import { decideSchemaMigration, schemaAcceptsSync, type SchemaMigration } from '../db/migrations'
 
+const noop = async (): Promise<void> => {}
+
 const migrations: readonly SchemaMigration[] = [
-  { version: 1, name: 'init', statements: ['create table one (id integer primary key)'] },
-  { version: 2, name: 'add-devices', statements: ['create table two (id integer primary key)'] },
-  {
-    version: 3,
-    name: 'add-checkpoints',
-    statements: ['create table three (id integer primary key)'],
-  },
+  { version: 1, name: 'init', migrate: noop },
+  { version: 2, name: 'add-devices', migrate: noop },
+  { version: 3, name: 'add-checkpoints', migrate: noop },
 ]
 
 test('schema migration is ready when all bundled migrations are applied', () => {
@@ -73,13 +71,7 @@ test('schema migration rejects invalid migration plans', () => {
   assert.deepEqual(
     decideSchemaMigration({
       appliedVersions: new Set(),
-      availableMigrations: [
-        {
-          version: 2,
-          name: 'skip-init',
-          statements: ['create table two (id integer primary key)'],
-        },
-      ],
+      availableMigrations: [{ version: 2, name: 'skip-init', migrate: noop }],
       failedMigration: undefined,
     }),
     { action: 'degraded', reason: 'invalid-migration-plan' },
@@ -89,8 +81,8 @@ test('schema migration rejects invalid migration plans', () => {
     decideSchemaMigration({
       appliedVersions: new Set(),
       availableMigrations: [
-        { version: 1, name: 'init', statements: ['create table one (id integer primary key)'] },
-        { version: 2, name: 'init', statements: ['create table two (id integer primary key)'] },
+        { version: 1, name: 'init', migrate: noop },
+        { version: 2, name: 'init', migrate: noop },
       ],
       failedMigration: undefined,
     }),
@@ -100,7 +92,7 @@ test('schema migration rejects invalid migration plans', () => {
   assert.deepEqual(
     decideSchemaMigration({
       appliedVersions: new Set(),
-      availableMigrations: [{ version: 1, name: 'init', statements: [] }],
+      availableMigrations: [{ version: 1, name: '', migrate: noop }],
       failedMigration: undefined,
     }),
     { action: 'degraded', reason: 'invalid-migration-plan' },

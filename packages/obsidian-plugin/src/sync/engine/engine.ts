@@ -6,11 +6,7 @@ import {
   type ClientStartupPlanInput,
   type ClientStartupStep,
 } from '@kuroflare/core'
-import {
-  type SetupBootstrapMode,
-  type SetupExchangeResponse,
-  type VaultId,
-} from '@kuroflare/core'
+import { type SetupBootstrapMode, type SetupExchangeResponse, type VaultId } from '@kuroflare/core'
 
 /** Phase used by the plugin shell to sequence startup side effects. */
 export type SyncEngineStartupPhase =

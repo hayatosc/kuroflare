@@ -3,12 +3,12 @@ import assert from 'node:assert/strict'
 import { makeVaultId } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { planSyncRuntimeObsidianPresentation } from '../obsidian/presentation'
 import {
   applySyncRuntimeShellCommands,
   INITIAL_SYNC_RUNTIME_SHELL_STATE,
 } from '../engine/actuation'
 import { type SyncRuntimeStartupEffect } from '../engine/startup'
+import { planSyncRuntimeObsidianPresentation } from '../obsidian/presentation'
 
 const resumeBackgroundQueuesEffect = {
   kind: 'run-sync-startup-effect',

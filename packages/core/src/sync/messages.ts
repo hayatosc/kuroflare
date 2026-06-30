@@ -1,9 +1,9 @@
 import * as v from 'valibot'
 
-import { NonEmptyBase64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
-import { DeviceIdSchema, DocIdSchema, MessageIdSchema, VaultIdSchema } from '../utils/ids'
 import { Sha256HexSchema } from '../sync/meta'
 import { WireYClientIdSchema } from '../sync/setup'
+import { DeviceIdSchema, DocIdSchema, MessageIdSchema, VaultIdSchema } from '../utils/ids'
+import { NonEmptyBase64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
 import { ProtocolVersionSchema } from '../utils/version'
 
 export const ClientCapabilitySchema = v.union([v.literal('awareness'), v.literal('binary-v1')])

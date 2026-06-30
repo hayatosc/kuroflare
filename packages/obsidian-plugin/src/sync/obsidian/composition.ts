@@ -1,8 +1,10 @@
 import {
-  createSyncRuntimeObsidianShellLifecycle,
-  type SyncRuntimeObsidianShellLifecycle,
-} from '../obsidian/lifecycle'
-import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
+  createSyncRuntimeStartupEffectExecutor,
+  type SyncRuntimeLocalStoreEffectPort,
+  type SyncRuntimeLocalStoreRebuildEffectPort,
+  type SyncRuntimeSetupExchangePort,
+  type SyncRuntimeStartupStepEffectPort,
+} from '../engine/actuation'
 import {
   createSyncRuntimeObsidianShellEvidencePort,
   createSyncRuntimeObsidianStartupEvidenceReader,
@@ -10,12 +12,10 @@ import {
   type SyncRuntimeObsidianStartupSettingsEvidenceReaderPort,
 } from '../obsidian/evidence'
 import {
-  createSyncRuntimeStartupEffectExecutor,
-  type SyncRuntimeLocalStoreEffectPort,
-  type SyncRuntimeLocalStoreRebuildEffectPort,
-  type SyncRuntimeSetupExchangePort,
-  type SyncRuntimeStartupStepEffectPort,
-} from '../engine/actuation'
+  createSyncRuntimeObsidianShellLifecycle,
+  type SyncRuntimeObsidianShellLifecycle,
+} from '../obsidian/lifecycle'
+import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
 
 /** Input ports for composing the Obsidian sync runtime lifecycle. */
 export interface SyncRuntimeObsidianCompositionInput {

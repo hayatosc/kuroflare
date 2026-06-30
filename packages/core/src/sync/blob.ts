@@ -1,9 +1,9 @@
 import * as v from 'valibot'
 
-import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
+import { Sha256HexSchema, type BinaryMetaFile } from '../sync/meta'
 import { DeviceIdSchema, FileIdSchema } from '../utils/ids'
 import type { FileId } from '../utils/ids'
-import { Sha256HexSchema, type BinaryMetaFile } from '../sync/meta'
+import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
 
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()

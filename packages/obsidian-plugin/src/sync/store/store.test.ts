@@ -18,6 +18,15 @@ import {
 import { test } from 'vitest'
 
 import {
+  planOutboundQueueAckCompletion,
+  planOutboundQueueFullSnapshotRelease,
+  planOutboundQueueLeaseAcquire,
+  planOutboundQueueLeaseRenew,
+  planOutboundQueueQuarantinePause,
+  planOutboundQueueSuccessCompletion,
+  planOutboundQueueTick,
+} from '../engine/queue'
+import {
   applyLocalStoreOutboxPatch,
   applyLocalStoreTransactionSnapshot,
   planLocalStoreAckCompletionTransaction,
@@ -30,15 +39,6 @@ import {
   planLocalStoreTransactionCommit,
   type LocalStoreOutboxRecord,
 } from '../store/store'
-import {
-  planOutboundQueueAckCompletion,
-  planOutboundQueueFullSnapshotRelease,
-  planOutboundQueueLeaseAcquire,
-  planOutboundQueueLeaseRenew,
-  planOutboundQueueQuarantinePause,
-  planOutboundQueueSuccessCompletion,
-  planOutboundQueueTick,
-} from '../engine/queue'
 
 const yUpdateId = outboxId('local-y-update-1')
 const pausedId = outboxId('local-paused-1')

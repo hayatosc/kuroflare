@@ -64,6 +64,24 @@ async function waitForActiveMetaEntry(path) {
   return entry
 }
 
+async function waitForPluginReady() {
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    const ready = evalInObsidian(`(() => {
+      const plugin = app.plugins.plugins.kuroflare;
+      return JSON.stringify(Boolean(
+        plugin?.metaDoc &&
+        plugin?.statusEl?.textContent === 'Kuroflare: ready'
+      ));
+    })()`)
+    if (ready === true) {
+      return
+    }
+    await sleep(100)
+  }
+  throw new Error('kuroflare plugin did not become ready')
+}
+
 function clearMetaIndexedDb() {
   obsidian([
     'eval',
@@ -85,6 +103,8 @@ obsidian(['plugin:disable', `id=${pluginId}`, 'filter=community'])
 clearMetaIndexedDb()
 obsidian(['plugins:restrict', 'off'])
 obsidian(['plugin:enable', `id=${pluginId}`, 'filter=community'])
+await waitForPluginReady()
+await sleep(250)
 
 // Create a note inside Obsidian so the plugin's vault 'create' watcher registers a meta entry.
 evalInObsidian(

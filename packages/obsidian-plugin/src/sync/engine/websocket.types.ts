@@ -10,15 +10,16 @@ import {
   type VaultId,
   type OutboxRunningLease,
 } from '@kuroflare/core'
+import type * as Y from 'yjs'
+
+import { type SyncRuntimeWebSocketStepPort } from '../engine/actuation.types'
+import { type LocalSetupMetadata } from '../engine/setup'
+import { type OutboxWorkerCompletionPlan } from '../engine/worker'
 import {
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
 } from '../store/indexeddb'
 import { type LocalStoreOutboxRecord } from '../store/store'
-import { type OutboxWorkerCompletionPlan } from '../engine/worker'
-import { type LocalSetupMetadata } from '../engine/setup'
-import { type SyncRuntimeWebSocketStepPort } from '../engine/actuation.types'
-import type * as Y from 'yjs'
 
 /** Minimal WebSocket surface needed by startup transport steps. */
 export interface SyncRuntimeWebSocketConnection {

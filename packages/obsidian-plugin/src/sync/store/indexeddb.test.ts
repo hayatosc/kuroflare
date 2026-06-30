@@ -17,6 +17,7 @@ import {
 } from '@kuroflare/core'
 import { test } from 'vitest'
 
+import { planOutboundQueueAckCompletion, planOutboundQueueSuccessCompletion } from '../engine/queue'
 import {
   applyLocalStoreIndexedDbOpenEffect,
   commitLocalStoreIndexedDbConcreteWriteTransaction,
@@ -42,10 +43,6 @@ import {
   planLocalStoreSuccessCompletionTransaction,
   type LocalStoreOutboxRecord,
 } from '../store/store'
-import {
-  planOutboundQueueAckCompletion,
-  planOutboundQueueSuccessCompletion,
-} from '../engine/queue'
 
 const yUpdateId = outboxId('indexeddb-y-update-1')
 const materializeId = outboxId('indexeddb-materialize-1')

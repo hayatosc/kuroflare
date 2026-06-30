@@ -1,8 +1,8 @@
 import * as v from 'valibot'
 
-import { Base64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
-import { DocIdSchema } from '../utils/ids'
 import { Sha256HexSchema } from '../sync/meta'
+import { DocIdSchema } from '../utils/ids'
+import { Base64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
 
 const MAX_R2_KEY_LENGTH = 1024
 

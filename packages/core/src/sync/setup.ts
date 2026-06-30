@@ -1,7 +1,7 @@
 import * as v from 'valibot'
 
-import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
 import { DeviceIdSchema, VaultIdSchema } from '../utils/ids'
+import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
 import { ProtocolVersionSchema } from '../utils/version'
 
 export const SetupBootstrapModeSchema = v.union([

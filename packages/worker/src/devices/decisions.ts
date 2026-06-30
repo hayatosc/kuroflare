@@ -1,7 +1,7 @@
 import * as v from 'valibot'
+
 import type {
   YClientId,
-  
   SetupExchangeDecisionInput,
   SetupExchangeDecision,
   YClientIdRange,
@@ -14,7 +14,8 @@ import type {
   DeviceRefreshTokenRotationInput,
   DeviceRefreshTokenRotationPlan,
   RevokeDeviceDecisionInput,
-  RevokeDeviceDecision} from './types'
+  RevokeDeviceDecision,
+} from './types'
 
 /**
  * Decides how setup exchange should bind a device to a Yjs clientID.
@@ -61,11 +62,13 @@ export function planSetupExchangeCredentials(
       ? {
           deviceId: input.setupDecision.device.deviceId,
           yClientId: input.setupDecision.device.yClientId,
-          tokenVersion: input.setupDecision.device.tokenVersion}
+          tokenVersion: input.setupDecision.device.tokenVersion,
+        }
       : {
           deviceId: input.deviceId,
           yClientId: input.setupDecision.yClientId,
-          tokenVersion: 1}
+          tokenVersion: 1,
+        }
 
   if (credential.deviceId !== input.deviceId) {
     return { action: 'reject', reason: 'device-id-mismatch' }
@@ -80,7 +83,9 @@ export function planSetupExchangeCredentials(
       tokenHash: input.refreshTokenHash,
       deviceId: credential.deviceId,
       issuedAt: input.now,
-      expiresAt: input.refreshTokenExpiresAt}}
+      expiresAt: input.refreshTokenExpiresAt,
+    },
+  }
 }
 
 /**
@@ -164,7 +169,8 @@ export function decideDeviceTokenRefresh(
   return {
     action: 'mint-token',
     tokenVersion: input.device.tokenVersion,
-    rotateRefreshToken: true}
+    rotateRefreshToken: true,
+  }
 }
 
 /**
@@ -199,12 +205,15 @@ export function planDeviceRefreshTokenRotation(
     action: 'rotate',
     revoke: {
       tokenHash: input.currentTokenHash,
-      revokedAt: input.now},
+      revokedAt: input.now,
+    },
     insert: {
       tokenHash: input.nextTokenHash,
       deviceId: input.deviceId,
       issuedAt: input.now,
-      expiresAt: input.nextExpiresAt}}
+      expiresAt: input.nextExpiresAt,
+    },
+  }
 }
 
 /**
@@ -223,13 +232,15 @@ export function decideRevokeDevice(input: RevokeDeviceDecisionInput): RevokeDevi
     return {
       action: 'already-revoked',
       tokenVersion: input.device.tokenVersion,
-      revokedAt: input.device.revokedAt}
+      revokedAt: input.device.revokedAt,
+    }
   }
 
   return {
     action: 'revoke-device',
     tokenVersion: input.device.tokenVersion + 1,
-    revokedAt: input.revokedAt}
+    revokedAt: input.revokedAt,
+  }
 }
 
 /**

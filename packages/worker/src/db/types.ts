@@ -1,4 +1,4 @@
-import type {  Generated } from 'kysely'
+import type { Generated } from 'kysely'
 
 export interface Database {
   schema_migrations: SchemaMigrationTable

@@ -8,8 +8,8 @@ import {
 } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { decideAuthAdmission } from '../http/auth'
 import type { DeviceRegistryEntry } from '../devices'
+import { decideAuthAdmission } from '../http/auth'
 
 const vaultId = makeVaultId('vault-1')
 const otherVaultId = makeVaultId('vault-2')

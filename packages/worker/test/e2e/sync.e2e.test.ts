@@ -15,8 +15,9 @@ import { env, evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { expect, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { SCHEMA_MIGRATIONS } from '../../src/schema'
-import { makeSnapshotListPrefix } from '../../src/snapshots'
+import { createDb } from '../../src/db/db'
+import { SCHEMA_MIGRATIONS } from '../../src/db/schema'
+import { makeSnapshotListPrefix } from '../../src/sync/snapshots'
 
 const VAULT_ID = 'vault-1'
 const DEVICE_TOKEN_SECRET = 'e2e-device-token-secret'
@@ -97,12 +98,11 @@ function roomStub() {
 }
 
 async function seedDevices(devices: readonly SeededDevice[]): Promise<void> {
-  await runInDurableObject(roomStub(), (_instance, state) => {
+  await runInDurableObject(roomStub(), async (_instance, state) => {
     const sql = state.storage.sql
+    const db = createDb(sql)
     for (const migration of SCHEMA_MIGRATIONS) {
-      for (const statement of migration.statements) {
-        sql.exec(statement)
-      }
+      await migration.migrate(db)
     }
     const now = Date.now()
     for (const device of devices) {

@@ -15,22 +15,6 @@ import {
 import { test } from 'vitest'
 
 import {
-  type LocalStoreIndexedDbMetadataWriteOperation,
-  type LocalStoreIndexedDbFactoryPort,
-  type LocalStoreIndexedDbObjectStoreNameList,
-  type LocalStoreIndexedDbOpenRequest,
-  type LocalStoreIndexedDbRequest,
-  type LocalStoreIndexedDbSchemaDatabasePort,
-} from '../store/indexeddb'
-import {
-  LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
-  type LocalStoreIndexedDbOpenEffect,
-} from '../store/schema'
-import {
-  type LocalSetupPersistMetadataPort,
-  type LocalSetupPersistSecretStoragePort,
-} from '../engine/persist'
-import {
   applySyncRuntimeShellCommands,
   createSyncRuntimeIndexedDbLocalStoreEffectPort,
   createSyncRuntimeLocalStoreRebuildReplanPort,
@@ -47,8 +31,24 @@ import {
   type SyncRuntimeStartupStepExecutorPorts,
   type SyncRuntimeShellEffectExecutor,
 } from '../engine/actuation'
-import { planSyncRuntimeStartup, type SyncRuntimeStartupEffect } from '../engine/startup'
 import { type SyncEngineStartupEffect } from '../engine/engine'
+import {
+  type LocalSetupPersistMetadataPort,
+  type LocalSetupPersistSecretStoragePort,
+} from '../engine/persist'
+import { planSyncRuntimeStartup, type SyncRuntimeStartupEffect } from '../engine/startup'
+import {
+  type LocalStoreIndexedDbMetadataWriteOperation,
+  type LocalStoreIndexedDbFactoryPort,
+  type LocalStoreIndexedDbObjectStoreNameList,
+  type LocalStoreIndexedDbOpenRequest,
+  type LocalStoreIndexedDbRequest,
+  type LocalStoreIndexedDbSchemaDatabasePort,
+} from '../store/indexeddb'
+import {
+  LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+  type LocalStoreIndexedDbOpenEffect,
+} from '../store/schema'
 
 const vaultId = makeVaultId('actuation-vault-1')
 const deviceId = makeDeviceId('actuation-device-1')

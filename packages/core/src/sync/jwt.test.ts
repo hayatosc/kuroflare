@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { signHs256DeviceToken, verifyHs256DeviceToken } from '../sync/jwt'
 import { makeDeviceId, makeVaultId, type DeviceTokenClaims } from '../index'
+import { signHs256DeviceToken, verifyHs256DeviceToken } from '../sync/jwt'
 
 const vaultId = makeVaultId('jwt-vault-1')
 const deviceId = makeDeviceId('jwt-device-1')

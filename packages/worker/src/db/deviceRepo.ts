@@ -1,4 +1,5 @@
 import { type Kysely, sql } from 'kysely'
+
 import type { Database } from './types'
 
 export interface DeviceRow {

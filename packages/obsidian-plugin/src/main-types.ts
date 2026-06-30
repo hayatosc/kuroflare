@@ -1,6 +1,6 @@
+import type { SetupExchangeResponse, DocId } from '@kuroflare/core'
 import type { IndexeddbPersistence } from 'y-indexeddb'
 import type * as Y from 'yjs'
-import type { SetupExchangeResponse, DocId } from '@kuroflare/core'
 
 export interface KuroflareSettings {
   readonly endpoint: string

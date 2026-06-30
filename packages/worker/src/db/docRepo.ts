@@ -1,6 +1,5 @@
 import { type Kysely, sql } from 'kysely'
-import type { Database } from './types'
-import { readSqlUpdateBytes, toArrayBuffer } from './helpers'
+
 import type {
   DocClockRow,
   DocSnapshotPointerRow,
@@ -9,6 +8,8 @@ import type {
   OpLogUpdateRow,
   MessageDedupRow,
 } from './docRepo-types'
+import { readSqlUpdateBytes, toArrayBuffer } from './helpers'
+import type { Database } from './types'
 
 export type {
   DocClockRow,
@@ -192,9 +193,7 @@ export async function getDocsNeedingCheckpoint(
     .execute()
 }
 
-export async function getFirstDocId(
-  db: Kysely<Database>,
-): Promise<DocIdRow | undefined> {
+export async function getFirstDocId(db: Kysely<Database>): Promise<DocIdRow | undefined> {
   return db
     .selectFrom('docs')
     .select((eb) => eb.ref('doc_id').as('docId'))
@@ -276,11 +275,7 @@ export async function deleteOpLogBelowSeq(
   docKey: string,
   upperSeq: number,
 ): Promise<void> {
-  await db
-    .deleteFrom('op_log')
-    .where('doc_id', '=', docKey)
-    .where('seq', '<=', upperSeq)
-    .execute()
+  await db.deleteFrom('op_log').where('doc_id', '=', docKey).where('seq', '<=', upperSeq).execute()
 }
 
 export async function applyOpLogUpdateBytes(

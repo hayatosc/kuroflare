@@ -8,12 +8,12 @@ import {
 import { RevokeDeviceResponseSchema, type RevokeDeviceResponse } from '@kuroflare/core'
 import * as v from 'valibot'
 
+import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from '../engine/setup'
 import {
   commitLocalStoreIndexedDbMetadataTransaction,
   planLocalStoreIndexedDbMetadataWrites,
   type LocalStoreIndexedDbMetadataDatabasePort,
 } from '../store/indexeddb'
-import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from '../engine/setup'
 
 /** SecretStorage surface required by local device revoke persistence. */
 export interface AuthRevokeSecretStoragePort {

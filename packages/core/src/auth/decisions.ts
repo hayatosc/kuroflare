@@ -17,7 +17,6 @@ import type {
   ClientAuthMetadataPatchDecision,
   ClientAuthMetadataRefreshAttemptPatchInput,
 } from './types'
-
 import {
   isPositiveSafeInteger,
   isNonNegativeSafeInteger,
@@ -452,10 +451,7 @@ export function applyClientAuthMetadataRefreshAttemptPatch(
   }
 }
 
-function hasRequiredScopes<T>(
-  grantedScopes: readonly T[],
-  requiredScopes: readonly T[],
- ): boolean {
+function hasRequiredScopes<T>(grantedScopes: readonly T[], requiredScopes: readonly T[]): boolean {
   const granted = new Set(grantedScopes)
   return requiredScopes.every((scope) => granted.has(scope))
 }

@@ -1,8 +1,4 @@
-import {
-  CURRENT_PROTOCOL_VERSION,
-  type HealthCheck,
-  type HealthResponse,
-} from '@kuroflare/core'
+import { CURRENT_PROTOCOL_VERSION, type HealthCheck, type HealthResponse } from '@kuroflare/core'
 
 import type { SchemaMigrationDecision } from '../db/migrations'
 

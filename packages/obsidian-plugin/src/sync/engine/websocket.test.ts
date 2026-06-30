@@ -20,7 +20,6 @@ import {
 import { test } from 'vitest'
 import * as Y from 'yjs'
 
-import { type LocalStoreOutboxRecord } from '../store/store'
 import {
   attachSyncRuntimeWebSocketInboundMessageHandler,
   buildSyncRuntimeWebSocketProtocols,
@@ -55,6 +54,7 @@ import {
   type SyncRuntimeWebSocketYDocRegistryPort,
   type SyncRuntimeWebSocketInboundRoutePorts,
 } from '../engine/websocket'
+import { type LocalStoreOutboxRecord } from '../store/store'
 
 const vaultId = makeVaultId('websocket-vault-1')
 const deviceId = makeDeviceId('websocket-device-1')

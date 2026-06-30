@@ -9,12 +9,6 @@ import { makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import {
-  type LocalStoreIndexedDbObjectStorePort,
-  type LocalStoreIndexedDbRequest,
-  type LocalStoreIndexedDbTransactionLifecycle,
-} from '../store/indexeddb'
-import { type LocalStoreOutboxRecord } from '../store/store'
-import {
   commitFullSnapshotApplyIndexedDbTransaction,
   planFullSnapshotApplyRuntime,
   type FullSnapshotApplyIndexedDbDatabasePort,
@@ -26,6 +20,12 @@ import {
   type FullSnapshotApplyYDocRecord,
   type VerifiedFullSnapshotBytes,
 } from '../engine/snapshot'
+import {
+  type LocalStoreIndexedDbObjectStorePort,
+  type LocalStoreIndexedDbRequest,
+  type LocalStoreIndexedDbTransactionLifecycle,
+} from '../store/indexeddb'
+import { type LocalStoreOutboxRecord } from '../store/store'
 
 const fileDocId = { kind: 'file', ydocId: makeYDocId('snapshot-runtime-doc-1') } satisfies DocId
 const updateHash = makeSha256Hex('a'.repeat(64))

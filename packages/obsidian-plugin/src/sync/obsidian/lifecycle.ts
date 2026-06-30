@@ -1,4 +1,9 @@
 import {
+  type SyncRuntimeSetupExchangePort,
+  type SyncRuntimeShellEffectExecutor,
+  type SyncRuntimeStartupStepEffectPort,
+} from '../engine/actuation'
+import {
   INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE,
   runSyncRuntimeObsidianShellDriverTransportTick,
   type SyncRuntimeObsidianShellDriverState,
@@ -10,11 +15,6 @@ import {
   type SyncRuntimeObsidianShellUiApplyResult,
   type SyncRuntimeObsidianShellUiPort,
 } from '../obsidian/ui'
-import {
-  type SyncRuntimeSetupExchangePort,
-  type SyncRuntimeShellEffectExecutor,
-  type SyncRuntimeStartupStepEffectPort,
-} from '../engine/actuation'
 
 /** Runtime ports needed by the Obsidian plugin lifecycle to run startup ticks. */
 export interface SyncRuntimeObsidianShellLifecyclePorts {

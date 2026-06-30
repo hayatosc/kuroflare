@@ -1,10 +1,12 @@
-import * as v from 'valibot'
+import type { Kysely } from 'kysely'
+
+import type { Database } from './types'
 
 /** Durable Object schema migration known to the Worker bundle. */
 export interface SchemaMigration {
   readonly version: number
   readonly name: string
-  readonly statements: readonly string[]
+  readonly migrate: (db: Kysely<Database>) => Promise<void>
 }
 
 /** Previously failed schema migration evidence persisted by the caller. */
@@ -107,21 +109,8 @@ function isValidMigrationPlan(migrations: readonly SchemaMigration[]): boolean {
   for (const [index, migration] of migrations.entries()) {
     if (
       migration.version !== index + 1 ||
-      !v.is(v.pipe(v.string(), v.minLength(1), v.maxLength(128)), migration.name) ||
-      !v.is(
-        v.pipe(
-          v.array(
-            v.pipe(
-              v.string(),
-              v.minLength(1),
-              v.maxLength(4096),
-              v.check((s) => !s.includes('\0'), 'no nulls'),
-            ),
-          ),
-          v.minLength(1),
-        ),
-        migration.statements,
-      ) ||
+      migration.name.length < 1 ||
+      migration.name.length > 128 ||
       names.has(migration.name)
     ) {
       return false

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { makeDeviceId, makeVaultId } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { planDeviceTokenRefreshHttpResponse } from './authRefresh'
 import { type DeviceRefreshTokenRotationPlan, type DeviceTokenRefreshDecision } from '../devices'
+import { planDeviceTokenRefreshHttpResponse } from './authRefresh'
 
 const vaultId = makeVaultId('vault-a')
 const deviceId = makeDeviceId('device-a')

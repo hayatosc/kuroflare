@@ -1,7 +1,7 @@
 import * as v from 'valibot'
 
-import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
 import { Sha256HexSchema } from '../sync/meta'
+import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
 
 export const MAX_BLOB_HEAD_HASHES = 512
 

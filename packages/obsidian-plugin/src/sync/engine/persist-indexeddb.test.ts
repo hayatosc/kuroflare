@@ -4,6 +4,12 @@ import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflar
 import { test } from 'vitest'
 
 import {
+  LOCAL_AUTH_METADATA_KEY,
+  LOCAL_SETUP_METADATA_KEY,
+  planLocalSetupPersist,
+  type LocalSetupMetadataPutOperation,
+} from '../engine/setup'
+import {
   applyLocalStoreIndexedDbMetadataWrites,
   commitLocalStoreIndexedDbMetadataTransaction,
   planLocalStoreIndexedDbMetadataWrites,
@@ -15,12 +21,6 @@ import {
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
 } from '../store/indexeddb'
-import {
-  LOCAL_AUTH_METADATA_KEY,
-  LOCAL_SETUP_METADATA_KEY,
-  planLocalSetupPersist,
-  type LocalSetupMetadataPutOperation,
-} from '../engine/setup'
 
 const vaultId = makeVaultId('setup-indexeddb-vault-1')
 const deviceId = makeDeviceId('setup-indexeddb-device-1')

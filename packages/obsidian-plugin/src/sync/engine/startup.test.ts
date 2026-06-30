@@ -5,16 +5,16 @@ import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflar
 import { test } from 'vitest'
 
 import {
-  LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION,
-  LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
-  type LocalStoreIndexedDbOpenPlanInput,
-} from '../store/schema'
-import {
   planSyncRuntimeStartup,
   planSyncRuntimeStartupFromSchemaEvidence,
   planSyncRuntimeLocalStateFromEvidence,
   type SyncRuntimeLocalStoreEvidence,
 } from '../engine/startup'
+import {
+  LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION,
+  LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+  type LocalStoreIndexedDbOpenPlanInput,
+} from '../store/schema'
 
 const vaultId = makeVaultId('runtime-vault-1')
 const deviceId = makeDeviceId('runtime-device-1')

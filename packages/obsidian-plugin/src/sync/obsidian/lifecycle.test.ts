@@ -8,10 +8,6 @@ import {
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { test } from 'vitest'
 
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
-import { type SyncRuntimeObsidianShellEvidenceReadResult } from '../obsidian/shell'
-import { createSyncRuntimeObsidianShellLifecycle } from '../obsidian/lifecycle'
-import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
 import {
   createSyncRuntimeSetupExchangePort,
   type SyncRuntimeShellEffectExecutor,
@@ -22,6 +18,10 @@ import {
   type SyncRuntimeStartupEffect,
   type SyncRuntimeStartupFromSchemaEvidenceInput,
 } from '../engine/startup'
+import { createSyncRuntimeObsidianShellLifecycle } from '../obsidian/lifecycle'
+import { type SyncRuntimeObsidianShellEvidenceReadResult } from '../obsidian/shell'
+import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
 
 const vaultId = makeVaultId('lifecycle-vault-1')
 const deviceId = makeDeviceId('lifecycle-device-1')

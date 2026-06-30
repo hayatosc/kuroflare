@@ -10,6 +10,7 @@ import {
   type AuthRevokeMetadataPort,
   type AuthRevokeSecretStoragePort,
 } from '../auth/revoke'
+import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from '../engine/setup'
 import {
   type LocalStoreIndexedDbMetadataDatabasePort,
   type LocalStoreIndexedDbMetadataObjectStorePort,
@@ -18,7 +19,6 @@ import {
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
 } from '../store/indexeddb'
-import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from '../engine/setup'
 
 const deviceId = makeDeviceId('auth-revoke-device-1')
 const otherDeviceId = makeDeviceId('auth-revoke-device-2')

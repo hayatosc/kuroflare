@@ -22,6 +22,7 @@ import {
   type AuthRefreshMetadataPort,
   type AuthRefreshSecretStoragePort,
 } from '../auth/refresh'
+import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from '../engine/setup'
 import {
   type LocalStoreIndexedDbMetadataDatabasePort,
   type LocalStoreIndexedDbMetadataObjectStorePort,
@@ -30,7 +31,6 @@ import {
   type LocalStoreIndexedDbRequest,
   type LocalStoreIndexedDbTransactionLifecycle,
 } from '../store/indexeddb'
-import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from '../engine/setup'
 
 const vaultId = makeVaultId('auth-refresh-vault-1')
 const deviceId = makeDeviceId('auth-refresh-device-1')

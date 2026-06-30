@@ -1,32 +1,11 @@
 export * from '../engine/actuation.types'
 
 import { decideClientAuthRefresh, type ClientStartupStep } from '@kuroflare/core'
-import {
-  
-  type DeviceTokenScope} from '@kuroflare/core'
+import { type DeviceTokenScope } from '@kuroflare/core'
 
 import {
-  applyLocalStoreIndexedDbOpenEffect,
-  type LocalStoreIndexedDbExecutableOpenEffect,
-  
-  type LocalStoreIndexedDbOpenEffectPlan,
-  type LocalStoreIndexedDbSchemaDatabasePort} from '../store/indexeddb'
-import { type LocalStoreIndexedDbOpenEffect } from '../store/schema'
-import {
-  persistLocalSetupResponse,
-  
-  
-  type LocalSetupPersistRuntimePlan} from '../engine/persist'
-import { type SyncRuntimeStartupEffect } from '../engine/startup'
-import { type SyncEngineStartupEffect } from '../engine/engine'
-
-import {
-  
-  
   type SyncRuntimeShellCommand,
   type SyncRuntimeShellState,
-  
-  
   type SyncRuntimeStartupActuationInput,
   type SyncRuntimeStartupActuationPlan,
   type SyncRuntimeShellEffectExecutor,
@@ -36,32 +15,33 @@ import {
   type SyncRuntimeNoNetworkEffectPumpPlan,
   type SyncRuntimeDeferredStartupEffect,
   type SyncRuntimeStartupEffectExecutorPorts,
-  
-  
   type SyncRuntimeIndexedDbLocalStoreEffectPortInput,
   type SyncRuntimeIndexedDbLocalStoreEffectPort,
-  
   type SyncRuntimeSetupExchangeReplanRequest,
-  
   type SyncRuntimeSetupExchangePortInput,
   type SyncRuntimeSetupExchangePort,
   type SyncRuntimeStartupStepEffectPort,
-  
-  
   type SyncRuntimeLocalStoreRebuildReplanRequest,
   type SyncRuntimeLocalStoreRebuildReplanPortInput,
   type SyncRuntimeLocalStoreRebuildReplanPort,
   type SyncRuntimeStartupStepExecutorPorts,
   type SyncRuntimeStartupStepEffect,
-  
-  
-  
   type SyncRuntimeSetupPersistStepPortInput,
   type SyncRuntimeVerifiedSetupPersistStepPortInput,
   type SyncRuntimeSetupPersistStepPort,
   type SyncRuntimeSetupPersistTokenVerificationFailure,
-  
-  type SyncRuntimeVerifiedSetupPersistStepPort} from '../engine/actuation.types'
+  type SyncRuntimeVerifiedSetupPersistStepPort,
+} from '../engine/actuation.types'
+import { type SyncEngineStartupEffect } from '../engine/engine'
+import { persistLocalSetupResponse, type LocalSetupPersistRuntimePlan } from '../engine/persist'
+import { type SyncRuntimeStartupEffect } from '../engine/startup'
+import {
+  applyLocalStoreIndexedDbOpenEffect,
+  type LocalStoreIndexedDbExecutableOpenEffect,
+  type LocalStoreIndexedDbOpenEffectPlan,
+  type LocalStoreIndexedDbSchemaDatabasePort,
+} from '../store/indexeddb'
+import { type LocalStoreIndexedDbOpenEffect } from '../store/schema'
 
 /** Initial shell state before startup actuation commands are applied. */
 export const INITIAL_SYNC_RUNTIME_SHELL_STATE: SyncRuntimeShellState = {
@@ -73,7 +53,8 @@ export const INITIAL_SYNC_RUNTIME_SHELL_STATE: SyncRuntimeShellState = {
   notices: [],
   runnableEffects: [],
   completedEffects: [],
-  lastFailedEffect: undefined}
+  lastFailedEffect: undefined,
+}
 
 /**
  * Converts startup runtime effects into commands for the Obsidian plugin shell.
@@ -85,7 +66,8 @@ export function planSyncRuntimeStartupActuation(
   input: SyncRuntimeStartupActuationInput,
 ): SyncRuntimeStartupActuationPlan {
   return {
-    commands: input.plan.effects.flatMap((effect) => shellCommandsForRuntimeEffect(effect))}
+    commands: input.plan.effects.flatMap((effect) => shellCommandsForRuntimeEffect(effect)),
+  }
 }
 
 /**
@@ -140,7 +122,8 @@ export async function executeRunnableSyncRuntimeShellEffects(
       const command: SyncRuntimeShellCommand = {
         kind: 'fail-runtime-effect',
         effect,
-        reason: runtimeEffectFailureReason(error)}
+        reason: runtimeEffectFailureReason(error),
+      }
       commands.push(command)
       state = applySyncRuntimeShellCommands(state, [command])
       break
@@ -188,7 +171,8 @@ export function planSyncRuntimeNoNetworkEffectPump(
   const nextEffect = input.state.runnableEffects[executableEffectCount]
   return {
     executableEffectCount,
-    deferredEffect: nextEffect === undefined ? undefined : deferredNoNetworkEffect(nextEffect)}
+    deferredEffect: nextEffect === undefined ? undefined : deferredNoNetworkEffect(nextEffect),
+  }
 }
 
 /**
@@ -215,7 +199,8 @@ export function createSyncRuntimeStartupEffectExecutor(
         case 'report-local-store-schema-evidence-failure':
           throw new Error(`Non-runnable startup effect: ${effect.kind}`)
       }
-    }}
+    },
+  }
 }
 
 /**
@@ -239,15 +224,18 @@ export function createSyncRuntimeIndexedDbLocalStoreEffectPort<
       }
       const plan = await applyLocalStoreIndexedDbOpenEffect({
         indexedDb: input.indexedDb,
-        effect})
+        effect,
+      })
       appliedEffects.push(effect)
       openPlans.push(plan)
     },
     snapshot() {
       return {
         appliedEffects: [...appliedEffects],
-        openPlans: [...openPlans]}
-    }}
+        openPlans: [...openPlans],
+      }
+    },
+  }
 }
 
 /**
@@ -271,7 +259,8 @@ export function createSyncRuntimeSetupExchangePort(
     },
     snapshot() {
       return { completed: [...completed] }
-    }}
+    },
+  }
 }
 
 /**
@@ -292,7 +281,8 @@ export function createSyncRuntimeSetupPersistStepPort(
         accessTokenExpiresAt: input.accessTokenExpiresAt,
         secretKeyPrefix: input.secretKeyPrefix,
         secretStorage: input.secretStorage,
-        metadata: input.metadata})
+        metadata: input.metadata,
+      })
       results.push(result)
       if (!result.ok) {
         throw new Error(setupPersistFailureReason(result))
@@ -300,7 +290,8 @@ export function createSyncRuntimeSetupPersistStepPort(
     },
     snapshot() {
       return { results: [...results] }
-    }}
+    },
+  }
 }
 
 /**
@@ -327,7 +318,8 @@ export function createVerifiedSyncRuntimeSetupPersistStepPort(
         accessTokenExpiresAt: verification.expiresAt,
         secretKeyPrefix: input.secretKeyPrefix,
         secretStorage: input.secretStorage,
-        metadata: input.metadata})
+        metadata: input.metadata,
+      })
       results.push(result)
       if (!result.ok) {
         throw new Error(setupPersistFailureReason(result))
@@ -336,8 +328,10 @@ export function createVerifiedSyncRuntimeSetupPersistStepPort(
     snapshot() {
       return {
         results: [...results],
-        verificationFailures: [...verificationFailures]}
-    }}
+        verificationFailures: [...verificationFailures],
+      }
+    },
+  }
 }
 
 /**
@@ -359,7 +353,8 @@ export function createSyncRuntimeLocalStoreRebuildReplanPort(
     },
     snapshot() {
       return { requests: [...requests] }
-    }}
+    },
+  }
 }
 
 /**
@@ -442,7 +437,8 @@ export function createSyncRuntimeStartupStepEffectPort(
           )
           return
       }
-    }}
+    },
+  }
 }
 
 function applySyncRuntimeShellCommand(
@@ -454,19 +450,22 @@ function applySyncRuntimeShellCommand(
       return {
         ...state,
         status: command.status,
-        statusReason: command.reason}
+        statusReason: command.reason,
+      }
     case 'stop-background-queues':
       return {
         ...state,
         backgroundQueues: 'stopped',
-        backgroundQueueStopReason: command.reason}
+        backgroundQueueStopReason: command.reason,
+      }
     case 'show-repair-entry':
       return {
         ...state,
         repairEntries: [
           ...state.repairEntries.filter((entry) => entry.entry !== command.entry),
           { entry: command.entry, reason: command.reason },
-        ]}
+        ],
+      }
     case 'clear-repair-entries':
       return {
         ...state,
@@ -474,15 +473,18 @@ function applySyncRuntimeShellCommand(
         backgroundQueueStopReason:
           state.backgroundQueues === 'stopped'
             ? 'startup-not-ready'
-            : state.backgroundQueueStopReason}
+            : state.backgroundQueueStopReason,
+      }
     case 'show-notice':
       return {
         ...state,
-        notices: [...state.notices, command.notice]}
+        notices: [...state.notices, command.notice],
+      }
     case 'run-runtime-effect':
       return {
         ...state,
-        runnableEffects: [...state.runnableEffects, command.effect]}
+        runnableEffects: [...state.runnableEffects, command.effect],
+      }
     case 'ack-runtime-effect':
       if (!runtimeStartupEffectIsHead(state.runnableEffects, command.effect)) {
         return state
@@ -496,7 +498,8 @@ function applySyncRuntimeShellCommand(
           : state.backgroundQueues,
         backgroundQueueStopReason: runtimeEffectStartsBackgroundQueues(command.effect)
           ? undefined
-          : state.backgroundQueueStopReason}
+          : state.backgroundQueueStopReason,
+      }
     case 'fail-runtime-effect':
       if (!runtimeStartupEffectIsHead(state.runnableEffects, command.effect)) {
         return state
@@ -513,7 +516,8 @@ function applySyncRuntimeShellCommand(
         ],
         notices: [...state.notices, 'startup-rejected'],
         runnableEffects: state.runnableEffects.slice(1),
-        lastFailedEffect: { effect: command.effect, reason: command.reason }}
+        lastFailedEffect: { effect: command.effect, reason: command.reason },
+      }
     case 'retry-last-failed-effect':
       if (state.lastFailedEffect === undefined) {
         return state
@@ -524,7 +528,8 @@ function applySyncRuntimeShellCommand(
         statusReason: command.reason,
         repairEntries: state.repairEntries.filter((entry) => entry.entry !== 'startup-rejected'),
         runnableEffects: [state.lastFailedEffect.effect, ...state.runnableEffects],
-        lastFailedEffect: undefined}
+        lastFailedEffect: undefined,
+      }
   }
 }
 
@@ -691,7 +696,8 @@ async function verifySetupPersistAccessToken(
     expectedVaultId: input.response.vaultId,
     expectedDeviceId: input.response.deviceId,
     requiredScopes: input.requiredScopes ?? REQUIRED_SETUP_ACCESS_TOKEN_SCOPES,
-    now: input.now})
+    now: input.now,
+  })
   if (decision.action === 'reject') {
     return { ok: false, reason: decision.reason }
   }
@@ -778,7 +784,8 @@ function shellCommandsForSyncEffect(
         {
           kind: 'show-repair-entry',
           entry: effect.reason,
-          reason: effect.reason},
+          reason: effect.reason,
+        },
         { kind: 'show-notice', notice: effect.reason },
       ]
     case 'enter-degraded':

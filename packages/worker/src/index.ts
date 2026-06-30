@@ -58,15 +58,7 @@ export {
   type SchemaMigrationDecision,
   type SchemaMigrationDecisionInput,
 } from './db/migrations'
-export {
-  collectSqlObjectNames,
-  INITIAL_SCHEMA_INDEXES,
-  INITIAL_SCHEMA_OBJECTS,
-  INITIAL_SCHEMA_TABLES,
-  migrationStatements,
-  SCHEMA_MIGRATIONS,
-  type SqlObjectDefinition,
-} from './db/schema'
+export { SCHEMA_MIGRATIONS } from './db/schema'
 export {
   decideSetupTokenConsume,
   type SetupTokenConsumeDecision,

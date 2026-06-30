@@ -1,12 +1,6 @@
 import assert from 'node:assert/strict'
 
-import {
-  makeDeviceId,
-  makeMessageId,
-  makeSha256Hex,
-  makeYDocId,
-  type DocId,
-} from '@kuroflare/core'
+import { makeDeviceId, makeMessageId, makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/core'
 import { test } from 'vitest'
 
 import { decideQuarantinedUpdateAdmin, type QuarantinedUpdateRecord } from './quarantine'

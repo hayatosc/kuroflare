@@ -1,7 +1,7 @@
 import * as v from 'valibot'
 
-import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
 import { DeviceIdSchema } from '../utils/ids'
+import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
 
 const MAX_REVOKE_REASON_LENGTH = 1024
 

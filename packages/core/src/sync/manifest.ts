@@ -1,6 +1,6 @@
-import { hashBytesSha256 } from '../utils/hashing'
 import { encodeBlobManifestJson, type BlobManifest } from '../sync/blob'
 import { makeSha256Hex, type Sha256Hex } from '../sync/meta'
+import { hashBytesSha256 } from '../utils/hashing'
 import { type DeviceId, type FileId } from '../utils/ids'
 
 export interface ChunkingOptions {

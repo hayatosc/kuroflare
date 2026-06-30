@@ -1,5 +1,3 @@
-import type { SyncRuntimeObsidianPresentationPlan, SyncRuntimeObsidianPresentationSnapshot } from '../obsidian/presentation'
-import type { SyncRuntimeSetupExchangeShellReplan } from '../engine/replan'
 import type {
   SyncRuntimeDeferredStartupEffect,
   SyncRuntimeShellEffectExecutor,
@@ -7,11 +5,16 @@ import type {
   SyncRuntimeSetupExchangePort,
   SyncRuntimeStartupStepEffectPort,
 } from '../engine/actuation'
+import type { SyncRuntimeSetupExchangeShellReplan } from '../engine/replan'
 import type {
   SyncRuntimeLocalStateEvidencePlan,
   SyncRuntimeStartupFromSchemaEvidenceInput,
   SyncRuntimeStartupPlan,
 } from '../engine/startup'
+import type {
+  SyncRuntimeObsidianPresentationPlan,
+  SyncRuntimeObsidianPresentationSnapshot,
+} from '../obsidian/presentation'
 
 /** Result of reading startup evidence for the Obsidian shell driver. */
 export type SyncRuntimeObsidianShellEvidenceReadResult =
