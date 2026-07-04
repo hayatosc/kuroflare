@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   CURRENT_PROTOCOL_VERSION,
   makeDeviceId,
@@ -8,7 +6,7 @@ import {
   makeYDocId,
   type SyncRequest,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { decideSyncRequest, type SyncRequestDocState } from './request'
 

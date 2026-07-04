@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   type DocId,
   makeDeviceId,
@@ -9,7 +7,7 @@ import {
   makeVaultId,
   makeYDocId,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   buildBinaryDownloadOutboxPlan,
@@ -62,6 +60,9 @@ test('binary upload plan publishes meta only after chunks and manifest', () => {
   })
 
   assert.equal(result.ok, true)
+  if (!result.ok) {
+    throw new Error(`unexpected upload plan rejection: ${result.reason}`)
+  }
   assert.deepEqual(result.plan.chunkPuts, [chunk1, chunk2])
   assert.deepEqual(
     result.plan.items.map((item) => item.kind),
@@ -87,6 +88,9 @@ test('binary download plan materializes only after all chunks are fetched', () =
   })
 
   assert.equal(result.ok, true)
+  if (!result.ok) {
+    throw new Error(`unexpected download plan rejection: ${result.reason}`)
+  }
   assert.deepEqual(result.plan.chunkGets, [chunk1, chunk2])
   assert.deepEqual(
     result.plan.items.map((item) => item.kind),
@@ -111,11 +115,17 @@ test('binary plan builders support zero chunk manifests without hidden dependenc
   })
 
   assert.equal(upload.ok, true)
+  if (!upload.ok) {
+    throw new Error(`unexpected upload plan rejection: ${upload.reason}`)
+  }
   assert.deepEqual(
     upload.plan.items.map((item) => item.dependsOn),
     [[], [upload.plan.manifestPut]],
   )
   assert.equal(download.ok, true)
+  if (!download.ok) {
+    throw new Error(`unexpected download plan rejection: ${download.reason}`)
+  }
   assert.deepEqual(download.plan.items[0]?.dependsOn, [])
 })
 

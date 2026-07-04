@@ -128,6 +128,24 @@ async function buildInitialSchema(db: Kysely<Database>): Promise<void> {
     .execute()
 
   await db.schema
+    .createTable('snapshot_retention_events')
+    .ifNotExists()
+    .addColumn('id', 'integer', (col) => col.primaryKey().autoIncrement())
+    .addColumn('doc_id', 'text', (col) => col.notNull())
+    .addColumn('snapshot_key', 'text', (col) => col.notNull())
+    .addColumn('action', 'text', (col) => col.notNull())
+    .addColumn('error', 'text')
+    .addColumn('attempted_at', 'integer', (col) => col.notNull())
+    .execute()
+
+  await db.schema
+    .createIndex('idx_snapshot_retention_events_doc_attempted')
+    .ifNotExists()
+    .on('snapshot_retention_events')
+    .columns(['doc_id', 'attempted_at'])
+    .execute()
+
+  await db.schema
     .createTable('connected_devices')
     .ifNotExists()
     .addColumn('device_id', 'text', (col) => col.primaryKey())

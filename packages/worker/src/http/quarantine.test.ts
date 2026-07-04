@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   QuarantinedUpdateActionResponseSchema,
   QuarantinedUpdateDetailResponseSchema,
@@ -11,7 +9,7 @@ import {
   type DocId,
 } from '@kuroflare/core'
 import * as v from 'valibot'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import type { QuarantinedUpdateRecord } from '../quarantine'
 import {

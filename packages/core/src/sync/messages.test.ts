@@ -1,7 +1,5 @@
-import assert from 'node:assert/strict'
-
 import * as v from 'valibot'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   blobManifestMatchesMetaFile,
@@ -20,6 +18,7 @@ import {
   makeYDocId,
   parseBlobManifestJson,
   parseControlMessage,
+  parseSetupUri,
   stringifyBlobManifest,
   type BlobManifest,
   type BinaryMetaFile,
@@ -47,11 +46,16 @@ import {
   MetaLatestSnapshotResponseSchema,
   SnapshotObjectKeySchema,
   DocLatestSnapshotResponseSchema,
+  SnapshotImportRequestSchema,
+  SnapshotImportResponseSchema,
   AdminOperationRequestSchema,
   AdminOperationResponseSchema,
   QuarantinedUpdateEntrySchema,
   QuarantinedUpdateListResponseSchema,
   QuarantinedUpdateDetailResponseSchema,
+  QuarantinedUpdateActionDryRunResponseSchema,
+  QuarantinedUpdateActionHttpRequestSchema,
+  QuarantinedUpdateActionHttpResponseSchema,
   QuarantinedUpdateActionRequestSchema,
   QuarantinedUpdateActionResponseSchema,
   RevokeDeviceRequestSchema,
@@ -175,6 +179,30 @@ test('validates setup token issue response bodies', () => {
       endpoint: 'https://user:pass@sync.example.test',
     }),
     false,
+  )
+})
+
+test('parses setup URI fields for client settings', () => {
+  assert.deepEqual(
+    parseSetupUri(
+      ' kuroflare://setup?endpoint=https%3A%2F%2Fsync.example.test&vaultId=vault-1&setupToken=setup-token ',
+    ),
+    {
+      endpoint: 'https://sync.example.test',
+      vaultId: 'vault-1',
+      setupToken: 'setup-token',
+    },
+  )
+  assert.equal(parseSetupUri('https://sync.example.test'), undefined)
+  assert.equal(
+    parseSetupUri(
+      'kuroflare://setup?endpoint=https%3A%2F%2Fuser%3Apass%40sync.example.test&vaultId=vault-1&setupToken=setup-token',
+    ),
+    undefined,
+  )
+  assert.equal(
+    parseSetupUri('kuroflare://setup?endpoint=https%3A%2F%2Fsync.example.test&vaultId='),
+    undefined,
   )
 })
 
@@ -504,6 +532,33 @@ test('validates doc latest snapshot response bodies', () => {
   assert.equal(v.is(DocLatestSnapshotResponseSchema, { ...response, docId: undefined }), false)
 })
 
+test('validates snapshot import request and response bodies', () => {
+  const request = {
+    updateBytesBase64: 'AQID',
+    latestSeq: 2,
+  }
+  const response = {
+    ok: true,
+    vaultId: makeVaultId('vault-1'),
+    docId: { kind: 'file', ydocId: makeYDocId('doc-1') },
+    snapshotKey: 'snapshots/vault-1/files/doc-1/2.yupdate',
+    snapshotSeq: 2,
+  }
+
+  assert.equal(v.is(SnapshotImportRequestSchema, request), true)
+  assert.equal(v.is(SnapshotImportRequestSchema, { ...request, latestSeq: 0 }), false)
+  assert.equal(
+    v.is(SnapshotImportRequestSchema, { ...request, updateBytesBase64: 'not base64!' }),
+    false,
+  )
+  assert.equal(v.is(SnapshotImportResponseSchema, response), true)
+  assert.equal(v.is(SnapshotImportResponseSchema, { ...response, snapshotSeq: 0 }), false)
+  assert.equal(
+    v.is(SnapshotImportResponseSchema, { ...response, snapshotKey: 'blob/doc-1/2.yupdate' }),
+    false,
+  )
+})
+
 test('validates admin operation request bodies', () => {
   assert.equal(
     v.is(AdminOperationRequestSchema, {
@@ -620,6 +675,30 @@ test('validates quarantined update admin response bodies', () => {
 })
 
 test('validates quarantined update admin action bodies', () => {
+  assert.equal(v.is(QuarantinedUpdateActionHttpRequestSchema, { mode: 'dry-run' }), true)
+  assert.equal(
+    v.is(QuarantinedUpdateActionHttpRequestSchema, {
+      mode: 'execute',
+      confirmationToken: 'confirm-token',
+      reason: 'bad update',
+    }),
+    true,
+  )
+  assert.equal(
+    v.is(QuarantinedUpdateActionHttpRequestSchema, {
+      mode: 'execute',
+      reason: 'bad update',
+    }),
+    false,
+  )
+  assert.equal(
+    v.is(QuarantinedUpdateActionHttpRequestSchema, {
+      mode: 'dry-run',
+      confirmationToken: 'confirm-token',
+    }),
+    false,
+  )
+
   assert.equal(
     v.is(QuarantinedUpdateActionRequestSchema, {
       action: 'discard',
@@ -671,6 +750,37 @@ test('validates quarantined update admin action bodies', () => {
     }),
     false,
   )
+  assert.equal(
+    v.is(QuarantinedUpdateActionDryRunResponseSchema, {
+      action: 'discard',
+      id: 'quarantine-1',
+      mode: 'dry-run',
+      confirmationRequired: true,
+      confirmationToken: 'confirm-token',
+      effects: [{ kind: 'quarantine-discard', count: 1, detail: 'quarantine-1' }],
+    }),
+    true,
+  )
+  assert.equal(
+    v.is(QuarantinedUpdateActionHttpResponseSchema, {
+      action: 'force-apply',
+      id: 'quarantine-1',
+      applied: true,
+      effects: [{ kind: 'quarantine-force-apply', count: 1, detail: 'seq=11' }],
+    }),
+    true,
+  )
+  assert.equal(
+    v.is(QuarantinedUpdateActionHttpResponseSchema, {
+      action: 'discard',
+      id: 'quarantine-1',
+      mode: 'dry-run',
+      confirmationRequired: true,
+      confirmationToken: 'confirm-token',
+      effects: [{ kind: 'quarantine-discard', count: 1, detail: 'quarantine-1' }],
+    }),
+    true,
+  )
 })
 
 test('validates revoke device request and response bodies', () => {
@@ -707,6 +817,9 @@ test('parses sync request JSON', () => {
   const parsed = parseControlMessage(json)
   assert(parsed)
   assert.equal(parsed.type, 'sync-request')
+  if (parsed.type !== 'sync-request') {
+    throw new Error(`unexpected parsed message type: ${parsed.type}`)
+  }
   assert.equal(parsed.docId.kind, 'file')
 })
 

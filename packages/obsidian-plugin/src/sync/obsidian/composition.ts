@@ -22,13 +22,13 @@ export interface SyncRuntimeObsidianCompositionInput {
   readonly settings: SyncRuntimeObsidianStartupSettingsEvidenceReaderPort
   readonly local: SyncRuntimeObsidianLocalStartupEvidenceReaderPort
   readonly ui: SyncRuntimeObsidianShellUiPort
-  readonly setupExchange?: SyncRuntimeSetupExchangePort | undefined
-  readonly startupStep?: SyncRuntimeStartupStepEffectPort | undefined
-  readonly localStore?: SyncRuntimeLocalStoreEffectPort | undefined
-  readonly localStoreRebuild?: SyncRuntimeLocalStoreRebuildEffectPort | undefined
+  readonly setupExchange: SyncRuntimeSetupExchangePort
+  readonly startupStep: SyncRuntimeStartupStepEffectPort
+  readonly localStore: SyncRuntimeLocalStoreEffectPort
+  readonly localStoreRebuild: SyncRuntimeLocalStoreRebuildEffectPort
 }
 
-/** Runtime lifecycle plus the default fail-fast ports used for still-unwired families. */
+/** Runtime lifecycle plus the concrete ports used by the production composition root. */
 export interface SyncRuntimeObsidianComposition {
   readonly lifecycle: SyncRuntimeObsidianShellLifecycle
   readonly setupExchange: SyncRuntimeSetupExchangePort
@@ -46,10 +46,6 @@ export interface SyncRuntimeObsidianComposition {
 export function createSyncRuntimeObsidianComposition(
   input: SyncRuntimeObsidianCompositionInput,
 ): SyncRuntimeObsidianComposition {
-  const setupExchange = input.setupExchange ?? createUnwiredSetupExchangePort()
-  const startupStep = input.startupStep ?? createUnwiredStartupStepPort()
-  const localStore = input.localStore ?? createUnwiredLocalStoreEffectPort()
-  const localStoreRebuild = input.localStoreRebuild ?? createUnwiredLocalStoreRebuildEffectPort()
   const evidence = createSyncRuntimeObsidianShellEvidencePort(
     createSyncRuntimeObsidianStartupEvidenceReader({
       settings: input.settings,
@@ -57,10 +53,10 @@ export function createSyncRuntimeObsidianComposition(
     }),
   )
   const executor = createSyncRuntimeStartupEffectExecutor({
-    localStore,
-    setupExchange,
-    startupStep,
-    localStoreRebuild,
+    localStore: input.localStore,
+    setupExchange: input.setupExchange,
+    startupStep: input.startupStep,
+    localStoreRebuild: input.localStoreRebuild,
   })
 
   return {
@@ -68,49 +64,14 @@ export function createSyncRuntimeObsidianComposition(
       ports: {
         evidence,
         executor,
-        setupExchange,
-        startupStep,
+        setupExchange: input.setupExchange,
+        startupStep: input.startupStep,
         ui: input.ui,
       },
     }),
-    setupExchange,
-    startupStep,
-    localStore,
-    localStoreRebuild,
-  }
-}
-
-function createUnwiredSetupExchangePort(): SyncRuntimeSetupExchangePort {
-  return {
-    async run() {
-      throw new Error('setup-exchange-port-unwired')
-    },
-    snapshot() {
-      return { completed: [] }
-    },
-  }
-}
-
-function createUnwiredStartupStepPort(): SyncRuntimeStartupStepEffectPort {
-  return {
-    async run(effect) {
-      throw new Error(`startup-step-port-unwired:${effect.step}`)
-    },
-  }
-}
-
-function createUnwiredLocalStoreEffectPort(): SyncRuntimeLocalStoreEffectPort {
-  return {
-    async runOpenEffect(effect) {
-      throw new Error(`local-store-effect-port-unwired:${effect.kind}`)
-    },
-  }
-}
-
-function createUnwiredLocalStoreRebuildEffectPort(): SyncRuntimeLocalStoreRebuildEffectPort {
-  return {
-    async rerunStartup(effect) {
-      throw new Error(`local-store-rebuild-port-unwired:${effect.dbName}`)
-    },
+    setupExchange: input.setupExchange,
+    startupStep: input.startupStep,
+    localStore: input.localStore,
+    localStoreRebuild: input.localStoreRebuild,
   }
 }

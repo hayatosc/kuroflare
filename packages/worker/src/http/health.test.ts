@@ -1,8 +1,6 @@
-import assert from 'node:assert/strict'
-
 import { HealthResponseSchema } from '@kuroflare/core'
 import * as v from 'valibot'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   decideDurableObjectSyncAdmission,

@@ -1,7 +1,5 @@
-import assert from 'node:assert/strict'
-
 import { makeVaultId } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   applySyncRuntimeShellCommands,

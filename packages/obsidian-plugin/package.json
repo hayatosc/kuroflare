@@ -7,9 +7,10 @@
     "build": "NODE_ENV=production tsdown && mv main.cjs main.js",
     "dev": "tsdown --watch",
     "test": "vitest run",
-    "test:e2e:obsidian": "NODE_ENV=production tsdown && mv main.cjs main.js && node scripts/obsidian-cli-smoke.mjs",
-    "test:e2e:obsidian:mvp2": "NODE_ENV=production tsdown && mv main.cjs main.js && node scripts/obsidian-mvp2-smoke.mjs",
-    "test:e2e:obsidian:miniflare": "NODE_ENV=production tsdown && mv main.cjs main.js && node scripts/obsidian-miniflare-smoke.mjs",
+    "test:e2e:obsidian": "NODE_ENV=production tsdown && mv main.cjs main.js && node --experimental-strip-types scripts/obsidian-cli-smoke.ts",
+    "test:e2e:obsidian:mvp2": "NODE_ENV=production tsdown && mv main.cjs main.js && node --experimental-strip-types scripts/obsidian-mvp2-smoke.ts",
+    "test:e2e:obsidian:miniflare": "NODE_ENV=production tsdown && mv main.cjs main.js && node --experimental-strip-types scripts/obsidian-miniflare-smoke.ts",
+    "snapshot:import": "node --experimental-strip-types scripts/kuroflare-snapshot-import.ts",
     "typecheck": "tsgo --noEmit",
     "typecheck:compat": "tsc --noEmit"
   },

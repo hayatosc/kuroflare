@@ -151,7 +151,7 @@ export interface OutboxWorkerMaterializeSideEffectPlan {
   }
   readonly diskCas: {
     readonly path: string
-    readonly lastMaterialized: LastMaterializedRecord
+    readonly lastMaterialized?: LastMaterializedRecord | undefined
   }
   readonly writeVaultFile: {
     readonly path: string

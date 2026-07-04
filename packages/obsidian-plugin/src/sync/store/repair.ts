@@ -63,11 +63,64 @@ export type {
 /** Vault-relative directory used for degraded local-store repair exports. */
 export const LOCAL_STORE_REPAIR_EXPORT_DIRECTORY = '.obsidian/kuroflare/repair-exports'
 
+/** Minimal Vault adapter surface needed for local-store repair export files. */
+export interface LocalStoreRepairExportFileAdapter {
+  readonly read: (path: string) => Promise<string>
+  readonly write: (path: string, data: string) => Promise<void>
+}
+
+/** Result of reading and validating a local-store repair export JSON file. */
+export type LocalStoreRepairExportFileReadPlan =
+  | {
+      readonly ok: true
+      readonly exportFile: v.InferInput<typeof LocalOutboxRepairExportSchema>
+    }
+  | {
+      readonly ok: false
+      readonly reason: 'unreadable-json' | 'invalid-export-payload'
+      readonly error?: unknown
+    }
+
 /**
  * Builds the Vault-relative path for a degraded local-store repair export.
  */
 export function localStoreRepairExportPath(exportName: string): string {
   return `${LOCAL_STORE_REPAIR_EXPORT_DIRECTORY}/${exportName}`
+}
+
+/**
+ * Writes a protocol-valid local-store repair export JSON file through the Vault adapter.
+ *
+ * @param input Vault adapter, target path, and export payload produced by the repair builder.
+ */
+export async function writeLocalStoreRepairExportFile(input: {
+  readonly adapter: Pick<LocalStoreRepairExportFileAdapter, 'write'>
+  readonly path: string
+  readonly exportFile: v.InferInput<typeof LocalOutboxRepairExportSchema>
+}): Promise<void> {
+  await input.adapter.write(input.path, `${JSON.stringify(input.exportFile, null, 2)}\n`)
+}
+
+/**
+ * Reads and validates a local-store repair export JSON file from the Vault adapter.
+ *
+ * @param input Vault adapter and Vault-relative path to read.
+ * @returns A validated export payload or a typed rejection reason.
+ */
+export async function readLocalStoreRepairExportFile(input: {
+  readonly adapter: Pick<LocalStoreRepairExportFileAdapter, 'read'>
+  readonly path: string
+}): Promise<LocalStoreRepairExportFileReadPlan> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await input.adapter.read(input.path)) as unknown
+  } catch (error: unknown) {
+    return { ok: false, reason: 'unreadable-json', error }
+  }
+  if (!v.is(LocalOutboxRepairExportSchema, parsed)) {
+    return { ok: false, reason: 'invalid-export-payload' }
+  }
+  return { ok: true, exportFile: parsed }
 }
 
 /**

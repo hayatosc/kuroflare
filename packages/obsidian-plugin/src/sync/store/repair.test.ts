@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
   decideLocalStoreSchema,
@@ -16,7 +14,7 @@ import {
   type DocId,
 } from '@kuroflare/core'
 import * as v from 'valibot'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { applyLocalStoreDriverTransaction } from '../store/driver'
 import {
@@ -28,6 +26,8 @@ import {
   planLocalStoreRepairImportStageTransaction,
   planLocalStoreRepairImportResume,
   planLocalStoreRepair,
+  readLocalStoreRepairExportFile,
+  writeLocalStoreRepairExportFile,
 } from '../store/repair'
 import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
 
@@ -302,6 +302,65 @@ test('local store repair export builder creates protocol-valid payloads', () => 
         localCacheKey: 'blob-cache/outbox-blob-put-1',
       },
     ])
+  }
+})
+
+test('local store repair export and import plans do not carry token material', () => {
+  const exportPlan = buildLocalStoreRepairExport({
+    exportedAt: now,
+    vaultId,
+    deviceId,
+    metadata: {
+      localStoreVersion: 1,
+      targetStoreVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+      degradedReason: 'store-version-too-old-with-pending-outbox',
+    },
+    outboxRecords: [
+      {
+        id: yUpdateOutboxId,
+        kind: 'y-update',
+        status: 'pending',
+        dependsOn: [],
+        createdAt: 100,
+        docId: fileDocId,
+        messageId,
+        updateSha256,
+        updateBytesBase64: 'AQID',
+      },
+    ],
+  })
+  assert.equal(exportPlan.ok, true)
+
+  if (exportPlan.ok) {
+    assertNoTokenMaterial(exportPlan.exportFile)
+
+    const importPlan = planLocalStoreRepairImport({
+      exportFile: exportPlan.exportFile,
+      vaultId,
+      deviceId,
+      existingOutboxIds: [],
+      durableMessages: [],
+      quarantinedMessages: [],
+    })
+    assert.equal(importPlan.ok, true)
+    assertNoTokenMaterial(importPlan)
+
+    if (importPlan.ok) {
+      assert.deepEqual(importPlan.decision.imports, [
+        {
+          id: 'outbox-y-update-1',
+          kind: 'y-update',
+          status: 'paused',
+          reason: 'imported-repair-export',
+          resumeOn: 'manual',
+          docId: fileDocId,
+          messageId,
+          updateSha256,
+          updateBytesBase64: 'AQID',
+          createdAt: 100,
+        },
+      ])
+    }
   }
 })
 
@@ -709,6 +768,119 @@ test('local store repair import transactions stage and resume imported records',
   }
 })
 
+test('local store repair export file round-trips through adapter before import stage and resume', async () => {
+  const adapter = new FakeRepairExportAdapter()
+  const path = localStoreRepairExportPath('kuroflare-local-outbox-1700000000000.json')
+  const exportPlan = buildLocalStoreRepairExport({
+    exportedAt: now,
+    vaultId,
+    deviceId,
+    metadata: {
+      localStoreVersion: 1,
+      targetStoreVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+      degradedReason: 'store-version-too-old-with-pending-outbox',
+    },
+    outboxRecords: [
+      {
+        id: yUpdateOutboxId,
+        kind: 'y-update',
+        status: 'pending',
+        dependsOn: [],
+        createdAt: 100,
+        docId: fileDocId,
+        messageId,
+        updateSha256,
+        updateBytesBase64: 'AQID',
+      },
+    ],
+  })
+  assert.equal(exportPlan.ok, true)
+
+  if (exportPlan.ok) {
+    await writeLocalStoreRepairExportFile({
+      adapter,
+      path,
+      exportFile: exportPlan.exportFile,
+    })
+    assert.equal(adapter.files.get(path)?.endsWith('\n'), true)
+    assertNoTokenMaterial(adapter.files.get(path))
+
+    const read = await readLocalStoreRepairExportFile({ adapter, path })
+    assert.equal(read.ok, true)
+
+    if (read.ok) {
+      const importPlan = planLocalStoreRepairImport({
+        exportFile: read.exportFile,
+        vaultId,
+        deviceId,
+        existingOutboxIds: [],
+        durableMessages: [],
+        quarantinedMessages: [],
+      })
+      assert.equal(importPlan.ok, true)
+
+      if (importPlan.ok) {
+        const stageTransaction = applyLocalStoreDriverTransaction({
+          source: { outboxRecords: [], leaseRows: [] },
+          operations: planLocalStoreRepairImportStageTransaction(importPlan),
+        })
+        assert.equal(stageTransaction.ok, true)
+
+        if (stageTransaction.ok) {
+          assert.deepEqual(stageTransaction.snapshot.outboxRecords, [stagedImportedRecord()])
+
+          const resumePlan = planLocalStoreRepairImportResume({
+            record: stagedImportedRecord(),
+            userConfirmed: true,
+            durableMessages: [],
+            quarantinedMessages: [],
+          })
+          assert.equal(resumePlan.ok, true)
+          assert.equal(resumePlan.action, 'resume')
+
+          if (resumePlan.ok && resumePlan.action === 'resume') {
+            const resumeTransaction = applyLocalStoreDriverTransaction({
+              source: stageTransaction.snapshot,
+              operations: planLocalStoreRepairImportResumeTransaction(resumePlan),
+            })
+            assert.equal(resumeTransaction.ok, true)
+
+            if (resumeTransaction.ok) {
+              assert.deepEqual(resumeTransaction.snapshot.outboxRecords, [
+                {
+                  ...stagedImportedRecord(),
+                  status: 'pending',
+                  nextAttemptAt: undefined,
+                  resumeOn: undefined,
+                  reason: undefined,
+                },
+              ])
+            }
+          }
+        }
+      }
+    }
+  }
+})
+
+test('local store repair export file reader rejects unreadable and invalid files', async () => {
+  const adapter = new FakeRepairExportAdapter()
+  adapter.files.set('invalid.json', '{"format":"wrong"}')
+
+  const missing = await readLocalStoreRepairExportFile({ adapter, path: 'missing.json' })
+  assert.equal(missing.ok, false)
+  if (!missing.ok) {
+    assert.equal(missing.reason, 'unreadable-json')
+    assert(missing.error instanceof Error)
+    assert.equal(missing.error.message, 'missing file: missing.json')
+  }
+
+  assert.deepEqual(await readLocalStoreRepairExportFile({ adapter, path: 'invalid.json' }), {
+    ok: false,
+    reason: 'invalid-export-payload',
+  })
+})
+
 test('local store repair import stage transaction rejects existing local outbox rows', () => {
   const record = stagedImportedRecord()
   const plan = applyLocalStoreDriverTransaction({
@@ -768,4 +940,34 @@ function stagedImportedRecord() {
     updateSha256,
     updateBytesBase64: 'AQID',
   } as const
+}
+
+function assertNoTokenMaterial(value: unknown) {
+  const serialized = JSON.stringify(value)
+  for (const forbidden of [
+    'accessToken',
+    'refreshToken',
+    'setupToken',
+    'tokenSecret',
+    'authorization',
+    'Bearer ',
+  ]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden)
+  }
+}
+
+class FakeRepairExportAdapter {
+  readonly files = new Map<string, string>()
+
+  async read(path: string): Promise<string> {
+    const value = this.files.get(path)
+    if (value === undefined) {
+      throw new Error(`missing file: ${path}`)
+    }
+    return value
+  }
+
+  async write(path: string, data: string): Promise<void> {
+    this.files.set(path, data)
+  }
 }

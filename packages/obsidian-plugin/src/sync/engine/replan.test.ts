@@ -1,8 +1,6 @@
-import assert from 'node:assert/strict'
-
 import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type ClientStartupLocalState } from '@kuroflare/core'
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   applySyncRuntimeShellCommands,
@@ -87,11 +85,11 @@ test('setup exchange replan maps reconnect response into new-vault bootstrap sta
   })
   assert.deepEqual(
     plan.startup.effects.slice(1).map((effect) => effect.kind),
-    Array.from({ length: 6 }, () => 'run-sync-startup-effect'),
+    Array.from({ length: 7 }, () => 'run-sync-startup-effect'),
   )
   assert.deepEqual(
     plan.actuation.commands.filter((command) => command.kind === 'run-runtime-effect').length,
-    7,
+    8,
   )
 })
 
@@ -207,6 +205,7 @@ test('setup exchange shell replan acknowledges completed setup effect and replac
     result.state.runnableEffects.map((effect) => effect.kind),
     [
       'run-local-store-open-effect',
+      'run-sync-startup-effect',
       'run-sync-startup-effect',
       'run-sync-startup-effect',
       'run-sync-startup-effect',

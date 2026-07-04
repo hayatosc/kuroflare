@@ -1,8 +1,12 @@
 import * as v from 'valibot'
 
 import { Sha256HexSchema } from '../sync/meta'
-import { DocIdSchema } from '../utils/ids'
-import { Base64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
+import { DocIdSchema, VaultIdSchema } from '../utils/ids'
+import {
+  Base64Schema,
+  NonNegativeSafeIntegerSchema,
+  PositiveSafeIntegerSchema,
+} from '../utils/shared'
 
 const MAX_R2_KEY_LENGTH = 1024
 
@@ -37,3 +41,18 @@ export const DocLatestSnapshotResponseSchema = v.intersect([
   v.object({ docId: DocIdSchema }),
 ])
 export type DocLatestSnapshotResponse = v.InferInput<typeof DocLatestSnapshotResponseSchema>
+
+export const SnapshotImportRequestSchema = v.object({
+  updateBytesBase64: Base64Schema,
+  latestSeq: v.optional(PositiveSafeIntegerSchema),
+})
+export type SnapshotImportRequest = v.InferInput<typeof SnapshotImportRequestSchema>
+
+export const SnapshotImportResponseSchema = v.object({
+  ok: v.literal(true),
+  vaultId: VaultIdSchema,
+  docId: DocIdSchema,
+  snapshotKey: SnapshotObjectKeySchema,
+  snapshotSeq: PositiveSafeIntegerSchema,
+})
+export type SnapshotImportResponse = v.InferInput<typeof SnapshotImportResponseSchema>

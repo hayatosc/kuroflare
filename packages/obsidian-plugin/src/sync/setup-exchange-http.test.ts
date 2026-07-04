@@ -1,12 +1,10 @@
-import assert from 'node:assert/strict'
-
 import {
   makeDeviceId,
   makeVaultId,
   type SetupExchangeRequest,
   type SetupExchangeResponse,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, expect, test } from 'vitest'
 
 import {
   buildSetupExchangeRequest,
@@ -153,14 +151,13 @@ test('setup exchange http client rejects non-ok responses without reading token-
     },
   })
 
-  await assert.rejects(
+  await expect(
     requestSetupExchange({
       endpoint: 'https://sync.example.test',
       request,
       fetch,
     }),
-    /setup-exchange-http:403/,
-  )
+  ).rejects.toThrow(/setup-exchange-http:403/)
   assert.equal(jsonRead, false)
 })
 
@@ -173,14 +170,13 @@ test('setup exchange http client rejects invalid json and invalid response shape
     },
   })
 
-  await assert.rejects(
+  await expect(
     requestSetupExchange({
       endpoint: 'https://sync.example.test',
       request,
       fetch: invalidJsonFetch,
     }),
-    /setup-exchange-invalid-json/,
-  )
+  ).rejects.toThrow(/setup-exchange-invalid-json/)
 
   const invalidResponseFetch: SetupExchangeFetchPort = async () => ({
     ok: true,
@@ -190,14 +186,13 @@ test('setup exchange http client rejects invalid json and invalid response shape
     },
   })
 
-  await assert.rejects(
+  await expect(
     requestSetupExchange({
       endpoint: 'https://sync.example.test',
       request,
       fetch: invalidResponseFetch,
     }),
-    /invalid-setup-exchange-response/,
-  )
+  ).rejects.toThrow(/invalid-setup-exchange-response/)
 })
 
 test('setup exchange http client rejects invalid endpoint before sending request', async () => {
@@ -213,14 +208,13 @@ test('setup exchange http client rejects invalid endpoint before sending request
     }
   }
 
-  await assert.rejects(
+  await expect(
     requestSetupExchange({
       endpoint: 'kuroflare://setup',
       request,
       fetch,
     }),
-    /invalid-setup-exchange-endpoint/,
-  )
+  ).rejects.toThrow(/invalid-setup-exchange-endpoint/)
   assert.equal(called, false)
 })
 
@@ -290,7 +284,7 @@ test('http-backed setup exchange startup port does not schedule replan after inv
     },
   })
 
-  await assert.rejects(port.run(effect), /invalid-setup-exchange-response/)
+  await expect(port.run(effect)).rejects.toThrow(/invalid-setup-exchange-response/)
   assert.deepEqual(scheduled, [])
   assert.deepEqual(port.snapshot().completed, [])
 })
@@ -383,12 +377,16 @@ test('evidence-backed setup exchange startup port fails invalid evidence without
     },
   })
 
-  await assert.rejects(port.run(effect), (error: unknown) => {
-    assert.ok(error instanceof Error)
+  await expect(port.run(effect)).rejects.toThrow(
+    /setup-exchange-request:invalid-requested-device-name/,
+  )
+  try {
+    await port.run(effect)
+  } catch (error) {
+    assert.instanceOf(error, Error)
     assert.equal(error.message, 'setup-exchange-request:invalid-requested-device-name')
     assert.equal(error.message.includes(token), false)
-    return true
-  })
+  }
   assert.equal(fetchCalled, false)
   assert.deepEqual(scheduled, [])
   assert.deepEqual(port.snapshot().completed, [])

@@ -416,6 +416,14 @@ export interface SyncRuntimeLocalScanStepPort {
 
 /** Runtime port for remote snapshot and state-vector startup steps. */
 export interface SyncRuntimeSnapshotStepPort {
+  /** Publishes the local meta document as a durable remote snapshot during new-vault bootstrap. */
+  publishLocalMetaSnapshot(
+    effect: SyncRuntimeStartupStepEffect<'publish-local-meta-snapshot'>,
+  ): Promise<void>
+  /** Publishes initial text file snapshots for a newly bootstrapped vault. */
+  publishInitialFileSnapshots(
+    effect: SyncRuntimeStartupStepEffect<'publish-initial-file-snapshots'>,
+  ): Promise<void>
   /** Fetches the remote meta snapshot before joining or repairing local metadata. */
   fetchRemoteMetaSnapshot(
     effect: SyncRuntimeStartupStepEffect<'fetch-remote-meta-snapshot'>,
@@ -448,10 +456,6 @@ export interface SyncRuntimeWebSocketStepPort {
 
 /** Runtime port for startup outbox and background queue steps. */
 export interface SyncRuntimeOutboxStepPort {
-  /** Enqueues initial file uploads for a newly bootstrapped vault. */
-  enqueueInitialFileUploads(
-    effect: SyncRuntimeStartupStepEffect<'enqueue-initial-file-uploads'>,
-  ): Promise<void>
   /** Sends the meta update that publishes initial or adopted metadata. */
   sendMetaUpdate(effect: SyncRuntimeStartupStepEffect<'send-meta-update'>): Promise<void>
   /** Enqueues missing downloads after a join or snapshot repair. */

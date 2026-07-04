@@ -131,13 +131,14 @@ export function startupStepPhase(step: ClientStartupStep): SyncEngineStartupPhas
     case 'create-local-meta-ydoc':
     case 'adopt-local-files-after-remote-meta':
       return 'local-scan'
-    case 'enqueue-initial-file-uploads':
     case 'send-meta-update':
     case 'enqueue-missing-downloads':
     case 'resume-background-queues':
       return 'outbox'
     case 'fetch-remote-meta-snapshot':
     case 'apply-remote-meta-snapshot':
+    case 'publish-local-meta-snapshot':
+    case 'publish-initial-file-snapshots':
     case 'sync-meta-state-vector':
     case 'sync-active-file-state-vector':
       return 'snapshot'

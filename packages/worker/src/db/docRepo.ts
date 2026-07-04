@@ -201,6 +201,18 @@ export async function getFirstDocId(db: Kysely<Database>): Promise<DocIdRow | un
     .executeTakeFirst()
 }
 
+export async function getAllDocIds(
+  db: Kysely<Database>,
+  limit: number,
+): Promise<readonly DocIdRow[]> {
+  return db
+    .selectFrom('docs')
+    .select((eb) => eb.ref('doc_id').as('docId'))
+    .orderBy('doc_id', 'asc')
+    .limit(limit)
+    .execute()
+}
+
 export async function getOpLogUpdatesSince(
   db: Kysely<Database>,
   docKey: string,

@@ -9,6 +9,7 @@ export interface Database {
   op_log: OpLogTable
   message_dedup: MessageDedupTable
   checkpoint_runs: CheckpointRunTable
+  snapshot_retention_events: SnapshotRetentionEventTable
   connected_devices: ConnectedDeviceTable
   quarantined_updates: QuarantinedUpdateTable
 }
@@ -85,6 +86,15 @@ export interface CheckpointRunTable {
   r2_written_at: number | null
   pointer_updated_at: number | null
   compacted_at: number | null
+}
+
+export interface SnapshotRetentionEventTable {
+  id: Generated<number>
+  doc_id: string
+  snapshot_key: string
+  action: string
+  error: string | null
+  attempted_at: number
 }
 
 export interface ConnectedDeviceTable {

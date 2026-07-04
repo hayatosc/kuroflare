@@ -1,6 +1,4 @@
-import assert from 'node:assert/strict'
-
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { decideSchemaMigration } from '../db/migrations'
 import { SCHEMA_MIGRATIONS } from '../db/schema'

@@ -1,6 +1,4 @@
-import assert from 'node:assert/strict'
-
-import { test } from 'vitest'
+import { assert, expect, test } from 'vitest'
 
 import { makeDeviceId, makeVaultId, type DeviceTokenClaims } from '../index'
 import { signHs256DeviceToken, verifyHs256DeviceToken } from '../sync/jwt'
@@ -31,8 +29,7 @@ test('HS256 device token helper rejects bad signature, secret, and payload', asy
 
   assert.equal(await verifyHs256DeviceToken({ token: `${token}x`, secret }), undefined)
   assert.equal(await verifyHs256DeviceToken({ token, secret: 'other' }), undefined)
-  await assert.rejects(
-    signHs256DeviceToken({ claims: { ...claims, exp: 100 }, secret }),
+  await expect(signHs256DeviceToken({ claims: { ...claims, exp: 100 }, secret })).rejects.toThrow(
     /invalid-device-token-claims/,
   )
 })

@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   makeOutboxPlanItemId,
   type OutboxPlanItemId,
@@ -13,7 +11,7 @@ import {
   makeYDocId,
   type DocId,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   planOutboundQueueAckCompletion,

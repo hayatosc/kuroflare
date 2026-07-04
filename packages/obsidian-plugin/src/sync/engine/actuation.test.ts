@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
   type ClientStartupLocalState,
@@ -12,7 +10,7 @@ import {
   type DeviceTokenClaims,
   type SetupExchangeResponse,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, expect, test } from 'vitest'
 
 import {
   applySyncRuntimeShellCommands,
@@ -758,15 +756,14 @@ test('verified setup persist step port rejects token claims before writing secre
     metadata,
   })
 
-  await assert.rejects(
+  await expect(
     port.persistSetupResponse({
       kind: 'run-startup-step',
       vaultId,
       step: 'persist-setup-response',
       phase: 'setup',
     }),
-    /setup-persist-token:token-version-mismatch/,
-  )
+  ).rejects.toThrow(/setup-persist-token:token-version-mismatch/)
 
   assert.deepEqual(port.snapshot().verificationFailures, [{ reason: 'token-version-mismatch' }])
   assert.deepEqual(port.snapshot().results, [])
@@ -780,6 +777,7 @@ test('startup step executor dispatches every accepted startup step to the matchi
     'scan-local-vault',
     'create-local-meta-ydoc',
     'adopt-local-files-after-remote-meta',
+    'publish-local-meta-snapshot',
     'fetch-remote-meta-snapshot',
     'apply-remote-meta-snapshot',
     'sync-meta-state-vector',
@@ -787,7 +785,7 @@ test('startup step executor dispatches every accepted startup step to the matchi
     'load-indexeddb-ydocs',
     'open-websocket',
     'send-client-hello',
-    'enqueue-initial-file-uploads',
+    'publish-initial-file-snapshots',
     'send-meta-update',
     'enqueue-missing-downloads',
     'resume-background-queues',
@@ -804,6 +802,7 @@ test('startup step executor dispatches every accepted startup step to the matchi
     'localScan.scanLocalVault:scan-local-vault',
     'localScan.createLocalMetaYDoc:create-local-meta-ydoc',
     'localScan.adoptLocalFilesAfterRemoteMeta:adopt-local-files-after-remote-meta',
+    'snapshot.publishLocalMetaSnapshot:publish-local-meta-snapshot',
     'snapshot.fetchRemoteMetaSnapshot:fetch-remote-meta-snapshot',
     'snapshot.applyRemoteMetaSnapshot:apply-remote-meta-snapshot',
     'snapshot.syncMetaStateVector:sync-meta-state-vector',
@@ -811,7 +810,7 @@ test('startup step executor dispatches every accepted startup step to the matchi
     'localStore.loadIndexedDbYDocs:load-indexeddb-ydocs',
     'websocket.openWebSocket:open-websocket',
     'websocket.sendClientHello:send-client-hello',
-    'outbox.enqueueInitialFileUploads:enqueue-initial-file-uploads',
+    'snapshot.publishInitialFileSnapshots:publish-initial-file-snapshots',
     'outbox.sendMetaUpdate:send-meta-update',
     'outbox.enqueueMissingDownloads:enqueue-missing-downloads',
     'outbox.resumeBackgroundQueues:resume-background-queues',
@@ -1162,6 +1161,8 @@ function createRecordingStartupStepPorts(): {
         adoptLocalFilesAfterRemoteMeta: record('localScan.adoptLocalFilesAfterRemoteMeta'),
       },
       snapshot: {
+        publishLocalMetaSnapshot: record('snapshot.publishLocalMetaSnapshot'),
+        publishInitialFileSnapshots: record('snapshot.publishInitialFileSnapshots'),
         fetchRemoteMetaSnapshot: record('snapshot.fetchRemoteMetaSnapshot'),
         applyRemoteMetaSnapshot: record('snapshot.applyRemoteMetaSnapshot'),
         syncMetaStateVector: record('snapshot.syncMetaStateVector'),
@@ -1175,7 +1176,6 @@ function createRecordingStartupStepPorts(): {
         sendClientHello: record('websocket.sendClientHello'),
       },
       outbox: {
-        enqueueInitialFileUploads: record('outbox.enqueueInitialFileUploads'),
         sendMetaUpdate: record('outbox.sendMetaUpdate'),
         enqueueMissingDownloads: record('outbox.enqueueMissingDownloads'),
         resumeBackgroundQueues: record('outbox.resumeBackgroundQueues'),

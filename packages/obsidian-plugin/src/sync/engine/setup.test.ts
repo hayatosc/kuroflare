@@ -1,7 +1,10 @@
-import assert from 'node:assert/strict'
-
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import {
+  isClientAuthMetadata,
+  makeDeviceId,
+  makeVaultId,
+  type SetupExchangeResponse,
+} from '@kuroflare/core'
+import { assert, test } from 'vitest'
 
 import {
   LOCAL_AUTH_METADATA_KEY,
@@ -146,6 +149,9 @@ test('local setup metadata guard validates persisted setup/auth snapshot', () =>
   const auth = plan.metadataPuts[1]?.value
 
   assert.equal(isLocalSetupMetadata(setup), true)
+  if (!isLocalSetupMetadata(setup) || !isClientAuthMetadata(auth)) {
+    throw new Error('setup plan did not include valid setup/auth metadata')
+  }
   assert.deepEqual(planLocalSetupMetadataSnapshot({ setup, auth }), {
     ok: true,
     snapshot: {
@@ -255,6 +261,9 @@ function requireSuccessfulSetupPlan(): SuccessfulLocalSetupPersistPlan {
     accessTokenExpiresAt: 10_000,
   })
   assert.equal(plan.ok, true)
+  if (!plan.ok) {
+    throw new Error(`unexpected setup persist rejection: ${plan.reason}`)
+  }
   return plan
 }
 

@@ -11,7 +11,7 @@ const secondNotePath = 'e2e-smoke-second.md'
 const initialContent = 'initial smoke'
 const secondContent = 'second smoke'
 
-function obsidian(args) {
+function obsidian(args: readonly string[]): string {
   return execFileSync('obsidian', args, {
     cwd: packageDir,
     encoding: 'utf8',
@@ -19,19 +19,19 @@ function obsidian(args) {
   }).trim()
 }
 
-function requireIncludes(value, expected, label) {
+function requireIncludes(value: string, expected: string, label: string): void {
   if (!value.includes(expected)) {
     throw new Error(`${label} did not include ${JSON.stringify(expected)}:\n${value}`)
   }
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
 }
 
-async function waitForFileIncludes(path, expected) {
+async function waitForFileIncludes(path: string, expected: string): Promise<string> {
   const deadline = Date.now() + 5000
   while (Date.now() < deadline) {
     const content = readFileSync(path, 'utf8')
@@ -43,7 +43,7 @@ async function waitForFileIncludes(path, expected) {
   return readFileSync(path, 'utf8')
 }
 
-async function waitForEvalIncludes(code, expected) {
+async function waitForEvalIncludes(code: string, expected: string): Promise<string> {
   const deadline = Date.now() + 5000
   let output = ''
   while (Date.now() < deadline) {
@@ -56,17 +56,22 @@ async function waitForEvalIncludes(code, expected) {
   return output
 }
 
-function evalInObsidian(code) {
-  return JSON.parse(obsidian(['eval', `code=${code}`]).replace(/^=>\s*/, ''))
+function evalInObsidian(code: string): unknown {
+  const parsed: unknown = JSON.parse(obsidian(['eval', `code=${code}`]).replace(/^=>\s*/, ''))
+  return parsed
 }
 
-function listConflictCopies(vaultPath, basename) {
+function listConflictCopies(vaultPath: string, basename: string): string[] {
   return readdirSync(vaultPath)
     .filter((name) => name.startsWith(`${basename} (kuroflare conflict `) && name.endsWith('.md'))
     .sort()
 }
 
-async function waitForNewConflictCopy(vaultPath, basename, before) {
+async function waitForNewConflictCopy(
+  vaultPath: string,
+  basename: string,
+  before: readonly string[],
+): Promise<{ readonly after: string[]; readonly created: string[] }> {
   const deadline = Date.now() + 5000
   while (Date.now() < deadline) {
     const after = listConflictCopies(vaultPath, basename)
@@ -80,7 +85,7 @@ async function waitForNewConflictCopy(vaultPath, basename, before) {
   return { after, created: after.filter((path) => !before.includes(path)) }
 }
 
-function copyPlugin(vaultPath) {
+function copyPlugin(vaultPath: string): void {
   const targetDir = join(vaultPath, '.obsidian', 'plugins', pluginId)
   mkdirSync(targetDir, { recursive: true })
   for (const file of ['manifest.json', 'versions.json', 'main.js']) {
@@ -233,7 +238,11 @@ if (newConflictCopies.length !== 1) {
     })}`,
   )
 }
-const conflictContent = readFileSync(join(vaultPath, newConflictCopies[0]), 'utf8')
+const newConflictCopy = newConflictCopies[0]
+if (newConflictCopy === undefined) {
+  throw new Error('missing watcher-drop conflict copy')
+}
+const conflictContent = readFileSync(join(vaultPath, newConflictCopy), 'utf8')
 requireIncludes(conflictContent, watcherDropMarker, 'watcher-drop conflict copy')
 
 const errors = obsidian(['dev:errors'])

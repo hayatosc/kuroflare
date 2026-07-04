@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   makeSha256Hex,
   type BlobHeadRequest,
@@ -7,7 +5,7 @@ import {
   type BlobSinglePutUploadResponse,
   type BlobUploadUrlRequest,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { planBlobHeadHttpResponse, planBlobUploadUrlHttpResponse } from './blob'
 

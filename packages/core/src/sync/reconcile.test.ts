@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   canonicalizeVaultPath,
   MetaFileSchema,
@@ -12,7 +10,7 @@ import {
   type MetaFile,
 } from '@kuroflare/core'
 import * as v from 'valibot'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { applyMetaRepair, planDeleteVsEditRepairs, planPathConflictRepairs } from '../index'
 

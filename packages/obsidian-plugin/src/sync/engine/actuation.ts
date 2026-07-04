@@ -387,6 +387,16 @@ export function createSyncRuntimeStartupStepEffectPort(
             startupStepEffect(effect, 'adopt-local-files-after-remote-meta'),
           )
           return
+        case 'publish-local-meta-snapshot':
+          await ports.snapshot.publishLocalMetaSnapshot(
+            startupStepEffect(effect, 'publish-local-meta-snapshot'),
+          )
+          return
+        case 'publish-initial-file-snapshots':
+          await ports.snapshot.publishInitialFileSnapshots(
+            startupStepEffect(effect, 'publish-initial-file-snapshots'),
+          )
+          return
         case 'fetch-remote-meta-snapshot':
           await ports.snapshot.fetchRemoteMetaSnapshot(
             startupStepEffect(effect, 'fetch-remote-meta-snapshot'),
@@ -417,11 +427,6 @@ export function createSyncRuntimeStartupStepEffectPort(
           return
         case 'send-client-hello':
           await ports.websocket.sendClientHello(startupStepEffect(effect, 'send-client-hello'))
-          return
-        case 'enqueue-initial-file-uploads':
-          await ports.outbox.enqueueInitialFileUploads(
-            startupStepEffect(effect, 'enqueue-initial-file-uploads'),
-          )
           return
         case 'send-meta-update':
           await ports.outbox.sendMetaUpdate(startupStepEffect(effect, 'send-meta-update'))

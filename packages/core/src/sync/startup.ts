@@ -9,7 +9,8 @@ export type ClientStartupStep =
   | 'persist-setup-response'
   | 'scan-local-vault'
   | 'create-local-meta-ydoc'
-  | 'enqueue-initial-file-uploads'
+  | 'publish-local-meta-snapshot'
+  | 'publish-initial-file-snapshots'
   | 'send-meta-update'
   | 'fetch-remote-meta-snapshot'
   | 'apply-remote-meta-snapshot'
@@ -97,7 +98,8 @@ const BOOTSTRAP_NEW_VAULT_STEPS = [
   'persist-setup-response',
   'scan-local-vault',
   'create-local-meta-ydoc',
-  'enqueue-initial-file-uploads',
+  'publish-local-meta-snapshot',
+  'publish-initial-file-snapshots',
   'send-meta-update',
   'open-websocket',
 ] as const satisfies readonly ClientStartupStep[]

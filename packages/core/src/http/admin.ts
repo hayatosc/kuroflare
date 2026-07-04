@@ -127,6 +127,42 @@ export type QuarantinedUpdateActionRequest = v.InferInput<
   typeof QuarantinedUpdateActionRequestSchema
 >
 
+export const QuarantinedUpdateActionHttpRequestSchema = v.union([
+  v.object({
+    mode: v.literal('dry-run'),
+    confirmationToken: v.optional(v.never()),
+    reason: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_ADMIN_REASON_LENGTH))),
+  }),
+  v.object({
+    mode: v.literal('execute'),
+    confirmationToken: v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(MAX_CONFIRMATION_TOKEN_LENGTH),
+    ),
+    reason: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_ADMIN_REASON_LENGTH))),
+  }),
+])
+export type QuarantinedUpdateActionHttpRequest = v.InferInput<
+  typeof QuarantinedUpdateActionHttpRequestSchema
+>
+
+export const QuarantinedUpdateActionDryRunResponseSchema = v.object({
+  action: v.union([v.literal('discard'), v.literal('force-apply')]),
+  id: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_QUARANTINED_UPDATE_ID_LENGTH)),
+  mode: v.literal('dry-run'),
+  confirmationRequired: v.literal(true),
+  confirmationToken: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_CONFIRMATION_TOKEN_LENGTH)),
+  effects: v.pipe(
+    v.array(AdminOperationEffectSchema),
+    v.minLength(1),
+    v.maxLength(MAX_ADMIN_EFFECTS),
+  ),
+})
+export type QuarantinedUpdateActionDryRunResponse = v.InferInput<
+  typeof QuarantinedUpdateActionDryRunResponseSchema
+>
+
 export const QuarantinedUpdateActionResponseSchema = v.object({
   action: v.union([v.literal('discard'), v.literal('force-apply')]),
   id: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_QUARANTINED_UPDATE_ID_LENGTH)),
@@ -139,4 +175,12 @@ export const QuarantinedUpdateActionResponseSchema = v.object({
 })
 export type QuarantinedUpdateActionResponse = v.InferInput<
   typeof QuarantinedUpdateActionResponseSchema
+>
+
+export const QuarantinedUpdateActionHttpResponseSchema = v.union([
+  QuarantinedUpdateActionDryRunResponseSchema,
+  QuarantinedUpdateActionResponseSchema,
+])
+export type QuarantinedUpdateActionHttpResponse = v.InferInput<
+  typeof QuarantinedUpdateActionHttpResponseSchema
 >

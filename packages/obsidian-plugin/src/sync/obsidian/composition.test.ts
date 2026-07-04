@@ -1,11 +1,11 @@
-import assert from 'node:assert/strict'
-
 import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type ClientStartupLocalState } from '@kuroflare/core'
 import { makeDeviceId, makeVaultId } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   type SyncRuntimeLocalStoreEffectPort,
+  type SyncRuntimeLocalStoreRebuildEffectPort,
+  type SyncRuntimeSetupExchangePort,
   type SyncRuntimeStartupStepEffectPort,
 } from '../engine/actuation'
 import { createSyncRuntimeObsidianComposition } from '../obsidian/composition'
@@ -78,7 +78,9 @@ test('Obsidian runtime composition wires startup evidence through the lifecycle'
       },
     },
     ui,
+    setupExchange: new NoopSetupExchangePort(),
     localStore: new NoopLocalStoreEffectPort(),
+    localStoreRebuild: new NoopLocalStoreRebuildEffectPort(),
     startupStep,
   })
 
@@ -99,66 +101,6 @@ test('Obsidian runtime composition wires startup evidence through the lifecycle'
   assert.equal(ui.statusTexts.at(-1), 'Kuroflare: starting / queues running')
 })
 
-test('Obsidian runtime composition fails fast for unwired startup ports', async () => {
-  const ui = new RecordingUiPort()
-  const composition = createSyncRuntimeObsidianComposition({
-    settings: {
-      async readSettings() {
-        return {}
-      },
-    },
-    local: {
-      async readLocalEvidence() {
-        return {
-          metadataSnapshot: {
-            ok: true,
-            snapshot: {
-              setup: {
-                endpoint: 'https://sync.example.test',
-                vaultId,
-                deviceId,
-                yClientId: 1,
-                protocolVersion: 1,
-                bootstrapMode: 'join-existing',
-                tokenVersion: 1,
-              },
-              auth: {
-                deviceId,
-                tokenVersion: 1,
-                authState: 'active',
-                accessTokenSecretKey: 'kuroflare/access',
-                refreshTokenSecretKey: 'kuroflare/refresh',
-                accessTokenExpiresAt: 10_000,
-                refreshState: 'idle',
-                retryCount: 0,
-              },
-            },
-          },
-          localStoreEvidence: {
-            ok: true,
-            evidence: {
-              dbExists: true,
-              currentVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
-              presentStores: DEFAULT_LOCAL_STORE_OBJECT_STORES,
-              pendingOutboxCount: 0,
-            },
-          },
-          hasMetaYDoc: true,
-          hasLocalVaultFiles: true,
-        }
-      },
-    },
-    ui,
-  })
-
-  const result = await composition.lifecycle.runStartupTick()
-
-  assert.equal(result.driver.executedStartupStepCount, 0)
-  assert.equal(result.driver.state.shell.status, 'rejected')
-  assert.equal(result.driver.state.shell.statusReason, 'startup-step-failed')
-  assert.equal(ui.statusTexts.at(-1), 'Kuroflare: rejected / queues stopped (rejected)')
-})
-
 class RecordingStartupStepPort implements SyncRuntimeStartupStepEffectPort {
   readonly effects: Parameters<SyncRuntimeStartupStepEffectPort['run']>[0][] = []
 
@@ -169,6 +111,20 @@ class RecordingStartupStepPort implements SyncRuntimeStartupStepEffectPort {
 
 class NoopLocalStoreEffectPort implements SyncRuntimeLocalStoreEffectPort {
   async runOpenEffect(): Promise<void> {}
+}
+
+class NoopSetupExchangePort implements SyncRuntimeSetupExchangePort {
+  async run(): Promise<never> {
+    throw new Error('setup-exchange-should-not-run')
+  }
+
+  snapshot(): ReturnType<SyncRuntimeSetupExchangePort['snapshot']> {
+    return { completed: [] }
+  }
+}
+
+class NoopLocalStoreRebuildEffectPort implements SyncRuntimeLocalStoreRebuildEffectPort {
+  async rerunStartup(): Promise<void> {}
 }
 
 class RecordingUiPort implements SyncRuntimeObsidianShellUiPort {

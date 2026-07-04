@@ -1,7 +1,5 @@
-import assert from 'node:assert/strict'
-
 import { makeDeviceId, makeVaultId } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { type SetupExchangeCredentialPlan } from '../devices'
 import { planSetupExchangeHttpResponse } from './setup'

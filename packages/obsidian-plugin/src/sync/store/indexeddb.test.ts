@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
   makeOutboxPlanItemId,
@@ -15,7 +13,7 @@ import {
   makeYDocId,
   type DocId,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, expect, test } from 'vitest'
 
 import { planOutboundQueueAckCompletion, planOutboundQueueSuccessCompletion } from '../engine/queue'
 import {
@@ -100,6 +98,9 @@ test('local store indexeddb adapter applies open effects and creates requested s
   })
 
   assert.equal(plan.ok, true)
+  if (!plan.ok || plan.kind !== 'open-database') {
+    throw new Error(`unexpected indexeddb open plan: ${JSON.stringify(plan)}`)
+  }
   assert.equal(plan.kind, 'open-database')
   assert.deepEqual(plan.createdStores, DEFAULT_LOCAL_STORE_OBJECT_STORES)
   assert.deepEqual(factory.operations, [
@@ -123,6 +124,9 @@ test('local store indexeddb adapter skips existing stores during upgrades', asyn
   })
 
   assert.equal(plan.ok, true)
+  if (!plan.ok || plan.kind !== 'open-database') {
+    throw new Error(`unexpected indexeddb open plan: ${JSON.stringify(plan)}`)
+  }
   assert.equal(plan.kind, 'open-database')
   assert.deepEqual(plan.createdStores, ['running-leases'])
   assert.deepEqual(factory.database.createdStores, ['running-leases'])
@@ -610,14 +614,13 @@ test('local store indexeddb database transaction rejects aborted commits', async
   assert.equal(completion.ok, true)
 
   if (completion.ok) {
-    await assert.rejects(
+    await expect(
       async () =>
         await commitLocalStoreIndexedDbDatabaseTransaction({
           operations: planLocalStoreAckCompletionTransaction(completion),
           database,
         }),
-      { message: 'fake transaction aborted' },
-    )
+    ).rejects.toThrow(/fake transaction aborted/)
     assert.equal(database.lifecycle.aborted, true)
   }
 })

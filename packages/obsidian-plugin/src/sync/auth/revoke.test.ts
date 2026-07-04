@@ -1,8 +1,6 @@
-import assert from 'node:assert/strict'
-
 import { type ClientAuthMetadata } from '@kuroflare/core'
 import { makeDeviceId, type RevokeDeviceResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   createAuthRevokeIndexedDbMetadataPort,

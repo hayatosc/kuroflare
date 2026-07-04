@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import { type ClientAuthMetadata } from '@kuroflare/core'
 import {
   DEVICE_TOKEN_ISSUER,
@@ -9,7 +7,7 @@ import {
   type DeviceTokenRefreshRequest,
   type DeviceTokenScope,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   createAuthRefreshIndexedDbMetadataPort,

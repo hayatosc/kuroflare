@@ -1,8 +1,8 @@
-import assert from 'node:assert/strict'
-
 import {
   LOCAL_OUTBOX_REPAIR_EXPORT_FORMAT,
   LOCAL_OUTBOX_REPAIR_EXPORT_VERSION,
+  LocalOutboxRepairEvidenceRequestSchema,
+  LocalOutboxRepairEvidenceResponseSchema,
   makeDeviceId,
   makeMessageId,
   makeSha256Hex,
@@ -11,7 +11,8 @@ import {
   type DocId,
   type LocalOutboxRepairExport,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import * as v from 'valibot'
+import { assert, test } from 'vitest'
 
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
@@ -302,6 +303,32 @@ test('local store repair handles empty outbox and invalid repair evidence', () =
       now: 1,
     }),
     { action: 'reject', reason: 'invalid-pending-outbox-count' },
+  )
+})
+
+test('local outbox repair evidence protocol guards request and response payloads', () => {
+  const request = {
+    items: [{ docId: fileDocId, messageId, updateSha256: firstHash }],
+  }
+  assert.equal(v.is(LocalOutboxRepairEvidenceRequestSchema, request), true)
+  assert.equal(
+    v.is(LocalOutboxRepairEvidenceRequestSchema, {
+      items: [{ docId: fileDocId, updateSha256: firstHash }],
+    }),
+    false,
+  )
+
+  const response = {
+    durableMessages: [{ docId: fileDocId, messageId, durableSeq: 1 }],
+    quarantinedMessages: [{ docId: fileDocId, messageId, updateSha256: firstHash }],
+  }
+  assert.equal(v.is(LocalOutboxRepairEvidenceResponseSchema, response), true)
+  assert.equal(
+    v.is(LocalOutboxRepairEvidenceResponseSchema, {
+      durableMessages: [{ docId: fileDocId, messageId, durableSeq: -1 }],
+      quarantinedMessages: [],
+    }),
+    false,
   )
 })
 

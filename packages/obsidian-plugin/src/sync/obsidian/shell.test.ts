@@ -1,12 +1,10 @@
-import assert from 'node:assert/strict'
-
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
   type ClientStartupLocalState,
   type ClientStartupStep,
 } from '@kuroflare/core'
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   createSyncRuntimeSetupExchangePort,
@@ -437,7 +435,8 @@ test('Obsidian shell driver transport tick runs setup exchange, local-store gate
       'persist-setup-response',
       'scan-local-vault',
       'create-local-meta-ydoc',
-      'enqueue-initial-file-uploads',
+      'publish-local-meta-snapshot',
+      'publish-initial-file-snapshots',
       'send-meta-update',
       'open-websocket',
     ],

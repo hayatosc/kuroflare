@@ -1,6 +1,6 @@
-import assert from 'node:assert/strict'
-
 import {
+  buildBinaryDownloadOutboxPlan,
+  buildBinaryUploadOutboxPlan,
   makeOutboxPlanItemId,
   type OutboxPlanItemId,
   type OutboxSchedulerItem,
@@ -16,7 +16,7 @@ import {
   type BlobManifest,
   type DocId,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { planOutboundQueueTick } from '../engine/queue'
 import {
@@ -325,6 +325,9 @@ test('outbox worker preserves scheduler validation failures', () => {
     maxStarts: 1,
     authRefreshState: { status: 'idle' },
   })
+  if (tick.ok) {
+    throw new Error('expected duplicate item IDs to reject scheduler tick')
+  }
 
   assert.deepEqual(
     planOutboxWorkerTick({
@@ -975,6 +978,216 @@ test('outbox worker plans materialize side effects from manifest and cache evide
   }
 })
 
+test('outbox worker allows materialize without a CAS base for missing local files', () => {
+  const lease = runningLease(pausedId, 'materialize', 'worker-1', 31_000)
+  const manifest = blobManifest()
+  const record = {
+    ...outboxRecord(pausedId, 'materialize', 'retrying'),
+    fileId,
+    expectedHash: manifest.contentSha256,
+    targetPath: 'Assets/payload.bin',
+    blobManifest: manifest,
+    materializeChunks: [
+      { sha256: updateHash, localCacheKey: 'blob-cache/chunk-1', size: 64 },
+      { sha256: secondChunkHash, localCacheKey: 'blob-cache/chunk-2', size: 59 },
+    ],
+  } satisfies LocalStoreOutboxRecord
+
+  const plan = planOutboxWorkerSideEffect({
+    effect: {
+      kind: 'start-side-effect',
+      start: { id: pausedId, kind: 'materialize', lane: 'materialize' },
+      lease,
+    },
+    record,
+    endpoint: '',
+    accessToken: undefined,
+  })
+
+  assert.equal(plan.ok, true)
+  if (plan.ok && plan.action === 'materialize') {
+    assert.equal(plan.diskCas.lastMaterialized, undefined)
+  }
+})
+
+test('outbox worker preserves one binary manifest across plugin upload and download side effects', () => {
+  const manifest = blobManifest()
+  const upload = buildBinaryUploadOutboxPlan({
+    fileId,
+    blobManifestHash: manifestHash,
+    chunks: [
+      {
+        id: outboxId('binary-flow-upload-chunk-1'),
+        sha256: updateHash,
+        localCacheKey: 'blob-cache/chunk-1',
+        size: 64,
+      },
+      {
+        id: outboxId('binary-flow-upload-chunk-2'),
+        sha256: secondChunkHash,
+        localCacheKey: 'blob-cache/chunk-2',
+        size: 59,
+      },
+    ],
+    manifestPutId: outboxId('binary-flow-upload-manifest'),
+    metaRefUpdateId: outboxId('binary-flow-upload-meta-ref'),
+  })
+  assert.equal(upload.ok, true)
+
+  const download = buildBinaryDownloadOutboxPlan({
+    fileId,
+    expectedHash: manifest.contentSha256,
+    chunks: manifest.chunks.map((chunk, index) => ({
+      id: outboxId(`binary-flow-download-chunk-${index.toString(36)}`),
+      sha256: chunk.sha256,
+      localCacheKey: `blob-cache/${chunk.sha256}`,
+      size: chunk.size,
+    })),
+    materializeId: outboxId('binary-flow-download-materialize'),
+  })
+  assert.equal(download.ok, true)
+  if (!upload.ok || !download.ok) {
+    return
+  }
+  const uploadChunkPutId = upload.plan.chunkPuts[0]
+  const downloadChunkGetId = download.plan.chunkGets[0]
+  assert.notEqual(uploadChunkPutId, undefined)
+  assert.notEqual(downloadChunkGetId, undefined)
+  if (uploadChunkPutId === undefined || downloadChunkGetId === undefined) {
+    return
+  }
+
+  const uploadChunkPut = planOutboxWorkerSideEffect({
+    effect: {
+      kind: 'start-side-effect',
+      start: { id: uploadChunkPutId, kind: 'blob-put', lane: 'blob-transfer' },
+      lease: runningLease(uploadChunkPutId, 'blob-put', 'worker-1', 31_000),
+    },
+    record: {
+      ...outboxRecord(uploadChunkPutId, 'blob-put', 'retrying'),
+      fileId,
+      blobSha256: updateHash,
+      localCacheKey: 'blob-cache/chunk-1',
+      blobSize: 64,
+    },
+    endpoint: 'https://sync.example.test',
+    accessToken: 'access-token',
+  })
+  const uploadManifestPut = planOutboxWorkerSideEffect({
+    effect: {
+      kind: 'start-side-effect',
+      start: { id: upload.plan.manifestPut, kind: 'manifest-put', lane: 'blob-transfer' },
+      lease: runningLease(upload.plan.manifestPut, 'manifest-put', 'worker-1', 31_000),
+    },
+    record: {
+      ...outboxRecord(upload.plan.manifestPut, 'manifest-put', 'retrying'),
+      fileId,
+      blobManifestHash: manifestHash,
+      blobManifest: manifest,
+    },
+    endpoint: 'https://sync.example.test',
+    accessToken: 'access-token',
+  })
+  const uploadMetaRef = planOutboxWorkerSideEffect({
+    effect: {
+      kind: 'start-side-effect',
+      start: { id: upload.plan.metaRefUpdate, kind: 'meta-ref-update', lane: 'sync-control' },
+      lease: runningLease(upload.plan.metaRefUpdate, 'meta-ref-update', 'worker-1', 31_000),
+    },
+    record: {
+      ...outboxRecord(upload.plan.metaRefUpdate, 'meta-ref-update', 'retrying'),
+      fileId,
+      docId: metaDocId,
+      messageId,
+      updateSha256: updateHash,
+      updateBytesBase64: 'AQID',
+      blobManifestHash: manifestHash,
+      blobManifest: manifest,
+    },
+    endpoint: '',
+    accessToken: undefined,
+  })
+  const downloadChunkGet = planOutboxWorkerSideEffect({
+    effect: {
+      kind: 'start-side-effect',
+      start: {
+        id: downloadChunkGetId,
+        kind: 'blob-get',
+        lane: 'blob-transfer',
+      },
+      lease: runningLease(downloadChunkGetId, 'blob-get', 'worker-1', 31_000),
+    },
+    record: {
+      ...outboxRecord(downloadChunkGetId, 'blob-get', 'retrying'),
+      fileId,
+      blobSha256: updateHash,
+      localCacheKey: `blob-cache/${updateHash}`,
+      blobSize: 64,
+    },
+    endpoint: 'https://sync.example.test',
+    accessToken: 'access-token',
+  })
+  const downloadMaterialize = planOutboxWorkerSideEffect({
+    effect: {
+      kind: 'start-side-effect',
+      start: { id: download.plan.materialize, kind: 'materialize', lane: 'materialize' },
+      lease: runningLease(download.plan.materialize, 'materialize', 'worker-1', 31_000),
+    },
+    record: {
+      ...outboxRecord(download.plan.materialize, 'materialize', 'retrying'),
+      fileId,
+      expectedHash: manifest.contentSha256,
+      targetPath: 'Assets/payload.bin',
+      blobManifestHash: manifestHash,
+      blobManifest: manifest,
+      materializeChunks: manifest.chunks.map((chunk) => ({
+        sha256: chunk.sha256,
+        localCacheKey: `blob-cache/${chunk.sha256}`,
+        size: chunk.size,
+      })),
+    },
+    endpoint: '',
+    accessToken: undefined,
+  })
+
+  assert.equal(uploadChunkPut.ok, true)
+  assert.equal(uploadManifestPut.ok, true)
+  assert.equal(uploadMetaRef.ok, true)
+  assert.equal(downloadChunkGet.ok, true)
+  assert.equal(downloadMaterialize.ok, true)
+  if (
+    uploadChunkPut.ok &&
+    uploadChunkPut.action === 'blob-put' &&
+    uploadManifestPut.ok &&
+    uploadManifestPut.action === 'manifest-put' &&
+    uploadMetaRef.ok &&
+    uploadMetaRef.action === 'meta-ref-update' &&
+    downloadChunkGet.ok &&
+    downloadChunkGet.action === 'blob-get' &&
+    downloadMaterialize.ok &&
+    downloadMaterialize.action === 'materialize'
+  ) {
+    assert.deepEqual(uploadManifestPut.putManifestRequest.bodyJson, manifest)
+    assert.deepEqual(uploadMetaRef.binaryRef, {
+      blobManifestHash: manifestHash,
+      blobChunks: [updateHash, secondChunkHash],
+    })
+    assert.equal(
+      downloadChunkGet.downloadRequest.url,
+      `https://sync.example.test/blobs/${updateHash}`,
+    )
+    assert.deepEqual(downloadMaterialize.readChunks, [
+      { sha256: updateHash, key: `blob-cache/${updateHash}`, expectedSize: 64 },
+      { sha256: secondChunkHash, key: `blob-cache/${secondChunkHash}`, expectedSize: 59 },
+    ])
+    assert.equal(downloadMaterialize.assemble.expectedContentSha256, manifest.contentSha256)
+    assert.deepEqual(downloadMaterialize.writeVaultFile, {
+      path: 'Assets/payload.bin',
+      bodySource: 'assembled-blob',
+    })
+  }
+})
+
 test('outbox worker rejects unsafe materialize side effects before disk I/O', () => {
   const lease = runningLease(pausedId, 'materialize', 'worker-1', 31_000)
   const manifest = blobManifest()
@@ -1018,15 +1231,6 @@ test('outbox worker rejects unsafe materialize side effects before disk I/O', ()
       accessToken: undefined,
     }),
     { ok: false, reason: 'invalid-target-path' },
-  )
-  assert.deepEqual(
-    planOutboxWorkerSideEffect({
-      effect,
-      record: { ...validRecord, lastMaterialized: undefined },
-      endpoint: '',
-      accessToken: undefined,
-    }),
-    { ok: false, reason: 'missing-last-materialized' },
   )
   assert.deepEqual(
     planOutboxWorkerSideEffect({

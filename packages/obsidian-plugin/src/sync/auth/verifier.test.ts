@@ -1,12 +1,10 @@
-import assert from 'node:assert/strict'
-
 import {
   makeDeviceId,
   makeVaultId,
   signHs256DeviceToken,
   type DeviceTokenClaims,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { createHs256AccessTokenVerifier } from '../auth/verifier'
 

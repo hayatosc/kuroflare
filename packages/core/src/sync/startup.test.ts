@@ -1,7 +1,5 @@
-import assert from 'node:assert/strict'
-
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { planClientStartup, type ClientStartupLocalState } from '../sync/startup'
 
@@ -52,7 +50,8 @@ test('client startup plans new vault bootstrap without remote meta adoption', ()
         'persist-setup-response',
         'scan-local-vault',
         'create-local-meta-ydoc',
-        'enqueue-initial-file-uploads',
+        'publish-local-meta-snapshot',
+        'publish-initial-file-snapshots',
         'send-meta-update',
         'open-websocket',
       ],

@@ -294,6 +294,35 @@ export interface SyncRuntimeWebSocketOutboxSendPort {
   ): Promise<SyncRuntimeWebSocketOutboxSendPlan>
 }
 
+/** Input for planning one outbound sync-request WebSocket frame from local YDoc state. */
+export interface SyncRuntimeWebSocketSyncRequestSendInput {
+  readonly vaultId: VaultId
+  readonly deviceId: DeviceId
+  readonly messageId: SyncRequest['messageId']
+  readonly docId: DocId
+  readonly stateVector: Uint8Array
+}
+
+/** Result of turning local state-vector evidence into one sync-request frame. */
+export interface SyncRuntimeWebSocketSyncRequestSendPlan {
+  readonly ok: true
+  readonly message: SyncRequest
+  readonly frame: string
+}
+
+/** Input for creating an outbound sync-request WebSocket sender. */
+export interface SyncRuntimeWebSocketSyncRequestSendPortInput {
+  readonly session: SyncRuntimeWebSocketSessionPort
+}
+
+/** Port used by startup/resume runtime code to request peer sync state. */
+export interface SyncRuntimeWebSocketSyncRequestSendPort {
+  /** Sends one sync-request control frame for the given document state vector. */
+  sendSyncRequest(
+    input: SyncRuntimeWebSocketSyncRequestSendInput,
+  ): Promise<SyncRuntimeWebSocketSyncRequestSendPlan>
+}
+
 /** Verified peer sync-update payload accepted for local YDoc application. */
 export interface SyncRuntimeWebSocketRemoteUpdateApplyInput {
   readonly message: SyncUpdate

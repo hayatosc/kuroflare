@@ -1,7 +1,5 @@
-import assert from 'node:assert/strict'
-
 import { makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   decodeFullSnapshotBytesFromResponse,
@@ -36,6 +34,9 @@ test('full snapshot bytes decode and verify response update payloads', async () 
   })
 
   assert.equal(result.ok, true)
+  if (!result.ok) {
+    throw new Error(`unexpected snapshot bytes rejection: ${result.reason}`)
+  }
   assert.deepEqual(result.updateBytes, new TextEncoder().encode('abc'))
   assert.deepEqual(result.stateVectorBytes, Uint8Array.from([1, 2, 3]))
   assert.equal(result.actualUpdateSha256, abcHash)

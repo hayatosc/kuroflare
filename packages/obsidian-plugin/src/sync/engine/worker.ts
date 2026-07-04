@@ -599,9 +599,6 @@ function planOutboxWorkerMaterializeSideEffect(
   if (record.blobManifest === undefined) {
     return { ok: false, reason: 'missing-blob-manifest' }
   }
-  if (record.lastMaterialized === undefined) {
-    return { ok: false, reason: 'missing-last-materialized' }
-  }
   if (record.blobManifest.fileId !== record.fileId) {
     return { ok: false, reason: 'manifest-file-mismatch' }
   }

@@ -1,8 +1,14 @@
-import assert from 'node:assert/strict'
-
-import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type LocalStoreObjectStore } from '@kuroflare/core'
-import { makeVaultId } from '@kuroflare/core'
-import { test } from 'vitest'
+import {
+  DEFAULT_LOCAL_STORE_OBJECT_STORES,
+  makeMessageId,
+  makeOutboxPlanItemId,
+  makeSha256Hex,
+  makeVaultId,
+  makeYDocId,
+  type DocId,
+  type LocalStoreObjectStore,
+} from '@kuroflare/core'
+import { assert, test } from 'vitest'
 
 import {
   readLocalStoreIndexedDbSchemaEvidence,
@@ -14,6 +20,7 @@ import {
   type LocalStoreIndexedDbSchemaProbeFactoryPort,
   type LocalStoreIndexedDbSchemaProbeTransactionPort,
 } from '../store/indexeddb'
+import { buildLocalStoreRepairExport, planLocalStoreRepair } from '../store/repair'
 import {
   LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
   localStoreIndexedDbName,
@@ -22,6 +29,7 @@ import {
 
 const vaultId = makeVaultId('schema-evidence-vault-1')
 const dbName = localStoreIndexedDbName(vaultId)
+const now = 1_700_000_000_000
 
 test('local store indexeddb schema evidence probe returns missing database evidence without opening', async () => {
   const factory = new FakeSchemaProbeFactory([])
@@ -96,6 +104,133 @@ test('local store indexeddb schema evidence probe treats missing outbox as not p
         { kind: 'hold-degraded', dbName, reason: 'missing-required-store-with-pending-outbox' },
       ],
     })
+  }
+})
+
+test('local store repair uses fake indexeddb evidence before rebuild or discard', async () => {
+  const stores = DEFAULT_LOCAL_STORE_OBJECT_STORES.filter((store) => store !== 'metadata')
+  const factory = new FakeSchemaProbeFactory([
+    {
+      name: dbName,
+      database: new FakeSchemaProbeDatabase({
+        version: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+        stores,
+        outboxCount: 2,
+      }),
+    },
+  ])
+
+  const evidence = await readLocalStoreIndexedDbSchemaEvidence({ dbName, indexedDb: factory })
+  assert.equal(evidence.ok, true)
+
+  if (evidence.ok) {
+    const schemaPlan = planLocalStoreIndexedDbOpen({ vaultId, ...evidence.evidence })
+    assert.equal(schemaPlan.ok, false)
+    assert.equal(schemaPlan.startupGate, 'degraded')
+
+    if (!schemaPlan.ok && schemaPlan.startupGate === 'degraded') {
+      const exportPlan = planLocalStoreRepair({
+        vaultId,
+        schemaDecision: schemaPlan.decision,
+        request: 'export-pending-outbox',
+        pendingOutboxCount: evidence.evidence.pendingOutboxCount,
+        exportCompleted: false,
+        discardConfirmed: false,
+        now,
+      })
+      assert.deepEqual(exportPlan, {
+        ok: true,
+        action: 'export-pending-outbox',
+        dbName,
+        decision: {
+          action: 'export-pending-outbox',
+          exportName: 'kuroflare-local-outbox-1700000000000.json',
+          includeOutbox: true,
+          includeMetadata: true,
+        },
+        effects: [
+          {
+            kind: 'write-repair-export',
+            path: '.obsidian/kuroflare/repair-exports/kuroflare-local-outbox-1700000000000.json',
+            includeOutbox: true,
+            includeMetadata: true,
+          },
+        ],
+      })
+
+      assert.deepEqual(
+        planLocalStoreRepair({
+          vaultId,
+          schemaDecision: schemaPlan.decision,
+          request: 'rebuild-after-export',
+          pendingOutboxCount: evidence.evidence.pendingOutboxCount,
+          exportCompleted: false,
+          discardConfirmed: false,
+          now,
+        }),
+        {
+          ok: false,
+          action: 'reject',
+          dbName,
+          decision: { action: 'reject', reason: 'export-required' },
+          effects: [{ kind: 'reject-repair', reason: 'export-required' }],
+        },
+      )
+
+      assert.deepEqual(
+        planLocalStoreRepair({
+          vaultId,
+          schemaDecision: schemaPlan.decision,
+          request: 'discard-and-rebuild',
+          pendingOutboxCount: evidence.evidence.pendingOutboxCount,
+          exportCompleted: false,
+          discardConfirmed: false,
+          now,
+        }),
+        {
+          ok: false,
+          action: 'reject',
+          dbName,
+          decision: { action: 'reject', reason: 'discard-confirmation-required' },
+          effects: [{ kind: 'reject-repair', reason: 'discard-confirmation-required' }],
+        },
+      )
+
+      const itemId = makeOutboxPlanItemId('fake-indexeddb-evidence-outbox-1')
+      assert(itemId !== null)
+      const fileDocId = { kind: 'file', ydocId: makeYDocId('fake-indexeddb-doc-1') } satisfies DocId
+      const repairExport = buildLocalStoreRepairExport({
+        exportedAt: now,
+        vaultId,
+        metadata: {
+          localStoreVersion: evidence.evidence.currentVersion ?? 0,
+          targetStoreVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+          degradedReason: schemaPlan.decision.reason,
+        },
+        outboxRecords: [
+          {
+            id: itemId,
+            kind: 'y-update',
+            status: 'pending',
+            dependsOn: [],
+            createdAt: 100,
+            docId: fileDocId,
+            messageId: makeMessageId('fake-indexeddb-message-1'),
+            updateSha256: makeSha256Hex('d'.repeat(64)),
+            updateBytesBase64: 'AQID',
+          },
+        ],
+      })
+
+      assert.equal(repairExport.ok, true)
+      if (repairExport.ok) {
+        assert.deepEqual(repairExport.exportFile.metadata, {
+          localStoreVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+          targetStoreVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+          degradedReason: 'missing-required-store-with-pending-outbox',
+        })
+      }
+    }
   }
 })
 

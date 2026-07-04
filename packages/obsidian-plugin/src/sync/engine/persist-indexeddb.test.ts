@@ -1,7 +1,5 @@
-import assert from 'node:assert/strict'
-
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   LOCAL_AUTH_METADATA_KEY,
@@ -44,22 +42,28 @@ test('setup persist metadata puts map to metadata object-store writes', () => {
   })
   assert.equal(plan.ok, true)
 
-  if (plan.ok) {
-    assert.deepEqual(planLocalStoreIndexedDbMetadataWrites(plan.metadataPuts), [
-      {
-        kind: 'put',
-        storeName: 'metadata',
-        key: LOCAL_SETUP_METADATA_KEY,
-        value: plan.metadataPuts[0]?.value,
-      },
-      {
-        kind: 'put',
-        storeName: 'metadata',
-        key: LOCAL_AUTH_METADATA_KEY,
-        value: plan.metadataPuts[1]?.value,
-      },
-    ])
+  if (!plan.ok) {
+    throw new Error(`unexpected setup persist rejection: ${plan.reason}`)
   }
+  const setupPut = plan.metadataPuts[0]
+  const authPut = plan.metadataPuts[1]
+  if (setupPut === undefined || authPut === undefined) {
+    throw new Error('setup persist plan did not include both metadata puts')
+  }
+  assert.deepEqual(planLocalStoreIndexedDbMetadataWrites(plan.metadataPuts), [
+    {
+      kind: 'put',
+      storeName: 'metadata',
+      key: LOCAL_SETUP_METADATA_KEY,
+      value: setupPut.value,
+    },
+    {
+      kind: 'put',
+      storeName: 'metadata',
+      key: LOCAL_AUTH_METADATA_KEY,
+      value: authPut.value,
+    },
+  ])
 })
 
 test('setup persist metadata writes are applied in order without token bodies', async () => {
@@ -136,37 +140,46 @@ test('setup persist metadata snapshot reads setup and auth records before startu
   })
   assert.equal(plan.ok, true)
 
-  if (plan.ok) {
-    const database = new FakeMetadataDatabasePort()
-    const writes = planLocalStoreIndexedDbMetadataWrites(plan.metadataPuts)
-    const committed = commitLocalStoreIndexedDbMetadataTransaction({ database, writes })
-    database.transaction.store.succeedAll()
-    database.transaction.lifecycle.complete()
-    await committed
-
-    const read = readLocalStoreIndexedDbMetadataSnapshot({ database })
-    let completed = false
-    void read.then(() => {
-      completed = true
-    })
-
-    assert.deepEqual(database.transaction.store.readKeys, [
-      LOCAL_SETUP_METADATA_KEY,
-      LOCAL_AUTH_METADATA_KEY,
-    ])
-    database.transaction.store.succeedAll()
-    await Promise.resolve()
-    assert.equal(completed, false)
-
-    database.transaction.lifecycle.complete()
-    assert.deepEqual(await read, {
-      ok: true,
-      snapshot: {
-        setup: plan.metadataPuts[0]?.value,
-        auth: plan.metadataPuts[1]?.value,
-      },
-    })
+  if (!plan.ok) {
+    throw new Error(`unexpected setup persist rejection: ${plan.reason}`)
   }
+  const setupPut = plan.metadataPuts[0]
+  const authPut = plan.metadataPuts[1]
+  if (setupPut === undefined || authPut === undefined) {
+    throw new Error('setup persist plan did not include both metadata puts')
+  }
+  if (setupPut.key !== LOCAL_SETUP_METADATA_KEY || authPut.key !== LOCAL_AUTH_METADATA_KEY) {
+    throw new Error('setup persist plan metadata puts were not in setup/auth order')
+  }
+  const database = new FakeMetadataDatabasePort()
+  const writes = planLocalStoreIndexedDbMetadataWrites(plan.metadataPuts)
+  const committed = commitLocalStoreIndexedDbMetadataTransaction({ database, writes })
+  database.transaction.store.succeedAll()
+  database.transaction.lifecycle.complete()
+  await committed
+
+  const read = readLocalStoreIndexedDbMetadataSnapshot({ database })
+  let completed = false
+  void read.then(() => {
+    completed = true
+  })
+
+  assert.deepEqual(database.transaction.store.readKeys, [
+    LOCAL_SETUP_METADATA_KEY,
+    LOCAL_AUTH_METADATA_KEY,
+  ])
+  database.transaction.store.succeedAll()
+  await Promise.resolve()
+  assert.equal(completed, false)
+
+  database.transaction.lifecycle.complete()
+  assert.deepEqual(await read, {
+    ok: true,
+    snapshot: {
+      setup: setupPut.value,
+      auth: authPut.value,
+    },
+  })
 })
 
 test('setup persist metadata snapshot rejects missing or invalid records', async () => {

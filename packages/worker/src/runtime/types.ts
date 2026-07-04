@@ -60,6 +60,7 @@ export interface R2BucketBinding {
   head(key: string): Promise<R2ObjectMetadataBinding | null>
   list(options: R2ListOptionsBinding): Promise<R2ObjectsBinding>
   put(key: string, value: Uint8Array): Promise<void>
+  delete(key: string): Promise<void>
 }
 
 /** Minimal R2 object metadata used by blob HEAD planning. */

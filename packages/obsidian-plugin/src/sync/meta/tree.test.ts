@@ -1,7 +1,13 @@
-import assert from 'node:assert/strict'
-
-import { isMetaFile, makeDeviceId, makeFileId, makeYDocId, type MetaFile } from '@kuroflare/core'
-import { test } from 'vitest'
+import {
+  isMetaFile,
+  makeDeviceId,
+  makeFileId,
+  makeSha256Hex,
+  makeYDocId,
+  type BinaryMetaFile,
+  type MetaFile,
+} from '@kuroflare/core'
+import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
 import { reconcileMetaDoc } from '../meta/reconcile'
@@ -81,6 +87,29 @@ test('applyFileRename reports not-found for an unknown path and changes nothing'
   assert.equal(getMeta(map, makeFileId('file-a')).path, 'A.md')
 })
 
+test('applyFileRename preserves binary blob references on the same file ID', () => {
+  const { map } = metaDoc()
+  const fileId = makeFileId('file-a')
+  const manifestHash = makeSha256Hex('a'.repeat(64))
+  const chunkHash = makeSha256Hex('b'.repeat(64))
+  map.set(fileId, binaryMeta(fileId, 'Images/Old.png', manifestHash, [chunkHash], 1))
+
+  const result = applyFileRename(map, {
+    fromPath: 'Images/Old.png',
+    toPath: 'Images/New.png',
+    deviceId: DEVICE_B,
+    now: 2,
+  })
+
+  assert.deepEqual(result, { action: 'renamed', fileId })
+  const entry = getMeta(map, fileId)
+  assert.equal(entry.type, 'binary')
+  assert.equal(entry.path, 'Images/New.png')
+  assert.equal(entry.canonicalPath, 'images/new.png')
+  assert.equal(entry.type === 'binary' && entry.blobManifestHash, manifestHash)
+  assert.deepEqual(entry.type === 'binary' ? entry.blobChunks : [], [chunkHash])
+})
+
 test('applyFileDelete tombstones the entry without removing it', () => {
   const { map } = metaDoc()
   const fileId = makeFileId('file-a')
@@ -99,6 +128,24 @@ test('applyFileDelete tombstones the entry without removing it', () => {
   const entry = getMeta(map, fileId)
   assert.equal(entry.deleted, true)
   assert.equal(entry.deleted === true && entry.deletedAt, 5)
+})
+
+test('applyFileDelete tombstones binary entries without dropping blob references', () => {
+  const { map } = metaDoc()
+  const fileId = makeFileId('file-a')
+  const manifestHash = makeSha256Hex('a'.repeat(64))
+  const chunkHash = makeSha256Hex('b'.repeat(64))
+  map.set(fileId, binaryMeta(fileId, 'Images/A.png', manifestHash, [chunkHash], 1))
+
+  const result = applyFileDelete(map, { path: 'Images/A.png', deviceId: DEVICE_B, now: 5 })
+
+  assert.deepEqual(result, { action: 'deleted', fileId })
+  const entry = getMeta(map, fileId)
+  assert.equal(entry.type, 'binary')
+  assert.equal(entry.deleted, true)
+  assert.equal(entry.deleted === true && entry.deletedAt, 5)
+  assert.equal(entry.type === 'binary' && entry.blobManifestHash, manifestHash)
+  assert.deepEqual(entry.type === 'binary' ? entry.blobChunks : [], [chunkHash])
 })
 
 test('a rename is no longer found at its old path but is found at its new path', () => {
@@ -174,6 +221,32 @@ function snapshot(map: Y.Map<unknown>): Record<string, unknown> {
     out[key] = map.get(key)
   }
   return out
+}
+
+function binaryMeta(
+  fileId: ReturnType<typeof makeFileId>,
+  path: string,
+  blobManifestHash: ReturnType<typeof makeSha256Hex>,
+  blobChunks: readonly ReturnType<typeof makeSha256Hex>[],
+  now: number,
+): BinaryMetaFile {
+  return {
+    schemaVersion: 1,
+    fileId,
+    path,
+    canonicalPath: path.toLowerCase(),
+    type: 'binary',
+    blobManifestHash,
+    blobChunks: [...blobChunks],
+    deleted: false,
+    createdAt: now,
+    createdBy: DEVICE_A,
+    contentUpdatedAt: now,
+    contentUpdatedBy: DEVICE_A,
+    updatedAt: now,
+    updatedBy: DEVICE_A,
+    mtime: now,
+  }
 }
 
 function compareCodeUnit(left: string, right: string): number {

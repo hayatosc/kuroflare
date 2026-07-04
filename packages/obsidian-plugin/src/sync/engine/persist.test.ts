@@ -1,7 +1,5 @@
-import assert from 'node:assert/strict'
-
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   createLocalSetupPersistIndexedDbMetadataPort,
@@ -109,6 +107,9 @@ test('setup persist runtime can commit metadata through the IndexedDB adapter', 
   })
 
   assert.equal(result.ok, true)
+  if (!result.ok) {
+    throw new Error(`unexpected setup persist failure: ${result.phase}`)
+  }
   assert.deepEqual(
     database.transaction.store.operations.map((operation) => operation.key),
     [LOCAL_SETUP_METADATA_KEY, LOCAL_AUTH_METADATA_KEY],
@@ -135,24 +136,24 @@ test('setup persist runtime cleans up completed secrets when metadata commit fai
   })
 
   assert.equal(result.ok, false)
-  if (!result.ok) {
-    assert.equal(result.phase, 'metadata-commit')
-    assert.deepEqual(
-      secretStorage.operations.map((operation) => operation.kind),
-      ['set', 'set', 'delete', 'delete'],
-    )
-    assert.deepEqual(secretStorage.operations.slice(2), [
-      {
-        kind: 'delete',
-        key: 'kuroflare:setup-runtime-vault-1:setup-runtime-device-1:refresh-token',
-      },
-      {
-        kind: 'delete',
-        key: 'kuroflare:setup-runtime-vault-1:setup-runtime-device-1:access-token',
-      },
-    ])
-    assert.deepEqual(result.cleanupFailures, [])
+  if (result.ok || result.phase !== 'metadata-commit') {
+    throw new Error(`unexpected result ${JSON.stringify(result)}`)
   }
+  assert.deepEqual(
+    secretStorage.operations.map((operation) => operation.kind),
+    ['set', 'set', 'delete', 'delete'],
+  )
+  assert.deepEqual(secretStorage.operations.slice(2), [
+    {
+      kind: 'delete',
+      key: 'kuroflare:setup-runtime-vault-1:setup-runtime-device-1:refresh-token',
+    },
+    {
+      kind: 'delete',
+      key: 'kuroflare:setup-runtime-vault-1:setup-runtime-device-1:access-token',
+    },
+  ])
+  assert.deepEqual(result.cleanupFailures, [])
 })
 
 test('setup persist runtime cleans up completed subset when a later secret write fails', async () => {

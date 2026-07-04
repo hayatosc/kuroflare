@@ -1,9 +1,7 @@
 // @vitest-environment jsdom
-import assert from 'node:assert/strict'
-
 import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
-import { afterEach, test } from 'vitest'
+import { assert, afterEach, test } from 'vitest'
 import * as Y from 'yjs'
 
 import {
@@ -12,11 +10,11 @@ import {
   replaceYText,
 } from './editor-binding'
 
-// These tests exercise the real CodeMirror 6 <-> Yjs binding (y-codemirror.next) under jsdom — the
-// spec's §9.1 "highest implementation risk" — without a running Obsidian. They prove the binding
-// surface (createYTextEditorExtension / replaceYText / dispatchFullDocumentReplace) actually keeps a
-// Y.Text and a CodeMirror document in sync in both directions. End-to-end coverage inside the real
-// Obsidian shell is left to obsidian-e2e on a machine with the Obsidian app installed.
+// These tests exercise the real CodeMirror 6 <-> Yjs binding (y-codemirror.next) under jsdom,
+// without a running Obsidian. They prove the binding surface (createYTextEditorExtension /
+// replaceYText / dispatchFullDocumentReplace) actually keeps a Y.Text and a CodeMirror document in
+// sync in both directions. End-to-end coverage inside the real Obsidian shell is left to obsidian-e2e
+// on a machine with the Obsidian app installed.
 
 const views: EditorView[] = []
 

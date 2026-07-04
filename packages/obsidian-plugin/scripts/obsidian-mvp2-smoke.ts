@@ -9,7 +9,28 @@ const pluginId = 'kuroflare'
 const notePath = 'mvp2-note.md'
 const renamedPath = 'mvp2-renamed.md'
 
-function obsidian(args) {
+interface ActiveMetaEntry {
+  readonly fileId: string
+  readonly path: string
+  readonly type: string
+  readonly deleted: boolean
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isActiveMetaEntry(value: unknown): value is ActiveMetaEntry {
+  return (
+    isRecord(value) &&
+    typeof value.fileId === 'string' &&
+    typeof value.path === 'string' &&
+    typeof value.type === 'string' &&
+    typeof value.deleted === 'boolean'
+  )
+}
+
+function obsidian(args: readonly string[]): string {
   return execFileSync('obsidian', args, {
     cwd: packageDir,
     encoding: 'utf8',
@@ -17,17 +38,18 @@ function obsidian(args) {
   }).trim()
 }
 
-function evalInObsidian(code) {
-  return JSON.parse(obsidian(['eval', `code=${code}`]).replace(/^=>\s*/, ''))
+function evalInObsidian(code: string): unknown {
+  const parsed: unknown = JSON.parse(obsidian(['eval', `code=${code}`]).replace(/^=>\s*/, ''))
+  return parsed
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
 }
 
-function copyPlugin(vaultPath) {
+function copyPlugin(vaultPath: string): void {
   const targetDir = join(vaultPath, '.obsidian', 'plugins', pluginId)
   mkdirSync(targetDir, { recursive: true })
   for (const file of ['manifest.json', 'versions.json', 'main.js']) {
@@ -36,8 +58,8 @@ function copyPlugin(vaultPath) {
 }
 
 // Read the active (non-deleted) meta entry for a path, or null. fileId never changes across a rename.
-function readActiveMetaEntry(path) {
-  return evalInObsidian(`(() => {
+function readActiveMetaEntry(path: string): ActiveMetaEntry | null {
+  const value = evalInObsidian(`(() => {
     const plugin = app.plugins.plugins.kuroflare;
     const map = plugin?.metaDoc?.getMap('meta');
     if (!map) return JSON.stringify(null);
@@ -49,9 +71,13 @@ function readActiveMetaEntry(path) {
     }
     return JSON.stringify(null);
   })()`)
+  if (value === null || isActiveMetaEntry(value)) {
+    return value
+  }
+  throw new Error(`invalid active meta entry: ${JSON.stringify(value)}`)
 }
 
-async function waitForActiveMetaEntry(path) {
+async function waitForActiveMetaEntry(path: string): Promise<ActiveMetaEntry | null> {
   const deadline = Date.now() + 5000
   let entry = null
   while (Date.now() < deadline) {
@@ -64,7 +90,7 @@ async function waitForActiveMetaEntry(path) {
   return entry
 }
 
-async function waitForPluginReady() {
+async function waitForPluginReady(): Promise<void> {
   const deadline = Date.now() + 5000
   while (Date.now() < deadline) {
     const ready = evalInObsidian(`(() => {

@@ -80,8 +80,9 @@ remotely-save がロールバックで悩ましいのは「ファイル全体を
 
 ### 3.1 ファイル ID（安定識別子）
 
-- 各ファイルに **UUID（fileId）** を付与。`.obsidian` 配下に `fileId ↔ path` のマッピングを保持。
+- 各ファイルに**衝突耐性のある opaque ID（fileId、生成は UUID v4）**を付与する。`.obsidian` 配下に `fileId ↔ path` のマッピングを保持。
 - パス文字列をキーにしない。**リネームが「削除+作成」に化けて事故るのを防ぐ**最重要ポイント。
+- `fileId` の schema（`FileIdSchema`）は UUID 形式を要求しない汎用 ID パターンで検証する。生成箇所は `crypto.randomUUID()` に統一するが、これは呼び出し規約であって trust boundary の保証ではない。`allocateConflictPath` は `fileId.slice(0,8)` を conflict suffix に使うため、低エントロピー ID が混入すると suffix が衝突しやすくなるが、その場合も §8 継ぎ目 4 の `allocateSuffix` が `-2, -3...` と採番して一意性を担保する設計にする。
 
 ### 3.2 メタ YDoc（ファイルツリー）
 
@@ -172,6 +173,11 @@ type MetaFile =
 - `type="binary"` は lowercase SHA-256 hex の `blobManifestHash` と 1 個以上の `blobChunks` が必須で、`ydocId` を持つ entry は拒否する。
 - `deleted=false` の entry が `deletedAt` / `deletedBy` を持つ場合は拒否する。`deleted=true` のときだけ削除メタデータを許す。
 
+**schemaVersion 移行**: `MetaFile.schemaVersion` は現状 `v.literal(1)` 固定で、version 2 以降を受け付ける経路が無い。version を導入する場合は次の 2 点を先に決めておく。
+
+- 旧 client が未知の `schemaVersion` を持つ entry を受け取った場合、quarantine ではなく read-only 扱いにする。書き込み対象からは外すが、同期対象からは外さず削除・上書きもしない。
+- 新フィールドの追加は同一 `schemaVersion` 内で optional として行う。`schemaVersion` の bump は不変条件（必須フィールドの増減、型の意味変更）が変わる時だけに限る。
+
 ### 3.3 本文 YDoc（テキスト）
 
 - **ファイルごとに別 YDoc**（= 別の論理ルーム）+ ファイルツリー用に 1 つのメタ YDoc。
@@ -185,7 +191,7 @@ type MetaFile =
 - 利点: (1) 大ファイルの 1 箇所変更で変わったチャンクだけ転送、(2) ファイル間でも共通チャンクを自動共有（重複排除）。
 - チャンクは**不変**。一度書かれたら中身が変わらない。
 
-現在の `packages/blob/src/manifest.ts` の `chunkBytes(bytes, options)` は MVP 用の deterministic content-defined chunker で、chunk 先頭からの累積 hash を境界判定に使う。
+現在の `packages/core/src/sync/manifest.ts` の `chunkBytes(bytes, options)` は MVP 用の deterministic content-defined chunker で、chunk 先頭からの累積 hash を境界判定に使う。
 これは Rabin / Gear / FastCDC のような固定幅 window rolling hash ではないため、ファイル前方への挿入では後続境界が大きくずれ、理想的な CDC ほどの重複排除率は出ない。
 ただし manifest / chunk hash / content hash 検証の形式は将来の FastCDC へ差し替え可能な形にしておき、MVP では「全体転送を避ける決定論的分割」と「chunk 不変性」を先に固定する。
 
@@ -225,7 +231,9 @@ R2 のチャンクは content-addressed = **不変**。**不変なものは「�
 3. 取得失敗 → リトライキューへ（チャンクは不変なので何度でも安全に再取得できる）
 ```
 
-`packages/blob` の `assembleBlobBytes(manifest, chunksBySha256)` はこの読み込み側検証の共有実装。missing chunk、chunk size mismatch、chunk hash mismatch、content hash mismatch を区別して `BlobAssemblyError` で返す。Worker/plugin はこの error code を retry / degraded / repair log に変換する。
+`packages/core/src/sync/manifest.ts` の `assembleBlobBytes(manifest, chunksBySha256)` はこの読み込み側検証の共有実装。missing chunk、chunk size mismatch、chunk hash mismatch、content hash mismatch を区別して `BlobAssemblyError` で返す。Worker/plugin はこの error code を retry / degraded / repair log に変換する。
+
+§3.2 の不変条件「`blobChunks` は manifest と一致必須」を Worker は書き込み時にクロスチェックしない。`blobManifestMatchesMetaFile` による一致検証は plugin 側でのみ呼ばれ、Worker の meta schema 検証は構造検証（型・必須フィールド）にとどめる。R2 GET を伴う manifest 突合を meta update のたびに行うコストを避けるための割り切りであり、schema 的に妥当だが manifest と矛盾する `blobChunks` を Worker は受け入れる。矛盾を防ぐのではなく、読み込み側の `assembleBlobBytes` 検証で検出し repair log へ回す方針にする。
 
 一瞬「参照は来たがダウンロード中」が生じるが、不変なので**必ず収束**する。「古いファイルで後勝ち上書き → ロールバック」は起きない（古いチャンクも消えずに残る）。
 
@@ -236,6 +244,8 @@ R2 のチャンクは content-addressed = **不変**。**不変なものは「�
 ### 5.1 基本：物理削除しない
 
 削除はメタ YDoc の **tombstone**（`deleted: true`）で表現。Yjs の因果性で削除操作の順序が保たれ、他クライアントは確実に追従する。ローカルでは実ファイルを消す代わりに **`.trash` へ退避**（Obsidian 標準のゴミ箱と同じ発想）。誤同期で泣かない。
+
+meta YDoc は vault 全ファイルが集約される単一ドキュメントなので、`deleted: true` の entry を無条件に残し続けると、長寿命 vault では削除・rename・repair の履歴で無制限に肥大化する。**tombstone entry の horizon**: blob GC と同じ retention horizon（`gcRetentionWindow >= maxOfflineWindow`）を越えた tombstone entry は、full-snapshot 境界（§9.2 の snapshot rotate と同じタイミング）で Y.Map から物理削除してよい。これは §5.3 の blob GC horizon と同じ考え方であり、削除から `gcRetentionWindow` 以内は「削除 vs 編集」の復活判定（§8 継ぎ目 4）に応じられる状態を維持しつつ、それを越えたら物理的に手放す。
 
 ### 5.2 意味的衝突：「削除 vs 編集」
 
@@ -266,10 +276,12 @@ GC を実装する場合の不変条件:
 binary delete vs edit:
   1. concurrent edit を検出
   2. manifest を取得
-  3. 全 chunk HEAD + size/hash 検証
+  3. 全 chunk HEAD found + size 一致を検証
   4. 揃っている -> deleted=false に戻して復活
-  5. 欠けている -> 復活させず repair event。参照だけの壊れたファイルを materialize しない
+  5. 欠けている、または size 不明 -> 復活させず repair event。参照だけの壊れたファイルを materialize しない
 ```
+
+手順 3 が hash まで検証しないのは手抜きではなく、PUT 時に hash 検証済みの content-addressed store であることを前提にした設計判断である。chunk key 自体が content の sha256 なので、PUT 時に一度でも hash が検証されていれば、その key で HEAD found かつ size が一致する chunk は同一内容だと言える。復活判定は「もう一度 GET して hash を再計算する」までする必要はなく、HEAD found + size 一致で足りる。size が不明な chunk（`BlobHeadEntrySchema` が size を返さない）は無条件 true にせず、復活させない側へ倒す。
 
 「参照は復活したが実体は GC 済み」という状態は、CRDT 収束では直せない。GC を入れるなら、復活前の実体検証までを同じ機能として実装する。
 
@@ -357,7 +369,7 @@ op ごとに R2 へ書くと write 課金とレイテンシで死ぬ。DO Storag
 
 runtime は通常 append ごとに 30 秒後の alarm を入れるが、未 checkpoint op が 128 件以上になった場合は即時 alarm を入れる。alarm は通常 checkpoint の前に `checkpoint_runs` の `writing` / `r2-written` / `pointer-updated` を一段ずつ recovery し、R2 object 検証、pointer 前進、compact を再開する。
 
-**Hibernation（全クライアント離脱）:** 眠る前に**必ず R2 へ flush**。
+**Hibernation（全クライアント離脱）:** Cloudflare の hibernatable WebSocket は DO に「これから眠る」通知を提供しないため、hibernation 前 flush はデータ保全の必須条件ではない。op はすでに DO Storage（SQLite）へ同期 durable に書かれており、眠る＝メモリ YDoc が消えても R2 の古い snapshot + DO Storage の未 compact op を再生すれば正しい状態に戻る（継ぎ目 1 参照）。
 
 ```
 1. 強制 checkpoint（未 flush の op を R2 スナップショットへ）
@@ -365,7 +377,7 @@ runtime は通常 append ごとに 30 秒後の alarm を入れるが、未 chec
 3. その後で hibernate
 ```
 
-眠る = メモリ YDoc が消える。flush を怠ると最後の N op が失われるため**必須**。
+この flush は、R2 の鮮度を上げて次回コールドスタート時の replay 量を減らす**最適化**として位置づける。実装するフックとしては「認証済み socket が 0 になった時に checkpoint をトリガーする」が候補になるが、現状はこのフックを持たず、通常の checkpoint alarm（op 数しきい値 / 定期実行）だけに頼る。
 
 **コールドスタート（再接続）:**
 
@@ -407,6 +419,8 @@ LoadedDoc:
 - eviction 前に dirty doc は必ず snapshot へ flush する。flush 失敗時は eviction しない。
 - メモリ圧迫時は「非 active file の dirty flush -> eviction」を優先し、それでも無理なら degraded にして新規 file doc load を拒否する。
 
+現在の `packages/worker/src/runtime.ts` 実装は、file YDoc の eviction 判断を `packages/worker/src/runtime/eviction.ts` の `decideDocEviction(input)` という純粋 decision にしている。入力は `isMeta` / `checkpointed`（`latest_seq === latest_snapshot_seq`）/ `activeSocketCount` / `lastAccessedAt` / `now` / `idleThresholdMs` で、meta doc は常に keep、checkpoint 未完了・現在接続中のソケットが参照中・idle 未経過のいずれかが真なら keep、全て満たせば evict を返す。`activeSocketCount` は「hello 後の sync-request/sync-update でその doc に触れた、かつ現在も接続中のソケット数」を近似値として使う。protocol にファイル単位の open/close 通知が無いため、ソケットは接続が切れた時にのみ全 doc の active set から除かれる（doc を閲覧しなくなっただけでは減らない）。eviction は専用 timer を持たず、既存の checkpoint alarm（`VaultRoom.alarm()`）の末尾で `evictIdleDocs` として併走する。evict された doc は再アクセス時に既存の `ensureDocHydrated`（R2 snapshot + op_log replay）でそのまま再構成される。degraded 判定（メモリ圧迫時に新規 load を拒否する規則）は未実装のまま P1 の残タスクとする。
+
 これで DO は「vault の単一合流点」ではあるが、「vault 全文書を常時保持する巨大プロセス」ではなくなる。
 
 ---
@@ -420,6 +434,8 @@ LoadedDoc:
 ### 継ぎ目 1: メモリ ↔ DO Storage ↔ R2
 
 **checkpoint 中に op が来る（seq 境界）:** DO はシングルスレッド。`encodeStateAsUpdate` は同期処理なので、スナップショットとその state vector を**同じ同期ブロックで（await を挟まず）**撮る。順序は `snapshot → R2 確定 → compact` に固定。逆（compact 先）は厳禁。クラッシュが間に入っても残るのは冗長な op だけ（再生は冪等で無害）。
+
+`handleSyncUpdate` と quarantine force-apply は `withDocWriteQueue` で doc 単位に直列化されるが、`checkpointDoc` はこの queue を通らない。これは非対称ではなく、checkpoint の snapshot 取得（`encodeStateAsUpdate` / `encodeStateVector`）が await を挟まない同期ブロックだからこそ queue 外に置いてよい、という判断による。将来 checkpoint の snapshot 取得部分に await が入る変更をする場合は、この前提が崩れるため `checkpointDoc` も `withDocWriteQueue` に乗せて直列化し直す。
 
 **Hibernation 前 flush 失敗:** DO Storage の op はまだ消していないので、コールドスタート時に「R2 の古いスナップ + DO Storage の未 compact op」を再生すれば正しい状態に戻る。flush 失敗は「次回再生する op が増える」だけで損失にならない。
 
@@ -437,7 +453,7 @@ Yjs とファイルシステムを跨ぐトランザクションは無い。
 
 **エコーループ（observe → ディスク書き込み → watcher 発火 → また Yjs へ）:** 二段構えで殺す。
 
-- **ディスク書き込みの debounce**: キー入力ごとに書かず、1〜2 秒アイドル or ファイル close 時に YText → ディスク。
+- **ディスク書き込みの debounce**: キー入力ごとに書かず、1〜2 秒アイドル or ファイル close 時に YText → ディスク。この debounce は正しさの機構ではなく **write amplification 対策**である。エコーループ自体はハッシュゲートと materialize CAS だけで止まる。debounce が無いと、リモート編集が高頻度で流れた時に disk write が 1:1 で発生し、不要な I/O が積み上がる。
 - **ハッシュゲート**: YText → ディスク書き込み時に期待ハッシュを記録。watcher 発火時にディスクハッシュが現在の YText ハッシュと一致したら no-op、違うときだけ「外部編集」として YText へ取り込む。イベントが重複・順序入れ替わりしても正しく動く。
 - **materialize は compare-and-swap**: ディスクへ書く直前に必ず現在 disk hash を読み直す。`currentDiskHash == lastMaterialized.diskHash` の時だけ上書きしてよい。違う場合は watcher がまだ取り込んでいない外部編集があるので、上書きせず conflict copy へ退避し、その内容を先に YText へ取り込む。
 
@@ -685,41 +701,45 @@ MVP-3: initial sync + binary
 
 P0: production startup pipeline を no-op から実処理へつなぐ。
 
-- `packages/obsidian-plugin/src/main.ts` の `createStartupStepPort()` では `fetch-remote-meta-snapshot`、`apply-remote-meta-snapshot`、`adopt-local-files-after-remote-meta`、`enqueue-missing-downloads`、`load-indexeddb-ydocs`、`resume-background-queues` がまだ実質 no-op。`packages/core/src/sync/startup.ts` と `packages/obsidian-plugin/src/sync/engine/actuation.ts` には step と port 境界があるので、`main.ts` の ad-hoc 実装をそこへ寄せる。
-- `packages/obsidian-plugin/src/sync/obsidian/composition.ts` には unwired fail-fast port が残る。production composition root で local-store open/rebuild、startup step、outbox worker、WebSocket session を実 port へ接続する。
-- `setup` persistence は `packages/obsidian-plugin/src/sync/engine/persist.ts` に SecretStorage + IndexedDB metadata の実行境界があるが、`main.ts` はまだ `setupResponse`、`accessToken`、`refreshToken` を `data.json` へ保存する簡易経路を持つ。token material は `data.json` から外し、SecretStorage と metadata store を source にする。
-- `packages/obsidian-plugin/src/sync/engine/websocket.ts` には subprotocol token、hello admission、session、inbound dispatcher があるが、`main.ts` は独自 `openWorkerWebSocket()` / query token 経路を使っている。runtime 側の WebSocket port を実際の plugin lifecycle に採用する。
+- `packages/obsidian-plugin/src/main.ts` の `createStartupStepPort()` は `fetch-remote-meta-snapshot`、`apply-remote-meta-snapshot`、`adopt-local-files-after-remote-meta`、`enqueue-missing-downloads`、`load-indexeddb-ydocs`、`resume-background-queues` を実処理へ接続している。残りはこの startup step 経路から `main.ts` の ad-hoc 直呼び経路を減らし、production lifecycle で常時使うこと。
+- `packages/obsidian-plugin/src/sync/obsidian/composition.ts` は setup exchange、startup step、local-store open/rebuild を必須 port として受け取り、unwired fail-fast fallback は持たない。production composition root は local-store open/rebuild、startup step、outbox worker、WebSocket session の実 port を渡している。残りは `main.ts` 側の古い直送 WebSocket/outbox 経路を runtime port 経由へ寄せること。
+- `setup` persistence は `packages/obsidian-plugin/src/sync/engine/persist.ts` の SecretStorage + IndexedDB metadata 実行境界を通る。`main.ts` は token material を `data.json` に保存しない。起動時は `setupVaultId` または既存 `data.json.setupMetadata` から IndexedDB metadata DB を開き、guard 済み snapshot を読めた後は `trustedSetupMetadata` cache を `currentSetupMetadata()` の優先 source にする。古い `data.json.setupMetadata` mirror が trusted metadata と食い違う場合は trusted snapshot で settings mirror を上書きする。残りは `data.json.setupMetadata` を UI/復旧用 cache として明確化するか、完全廃止するかを決めること。
+- `packages/obsidian-plugin/src/sync/engine/websocket.ts` には subprotocol token、hello admission、session、inbound dispatcher があり、`main.ts` の startup/open/hello、state-vector request、outbox send は runtime WebSocket port/session 経由になっている。Worker も WebSocket `access_token` query を拒否し、subprotocol token だけを browser/WebView WebSocket 認証経路にする。残りは `main.ts` に残る ad-hoc lifecycle 呼び出しを production startup/outbox lifecycle へさらに寄せること。
 
 P0: full snapshot の production 経路を完成させる。
 
-- `packages/core/src/http/snapshot.ts` と `packages/obsidian-plugin/src/sync/engine/snapshot.ts` には latest snapshot response と local apply transaction があるが、`packages/worker/src/runtime.ts` には production `GET latest snapshot` route がなく、存在するのは e2e seed 用 `POST /__e2e/snapshot` だけ。`NeedFullSnapshot` を受けた client が HTTP で対象 doc の snapshot を取得できる route を追加する。
-- `NeedFullSnapshot(reason="state-vector-too-old")` は Worker から返るが、plugin 側は `handleWorkerMessage()` で警告するだけ。`snapshot-apply-runtime.ts` を使い、active editor / pending outbox / doc mismatch / hash mismatch の gate を通して local YDoc、remote cursor、outbox release を同一 IndexedDB transaction に保存する。
-- join-existing の e2e は meta/file snapshot seed から materialize できるが、現在は Worker の e2e seed API に依存している。通常の bootstrap/import flow で snapshot direct PUT、pointer 作成、meta 公開までできる CLI または plugin flow を作る。
+- `packages/worker/src/runtime.ts` は production `GET /vaults/:vaultId/meta/latest` と `GET /vaults/:vaultId/files/:ydocId/latest` を持ち、`sync:read` device token、vault mismatch guard、SQLite snapshot pointer、R2 snapshot object、response hash/state-vector guard を通して latest snapshot response を返す。`packages/worker/src/runtime.test.ts` は Worker entrypoint routing と `VaultRoom serves latest meta and file snapshots from production HTTP routes` で meta/file の両方を固定している。
+- `NeedFullSnapshot(reason="state-vector-too-old")` は plugin の inbound dispatcher から `fetchAndApplyFullSnapshot()` に入り、HTTP latest snapshot fetch、response schema guard、`decodeFullSnapshotBytesFromResponse()`、`planFullSnapshotApplyRuntime()`、local YDoc / remote cursor / outbox release の同一 IndexedDB transaction commit まで進む。active editor / pending outbox / doc mismatch / hash mismatch は apply 前 gate として残る。
+- Worker は production `PUT /vaults/:vaultId/meta/snapshot` と `PUT /vaults/:vaultId/files/:ydocId/snapshot` を持ち、`sync:write` device token、path/token vault guard、Yjs update validation、meta schema validation、R2 snapshot PUT、SQLite pointer/doc clock upsert、stale seq rejection を通す。これにより e2e seed API に依存せず、snapshot direct PUT と pointer 作成までは production HTTP route でできる。
+- `packages/core/src/sync/startup.ts` の new-vault bootstrap plan は `create-local-meta-ydoc` の直後に `publish-local-meta-snapshot` を走らせる。`packages/obsidian-plugin/src/main.ts` はこの startup step で local meta YDoc を `Y.encodeStateAsUpdate()` し、production `PUT /vaults/:vaultId/meta/snapshot` へ `SnapshotImportRequest` として送る。response は `SnapshotImportResponseSchema` で guard し、HTTP failure / token missing / invalid response は startup step failure として止める。これにより plugin の通常 bootstrap flow は、meta snapshot/pointer を先に作り、join-existing 側が通常の latest snapshot route から復元できる状態へ進む。
+- `packages/core/src/sync/startup.ts` の new-vault bootstrap plan は `publish-local-meta-snapshot` の後に `publish-initial-file-snapshots` を走らせる。`packages/obsidian-plugin/src/main.ts` は startup scan で作った各 text file YDoc を `Y.encodeStateAsUpdate()` し、production `PUT /vaults/:vaultId/files/:ydocId/snapshot` へ `SnapshotImportRequest` として送る。これにより plugin 自身の new-vault 初回 `.md` 本文 publish も WS/op_log ではなく file snapshot import route で pointer を作る。
+- `packages/obsidian-plugin/scripts/kuroflare-snapshot-import.ts` は実 CLI command として setup token exchange と production snapshot import を実行する。`packages/obsidian-plugin/package.json` の `snapshot:import` script から呼び出せる。入力 JSON は meta snapshot と file YDoc snapshot の `updateBytesBase64` を受け取り、出力 JSON は token material を含めず import 結果だけを返す。
+- `packages/obsidian-plugin/scripts/obsidian-miniflare-smoke.ts` は CLI bootstrap 相当の setup token を発行し、`kuroflare-snapshot-import.ts` で production `PUT /vaults/:vaultId/meta/snapshot` と `PUT /vaults/:vaultId/files/:ydocId/snapshot` を呼ぶ。これにより e2e seed snapshot API に依存せず、初回 meta snapshot と `.md` file YDoc snapshot/pointer を production import route で作ってから、plugin の join-existing flow が latest snapshot route で復元することを固定している。
 
 P0: outbox worker を実 side effect runner として動かす。
 
-- `packages/obsidian-plugin/src/sync/engine/worker.ts`、`outbound-queue.ts`、`local-store.ts`、`local-store-driver.ts`、`local-store-indexeddb.ts` は lease、CAS、completion、IndexedDB transaction plan まで持つが、plugin lifecycle から scheduler tick を継続実行する runner がまだ接続されていない。
-- `blob-put`、`blob-get`、`manifest-put`、`materialize`、`meta-ref-update` の side effect plan はある。実 runner は local blob cache read/write、HTTP fetch、Vault write、WebSocket send、completion classification、lease renew/release を順番に実行し、成功/失敗を local store transaction に戻す。
-- `y-update` / `meta-ref-update` は server `Ack` で完了する。`packages/obsidian-plugin/src/sync/engine/websocket.ts` の inbound dispatcher と outbox completion port を production local store に接続し、ad-hoc `sendDocUpdateToWorker()` 直送を outbox 経由へ寄せる。
+- `packages/obsidian-plugin/src/main.ts` は `runOutboxWorkerTick()` で `planOutboundQueueTick()`、`planOutboxWorkerTick()`、IndexedDB lease transaction、`blob-put` / `blob-get` / `manifest-put` / `materialize` / `meta-ref-update` / `y-update` runner、completion classification、failure completion、lease release を接続している。WebSocket/side-effect planning が I/O 前に拒否された場合も failure completion で lease を期限切れ待ちにしない。
+- `y-update` / `meta-ref-update` は server `Ack` で完了し、`packages/obsidian-plugin/src/sync/engine/websocket.ts` の inbound dispatcher と outbox completion port は production local store に接続済み。`sendDocUpdateToWorker()` は immediate send ではなく durable outbox enqueue + runner tick 起動に寄っている。
+- `main.ts` は layout ready、window focus、visibility resume、online event で `handleLifecycleResume()` を呼び、startup tick、foreground WebSocket/state-vector exchange、outbox tick を同じ復帰入口から再開する。残りはこの wrapper を Obsidian composition/lifecycle adapter 側へ寄せ、`main.ts` の ad-hoc lifecycle 呼び出しをさらに減らすこと。加えて fake vault または Obsidian harness で、runner が blob upload/download/materialize と WebSocket Ack completion を end-to-end に進めることを固定する。
 
 P1: binary を e2e 専用から通常機能へ上げる。
 
 - `packages/worker/src/runtime.ts` は `/blobs/head`、`/blobs/upload-url`、single PUT `/blobs/:sha256`、`/blob-manifests/:hash.json` を持つが、multipart は `blob-upload-url:multipart-unimplemented` で拒否する。大きい添付を扱うなら multipart create/part/complete/abort と R2 lifecycle を実装する。
-- `packages/blob/src/manifest.ts` と `packages/core/src/outbox.ts` には CDC、manifest、binary upload/download outbox plan がある。Obsidian の vault watcher から binary create/modify/delete を検出し、chunk cache、manifest PUT、meta ref update、download materialize を通常 outbox に積む。
-- 現在の binary e2e は remote peer が HTTP で PUT して meta を公開する形。Obsidian plugin 自身が binary file を upload/download/materialize する e2e を追加する。
+- `packages/core/src/sync/manifest.ts` と `packages/core/src/outbox.ts` には CDC、manifest、binary upload/download outbox plan がある。Obsidian の vault watcher から binary create/modify/delete を検出し、chunk cache、manifest PUT、meta ref update、download materialize を通常 outbox に積む。
+- 現在の binary e2e は remote peer が HTTP で PUT して meta を公開する形。Obsidian plugin 側は upload/download/materialize の outbox plan と side-effect 境界を同一 manifest で固定した。残りは fake vault または実 Obsidian harness で、plugin 自身が binary file を create/modify して upload し、別 client 相当で download/materialize する e2e。
 
 P1: meta materialize の残りを埋める。
 
-- `packages/obsidian-plugin/src/main.ts` は remote meta の text entry から欠損 Markdown を作れるが、親フォルダがない path はまだ扱わない。remote path の親フォルダ作成、既存 folder/file 衝突、invalid path quarantine を実装する。
-- active file が remote で rename/delete された場合の UX は spec にあるが、`main.ts` は active binding 維持・安全な rename/delete materialize まで未接続。active editor を直接 `Vault.modify` しない制約を守ったまま、path 更新と tombstone 表示を実装する。
-- `packages/obsidian-plugin/src/sync/meta/reconcile.ts` は delete-vs-edit repair を持つが、restorable binary set は production では未算出。binary manifest/chunk 検証を走らせ、復活可能な binary だけを restore する。
-- `keep-deleted` や invalid meta entry は repair-log / UI に出す必要がある。今は repair 結果を返す境界はあるが、ユーザーが確認できる persistent repair log と panel はまだない。
+- `packages/obsidian-plugin/src/main.ts` は remote meta の text entry から欠損 Markdown を作り、親フォルダがない path は作成する。既存 folder/file 衝突や invalid path は persistent repair log に出すが、自動解決・隔離 UI はまだ未実装。
+- active file が remote で rename された場合は `fileManager.renameFile` 後に active binding を追従し、delete された場合は editor buffer を維持して tombstone notice を出す。rename materialize 失敗の persistent repair log と、ユーザーが選べる解決 UI はまだ未実装。
+- `packages/obsidian-plugin/src/sync/meta/reconcile.ts` の delete-vs-edit repair は、production で manifest/chunk HEAD を確認した restorable binary set を渡す。残りは size 不明や HEAD 失敗時の degraded 表示・再試行 UI。
+- `keep-deleted`、invalid meta entry、remote materialize blocked は persistent repair log と settings panel に出る。invalid meta は確認付きで Y.Map から破棄でき、remote materialize blocked は retry/clear できる。path-conflict は path materialize retry/clear、keep-deleted は binary restore check retry/clear を settings panel から実行できる。残りは invalid meta の隔離 UI と、各 action の fake vault/Obsidian harness e2e。
 
 P1: local store degraded / repair flow を UI へつなぐ。
 
-- `packages/core/src/local-store.ts`、`packages/obsidian-plugin/src/sync/store/schema.ts`、`local-store-repair.ts` は schema gate、degraded、export、discard/rebuild、repair import staging を持つ。Obsidian settings/repair panel から export、discard、import、manual resume を実行できる UI が必要。
-- IndexedDB directory API がない環境、schema too new、pending outbox あり rebuild などの状態を status bar と Notice だけでなく、誤操作しにくい repair panel に出す。
-- repair export/import は token material を含めず、protocol guard を通った outbox evidence だけを扱うことを e2e で固定する。
+- `packages/core/src/local-store.ts`、`packages/obsidian-plugin/src/sync/store/schema.ts`、`local-store-repair.ts` は schema gate、degraded、export、discard/rebuild、repair import staging を持ち、Obsidian settings panel から export、discard/rebuild、import staging、manual resume を実行できる。degraded reason の説明、export evidence summary、degraded state / export 記録に応じた state-specific CTA も panel に出る。
+- IndexedDB directory API がない環境、schema too new、pending outbox あり rebuild などの状態は status bar / Notice に加えて repair panel へ出る。rebuild/discard 前の pending outbox evidence は fake IndexedDB harness で schema evidence から repair planner/export metadata まで固定した。
+- repair export/import は token material を含めない export/import plan、durable/quarantined server evidence を見た protocol guard、Vault adapter 越しの export JSON write/read から import staging/resume transaction までを unit/model/fake harness test で固定した。
 
 P2: 運用・配布に必要な面を足す。
 
@@ -765,114 +785,82 @@ Claude review の指摘に従い、MVP-0 後は純 decision の追加だけを�
 
 最初から monorepo にする。Obsidian 側と Worker 側で同じ型・メッセージ定義・Yjs 補助関数を共有するため。後から分けるより、最初に境界を切った方が同期プロトコルの破壊的変更を管理しやすい。
 
+現在の構成は当初の 5 パッケージ案（`obsidian-plugin` / `worker` / `model-tests` / `core` / `protocol` / `blob`）から、`protocol` と `blob` を `core` に統合した 4 パッケージに収まっている。
+
 ```
 kuroflare/
   package.json
   pnpm-workspace.yaml
   tsconfig.base.json
-  biome.json または eslint/oxlint 設定
-  vitest.config.ts
+  oxlint 設定（package ごと）
+  vitest.config.ts（package ごと）
 
   packages/
-    obsidian-plugin/
-      manifest.json
-      versions.json
+    core/
       src/
-        main.ts                 # Plugin entrypoint。DI と lifecycle のみ
-        settings.ts             # Setup URI / token / ignore rules
-        obsidian/
-          editor-binding.ts      # CM6 <-> Y.Text
-          vault-events.ts        # create/modify/rename/delete の入口
-          materializer.ts        # YDoc -> Vault 反映
-          hash-gate.ts           # echo loop 防止
-          conflict-panel.ts      # 自動修復ログの UI
-        sync/
-          sync-engine.ts         # meta/file/blob sync の orchestration
-          local-store.ts         # IndexedDB / plugin data / chunk cache
-          local-store-schema.ts  # IndexedDB schema open/rebuild/degraded startup gate
-          local-store-repair.ts  # degraded store export/rebuild/discard repair effects
-          local-store-driver.ts  # IndexedDB transaction read set / commit adapter
-          local-store-indexeddb.ts # browser indexedDB factory/probe + driver read/write plan -> IndexedDB adapter
-          outbound-queue.ts      # 冪等 retry queue
-          outbox-worker.ts       # scheduler/local-store/lease を side effect 開始へ繋ぐ pure orchestration
-          obsidian-startup-settings.ts # data.json/setup UI -> startup intent / setup evidence
-          obsidian-startup-evidence.ts # raw Obsidian evidence -> runtime startup input
-          startup-actuation.ts   # startup plan -> shell state / effect pump / no-network defer
-          obsidian-shell-presentation.ts # shell state -> status bar / Notice / repair panel 表示入力
-          obsidian-shell-ui.ts # presentation plan -> status/Notice/repair UI port 適用
-          obsidian-shell-driver.ts # evidence -> startup plan -> actuation -> local-only pump
-          obsidian-shell-lifecycle.ts # driver state 保持 + transport tick + UI apply の lifecycle 境界
-          websocket-runtime.ts # endpoint/token metadata -> WebSocket open + ClientHello startup step
-        mobile/
-          foreground-resume.ts   # iOS/Android の復帰時 resync
+        index.ts          # 公開 API のエントリーポイント
+        auth.ts            # JWT / setup token 検証（auth/ 配下に decision・型・validation）
+        health.ts           # Worker/DO health decision
+        local-store.ts      # IndexedDB schema/repair decision（local-store/ 配下に decisions・materialize・repair・型）
+        outbox.ts           # outbox retry/backoff/dependency/lease decision（outbox/ 配下に decisions・型・validation）
+        sync/               # wire protocol・メタ YDoc・manifest・snapshot・join adoption
+          meta.ts             # MetaFile schema（旧 protocol/meta.ts 相当）
+          messages.ts         # WS control message schema（旧 protocol/messages.ts 相当）
+          manifest.ts         # CDC chunking・BlobManifest 構築・assemble（旧 blob/manifest.ts 相当）
+          blob.ts             # blobManifest ⇔ meta 整合検証
+          reconcile.ts        # deterministic repair
+          snapshot.ts         # full snapshot apply decision
+          join-adoption.ts    # join 時 fileId adoption decision（§19.1）
+          jwt.ts / setup.ts / frame.ts / schemas.ts
+        http/               # Worker/plugin 共有の HTTP response guard（admin/blob/device/snapshot）
+        utils/              # ids・hashing・text・errors・version の共有ユーティリティ（旧 protocol/ids.ts, protocol/errors.ts, protocol/version.ts 相当）
 
     worker/
       wrangler.toml
       src/
-        runtime.ts              # Worker fetch entrypoint / VaultRoom DO shell
-        snapshots.ts            # R2 snapshot key / manifest guard / restore candidate choice
-        checkpoint.ts           # orphaned checkpoint run recovery decision
-        retention.ts            # snapshot retention delete plan
-        devices.ts              # setup exchange / device registry admission decision
-        index.ts                 # Hono routes
-        auth.ts                  # JWT / setup token
-        durable-objects/
-          vault-room.ts          # WS endpoint, SV exchange, op append
-          checkpoint.ts          # snapshot / compact / cold start
-          schema.ts              # SQLite DDL
-        r2/
-          blobs.ts               # chunk HEAD/PUT/GET, multipart
-          snapshots.ts           # snapshot key 管理
-        admin/
-          repair.ts              # force-local / force-remote / rebuild
+        runtime.ts          # Worker fetch entrypoint / VaultRoom DO shell
+        db/                 # SQLite schema・migration・checkpoint/doc/device repository
+        checkpoint/          # checkpoint write/compact/orphan recovery decision
+        devices/             # device registry admission・token decision
+        http/                # auth/blob/device/health/quarantine/setup の HTTP handler
+        sync/                # snapshot key・restore候補選択・sync-request/update decision
+        runtime/             # multi-doc eviction decision（§7.5）
+
+    obsidian-plugin/
+      manifest.json
+      versions.json
+      src/
+        main.ts              # Plugin entrypoint
+        obsidian/             # CM6 <-> Y.Text editor binding
+        sync/
+          engine/              # shell/actuation/queue/websocket/worker orchestration
+          auth/                 # refresh/revoke/verifier
+          store/                # IndexedDB driver・schema・repair
+          meta/                 # meta reconcile・tree
+          obsidian/             # composition・evidence・lifecycle・presentation・shell/ui・settings
 
     model-tests/
       src/
-        checkpoint-model.ts      # DO checkpoint/cold-start の実行可能な状態機械
-        checkpoint-model.test.ts # deterministic random operation sequence
-
-    core/
-      src/
-        text.ts                  # canonical text hash / minimal replacement
-        ydoc.ts                  # encode/apply helpers
-        reconcile.ts             # deterministic repair
-        hashing.ts               # sha256 for text/binary/snapshot payloads
-        clock.ts                 # monotonic client op ids
-
-    protocol/
-      src/
-        ids.ts                   # vaultId, deviceId, messageId, ydocId, DocId
-        messages.ts              # WS control message schema / binary header guard
-        meta.ts                  # MetaFile schema
-        errors.ts                # retryable/non-retryable 分類
-        version.ts               # protocolVersion / minCompatible
-
-    blob/
-      src/
-        cdc.ts                   # chunking
-        manifest.ts              # chunk list, size, hash
-        cache.ts                 # local blob cache policy
+        checkpoint-model.ts    # DO checkpoint/cold-start の実行可能な状態機械
+        outbox-model.ts        # outbox retry/backoff/lease の実行可能な状態機械
+        sync-update-model.ts   # sync-update quarantine/append の実行可能な状態機械
 
   tests/
     fixtures/
     integration/
-      two-clients.spec.ts
-      offline-merge.spec.ts
-      binary-retry.spec.ts
-      delete-vs-edit.spec.ts
+      ...（§21.2 / §21.3 の統合テストシナリオに対応）
 ```
 
 ### パッケージ責務
 
-| package           | 依存してよいもの           | 依存してはいけないもの            | 責務                                     |
-| ----------------- | -------------------------- | --------------------------------- | ---------------------------------------- |
-| `protocol`        | なし、または `zod` 程度    | Obsidian / Cloudflare / DOM       | wire format と永続データ型               |
-| `core`            | `protocol`, `yjs`          | Obsidian / Cloudflare             | Yjs 差分、修復、ハッシュ                 |
-| `blob`            | `protocol`, `core`         | Obsidian / Cloudflare             | CDC と blob manifest                     |
-| `worker`          | `protocol`, `core`, `blob` | Obsidian API                      | DO/R2/HTTP/WS                            |
-| `obsidian-plugin` | 全 shared package          | Cloudflare Worker runtime 直接API | UI、Vault、IndexedDB、同期 orchestration |
+| package           | 依存してよいもの          | 依存してはいけないもの            | 責務                                                              |
+| ----------------- | ------------------------- | --------------------------------- | ----------------------------------------------------------------- |
+| `core`            | `yjs`、`zod` 程度         | Obsidian / Cloudflare / DOM       | wire format、メタデータ型、CDC/manifest、Yjs 差分、修復、ハッシュ |
+| `worker`          | `core`                    | Obsidian API                      | DO/R2/HTTP/WS                                                     |
+| `obsidian-plugin` | `core`                    | Cloudflare Worker runtime 直接API | UI、Vault、IndexedDB、同期 orchestration                          |
+| `model-tests`     | `core` の decision を経由 | Obsidian / Cloudflare 実体        | decision 層の実行可能な状態機械テスト                             |
 
-この依存方向を守る。同期の知識が `obsidian-plugin` と `worker` に散るのは許すが、メッセージ型・メタデータ型・ハッシュ規則は `protocol/core/blob` に押し込める。
+この依存方向を守る。同期の知識が `obsidian-plugin` と `worker` に散るのは許すが、メッセージ型・メタデータ型・ハッシュ規則は `core` に押し込める。
 
 現在の `packages/obsidian-plugin` はまだ CM6/Yjs/disk behavior を検証する spike 段階だが、`src/main.ts` から sync runtime の純粋境界を分離しつつある。
 `main.ts` は Plugin lifecycle、Obsidian command/event、Vault read/write、status/notice の concrete port に寄せ、`editor-binding.ts` は Obsidian MarkdownView から `EditorView` を取り出す adapter、`Y.Text` 用 CM6 extension、EditorView 全置換、Y.Text minimal replacement transaction を担当する。
@@ -895,8 +883,8 @@ driver state は shell state、presentation snapshot、startup plan、replan 用
 `local-store.ts` / `local-store-driver.ts` / `local-store-indexeddb.ts` は ordered transaction operation、read set、commit validation、concrete IndexedDB read/write operation を分離し、runtime 側が store 名・key・値を再判断しないようにする。
 `local-store-indexeddb.ts` は `createBrowserLocalStoreIndexedDbFactoryPort(indexedDB)` で browser/Electron の `IDBFactory` を schema open/delete と schema probe の共通 factory port に束ねる。
 plugin composition root はこの factory port から local-store schema evidence、open/delete effect port、outbox transaction database port、metadata database port を組み立て、`main.ts` や lifecycle adapter が IndexedDB request/event の細部を扱わないようにする。
-現在の `obsidian-runtime-composition.ts` は startup evidence reader、shell UI port、setup exchange port、startup step port、local-store effect port を `createSyncRuntimeObsidianShellLifecycle(input)` へ束ねる最小 composition root である。
-未接続の side-effect family は fail-fast port にし、startup を成功扱いにせず `startup-step-failed` / `setup-exchange-failed` として shell state に残す。
+現在の `packages/obsidian-plugin/src/sync/obsidian/composition.ts` は startup evidence reader、shell UI port、setup exchange port、startup step port、local-store effect/rebuild port を `createSyncRuntimeObsidianShellLifecycle(input)` へ束ねる composition root である。
+side-effect family は composition input で必須にし、未接続のまま lifecycle を構築できないようにする。port 実行時の失敗は `startup-step-failed` / `setup-exchange-failed` として shell state に残す。
 `main.ts` は CM6/Yjs/disk spike を残したまま `Kuroflare sync: run startup tick` command からこの composition root を呼ぶ。
 setup/settings UI と production local evidence reader がまだ無いため、onload でネットワーク startup tick は自動実行しない。
 `websocket-runtime.ts` は trusted setup/auth metadata と SecretStorage の access token reader から browser-compatible WebSocket URL を組み立て、`open-websocket` step で socket open を待ち、`send-client-hello` step で `ClientHello` を送る。
@@ -904,7 +892,7 @@ Worker は registry/token/yClientId admission が通った場合だけ `hello-ac
 plugin の `send-client-hello` step はこの `hello-accepted` の vaultId/deviceId/yClientId が local setup metadata と一致するまで完了しない。
 hello 後に close/error した場合、または `hello-accepted` 以外や identity mismatch を受けた場合は startup step を fail し、`resume-background-queues` へ進めない。
 Worker は browser から header を付けられない事情に合わせて `Sec-WebSocket-Protocol` token を受け付けるため、plugin runtime は `wss://<endpoint>/ws/<vaultId>` に `kuroflare.v1` と `kuroflare-token.<short-lived-token>` subprotocol を付けて接続する。
-Worker は古い client / 手動検証用の互換経路として `access_token` query も受け付けるが、plugin は URL、snapshot、log、Notice に token を残さないため query token は使わない。
+Worker は WebSocket の `access_token` query parameter を受け付けない。HTTP client では `Authorization: Bearer ...`、browser/WebView WebSocket では subprotocol token だけを認証経路にし、URL、snapshot、log、Notice に token material が残る経路を閉じる。
 `createBrowserSyncRuntimeWebSocketFactory(WebSocket)` は browser/Electron の `WebSocket` constructor を runtime factory port に束ねる。
 `createSyncRuntimeWebSocketSession()` は startup、outbox sender、inbound dispatcher が共有する active socket 境界で、`open-websocket` step は接続した socket をこの session に attach する。
 outbox runner や state-vector request runner は startup step port の private closure から socket を取り出さず、session の `send` / `close` / `snapshot` だけを使う。
@@ -977,13 +965,10 @@ Vault 内に置く同期メタデータは最小化する。`.obsidian` は端�
   - auth secret reference（可能なら SecretStorage 側の key。token 本体は保存しない）
   - ignore rules
   - sync mode flags
-
-.obsidian/kuroflare/
-  file-ids.json        # 初期導入・障害復旧用の path -> fileId キャッシュ
-  repair-log.jsonl     # 自動修復イベント。UIで読めるようにする
+  - repairLog        # 自動修復イベント。UI（repair panel）から読む
 ```
 
-`file-ids.json` は真実ではない。真実はメタ YDoc。ローカル起動を速くする cache として使い、メタ YDoc と食い違ったらメタ YDoc を勝たせる。
+初期導入・障害復旧用の `path -> fileId` キャッシュを別途 Vault 内ファイル（`file-ids.json` 相当）として持つことは廃止する。fileId マッピングは IndexedDB の metadata store で完結しており、IndexedDB が失われた場合も §19.1 の join adoption（remote meta YDoc との content hash 照合）で再構築できるため、Vault 内に真実でも cache でもない追加ファイルを増やす理由が無い。自動修復イベントも独立した `repair-log.jsonl` ファイルではなく、plugin 設定（`data.json` の `repairLog` フィールド）に永続化し、repair panel から読む。
 
 ### 14.2 IndexedDB に置くもの
 
@@ -1007,6 +992,8 @@ upload 側では `manifest-put` が `blobManifestHash` と `blobManifest` を必
 
 local store schema は plugin bundle が `targetVersion` と `minimumReadableVersion` を持つ。起動時は IndexedDB schema gate の前に `local-store-indexeddb.ts` の `readLocalStoreIndexedDbSchemaEvidence(input)` で、存在有無、現在 version、存在する object store 名、pending outbox 件数を読む。この probe は `indexedDB.databases()` 相当の directory API で DB 存在を確認し、存在しない DB を `open()` して暗黙作成しない。既存 DB だけを version 指定なしで開き、known store 名だけを `presentStores` に写し、`outbox` store が存在する場合だけ readonly transaction で `count()` する。`outbox` store が欠けている DB は pending 0 と証明できないため、conservative に pending ありとして schema decision を degraded 側へ倒す。directory API が無い環境では missing DB を非破壊に証明できないので、sync startup は `database-directory-unavailable` として止め、ユーザーに Obsidian/Electron の IndexedDB 対応状況を示す。得られた evidence を `packages/core/src/local-store.ts` の `decideLocalStoreSchema(input)` に通す。
 
+Obsidian mobile（iOS WebView）でこの directory API（`indexedDB.databases()` 相当）が使えるかは §22 のスパイクで検証する未確定事項である。非対応と判明した場合の代替は、schema version を IndexedDB 外の `data.json` 側にも冗長に保持し、`database-directory-unavailable` に落とさず `data.json` 側の記録を DB 存在の代理証拠として使うことを予約しておく。
+
 - DB が無ければ `create(targetVersion)` し、必要 store を全部作る。この時点で pending outbox があるという evidence は矛盾なので reject。
 - `currentVersion == targetVersion` かつ required store が揃っていれば `open`。
 - `minimumReadableVersion <= currentVersion < targetVersion` は `upgrade`。足りない store だけ versionchange transaction で作り、既存 outbox と cursor は保持する。
@@ -1016,11 +1003,11 @@ local store schema は plugin bundle が `targetVersion` と `minimumReadableVer
 
 `decideLocalStoreSchema` の action は startup planner の前段 gate として扱う。plugin 側の `local-store-schema.ts` は `planLocalStoreIndexedDbOpen(input)` で core decision を vault ごとの DB 名 `kuroflare:<vaultId>` と IndexedDB effect list に変換する。`create/open/upgrade` は `startupGate="continue"` として `planClientStartup` へ進める。`rebuild` は `delete-database` と全 required store を作る `open-database(mode="create")` を返し、local YDoc/cursor/cache を初期化したうえで startup を `restore-local-meta-snapshot` または setup flow へ戻す。`degraded/reject` は `hold-degraded` / `reject-open` effect だけを返し、同期 side effect を開始せず、status bar と repair panel に出す。
 
-local store degraded repair は「export してから rebuild」「明示 discard して rebuild」「何もしない」の 3 経路だけにする。pending outbox がある degraded store では、repair panel はまず outbox と metadata を `.obsidian/kuroflare/repair-exports/kuroflare-local-outbox-<timestamp>.json` に export できるようにする。plugin 側の `local-store-repair.ts` は `planLocalStoreRepair(input)` で core repair decision を `write-repair-export`、`delete-database` + `open-database(mode="create")`、`keep-degraded`、`reject-repair` の effect に変換する。`buildLocalStoreRepairExport(input)` は export effect が書く JSON payload を `protocol` の `LocalOutboxRepairExport` として組み立て、`isLocalOutboxRepairExport` / `isLocalOutboxRepairExportEntry` を通らない record は書き出し前に拒否する。`done` item、`createdAt` 欠落、不正な `retryCount`、不正 base64 の update body は export しない。`planLocalStoreRepairImport(input)` は guarded repair export と fresh durable/quarantine evidence を core の import decision に通し、安全な `y-update` だけを `stage-repair-import` effect に変換する。staged item は `paused` / `resumeOn="manual"` / `reason="imported-repair-export"` で local outbox に置き、ユーザー確認なしに再送しない。`planLocalStoreRepairImportStageTransaction(plan)` は stage effect を `put-outbox` operation に変換し、driver の read set で同じ outbox ID が既に存在しないことを確認してから insert する。`planLocalStoreRepairImportResume(input)` は staged item を再送前にもう一度 user confirmation、durable evidence、quarantine evidence に通し、確認済みかつ未 durable / 未 quarantine の時だけ `resume-repair-import` effect と pending patch を返す。`planLocalStoreRepairImportResumeTransaction(plan)` はこの effect を `repair-import-resume` patch に変換し、通常の local-store transaction / IndexedDB driver と同じ保存経路に流す。blob / materialize / dependency 付き item、server durable 済み、server quarantine 済み、local duplicate は skip evidence として残す。export が完了していない限り `rebuild-after-export` は拒否する。`discard-and-rebuild` は local 未送信 update を失うので、確認文言付きの明示 confirmation がある時だけ許可する。pending outbox が 0 の場合だけ、export/confirmation なしで rebuild してよい。
+local store degraded repair は「export してから rebuild」「明示 discard して rebuild」「何もしない」の 3 経路だけにする。pending outbox がある degraded store では、repair panel はまず outbox と metadata を `.obsidian/kuroflare/repair-exports/kuroflare-local-outbox-<timestamp>.json` に export できるようにする。plugin 側の `local-store-repair.ts` は `planLocalStoreRepair(input)` で core repair decision を `write-repair-export`、`delete-database` + `open-database(mode="create")`、`keep-degraded`、`reject-repair` の effect に変換する。`buildLocalStoreRepairExport(input)` は export effect が書く JSON payload を `core` の `LocalOutboxRepairExport` として組み立て、`isLocalOutboxRepairExport` / `isLocalOutboxRepairExportEntry` を通らない record は書き出し前に拒否する。`done` item、`createdAt` 欠落、不正な `retryCount`、不正 base64 の update body は export しない。`planLocalStoreRepairImport(input)` は guarded repair export と fresh durable/quarantine evidence を core の import decision に通し、安全な `y-update` だけを `stage-repair-import` effect に変換する。staged item は `paused` / `resumeOn="manual"` / `reason="imported-repair-export"` で local outbox に置き、ユーザー確認なしに再送しない。`planLocalStoreRepairImportStageTransaction(plan)` は stage effect を `put-outbox` operation に変換し、driver の read set で同じ outbox ID が既に存在しないことを確認してから insert する。`planLocalStoreRepairImportResume(input)` は staged item を再送前にもう一度 user confirmation、durable evidence、quarantine evidence に通し、確認済みかつ未 durable / 未 quarantine の時だけ `resume-repair-import` effect と pending patch を返す。`planLocalStoreRepairImportResumeTransaction(plan)` はこの effect を `repair-import-resume` patch に変換し、通常の local-store transaction / IndexedDB driver と同じ保存経路に流す。blob / materialize / dependency 付き item、server durable 済み、server quarantine 済み、local duplicate は skip evidence として残す。export が完了していない限り `rebuild-after-export` は拒否する。`discard-and-rebuild` は local 未送信 update を失うので、確認文言付きの明示 confirmation がある時だけ許可する。pending outbox が 0 の場合だけ、export/confirmation なしで rebuild してよい。
 
 現在の `packages/core/src/local-store.ts` 実装は、この repair 境界を `decideLocalStoreRepair(input)` として持つ。`schemaDecision` が degraded でない時は repair action を開始しない。`export-pending-outbox` は deterministic な export 名と include flags だけを返し、実ファイル書き込みは plugin の Vault adapter が行う。`rebuild-after-export` は `exportCompleted=true`、`discard-and-rebuild` は `discardConfirmed=true` を要求する。これにより「壊れた IndexedDB を直すために、唯一残っている未送信 Yjs update を黙って消す」経路を閉じる。plugin 側の `packages/obsidian-plugin/src/sync/store/store.ts` は IndexedDB API を直接触る前段として、`outbound-queue.ts` の successful plan と repair import plan だけを受け取り、同一 transaction で適用する outbox put / outbox patch / lease CAS operation の ordered list を返す。さらに commit 直前の snapshot に対して `planLocalStoreTransactionCommit` を通し、outbox item 欠落、既存 ID への repair import insert、重複 put、lease CAS mismatch があれば item patch も lease release も適用しない。`applyLocalStoreOutboxPatch` が patch 種別ごとの永続 record 更新を一元化するため、実 driver はこの operation list / commit plan / patch application を IndexedDB transaction に写像するだけにし、Ack/quarantine/full snapshot/repair import resume の保存順序、CAS 条件、record field の更新規則を driver 側で再解釈しない。`packages/obsidian-plugin/src/sync/store/driver.ts` は operation list から `planLocalStoreDriverReadSet` で `outbox` と `running-leases` の key read set を導出し、`selectLocalStoreDriverSnapshot` で読み取った rows だけを transaction snapshot にする。selection は read set order を保ち、存在しない row は snapshot から省く。欠落 outbox item、既存 outbox item、missing/stale lease は次の `applyLocalStoreDriverCommit` が `missing-outbox-item` / `existing-outbox-item` / `lease-cas-mismatch` として拒否する。driver は同一 IndexedDB transaction でその rows を読み、`applyLocalStoreDriverCommit` に snapshot と operations を渡す。成功時は返された `writes` だけを同じ transaction 内で実行する。`put-outbox-record` は repair import の新規 staged row または patch 対象 row だけを書き戻し、`put-lease-row` は取得/延長した lease row だけを書き、`delete-lease-row` は完了/失敗/一時停止後の release 対象だけを消す。`applyLocalStoreDriverWrites` はこの write list を snapshot に replay する検証用境界で、`delete-lease-row` は現在 row が `expectedLease` と一致する場合だけ消す。`applyLocalStoreDriverTransaction` は read set 導出、selection、commit、write replay を 1 つにまとめた実行可能な手順書で、未読 row を保持した full store snapshot を返す。実 IndexedDB driver はこの pipeline と同じ順序で、同じ transaction 内に read / validation / write を置く。`packages/obsidian-plugin/src/sync/store/indexeddb.ts` はこの pipeline の read set / writes を `outbox` と `running-leases` object store の concrete `get` / `put` / `delete` plan に落とす。read set に必要 row が存在しない、または lease CAS が変わっていた場合は commit plan が失敗になり、driver は部分書き込みをしない。
 
-repair export は将来の plugin / CLI / 手動調査で読めるよう、protocol package の guard が検証できる JSON に固定する。
+repair export は将来の plugin / CLI / 手動調査で読めるよう、`packages/core/src/local-store/repair.ts` の guard が検証できる JSON に固定する。
 
 ```
 {
@@ -1142,7 +1129,7 @@ Yjs update はそれ自体が冪等だが、transport の ack は必要。ack �
 - binary frame は `encodeBinaryFrame` / `decodeBinaryFrame` で `KF` magic、u16 protocol version、u32 header length、JSON header、payload bytes を round-trip する。header は `BinaryFrameHeader` として control message と同じ ID/version/hash guard を通す。client から Worker へ送る binary frame は `durableSeq` を持たず、Worker は永続 append 後に header へ `durableSeq` を付けて再エンコードしてから peer へ broadcast する。
 - `decodeBinaryFrame` は壊れた magic/version/header length/schema を `null` として拒否する。`updateSha256` が header / JSON message に存在する場合、Worker 側 quarantine pipeline が実 payload bytes の SHA-256 と照合し、ズレた update は `hash-mismatch` として隔離する。Yjs update 妥当性と meta schema は Worker 側で検証する。
 - `VaultRoom` runtime は binary frame を任意 broadcast せず、`decodeBinaryFrame` が通った payload だけを既存の `sync-update` append/quarantine/ack pipeline に流す。hello 前 binary frame は `hello-required`、壊れた binary frame は `invalid-binary-frame` として close し、peer へは送らない。broadcast 先も hello 済みで `sessionStates` または hibernation attachment から session を復元できる socket だけに限定し、upgrade 済みだが hello 未完了の socket へ Yjs plaintext を送らない。binary broadcast は受信 frame をそのまま転送せず、append で確定した `durableSeq` 付き header と元 payload から新しい frame を作る。
-- WebSocket upgrade の device access token は `Authorization: Bearer ...` を第一候補にする。ただし browser/WebView は WebSocket custom header を付けられないため、plugin runtime は `Sec-WebSocket-Protocol: kuroflare.v1, kuroflare-token.<jwt>` を使う。Worker runtime は WebSocket に限って `?access_token=<jwt>` query parameter も互換経路として受け付けるが、plugin は query token を使わない。HTTP endpoint は引き続き Authorization header を使う。
+- WebSocket upgrade の device access token は `Authorization: Bearer ...` を第一候補にする。ただし browser/WebView は WebSocket custom header を付けられないため、plugin runtime は `Sec-WebSocket-Protocol: kuroflare.v1, kuroflare-token.<jwt>` を使う。Worker runtime は `?access_token=<jwt>` query parameter を受け付けない。HTTP endpoint は引き続き Authorization header を使う。
 - `packages/worker/src/sync-request.ts` の `decideSyncRequest(input)` は、guard 済み `SyncRequest` と caller が読んだ doc retention/diff evidence から、`send-update` / `no-update` / `need-full-snapshot` / `reject` を決める。`stateVectorCoversHorizon=false` は `NeedFullSnapshot(reason="state-vector-too-old")`、snapshot+residual から diff source を復元できない場合は `NeedFullSnapshot(reason="missing-log")` にする。diff が空なら WebSocket へ空 update を送らず `no-update` にし、実 Yjs diff 生成と R2/SQLite I/O は caller 側に残す。
 - `packages/worker/src/sync-update.ts` の `decideSyncUpdateQuarantine(input)` は、decoded update bytes の hash、Yjs apply 結果、meta schema validation 結果から append 前の隔離判定を行う。runtime は `SyncUpdate.updateSha256` / `BinaryFrameHeader.updateSha256` が存在する場合に `expectedUpdateSha256` として渡す。`hash-mismatch`、`yjs-apply-failed`、`meta-schema-invalid` は `quarantined_updates` row を返し、caller は op_log/docs/YDoc を更新せず、ack も返さない。quarantine row は repair/admin panel で inspect するための耐久 evidence であり、client 完了証拠ではない。
 - `packages/worker/src/sync-update.ts` の `decideSyncUpdateAppend(input)` は、guard 済み `SyncUpdate` と decoded update evidence から `append-op` / `ack-duplicate` / `snapshot-escape` / `reject` を決める。既存 `(docId,messageId)` は `message_dedup.durable_seq` を証拠にし、新しい seq を採番せず既存 `durableSeq` で ack を再送する。新規 update は `latestSeq + 1` を割り当て、通常サイズなら `op_log` append と `docs.latest_seq` patch を同一 transaction へ渡す。`largeUpdateThresholdBytes` を超える場合は op_log に詰めず、snapshot escape として `NeedFullSnapshot(reason="large-update-snapshot")` 境界を返す。
@@ -1552,9 +1539,11 @@ snapshots/<vaultId>/pointers/meta.json
 snapshots/<vaultId>/pointers/files/<ydocId>.json
 ```
 
-`latest.json` は「各 doc の最新 snapshot key と seq」を持つ全体 manifest。per-doc pointer は単一 doc の最新 snapshot だけを指す。更新順は `snapshot object PUT -> per-doc pointer PUT -> latest.json PUT`。`latest.json` が古くても、per-doc pointer または DO SQLite の op_log が残っていれば復元できる。DO が完全に消えた場合は R2 の pointer/manifest が復元入口になる。
+`latest.json` は「各 doc の最新 snapshot key と seq」を持つ全体 manifest。per-doc pointer は単一 doc の最新 snapshot だけを指す。目標設計での更新順は `snapshot object PUT -> per-doc pointer PUT -> latest.json PUT` であり、`latest.json` が古くても per-doc pointer または DO SQLite の op_log が残っていれば復元できるようにする。
 
-`latest.json` 更新中のクラッシュに備えて、manifest 自体にも世代を持たせる。
+**MVP スコープ**: `manifests/` と `pointers/` object への PUT はまだ実装しない。MVP では DO SQLite の `docs.latest_snapshot_key`（per-doc pointer）を正とし、DO storage が完全に消滅した場合の復元入口は `SNAPSHOT_BUCKET.list(prefix)` による R2 prefix list fallback だけにする。以下の manifest 世代管理・pointer 復元の記述は将来実装する目標設計であり、実装されるまでは prefix list fallback がその役割を代替する。
+
+`latest.json` 更新中のクラッシュに備えて、manifest 自体にも世代を持たせる（将来実装）。
 
 ```
 snapshots/<vaultId>/manifests/<manifestSeq>.json
@@ -1585,7 +1574,7 @@ type SnapshotManifest = {
 
 復元時は snapshot object を GET した後に sha256 を検証する。壊れていたら一つ古い manifest に戻る。R2 object が欠ける事故は通常想定しないが、source of truth と呼ぶ以上、検証と fallback は明文化しておく。
 
-現在の `packages/worker/src/sync/snapshots.ts` 実装は、この R2 snapshot 境界の最小 contract を持つ。`makeSnapshotObjectKey` / `makeSnapshotListPrefix` / `makeSnapshotPointerKey` / `makeManifestKey` / `makeLatestManifestKey` で命名を固定し、`isSnapshotManifest` で R2 から読んだ JSON を `unknown` から `DocId` / SHA-256 付き manifest に検証する。`chooseSnapshotForRestore(pointer, listedCandidates)` は pointer が健全かつ prefix list の最大健全 seq 以上の場合だけ pointer を採用し、stale/corrupt/missing pointer は最大健全 listed snapshot へ fallback する。
+現在の `packages/worker/src/sync/snapshots.ts` 実装は、MVP で実際に使う R2 snapshot 境界の最小 contract を持つ。`makeSnapshotObjectKey` / `makeSnapshotListPrefix` / `makeSnapshotPointerKey` / `makeManifestKey` / `makeLatestManifestKey` で命名を固定し、`isSnapshotManifest` で R2 から読んだ JSON を `unknown` から `DocId` / SHA-256 付き manifest に検証する。`chooseSnapshotForRestore(pointer, listedCandidates)` は pointer が健全かつ prefix list の最大健全 seq 以上の場合だけ pointer を採用し、stale/corrupt/missing pointer は最大健全 listed snapshot へ fallback する。
 
 client が `NeedFullSnapshot` を受けた場合、対象 doc の通常 outbox flush を止めて snapshot fetch / local reset 経路へ入る。手順:
 
@@ -1611,6 +1600,10 @@ client が `NeedFullSnapshot` を受けた場合、対象 doc の通常 outbox f
 - admin repair は任意の manifestSeq / snapshotSeq へ rollback できるようにする。
 
 現在の `packages/worker/src/db/retention.ts` 実装は、この retention cleanup を `planSnapshotRetention(input)` という純粋 decision にしている。最新 `minGenerationCount` 世代、現在 pointer、最新の健全 snapshot、未完了 checkpoint run（`writing` / `r2-written` / `pointer-updated`）が参照する snapshot を retain し、それ以外を `deleteKeys` として返す。実 R2 delete は caller が dry-run / admin confirmation / transaction 境界で適用する。
+
+`VaultRoom.checkpointDoc` の compact は、pointer 更新直後にその checkpoint 自身の `upperSeq` までを無条件に compact するのではなく、`planSnapshotRetention` が返す `retainKeys` に対応する snapshot のうち最も古い `upperSeq`（retention floor）を求め、`decideCheckpointCompact` の `compactedSeq` をこの floor で clamp する。floor が求まらない場合（初回 checkpoint など）は、その checkpoint 自身の `upperSeq` を floor として扱う。これにより「retention window 内で保持されている最古の健全 snapshot から、それより新しい compact 済み snapshot まで op_log を replay して辿り着ける」という不変条件を、compact のたびに維持する。
+
+`VaultRoom.recoverOrphanedCheckpointRun` が `pointer-updated` の checkpoint run を compact する際も、`checkpointDoc` の通常 compact と同じ retention floor を求め、`decideOrphanedCheckpointRecovery` の `compact-op-log` action が返す `compactedSeq` をその floor で clamp する。floor の算出に必要な retention 情報（R2 snapshot 一覧・pointer・checkpoint run）が信頼できない場合は、`block-compact` として compact 自体を保留し、誤って retention window 内の op_log を削除するより安全側に倒す。これにより、通常経路と回収経路のどちらから compact に到達しても、retention window 内の rollback 不変条件が同じ規則で保たれる。
 
 Yjs update 適用前の健全性チェック:
 
@@ -1661,7 +1654,7 @@ migration list は Worker bundle 側で version 1 からの contiguous な配列
 
 「書けたかもしれない snapshot」を即採用しない。必ず検証してから pointer/docs を進める。
 
-現在の `packages/worker/src/checkpoint/checkpoint.ts` 実装は、新規 checkpoint 開始を `decideCheckpointWrite(input)`、checkpoint 後 compact を `decideCheckpointCompact(input)`、orphaned checkpoint run 回収を `decideOrphanedCheckpointRecovery(input)` という純粋 decision にしている。`decideCheckpointWrite` は `latestSeq > latestSnapshotSeq` の時だけ `write` を返し、同じ seq の再 checkpoint は `no-new-ops` として skip する。`decideCheckpointCompact` は run が `pointer-updated` で、`docs.latest_snapshot_seq >= upperSeq` の時だけ compact を許す。`decideOrphanedCheckpointRecovery` の戻り値は `fail-run`、`mark-r2-written`、`advance-pointer`、`mark-stale`、`compact-op-log`、`block-compact`、`ignore-terminal` のいずれかで、実 DB/R2 更新は caller が transaction 境界で適用する。これにより「古い run が pointer を巻き戻さない」「未検証 snapshot を採用しない」「pointer 未検証で op*log を compact しない」を unit test で固定する。runtime の `VaultRoom.checkpointDoc(docId)` はこの write/compact decision を使い、R2 PUT が終わるまで `docs.latest_snapshot*\*`を進めず、PUT 後に`checkpoint_runs.status='r2-written'`、docs pointer 更新、`checkpoint_runs.status='pointer-updated'`、covered op_log compact、`checkpoint_runs.status='compacted'` の順で進める。`VaultRoom.alarm()`は`docs.latest_seq > latest_snapshot_seq`のdocを最大16件ずつcheckpointし、append後に`setAlarm` を予約する。alarmはrequest pathを持たないため、accepted hello の vaultId を DO storage に保存し、evict 後の alarm instance はそこから snapshot key 用 vaultId を復元する。
+現在の `packages/worker/src/checkpoint/checkpoint.ts` 実装は、新規 checkpoint 開始を `decideCheckpointWrite(input)`、checkpoint 後 compact を `decideCheckpointCompact(input)`、orphaned checkpoint run 回収を `decideOrphanedCheckpointRecovery(input)` という純粋 decision にしている。`decideCheckpointWrite` は `latestSeq > latestSnapshotSeq` の時だけ `write` を返し、同じ seq の再 checkpoint は `no-new-ops` として skip する。`decideCheckpointCompact` は run が `pointer-updated` で、`docs.latest_snapshot_seq >= upperSeq` の時だけ compact を許す。`decideOrphanedCheckpointRecovery` の戻り値は `fail-run`、`mark-r2-written`、`advance-pointer`、`mark-stale`、`compact-op-log`、`block-compact`、`ignore-terminal` のいずれかで、実 DB/R2 更新は caller が transaction 境界で適用する。これにより「古い run が pointer を巻き戻さない」「未検証 snapshot を採用しない」「pointer 未検証で op*log を compact しない」を unit test で固定する。runtime の `VaultRoom.checkpointDoc(docId)` はこの write/compact decision を使い、R2 PUT が終わるまで `docs.latest_snapshot*\*`を進めず、PUT 後に`checkpoint_runs.status='r2-written'`、docs pointer 更新、`checkpoint_runs.status='pointer-updated'`、covered op_log compact、`checkpoint_runs.status='compacted'` の順で進める。`VaultRoom.alarm()`は`docs.latest_seq > latest_snapshot_seq`のdocを最大16件ずつcheckpointし、append後に`setAlarm` を予約する。alarmはrequest pathを持たないため、accepted hello の vaultId を DO storage に保存し、evict 後の alarm instance はそこから snapshot key 用 vaultId を復元する。`VaultRoom.alarm()`は`readCheckpointableDocIds`が`CHECKPOINT_ALARM_DOC_LIMIT` 件ちょうど返った場合、またはオーファン checkpoint run の回収が同じ上限に達した場合、まだ未処理の dirty doc が残っている可能性があるとみなし、`CHECKPOINT_ALARM_DRAIN_DELAY_MS`（短い遅延）で `setAlarm` を入れ直す。これにより、1 回の alarm 実行でバッチ上限を超える dirty doc がある vault でも、新規 op が来ない doc が checkpoint されないまま op_log に残留し続けることを防ぐ。
 
 ---
 
@@ -1711,7 +1704,7 @@ type BlobManifest = {
 - `blobManifestMatchesMetaFile(manifest, metaFile)` は binary meta の `fileId` と `blobChunks` fast path が manifest 本文と一致することを確認する。`blobManifestHash` が manifest body の SHA-256 と一致するかは、body bytes を持つ Worker/plugin 側で検証する。
 - manifest body bytes は `encodeBlobManifestJson(manifest)` が返す canonical UTF-8 JSON に固定する。field order は `version,fileId,contentSha256,size,chunks,createdBy,createdAt`、chunk field order は `sha256,offset,size`、余計な whitespace は入れない。`blobManifestHash` はこの canonical bytes の SHA-256 にする。
 
-現在の `packages/blob` 実装は、binary upload 前の共有処理として以下を持つ。
+現在の `packages/core/src/sync/manifest.ts` 実装は、binary upload 前の共有処理として以下を持つ。
 
 - `chunkBytes(bytes, options)` は `minSize` / `avgSize` / `maxSize` に従って決定論的に chunk を切る。初期実装は軽量 rolling hash による content-defined boundary で、実運用前に FastCDC 等の実績ある実装へ差し替え可能な境界に閉じ込める。
 - `buildBlobManifest(fileId, bytes, createdBy, createdAt, options)` は content SHA-256、各 chunk SHA-256、offset、size、canonical manifest bytes、manifest hash を一括生成する。
@@ -1737,12 +1730,14 @@ pending blob:
 
 初期値:
 
-- 平均 chunk size: 1 MiB
-- 最小: 256 KiB
-- 最大: 4 MiB
+- 平均 chunk size: 256 KiB
+- 最小: 64 KiB
+- 最大: 1 MiB
 - 小さいファイル（8 MiB 未満）は固定 1 chunk でもよい
 
 Obsidian の添付は画像/PDFが多く、巨大 VM image のような極端な差分効率は不要。まず実装単純性と R2 request 数を優先する。
+
+chunking パラメータ（min/avg/max）の変更は wire 互換を壊さない。manifest は各 chunk の offset・size・sha256 を明示的に列挙する自己記述形式であり、読み込み側は chunking パラメータを知らずに再組み立てできるため、旧パラメータで書かれた chunk と新パラメータで書かれた chunk は同じ R2 bucket に混在してよい（content-addressed なので衝突もしない）。ただしパラメータを変えると同一内容でも chunk 境界が変わり、既存 chunk との重複排除が効かなくなるため、既定値の変更は storage コスト増を伴う運用判断として扱う。
 
 ---
 
@@ -1832,7 +1827,7 @@ reconnect:
   5. background file/blob queues resume
 ```
 
-bootstrap と join を混ぜない。既存 vault に参加する端末は、remote meta を読む前に UUID を大量採番しない。`setup/exchange` の `bootstrapMode` が `new-vault` なら、plugin は `scan-local-vault -> create-local-meta-ydoc -> enqueue-initial-file-uploads -> send-meta-update` の順で進む。`join-existing` なら、`fetch-remote-meta-snapshot -> apply-remote-meta-snapshot` が先で、その後に初めて local-only file を adopt する。remote meta を見ずに local tree を先に採番すると、同じ path の remote file と local file が別 fileId になり、初回参加だけで不要な conflict repair を発生させる。
+bootstrap と join を混ぜない。既存 vault に参加する端末は、remote meta を読む前に UUID を大量採番しない。`setup/exchange` の `bootstrapMode` が `new-vault` なら、plugin は `scan-local-vault -> create-local-meta-ydoc -> publish-local-meta-snapshot -> publish-initial-file-snapshots -> send-meta-update` の順で進む。`join-existing` なら、`fetch-remote-meta-snapshot -> apply-remote-meta-snapshot` が先で、その後に初めて local-only file を adopt する。remote meta を見ずに local tree を先に採番すると、同じ path の remote file と local file が別 fileId になり、初回参加だけで不要な conflict repair を発生させる。
 
 現在の `packages/core/src/sync/startup.ts` 実装は、この入口を `planClientStartup(input)` にしている。setup intent に `SetupExchangeResponse` がまだ無い場合は `run-setup-exchange` を返す。setup response の `bootstrapMode` が user intent と食い違う、caller が期待した mode と食い違う、または既存 local vaultId と response vaultId が違う場合は reject し、同期 side effect を始めない。reconnect は device credentials、IndexedDB、local vaultId、schema version、auth metadata の `authState` を確認し、local auth が `revoked` または `reauth-required` の場合は `auth-blocked` に入り、setup exchange へ自動的に流さない。plugin 側の `sync-engine.ts` はこれを `enter-auth-blocked` effect として公開し、`startup-actuation.ts` の `planSyncRuntimeStartupActuation(input)` が `stop-background-queues -> set-status(auth-blocked) -> show-repair-entry -> show-notice` の shell command に変換する。`applySyncRuntimeShellCommands(state, commands)` は command を `SyncRuntimeShellState` に畳み込み、auth-blocked では `backgroundQueues="stopped"`、`repairEntries=[device-revoked|reauth-required]`、`runnableEffects=[]` を固定する。通常 startup でも shell state の初期値は `backgroundQueues="stopped" / backgroundQueueStopReason="startup-not-ready"` で、startup step の実行予定は `runnableEffects` に積む。actuation plan の適用だけでは queue worker を起動せず、shell executor が `resume-background-queues` runtime effect を実行し、その effect を `ack-runtime-effect` した時点で初めて `backgroundQueues="running"` にする。shell executor は `executeRunnableSyncRuntimeShellEffects(input)` を通り、`runnableEffects[0]` を順に実行し、成功時は `ack-runtime-effect` で先頭と構造的に同じ effect だけを `runnableEffects` から消して `completedEffects` へ移し、失敗時は `fail-runtime-effect` で先頭と構造的に同じ effect だけを `runnableEffects` から外し、後続 effect を実行せず、`lastFailedEffect` を記録し、`startup-rejected` repair entry / notice を出して `status="rejected" / backgroundQueues="stopped"` に戻す。`createSyncRuntimeStartupEffectExecutor(ports)` は local-store schema open/delete、setup exchange、accepted startup step、local-store rebuild 後の replan scheduling を別 port に分配し、`createSyncRuntimeIndexedDbLocalStoreEffectPort(input)` は executable な local-store schema open/delete effect を `applyLocalStoreIndexedDbOpenEffect(input)` へ接続し、`hold-degraded` / `reject-open` が誤って runnable queue に入った場合は IndexedDB を触らず fail にする。local-store rebuild の最後は `createSyncRuntimeLocalStoreRebuildReplanPort(input)` で fresh evidence collection / startup replan を scheduler に要求し、scheduler が拒否した場合は rebuild effect を ACK しない。`createSyncRuntimeStartupStepEffectPort(ports)` は accepted startup step を setup persistence、local scan/adoption、remote snapshot/state-vector、local YDoc load、WebSocket admission、outbox/background queue resume の domain port に分ける。setup persistence port は `createSyncRuntimeSetupPersistStepPort(input)` で `persistLocalSetupResponse(input)` へ接続し、SecretStorage write と metadata transaction のどちらかが拒否された場合は step を ACK せず `fail-runtime-effect` へ流す。各 step port method は `SyncRuntimeStartupStepEffect<"step-name">` を受け取り、例えば setup persistence port に `open-websocket` step を渡す配線ミスは typecheck で落とす。`enter-auth-blocked` / degraded / reject / schema evidence failure のような terminal effect が誤って runnable queue に入った場合は ACK せず fail にする。先頭以外への ack/fail は out-of-order として no-op にする。失敗 effect は自動再実行せず、UI/repair が `retry-last-failed-effect(user-requested-retry|startup-replan)` を明示した場合だけ `startup-rejected` repair entry を消して `runnableEffects` の先頭へ戻す。startup step が進み始めたら `clear-repair-entries(startup-progress)` を先に適用し、stop reason を `startup-not-ready` に戻して、再認証成功後の reconnect で古い revoked/reauth repair entry を残さない。これにより revoked device や再認証待ちは新規 setup と混同されず、background queue も再開されない。ここまでの decision/runtime shell 境界は `src/sync/` に実装済みで、現行 `src/main.ts` は CM6/Yjs/disk spike の plugin lifecycle に sync startup tick の手動 command を追加している。ただし実 Obsidian settings UI、SecretStorage-backed setup exchange、local-store schema probe、再認証 modal、revoked device repair view、queue worker executor へ配線する production runtime はまだ未接続である。次に plugin lifecycle へ繋ぐ時は、この state を唯一の描画/実行入力にし、UI handler が独自に auth 状態や queue 起動可否を再判定しない。local meta YDoc だけ欠けている場合は remote meta snapshot から `restore-local-meta-snapshot` へ入る。schema が plugin の supported version より新しい場合は degraded にして、古い plugin が新しい store を壊さないようにする。
 
@@ -1904,6 +1899,8 @@ plugin は `resumePatches`、`blockPatches`、`deadLetterPatches`、`leaseReclai
 
 network / timeout / offline は retryable として扱う。auth failure は token refresh / re-auth で回復しうるので queue item を捨てず、`pause(resumeOn="auth-refresh")` にする。local conflict（materialize CAS conflict など）は自動 retry ではなく `pause(resumeOn="local-state-change")` にし、repair log / UI からユーザー操作またはファイル close / 再同期ボタンを待つ。non-retryable API error と invalid payload は retry しても進まないため `dead-letter` に退避し、dependent item も `dependency-dead-letter` として連鎖的に dead-letter へ落とす。Yjs update や meta ref update のような durable item は silent discard しない。
 
+materialize が §18.4 の block-conflict（未観測の外部編集を検出し、conflict copy へ退避してから改めて materialize queue へ積む経路）で再 enqueue される場合、その再 enqueue アイテムは新規アイテム扱いにし `retryCount` をリセットする（`MATERIALIZE_RETRY_POLICY` の即時 3 回はここから再び数える）。ただし外部編集が連続すると無限ループになり得るため、同一 `fileId` に対する連続 block-conflict の回数には別途上限を設け、これを超えたら `pause(resumeOn="local-state-change")` として manual 化する。retryCount をリセットしないと外部編集のたびに早すぎる manual pause に落ち、上限を設けないと連続 block-conflict が無限ループしうる。
+
 現在の `packages/core/src/outbox.ts` 実装は、この retry/backoff を `decideOutboxRetry(input)` という純粋 decision にしている。戻り値は `retry(delayMs, jitterRatio)`、`pause(reason, resumeOn)`、`dead-letter(reason)` の typed action union。`y-update` / `meta-ref-update` は 250ms -> 1s -> 5s -> 30s、blob 系は 1s -> 5s -> 30s -> 5min、`materialize` は即時 3 回までを policy として公開する。schedule 枯渇後も通常 retryable item は最後の schedule delay で再試行し続ける。`retryCount` はこの delay 計算だけに使い、依存関係の意味論には使わない。
 
 `decideOutboxResume(input)` は paused item をいつ `pending` に戻せるかを決める。`resumeOn="auth-refresh"` は `decideClientAuthRefresh` が accept した token refresh / re-auth 成功後だけ、`resumeOn="local-state-change"` は file close / watcher import / conflict repair など local 状態が変わった後だけ、自動 resume できる。`manual` event は全 paused item を明示的に再試行対象へ戻せるが、依存未完了や dependency failure を飛び越えるわけではない。`planOutboxResumePatches(items, events)` は scheduler tick が受け取った event 集合から persistable `resumePatches` を作り、resume 後も scheduler は必ず `planOutboxDependencyBlocks`、`decideOutboxRun`、`decideOutboxConcurrency` を通す。
@@ -1958,6 +1955,10 @@ YText 本文は BOM なし・LF 改行を canonical form とする。ただし t
 
 現在の `packages/core/src/local-store/materialize.ts` 実装は、この hash gate / materialize CAS の決定部分を `decideWatcherHashGate(input)` と `decideMaterializeWrite(input)` として共有する。watcher は `ignore-own-write`、`ignore-converged-write`、`import-external-edit` の 3 分岐、materialize は `skip-active-editor`、`write`、`block-conflict` の 3 分岐に閉じる。`lastMaterialized` が欠けている時は安全な base hash がないため `missing-last-materialized` として write を拒否する。
 
+materialize 実行時の active editor 判定は、呼び出し側が固定値を渡せない形で強制する。`decideMaterializeWrite` は `activeEditorBound: boolean` を直接受け取らず、`path`（materialize 対象のファイルパス）と `activeFilePath`（現在 active editor に bound されているファイルのパス、未 bound なら `undefined`）を受け取り、関数内部で一致判定する。呼び出し側は判定結果ではなく生の bind 状態を都度渡す義務を負い、これにより binary 経路・text 経路のどちらの呼び出し口でも判定ロジックの重複や固定値の混入が起きない。呼び出し側は `this.activeFile`（または active editor binding の実体）を、可能な限り副作用実行の直前（async 処理の後）で再評価してから渡す。呼び出し時点と書き込み直前とで active editor が切り替わる競合を、判定の鮮度で吸収するためである。
+
+**非アクティブファイルの外部編集検出戦略**: `.md` の `modify` watcher は active file に限定せず全ファイルを対象にする。ただしハッシュ計算はコストが高いため、watcher 発火時にまず `TFile.stat` の mtime/size を `lastMaterialized` の記録値と比較する pre-filter を通す。両方一致すれば「その watcher イベントは実質的な変更を含まない」とみなしハッシュ計算・disk read をスキップする。どちらかが不一致、または記録が無い（初回観測）場合のみ通常のハッシュゲート（`decideWatcherHashGate`）へ進む。`lastMaterialized` の stat フィールドは materialize/import の都度更新するため追加の永続化コストは無い。active editor に binding 中のファイルは §9.1 の理由により本 pre-filter を経由せず、従来どおり CM6 バインディング経路のみでハッシュゲートに入る。
+
 ---
 
 ## 19. 初回導入と既存 Vault の index
@@ -1972,7 +1973,7 @@ YText 本文は BOM なし・LF 改行を canonical form とする。ただし t
 bootstrap:
   1. ignore rules を確定
   2. 全ファイルを列挙
-  3. 既存 file-ids.json があれば path -> fileId を復元
+  3. 既存 IndexedDB metadata store があれば path -> fileId を復元
   4. 無ければ UUID 採番
   5. .md は YText seed、binary は blob upload queue へ
   6. meta YDoc に file entry を追加
@@ -1988,12 +1989,39 @@ join:
 
 初回 scan 中に Vault が変更されたら、scan 完了後にもう一度差分 scan を走らせる。scan 中の watcher イベントを逐次処理しようとすると順序が複雑になるため、初期実装では「scan snapshot + 追い scan」でよい。
 
+join 時の adoption 決定規則:
+
+```
+decideJoinFileAdoption(local file):
+  remoteEntry = remote meta entry at same canonicalPath (text 型のみ)
+  if remoteEntry is absent:
+    return allocate-new   // ローカルのみ、新規 fileId 採番
+  remoteContentHash = hash(remote YText)  // §18.4 の canonical hash と同一手続き
+  localContentHash = hash(disk content)
+  if remoteContentHash == localContentHash:
+    return adopt-matching-content(remoteEntry.fileId)  // 無条件 adopt、追加処理なし
+  else:
+    return adopt-with-local-edit(remoteEntry.fileId)   // remote fileId を採用した上で
+                                                         // ローカル内容を通常の外部編集と同様に
+                                                         // 最小 diff で YText へ取り込む
+```
+
+remote YText は `open-websocket` より前の join ステップ（`adopt-local-files-after-remote-meta`）の時点ではまだ取得できないため、判定は遅延させ、remote content が実際に届いた時点（sync update 適用時 / full snapshot apply 時）でハッシュ比較と取り込みを行う。
+
 ### 19.2 path 正規化
 
 - path separator は `/`。
 - Unicode normalization は Obsidian/OS 差を考慮し、比較用 canonical path を別に持つ。
 - 大文字小文字は OS によって衝突条件が違う。`canonicalPath = lower(normalize(path))` を conflict detection に使い、実表示 path は保持する。
 - `.obsidian`, `.trash`, `.git`, plugin cache は default ignore。
+
+`canonicalizeVaultPath(path)` の正確な定義は次のとおりにする。
+
+1. Unicode の **NFC 正規化**をかける。macOS のファイルシステムは NFD でパスを返すため、この正規化を前提にしないと macOS 端末と他 OS 端末で同一ファイルの `canonicalPath` が食い違う。
+2. 連続する `/` を 1 個に圧縮する。
+3. **locale 非依存の `toLowerCase()`**（Turkish `I` 問題などを避けるため、locale-aware な大文字小文字変換は使わない）を適用する。
+
+trailing slash・パス長上限・Windows 予約語（`CON`, `NUL` 等）は、`canonicalizeVaultPath` の正規化規則そのものではなく、materialize 時に OS 別に検証する。検証不能な path は conflict copy と同じ退避（別名で書き込み、repair log に記録）に倒す。
 
 ---
 
@@ -2004,7 +2032,7 @@ self-healing は「治ったかどうか」が見えないと信用できない�
 ### 20.1 クライアント側
 
 ```
-repair-log.jsonl:
+repairLog（plugin 設定の data.json に永続化。§14.1）:
   { ts, level, event, fileId, path, action, beforeHash, afterHash, detail }
 ```
 
@@ -2035,13 +2063,13 @@ DO は構造化ログで以下を出す。
 
 ## 21. テスト戦略
 
-### 21.1 core/protocol の単体テスト
+### 21.1 core の単体テスト
 
 実装済みの足場:
 
 - `packages/core` は canonical text hash、YText 用 canonicalization、任意 bytes の SHA-256、client auth metadata setup persist / guard / refresh attempt apply / revoke patch apply、client auth refresh decision、client auth refresh attempt/backoff decision、client device revoke local patch decision、client auth start expiry gate、単一 middle replacement の最小置換、同一 path 別 fileId の deterministic repair plan、delete vs edit repair plan、repair plan の meta entry 適用、watcher hash gate、materialize CAS decision、full snapshot bytes/hash verification、full snapshot response normalization / apply gate / stateVector patch、local store schema create/open/upgrade/rebuild gate、local store degraded repair/export gate、local outbox repair import staging/resume gate、client startup bootstrap/join/reconnect planner、binary upload/download outbox plan builder、outbox retry/backoff decision、outbox paused resume decision、outbox resume patch planner、outbox ack completion decision、outbox quarantine pause decision、outbox full snapshot release planner、outbox dependency block / dead-letter propagation、outbox scheduler tick plan、outbox scheduler auth start gate、outbox auth refresh request decision、stale running lease reclaim、outbox lease acquire/renew/release CAS decision、outbox run scheduler decision、outbox failure transition、outbox concurrency decision をテストする。
 - `packages/core` は branded ID、protocolVersion guard、health response guard、setup exchange request/response guard、setup token issue response guard、device token claims guard、device token refresh request/response guard、blob HTTP request/response guard、meta/doc latest snapshot response guard、local outbox repair export guard、admin operation request/response guard、revoke device request/response guard、`hello` / `sync-request` / `sync-update` / `ack` / `need-full-snapshot` の control message guard、binary frame encode/decode、binary header guard、ApiError guard、MetaFile schema guard、BlobManifest schema guard、canonical manifest JSON、meta 照合をテストする。
-- `packages/blob` は決定論的 chunking、BlobManifest 構築、canonical manifest hash、binary meta fast path との一致、chunk/content hash 検証付き assemble をテストする。
+- `packages/core` の `sync/manifest.ts` / `sync/blob.ts` は決定論的 chunking、BlobManifest 構築、canonical manifest hash、binary meta fast path との一致、chunk/content hash 検証付き assemble をテストする。
 - `packages/worker` は Worker fetch / `VaultRoom` Durable Object shell routing、auth admission decision、auth refresh HTTP response plan、device revoke HTTP response plan、blob head/upload-url HTTP response plan、worker health decision、schema migration decision、initial SQLite schema DDL、setup token consume decision、setup exchange HTTP response plan、`VaultRoom` setup exchange HTTP route / token consume / device credential persist / transaction rollback、`VaultRoom` auth refresh HTTP route / refresh token rotation / transaction rollback、`VaultRoom` device revoke HTTP route / authenticated revoke / idempotent already-revoked、`VaultRoom` quarantine list/detail HTTP route / authenticated inspect / bytes付きdetail、R2 snapshot key naming、SnapshotManifest guard、stale/corrupt pointer から prefix list 最大健全 snapshot へ fallback する復元候補選択、checkpoint write/compact decision、`VaultRoom.checkpointDoc` の R2 PUT + docs pointer update + covered op_log compact、`VaultRoom.alarm` の append後予約 / vaultId復元 / 未checkpoint doc batch checkpoint、orphaned checkpoint run recovery decision、snapshot retention delete plan、setup exchange credential plan、client hello / token refresh / refresh token rotation / revoke device registry decision、`VaultRoom` hello registry admission / WS JWT admission / missing secret fail-closed / hibernation attachment session restore / session identity mismatch、binary frame の decode + hello gate + durable append 後 broadcast、sync request diff/full-snapshot boundary decision、`VaultRoom` sync-request の diff/no-update/full-snapshot 応答、sync update quarantine/append/duplicate/snapshot-escape decision、quarantined update admin inspect/discard/force-apply decision をテストする。
 - `packages/model-tests` は checkpoint/cold-start に加えて、outbox dependency graph が blob/manifest 完了前の meta ref publish と download 完了前の materialize を防ぐこと、sync update の retry が seq を増やさないこと、large update が op_log ではなく snapshot boundary へ流れ、snapshot pointer と doc clock が巻き戻らないこと、compacted op_log の message dedup TTL が切れた後に同じ update が replay されても restored logical content が変わらないことを random sequence でテストする。
 
@@ -2233,6 +2261,20 @@ MVP との関係:
 - DO model test が通ったら MVP-1 の backend 実装に進む。
 - どちらかが落ちたら設計を戻して修正する。UI や binary CDC を先に積まない。
 
+### 22.3 mobile IndexedDB directory API スパイク
+
+目的: §14.2 の schema startup gate が前提にする `indexedDB.databases()` 相当の directory API が、Obsidian mobile（iOS WebView）で使えるかを検証する。ここが通らない場合、mobile は `database-directory-unavailable` で恒常的に起動不能になる。
+
+範囲:
+
+- 実 iOS 上の Obsidian mobile（または同等の WebView 環境）で `indexedDB.databases()` の有無・挙動を確認する。
+- desktop 版で確認済みの schema probe（存在有無、現在 version、object store 名、pending outbox 件数の read）と同じ経路を mobile 上で試す。
+
+mobile 対応着手前に必ず潰す判断分岐:
+
+- API が使える: desktop と同じ `readLocalStoreIndexedDbSchemaEvidence` 経路をそのまま使う。
+- API が使えない: `data.json` 側に schema version を冗長保持し、`database-directory-unavailable` に落とさず起動を継続できるよう §14.2 の fallback を実装する。
+
 ---
 
 ## 付録: remotely-save / Self-Hosted LiveSync との比較
@@ -2256,19 +2298,19 @@ MVP との関係:
 
 ### 規模
 
-| パッケージ                    | src 行数 | test 行数 | 中身                                                                                                                                                            |
-| ----------------------------- | -------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| worker                        | 約6,100  | 約6,200   | WS 同期・setup/exchange・auth/refresh・device revoke・quarantine admin・blob data plane・checkpoint・R2 cold-start 復元までの実ランタイム。`wrangler.toml` あり |
-| core                          | 約4,400  | 約4,200   | startup / reconcile / materialize / outbox / snapshot / auth metadata 等の純 decision                                                                           |
-| obsidian-plugin               | 約9,300  | 約10,200  | spike プラグイン（`KuroflareSpikePlugin`）＋ IndexedDB local store・outbox worker・sync-engine planner・startup-actuation                                       |
-| protocol / blob / model-tests | 約2,300  | 約1,700   | wire guard・blob planner・性質/モデルテスト                                                                                                                     |
+| パッケージ                                                 | src 行数 | test 行数 | 中身                                                                                                                                                            |
+| ---------------------------------------------------------- | -------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| worker                                                     | 約6,100  | 約6,200   | WS 同期・setup/exchange・auth/refresh・device revoke・quarantine admin・blob data plane・checkpoint・R2 cold-start 復元までの実ランタイム。`wrangler.toml` あり |
+| core                                                       | 約4,400  | 約4,200   | startup / reconcile / materialize / outbox / snapshot / auth metadata 等の純 decision                                                                           |
+| obsidian-plugin                                            | 約9,300  | 約10,200  | spike プラグイン（`KuroflareSpikePlugin`）＋ IndexedDB local store・outbox worker・sync-engine planner・startup-actuation                                       |
+| model-tests（wire guard・blob planner は現在 core に統合） | 約2,300  | 約1,700   | 性質/モデルテスト                                                                                                                                               |
 
 合計 約2.2万行 src ＋ 約2.2万行 test。テスト比はほぼ 1:1 で、純ロジックの検証密度は高い。
 
 ### できているもの
 
 - Worker 実ランタイム（`packages/worker/src/runtime.ts` 約3,150行）に MVP-1 backend の制御面が一通り存在する。
-- core / protocol の decision 層と wire guard が広くカバーされ、単体・モデルテストで固められている。
+- core の decision 層と wire guard が広くカバーされ、単体・モデルテストで固められている。
 - blob data plane は `head()` 化・vault 別 R2 キー・サイズ上限・multipart の明示拒否まで対応済み。
 - startup の auth 状態判定（active / revoked / reauth-required → auth-blocked）が決定層で実装済み。
 
@@ -2299,3 +2341,161 @@ MVP との関係:
 ### 推奨する次の縦切り
 
 (a) 完了: 全体ビルド通過。(b) 完了: miniflare で MVP-1 の 1 ファイル同期 e2e。(c) 完了: 実 Linux Obsidian + obsidian-cli で MVP-0（CM6 往復 + disk materialize + 外部編集取り込み + watcher-drop CAS conflict-copy）と MVP-1（plugin↔Worker フル同期）を実機受け入れ。(d) 完了: MVP-2 の path repair / file-tree を live 配線し、`test:e2e:obsidian:mvp2` と `test:e2e:obsidian:miniflare` で rename=path 更新、Worker 経由 concurrent rename 収束、text 本文 per-file YDoc 化を実機実証。(e) 完了: MVP-3 の CDC バイナリ（blob PUT→meta 参照公開）と初回フルシンク（meta/file snapshot から Markdown materialize）を実機 e2e 化。**次は §11.2 の P0**: startup pipeline、production snapshot API、outbox runner を ad-hoc 実装から production runtime へ接続する。
+
+---
+
+## 付録: 設計レビューで見つかった改善点（2026-07-03）
+
+> 2026-07-03 に spec 全体と working tree の実装を突き合わせた設計レビューの結果。§11.2 に既に載っている「未配線・未実装」の残タスクは重複させず、**設計の不変条件と実装が矛盾している点**、**spec 側に未定義の設計判断が残る点**、**実装判断が spec に反映されていない点**に絞る。各項目は「問題 → 提案 → 根拠（確度）」の形式。
+
+### A. Worker / DO: 不変条件との矛盾
+
+**A-1. compact が snapshot retention window を無視して op_log を即時全消去する（確度: high・最優先）**
+§16.4 は「retention window 内の rollback に必要な op_log は物理削除しない」と規定するが、`checkpointDoc`（`packages/worker/src/runtime.ts:1007-1024`）は pointer 前進直後に必ず `deleteOpLogBelowSeq(compactedSeq)` を呼び、直近 checkpoint 以前の op を全消去する。`decideCheckpointCompact`（`packages/worker/src/checkpoint/checkpoint.ts:119`）の入力に retention 情報が無い。結果、「古い健全 snapshot に戻って op_log で再構築する」という §16.4 の論理破損復旧シナリオは、最新 1 世代分の op しか残らないため成立しない。
+→ 提案: `decideCheckpointCompact` の入力に「保持すべき最古 snapshot の upperSeq」を渡し、`compactedSeq` をその境界で clamp する。または compact を checkpoint から切り離し、retention cleanup と同じ判断で遅延実行する。
+
+> **決着（2026-07-03）: 実装済み。§16.4 に反映。回収経路（`recoverOrphanedCheckpointRun`）にも同じ clamp を適用済み。**
+
+**A-2. checkpoint alarm がバッチ上限超過分を再スケジュールしない（確度: high）**
+`VaultRoom.alarm()`（`runtime.ts:939-945`）は `CHECKPOINT_ALARM_DOC_LIMIT=16` 件だけ処理し、自身を再スケジュールしない。17 件目以降の dirty doc は、その doc に新規 op が来ない限り永久に checkpoint されず、op_log が残留する。
+→ 提案: `readCheckpointableDocIds` が limit 件ちょうど返った場合は短い delay で `setAlarm` を入れ直す規則を §16.6 に追記し、実装する。
+
+> **決着（2026-07-03）: working tree に実装済みだったことを確認。§16.6 に反映。**
+
+**A-3. §16.3 の R2 vault-wide manifest / pointer object が一度も書かれない（確度: high）**
+`makeManifestKey` / `makeLatestManifestKey` は `packages/worker/src/sync/snapshots.ts` に定義だけ存在し、R2 へ PUT する経路が無い。pointer は DO SQLite の `docs.latest_snapshot_key` にのみ存在する（`packages/worker/src/db/docRepo.ts:243`）。DO storage が完全消滅した場合の復元入口は現状 `SNAPSHOT_BUCKET.list(prefix)` fallback だけで、§16.3 が想定する「manifest から辿る」復元より弱い。
+→ 提案: checkpoint 完了後の manifest/pointer PUT を実装するか、MVP スコープでは「DO SQLite pointer + R2 prefix list fallback を正とし、R2 manifest は将来実装」と §16.3 を縮小して明記する。どちらかに決着させる。
+
+> **決着（2026-07-03）: MVP スコープ縮小側で決着。spec へ反映済み。**
+
+**A-4. §7.5 multi-doc LRU が未実装で DO メモリが単調増加する（確度: high）**
+`docs` は素の `Map<string, Y.Doc>`（`runtime.ts:227-228`）で、`ensureDocHydrated`（`runtime.ts:1643-1679`）が hydrate した doc を解放する経路が無い。`LoadedDoc { lastAccessedAt, activeSocketCount }` 相当も eviction も存在しない。
+→ 提案: §7.5 の設計どおり「checkpoint 済み・active socket 0・一定時間未アクセス」の file doc を evict する最小実装を §11.2 の P1 相当として位置づける。degraded 判定は後回しでよい。
+
+> **決着（2026-07-03）: 最小実装済み（`decideDocEviction` + checkpoint alarm 併走）。degraded 判定は P1 残タスク。§7.5 に反映。**
+
+**A-5. checkpoint と append の直列化ドメインが非対称（確度: medium）**
+`handleSyncUpdate` と quarantine force-apply は `withDocWriteQueue` で doc 単位に直列化されるが、`checkpointDoc` はこの queue を通らない。現状は `encodeStateAsUpdate` / `encodeStateVector` を await を挟まず同期取得しているため破損しないが、その安全性根拠が spec にもコードにも明文化されておらず、将来 checkpoint 内に await が入ると §8 継ぎ目 1 の seq 境界保証が黙って壊れる。
+→ 提案: 「checkpoint の snapshot 取得は同期ブロックで行うため queue 外でよい」という根拠を §8 継ぎ目 1 に明記するか、`checkpointDoc` も同じ queue に乗せて非対称を消す。
+
+> **決着（2026-07-03）: spec へ反映済み。**
+
+**A-6. 「Hibernation 前に必ず R2 へ flush」は実行フックが無い（確度: medium）**
+Cloudflare の hibernatable WebSocket は DO 側に「これから眠る」通知を提供せず、実装にも最終 socket 切断時の強制 checkpoint は無い（`webSocketClose` は session 削除のみ、`runtime.ts:927-931`）。op_log は SQLite に同期 durable なのでデータ損失は無い（§8 継ぎ目 1 の記述どおり）が、§7.3 の「flush は必須」という記述は実態と合わない。
+→ 提案: §7.3 を「hibernation 前 flush はデータ保全の必須条件ではなく、R2 の鮮度と cold start 時の replay 量を減らす最適化」と書き直し、実装するなら「認証済み socket が 0 になった時に checkpoint をトリガーする」をフックとして明記する。
+
+> **決着（2026-07-03）: spec へ反映済み。**
+
+**A-7. §20.2 の Worker/DO 観測性がほぼ皆無（確度: high）**
+構造化ログは実質存在しない（`console.error` が `runtime.ts:403` の 1 箇所のみ）。checkpoint 失敗や quarantine 発生が起きても運用上見えない。
+→ 提案: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason の 3 種を最小の構造化 JSON ログとして先に入れる。§20.2 に「最小セット」として優先順位を明記する。
+
+### B. クライアント: 安全策の乖離と未定義の設計判断
+
+**B-1. §18.1 の状態機械が実装と別語彙になっている（確度: high）**
+`stopped → local-ready → connecting → meta-syncing → online → …` は実装に存在しない（`meta-syncing` / `local-ready` はコード全体で 0 件）。実装は `SyncRuntimeShellStatus`（起動ゲート軸、`packages/obsidian-plugin/src/sync/engine/actuation.types.ts:26-33`）+ `ClientStartupStep`（`packages/core/src/sync/startup.ts`）+ queue 状態の 3 軸構成。spec が明記する「`meta-syncing` 中は大きな materialize を抑制」に対応する gate も無い。
+→ 提案: §18.1 を実装の 3 軸構成に書き直し、その上で「meta 収束完了前の大規模 materialize 抑制」をどの軸のどの状態が担うかを再定義する。7 状態機械を復元するなら、その対応表を spec に残す。
+
+**B-2. text の materialize が active editor 判定を素通りする経路がある（確度: high）**
+`flushYTextToDisk`（`packages/obsidian-plugin/src/main.ts:3604-3608`）は `decideMaterializeWrite` へ渡す `activeEditorBound` を常に `false` にハードコードしており、CM6 バインディング中のファイルでも `Vault.modify` に到達しうる。binary 経路（`runMaterializeSideEffect`, `main.ts:2365-2424`）は正しく渡しており非対称。spec 側（§9.1 / §11.2）の「active editor を直接 `Vault.modify` しない」制約が、呼び出し側の実装規律だけに依存している。
+→ 提案: 「materialize の呼び出し口は必ず active editor 判定を経由する（`activeEditorBound` は呼び出し側で `this.activeFile` と対象 path の一致から算出し、固定値を渡してはならない）」を §18.4 に実装制約として明記し、型または関数分離で強制する。
+
+> **決着（2026-07-03）: 実装済み。§18.4 に反映。**
+
+**B-3. YText → disk の debounce（§8 継ぎ目 3）が未実装のまま設計だけ残っている（確度: high）**
+「1〜2 秒アイドル or close 時に書く」に対応する debounce は無く、`flushYTextToDisk` はイベント駆動で即時実行される（`main.ts:1271,2717,2870`）。エコーループはハッシュゲートと CAS で止まっているため事故にはなっていないが、リモート編集が高頻度で流れると disk write が 1:1 で発生する。
+→ 提案: debounce を「正しさの機構」ではなく「write amplification 対策」として §8 継ぎ目 3 に位置づけ直し、導入時の flush 条件（アイドル秒数・close・quit）を明記する。
+
+> **決着（2026-07-03）: spec へ反映済み。**
+
+**B-4. 非アクティブファイルの外部編集検出が active file 限定（確度: high）**
+`.md` の `vault.on('modify')` ハンドラは `this.activeFile?.path === file.path` の場合のみハッシュゲートへ入る（`main.ts:3441-3454`）。§8 継ぎ目 3 の「外部編集を例外扱いせず常時ハッシュ比較で取り込む」に反し、git pull 等の一括変更が取り込まれない。binary 側は全ファイル対象で非対称。背景には「全ファイル分の lastMaterialized 管理と hash 計算コスト」が spec 未定義という設計の穴がある。
+→ 提案: §18.4 に「非アクティブファイルの外部編集検出戦略」の節を追加し、(1) watcher を全ファイル対象へ広げ mtime+size で pre-filter して hash は変化候補のみ計算する、(2) 定期 rescan で代替する、のどちらかを明示選択する。大規模 vault のコスト上限もここで決める。
+
+> **決着（2026-07-03）: 実装済み。§18.4 に反映。**
+
+**B-5. join 時の content-hash adoption が設計どおりに行われない（確度: high）**
+`adoptLocalFilesAfterRemoteMeta`（`main.ts:613-646`）は path 一致のみで adopt し、content hash 比較をしない。§18.1.1 が名指しで警告する「同 path の remote/local が別 fileId になり不要な conflict repair を誘発する」パターンを防げていない。bootstrap scan 自体の未実装は §11.2 P0 に記載済みだが、adoption の判定規則は spec 側にも擬似コードが無い。
+→ 提案: §19.1 に join 時 adoption の決定規則を擬似コード化する（例: path 一致 + hash 一致 → 無条件 adopt / path 一致 + hash 不一致 → adopt した上で差分を通常のローカル編集として YText へ取り込む / path 不一致 → 新規採番）。
+
+> **決着（2026-07-03）: 実装済み。§19.1 に反映。**
+
+**B-6. §14.1 の `file-ids.json` / `repair-log.jsonl` の要否が宙に浮いている（確度: high）**
+両ファイルとも実装に存在せず（全文検索 0 件）、fileId マッピングは IndexedDB の metadata store で完結している。§14.1 はこれらを「初期導入・障害復旧 cache」として必須物のように記述している。
+→ 提案: IndexedDB が破損した場合の復旧手段として Vault 内ファイルが本当に必要か再検討し、「必要（理由と書き込みタイミング）」か「IndexedDB + remote meta からの再構築で足りるため廃止」かを §14.1 で決着させる。
+
+> **決着（2026-07-03）: 「IndexedDB + remote meta からの再構築で足りるため廃止」側で決着。spec へ反映済み。**
+
+**B-7. materialize block-conflict 再 enqueue 時の retry 規則が未定義（確度: medium）**
+§18.4 は「conflict copy 退避後、改めて materialize queue へ積む」とするが、再 enqueue されたアイテムが `MATERIALIZE_RETRY_POLICY`（即時 3 回で manual-intervention-required、`packages/core/src/outbox/types.ts:650-667`）の retryCount を引き継ぐのかリセットするのか未規定。外部編集が連続すると、無限ループにも早すぎる manual pause にも転びうる。
+→ 提案: 「block-conflict による再 enqueue は新規アイテム扱い（retryCount リセット）だが、同一 fileId の連続 block-conflict 回数に別途上限を設けて manual 化する」等の規則を §18.3 に追記する。
+
+> **決着（2026-07-03）: spec へ反映済み。**
+
+**B-8. モバイルで IndexedDB directory API が使えるかが未検証（確度: low）**
+§14.2 は directory API が無い環境で `database-directory-unavailable` として起動を止める設計だが、Obsidian mobile（iOS WebView）でのこの API の可否を spec は扱っていない。非対応なら mobile が恒常的に起動不能になる。
+→ 提案: mobile 対応着手前のスパイク項目として §22 に追加し、非対応時の代替（schema version を `data.json` 側に冗長保持する等）を §14.2 に予約しておく。
+
+> **決着（2026-07-03）: spec へ反映済み（§22.3 にスパイク項目追加、§14.2 に fallback 予約）。**
+
+### C. データモデル / blob: 実装判断の spec 反映と未定義事項
+
+**C-1. CDC 既定パラメータが §17.3 と食い違う（確度: high）**
+spec は平均 1 MiB / 最小 256 KiB / 最大 4 MiB、実装既定値は平均 256 KiB / 最小 64 KiB / 最大 1 MiB（`packages/core/src/sync/manifest.ts:45-47`）。既定値の一致を検証するテストも無い。chunking パラメータは既存 chunk の重複排除に影響する実質的な wire 互換事項なので、黙って変えられない。
+→ 提案: どちらかに統一して §17.3 を更新し、「chunking パラメータの変更は manifest の `chunking` フィールドで識別し、旧パラメータの chunk と混在してよい（content-addressed なので壊れない）」という互換規則も明記する。
+
+> **決着（2026-07-03）: 実装値（平均 256 KiB / 最小 64 KiB / 最大 1 MiB）を正として spec へ反映済み。互換規則は当初案の「manifest の `chunking` フィールドで識別」ではなく、`BlobManifest` が各 chunk の offset・size・sha256 を明示列挙する自己記述形式であることに基づく（`chunking` という専用フィールドは実装に存在しない）。**
+
+**C-2. `packages/blob` / `packages/protocol` は実在せず、構成記述が古い（確度: high）**
+§3.4 / §13 / §11.2 / 付録の規模表が参照する `packages/blob/src/manifest.ts` は実際には `packages/core/src/sync/manifest.ts`（+ schema は `core/src/sync/blob.ts`）に統合されている。実装挙動は spec の記述と一致しており、乖離は構成記述のみ。
+→ 提案: §13 のパッケージ構成と各所のパス参照を現状（core / worker / obsidian-plugin / model-tests の 4 パッケージ）に更新する。
+
+> **決着（2026-07-03）: spec へ反映済み（§13 を 4 パッケージ構成に更新し、他節のパス参照も置換）。**
+
+**C-3. fileId の「UUID」前提が schema で強制されない（確度: medium）**
+`FileIdSchema`（`packages/core/src/utils/ids.ts:3,19`）は汎用 ID パターンで、UUID 形式を要求しない。生成箇所は `crypto.randomUUID()` だが、これは呼び出し規約であって trust boundary の保証ではない。`allocateConflictPath` は `fileId.slice(0,8)` を suffix に使うため（`packages/core/src/sync/reconcile.ts:237-255`）、低エントロピー ID が混入すると conflict path が衝突しやすくなる。
+→ 提案: §3.1 の文言を「衝突耐性のある opaque ID（生成は UUID v4）」に改め、`FileIdSchema` を UUID 形式に絞るか、conflict suffix の一意性を suffix 衝突時の `-2, -3...` 採番だけで担保する設計であることを明記する。
+
+> **決着（2026-07-03）: spec へ反映済み。**
+
+**C-4. binary 復活時の chunk 検証が §5.3 の擬似コードより弱い（確度: medium）**
+§5.3 は「全 chunk HEAD + size/hash 検証」だが、実装（`main.ts:1118-1144` + `packages/core/src/http/blob.ts:13-23`）は `found` + optional な size 一致のみで、size 未提供時は無条件 true になる。実際には content-addressed key + PUT 時の hash 検証で整合性は別経路で担保されている。
+→ 提案: §5.3 の擬似コードを「PUT 時に hash 検証済みの content-addressed store では、復活判定は HEAD found + size 一致で足りる」という設計判断として書き直す。あわせて `BlobHeadEntrySchema` の size を必須化し「size 不明なら復活させない」側に倒す。
+
+> **決着（2026-07-03）: spec へ反映済み。`BlobHeadEntrySchema` の size 必須化は実装課題として残す。**
+
+**C-5. `blobChunks` ↔ manifest の一致検証が client 側にしかない（確度: medium）**
+§3.2 の不変条件「`blobChunks` は manifest と一致必須」は `blobManifestMatchesMetaFile`（`packages/core/src/sync/blob.ts:97-109`）として存在するが plugin 側でしか呼ばれず、Worker の meta schema 検証（`runtime.ts:3182` 付近）は構造検証のみ。schema 的に妥当だが manifest と矛盾する `blobChunks` を Worker は受け入れる。
+→ 提案: これを「Worker は R2 read を伴うクロスチェックをしない（コスト上の割り切り）。矛盾は読み込み側の `assembleBlobBytes` 検証で検出し repair log へ」という設計判断として §4.3 に明記する。防ぐのではなく検出に倒す現方針を文書化する。
+
+> **決着（2026-07-03）: spec へ反映済み。**
+
+**C-6. meta YDoc の `schemaVersion` 移行戦略が未定義（確度: medium）**
+SQLite migration（§16.5）と local-store schema には方針があるが、`MetaFile.schemaVersion`（`v.literal(1)` 固定、`packages/core/src/sync/meta.ts:30`）だけは version 2 導入時の互換方針が無い。現実装のままだと新 version の entry は schema 検証で落ち、quarantine 直行になる。
+→ 提案: §3.2 に「schemaVersion 移行」の節を追加する。最低限、(1) 旧 client は未知 version の entry を quarantine ではなく read-only 扱いにする、(2) 新フィールド追加は同一 version 内で optional として行い、version bump は不変条件が変わる時だけ、の 2 点を先に決めておく。
+
+> **決着（2026-07-03）: spec へ反映済み。**
+
+**C-7. アプリレベル tombstone（`deleted:true` entry）の肥大化戦略が未定義（確度: high）**
+§9.2 が扱うのは Yjs 内部の CRDT tombstone のみ。`deleted:true` の MetaFile entry は Y.Map から削除されず永続的に残り、purge する処理も存在しない。meta YDoc は vault 全ファイルが集約される単一ドキュメントなので、長寿命 vault では削除・rename・repair の履歴で無制限に肥大化する。
+→ 提案: §5.1 に「tombstone entry の horizon」を追加する。blob GC と同じ retention horizon（`gcRetentionWindow >= maxOfflineWindow`）を越えた tombstone は、full-snapshot 境界（§9.2 の snapshot rotate と同じタイミング）で Y.Map から物理削除してよい、という規則にすると既存の horizon 設計と一貫する。
+
+> **決着（2026-07-03）: spec へ反映済み（§5.1 に horizon 規則を追加）。GC は未実行のため実装は不要。**
+
+**C-8. `canonicalizeVaultPath` の実装判断が spec に反映されていない（確度: high）**
+§3.2 は「normalize + lower」としか書かないが、実装（`packages/core/src/sync/meta.ts:111-113`）は Unicode NFC 正規化 + 連続 `/` 圧縮 + 端末非依存 `toLowerCase()` を行う。macOS（NFD でパスを返す）との整合はこの NFC 正規化が前提になる重要判断だが spec に無い。trailing slash・パス長上限・Windows 予約語（CON, NUL 等）の扱いも未定義。
+→ 提案: §19.2 に canonicalPath の正確な定義（NFC / スラッシュ圧縮 / locale 非依存 lower）を明文化し、Windows 予約語とパス長上限は「materialize 時に OS 別に検証し、不能なら conflict copy と同じ退避 + repair log」という扱いを追記する。
+
+> **決着（2026-07-03）: spec へ反映済み。**
+
+### 優先順位のまとめ
+
+| 優先 | 項目                                                     | 理由                                                                         |
+| ---- | -------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| P0   | A-1（compact vs retention）                              | §16.4 の復旧シナリオが現状成立しない。データ保全の不変条件そのもの           |
+| P0   | B-2（activeEditorBound 固定値）                          | 「active editor を直接書かない」制約の破り穴。CM6 binding 破壊は即データ事故 |
+| P0   | A-2（alarm 再スケジュール）                              | 静かに op_log が残留し、cold start 劣化と storage 消費が進行する             |
+| P1   | B-4 / B-5（外部編集検出・join adoption）                 | §8 継ぎ目 3 と §19.1 の設計判断が宙に浮いており、実装が縮退している          |
+| P1   | A-3 / A-4（R2 pointer・doc LRU）                         | スコープを縮小するなら spec を、守るなら実装を直す。どちらかに決着           |
+| P1   | C-1 / C-7（CDC 既定値・tombstone horizon）               | wire 互換と長期運用に効く。早いほど安い                                      |
+| P2   | 残り（明文化系: A-5, A-6, B-3, B-6, B-7, C-2〜C-6, C-8） | 実装判断の spec 反映と未定義事項の決着。挙動変更を伴わないものが多い         |

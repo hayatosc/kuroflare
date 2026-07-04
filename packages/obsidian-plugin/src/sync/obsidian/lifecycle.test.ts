@@ -1,12 +1,10 @@
-import assert from 'node:assert/strict'
-
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
   type ClientStartupLocalState,
   type ClientStartupStep,
 } from '@kuroflare/core'
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   createSyncRuntimeSetupExchangePort,

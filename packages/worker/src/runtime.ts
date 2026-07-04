@@ -118,6 +118,36 @@ import {
 } from './http/quarantine'
 import { planSetupExchangeHttpResponse } from './http/setup'
 import type { QuarantinedUpdateRecord } from './quarantine'
+import {
+  docKey,
+  docIdFromKey,
+  makeQuarantineId,
+  blobObjectKey,
+  blobManifestObjectKey,
+  quarantineConfirmationStorageKey,
+  adminOperationConfirmationSubject,
+  parseBlobSize,
+  parseContentLength,
+  readRequestBytesWithLimit,
+  snapshotCandidateFromKey,
+  quarantinedUpdateRecordFromSqlRow,
+  stateVectorCoversHorizon,
+  canApplyYjsUpdate,
+  metaYDocSchemaValid,
+  isEmptyYjsUpdate,
+  decodeBase64,
+  encodeBase64,
+  encodeOptionalBase64,
+  extractBearerToken,
+  extractWebSocketBearerToken,
+  isWebSocketAttachment,
+  isCheckpointRunStatus,
+  sha256Text,
+  sha256Hex,
+  makeArrayBuffer,
+  makeOpaqueToken,
+  makeGeneratedDeviceId,
+} from './runtime/utils'
 import { decideSyncRequest, type SyncRequestDocState } from './sync/request'
 import {
   chooseSnapshotForRestore,
@@ -866,6 +896,7 @@ export class VaultRoom {
       status: 'pointer-updated',
       upperSeq: decision.upperSeq,
       latestSnapshotSeq: decision.upperSeq,
+      retainedSnapshotFloorSeq: undefined,
       now,
     })
     if (compact.action === 'compact') {
@@ -915,6 +946,7 @@ export class VaultRoom {
         pointerVerified,
       },
       snapshot,
+      retainedSnapshotFloorSeq: undefined,
     })
 
     switch (decision.action) {
@@ -2099,474 +2131,4 @@ export class VaultRoom {
     }
   }
 }
-
-async function verifyBearerToken(
-  env: WorkerEnv,
-  request: Request,
-): Promise<DeviceTokenClaims | undefined> {
-  const secret = env.DEVICE_TOKEN_SECRET
-  const token = extractBearerToken(request.headers.get('Authorization'))
-  if (secret === undefined || token === undefined) return undefined
-  return verifyHs256DeviceToken({ token, secret })
-}
-
-const workerApp = new Hono<{ Bindings: WorkerEnv }>()
-
-workerApp.use(
-  '*',
-  cors({
-    origin: '*',
-    allowHeaders: ['Authorization', 'Content-Type', 'x-kuroflare-e2e-secret'],
-    allowMethods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT'],
-  }),
-)
-
-workerApp.post(E2E_SETUP_TOKEN_PATH, async (c) => {
-  const secret = c.env.E2E_SETUP_TOKEN_SECRET
-  if (secret === undefined) return c.notFound()
-  if (c.req.header('x-kuroflare-e2e-secret') !== secret) {
-    return c.json({ error: 'e2e-seed-forbidden' }, 403)
-  }
-  const body: unknown = await c.req.raw
-    .clone()
-    .json()
-    .catch(() => undefined)
-  if (!v.is(E2eSetupTokenSeedRequestSchema, body)) {
-    return c.json({ error: 'invalid-e2e-setup-token-seed-request' }, 400)
-  }
-  return routeVaultRoom(c.req.raw, c.env, body.vaultId)
-})
-
-workerApp.post(E2E_SNAPSHOT_PATH, async (c) => {
-  const secret = c.env.E2E_SETUP_TOKEN_SECRET
-  if (secret === undefined) return c.notFound()
-  if (c.req.header('x-kuroflare-e2e-secret') !== secret) {
-    return c.json({ error: 'e2e-seed-forbidden' }, 403)
-  }
-  const body: unknown = await c.req.raw
-    .clone()
-    .json()
-    .catch(() => undefined)
-  if (!v.is(E2eSnapshotSeedRequestSchema, body)) {
-    return c.json({ error: 'invalid-e2e-snapshot-seed-request' }, 400)
-  }
-  return routeVaultRoom(c.req.raw, c.env, body.vaultId)
-})
-
-workerApp.post('/setup/exchange', async (c) => {
-  const body: unknown = await c.req.raw
-    .clone()
-    .json()
-    .catch(() => undefined)
-  if (!v.is(SetupExchangeRequestSchema, body)) {
-    return c.json({ error: 'invalid-setup-exchange-request' }, 400)
-  }
-  return routeVaultRoom(c.req.raw, c.env, body.vaultId)
-})
-
-workerApp.post('/auth/refresh', async (c) => {
-  const body: unknown = await c.req.raw
-    .clone()
-    .json()
-    .catch(() => undefined)
-  if (!v.is(DeviceTokenRefreshRequestSchema, body)) {
-    return c.json({ error: 'invalid-auth-refresh-request' }, 400)
-  }
-  return routeVaultRoom(c.req.raw, c.env, body.vaultId)
-})
-
-workerApp.post('/devices/:deviceId/revoke', async (c) => {
-  const rawDeviceId = c.req.param('deviceId')
-  if (!v.is(DeviceIdSchema, rawDeviceId)) {
-    return c.json({ error: 'invalid-device-id' }, 400)
-  }
-  const body: unknown = await c.req.raw
-    .clone()
-    .json()
-    .catch(() => undefined)
-  if (!v.is(RevokeDeviceRequestSchema, body)) {
-    return c.json({ error: 'invalid-revoke-device-request' }, 400)
-  }
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.get('/admin/quarantine', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.get('/admin/quarantine/:id', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.post('/blobs/head', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.post('/blobs/upload-url', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.on(['GET', 'PUT'], '/blobs/:hash', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.on(['GET', 'PUT'], '/blob-manifests/*', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.get('/ws/:vaultId', async (c) => {
-  const vaultId = c.req.param('vaultId')
-  if (!v.is(VaultIdSchema, vaultId)) {
-    return c.text('Invalid vaultId', 400)
-  }
-  if (c.req.header('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE) {
-    return c.text('Expected WebSocket upgrade', 426)
-  }
-  return routeVaultRoom(c.req.raw, c.env, vaultId)
-})
-
-export const workerEntrypoint = workerApp
-export default workerApp
-
-function routeVaultRoom(request: Request, env: WorkerEnv, vaultId: VaultId): Promise<Response> {
-  const id = env.VAULT_ROOM.idFromName(vaultId)
-  const room = env.VAULT_ROOM.get(id)
-  return Promise.resolve(room.fetch(request))
-}
-
-function docKey(docId: DocId): string {
-  return docId.kind === 'meta' ? 'meta' : `file:${docId.ydocId}`
-}
-
-function docIdFromKey(key: unknown): DocId | undefined {
-  if (key === 'meta') {
-    return { kind: 'meta' }
-  }
-  if (typeof key !== 'string' || !key.startsWith('file:')) {
-    return undefined
-  }
-
-  const ydocId = key.slice('file:'.length)
-  return v.is(YDocIdSchema, ydocId) ? { kind: 'file', ydocId } : undefined
-}
-
-function makeQuarantineId(update: SyncUpdate): string {
-  return `q-${update.messageId}`
-}
-
-function blobObjectKey(vaultId: VaultId, sha256: Sha256Hex): string {
-  return `vaults/${vaultId}/blobs/${sha256}`
-}
-
-function blobManifestObjectKey(vaultId: VaultId, sha256: Sha256Hex): string {
-  return `vaults/${vaultId}/blob-manifests/${sha256}.json`
-}
-
-function parseBlobSize(request: Request): number | undefined {
-  const rawSize = new URL(request.url).searchParams.get('size')
-  if (rawSize === null || !/^(0|[1-9][0-9]*)$/.test(rawSize)) {
-    return undefined
-  }
-  const size = Number(rawSize)
-  return Number.isSafeInteger(size) && size >= 0 ? size : undefined
-}
-
-function parseContentLength(request: Request): number | undefined {
-  const rawLength = request.headers.get('content-length')
-  if (rawLength === null || !/^(0|[1-9][0-9]*)$/.test(rawLength)) {
-    return undefined
-  }
-  const length = Number(rawLength)
-  return Number.isSafeInteger(length) && length >= 0 ? length : undefined
-}
-
-async function readRequestBytesWithLimit(
-  request: Request,
-  maxBytes: number,
-): Promise<Uint8Array | undefined> {
-  if (request.body === null) {
-    return new Uint8Array()
-  }
-
-  const reader = request.body.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  while (true) {
-    const result = await reader.read()
-    if (result.done) {
-      break
-    }
-    total += result.value.byteLength
-    if (total > maxBytes) {
-      await reader.cancel()
-      return undefined
-    }
-    chunks.push(result.value)
-  }
-
-  const bytes = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return bytes
-}
-
-function snapshotCandidateFromKey(prefix: string, key: string): SnapshotCandidate | undefined {
-  if (!key.startsWith(prefix) || !key.endsWith('.yupdate')) {
-    return undefined
-  }
-
-  const seqText = key.slice(prefix.length, -'.yupdate'.length)
-  if (!/^[1-9][0-9]*$/.test(seqText)) {
-    return undefined
-  }
-
-  const upperSeq = Number(seqText)
-  if (!v.is(PosIntSchema, upperSeq)) {
-    return undefined
-  }
-
-  return { key, upperSeq, healthy: true }
-}
-
-function quarantinedUpdateRecordFromSqlRow(
-  row: QuarantinedUpdateRow | undefined,
-): QuarantinedUpdateRecord | undefined {
-  if (row === undefined) {
-    return undefined
-  }
-
-  const docId = docIdFromKey(row.docId)
-  const updateBytes = readSqlUpdateBytes(row.updateBytes)
-  if (
-    docId === undefined ||
-    !v.is(MessageIdSchema, row.messageId) ||
-    !v.is(DeviceIdSchema, row.deviceId) ||
-    !isQuarantineReason(row.reason) ||
-    !v.is(Sha256HexSchema, row.updateSha256) ||
-    updateBytes === undefined ||
-    !v.is(NonNegIntSchema, row.createdAt)
-  ) {
-    return undefined
-  }
-
-  return {
-    id: row.id,
-    docId,
-    messageId: row.messageId,
-    deviceId: row.deviceId,
-    reason: row.reason,
-    updateSha256: row.updateSha256,
-    updateBytesLength: updateBytes.byteLength,
-    createdAt: row.createdAt,
-  }
-}
-
-function isQuarantineReason(value: unknown): value is QuarantinedUpdateRecord['reason'] {
-  return (
-    value === 'hash-mismatch' || value === 'yjs-apply-failed' || value === 'meta-schema-invalid'
-  )
-}
-
-function stateVectorCoversHorizon(
-  clientStateVector: Uint8Array,
-  horizonStateVector: Uint8Array | undefined,
-): boolean {
-  if (horizonStateVector === undefined || horizonStateVector.byteLength === 0) {
-    return true
-  }
-
-  try {
-    const client = Y.decodeStateVector(clientStateVector)
-    const horizon = Y.decodeStateVector(horizonStateVector)
-    for (const [clientId, horizonClock] of horizon) {
-      if ((client.get(clientId) ?? 0) < horizonClock) {
-        return false
-      }
-    }
-    return true
-  } catch {
-    return false
-  }
-}
-
-function canApplyYjsUpdate(updateBytes: Uint8Array): boolean {
-  const candidate = new Y.Doc()
-  try {
-    Y.applyUpdate(candidate, updateBytes)
-    return true
-  } catch {
-    return false
-  } finally {
-    candidate.destroy()
-  }
-}
-
-function metaYDocSchemaValid(doc: Y.Doc): boolean {
-  const meta = doc.getMap<unknown>('meta')
-  for (const [fileId, value] of meta.entries()) {
-    if (!v.is(FileIdSchema, fileId) || !(v.is(MetaFileSchema, value) && value.fileId === fileId)) {
-      return false
-    }
-  }
-  return true
-}
-
-function isEmptyYjsUpdate(update: Uint8Array): boolean {
-  return update.byteLength <= 2
-}
-
-function decodeBase64(value: string): Uint8Array | null {
-  try {
-    const decoded = atob(value)
-    const bytes = new Uint8Array(decoded.length)
-    for (let index = 0; index < decoded.length; index += 1) {
-      bytes[index] = decoded.charCodeAt(index)
-    }
-    return bytes
-  } catch {
-    return null
-  }
-}
-
-function encodeBase64(value: Uint8Array): string {
-  let binary = ''
-  for (const byte of value) {
-    binary += String.fromCharCode(byte)
-  }
-  return btoa(binary)
-}
-
-function encodeOptionalBase64(value: Uint8Array | undefined): string | undefined {
-  return value === undefined ? undefined : encodeBase64(value)
-}
-
-function extractBearerToken(authorization: string | null): string | undefined {
-  if (authorization === null) {
-    return undefined
-  }
-  const match = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/.exec(authorization)
-  return match?.[1]
-}
-
-function extractWebSocketBearerToken(request: Request): string | undefined {
-  const headerToken = extractBearerToken(request.headers.get('Authorization'))
-  if (headerToken !== undefined) {
-    return headerToken
-  }
-
-  const queryToken = new URL(request.url).searchParams.get('access_token')
-  if (queryToken !== null && isCompactJwt(queryToken)) {
-    return queryToken
-  }
-
-  return extractWebSocketProtocolToken(request.headers.get('Sec-WebSocket-Protocol'))
-}
-
-function extractWebSocketProtocolToken(protocolHeader: string | null): string | undefined {
-  if (protocolHeader === null) {
-    return undefined
-  }
-  for (const token of protocolHeader.split(',')) {
-    const trimmed = token.trim()
-    if (isCompactJwt(trimmed)) {
-      return trimmed
-    }
-    if (trimmed.startsWith('kuroflare-token.')) {
-      const encoded = trimmed.slice('kuroflare-token.'.length)
-      if (isCompactJwt(encoded)) {
-        return encoded
-      }
-    }
-  }
-  return undefined
-}
-
-function isCompactJwt(value: string | null): boolean {
-  return value !== null && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
-}
-
-function isWebSocketAttachment(value: unknown): value is WebSocketAttachment {
-  if (!isRecord(value)) {
-    return false
-  }
-  const authToken = value.authToken
-  const session = value.session
-  return (
-    (authToken === undefined || typeof authToken === 'string') &&
-    (session === undefined || isSessionState(session))
-  )
-}
-
-function isSessionState(value: unknown): value is SessionState {
-  if (!isRecord(value)) {
-    return false
-  }
-  return (
-    v.is(VaultIdSchema, value.vaultId) &&
-    v.is(DeviceIdSchema, value.deviceId) &&
-    isValidYClientId(value.yClientId)
-  )
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isCheckpointRunStatus(value: unknown): value is CheckpointRunStatus {
-  return (
-    value === 'writing' ||
-    value === 'r2-written' ||
-    value === 'pointer-updated' ||
-    value === 'compacted' ||
-    value === 'failed'
-  )
-}
-
-async function sha256Text(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const buffer = new ArrayBuffer(bytes.byteLength)
-  new Uint8Array(buffer).set(bytes)
-  const digest = await crypto.subtle.digest('SHA-256', buffer)
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-function makeArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const buffer = new ArrayBuffer(bytes.byteLength)
-  new Uint8Array(buffer).set(bytes)
-  return buffer
-}
-
-function makeOpaqueToken(): string {
-  const bytes = new Uint8Array(32)
-  crypto.getRandomValues(bytes)
-  return encodeBase64Url(bytes)
-}
-
-function encodeBase64Url(value: Uint8Array): string {
-  return encodeBase64(value).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
-}
-
-function makeGeneratedDeviceId(): DeviceId {
-  return makeDeviceId(`device-${crypto.randomUUID()}`)
-}
+export { workerEntrypoint, default } from './runtime/app'

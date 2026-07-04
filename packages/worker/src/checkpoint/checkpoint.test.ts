@@ -1,6 +1,4 @@
-import assert from 'node:assert/strict'
-
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   decideCheckpointCompact,
@@ -86,6 +84,7 @@ test('checkpoint compact runs only after the pointer has advanced', () => {
       status: 'pointer-updated',
       upperSeq: 12,
       latestSnapshotSeq: 12,
+      retainedSnapshotFloorSeq: undefined,
       now: 60,
     }),
     { action: 'compact', compactedSeq: 12, compactedAt: 60 },
@@ -96,6 +95,7 @@ test('checkpoint compact runs only after the pointer has advanced', () => {
       status: 'r2-written',
       upperSeq: 12,
       latestSnapshotSeq: 12,
+      retainedSnapshotFloorSeq: undefined,
       now: 60,
     }),
     { action: 'skip', reason: 'not-pointer-updated' },
@@ -106,9 +106,45 @@ test('checkpoint compact runs only after the pointer has advanced', () => {
       status: 'pointer-updated',
       upperSeq: 12,
       latestSnapshotSeq: 11,
+      retainedSnapshotFloorSeq: undefined,
       now: 60,
     }),
     { action: 'skip', reason: 'pointer-behind-run' },
+  )
+})
+
+test('checkpoint compact clamps to the retained snapshot floor so rollback op_log survives', () => {
+  assert.deepEqual(
+    decideCheckpointCompact({
+      status: 'pointer-updated',
+      upperSeq: 12,
+      latestSnapshotSeq: 12,
+      retainedSnapshotFloorSeq: 8,
+      now: 60,
+    }),
+    { action: 'compact', compactedSeq: 8, compactedAt: 60 },
+  )
+
+  assert.deepEqual(
+    decideCheckpointCompact({
+      status: 'pointer-updated',
+      upperSeq: 12,
+      latestSnapshotSeq: 12,
+      retainedSnapshotFloorSeq: 12,
+      now: 60,
+    }),
+    { action: 'compact', compactedSeq: 12, compactedAt: 60 },
+  )
+
+  assert.deepEqual(
+    decideCheckpointCompact({
+      status: 'pointer-updated',
+      upperSeq: 12,
+      latestSnapshotSeq: 12,
+      retainedSnapshotFloorSeq: -1,
+      now: 60,
+    }),
+    { action: 'skip', reason: 'invalid-clock' },
   )
 })
 
@@ -118,6 +154,7 @@ test('terminal checkpoint runs are ignored during cold-start recovery', () => {
       run: run({ status: 'compacted' }),
       doc: currentDoc,
       snapshot: verifiedSnapshot,
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'ignore-terminal' },
   )
@@ -127,6 +164,7 @@ test('terminal checkpoint runs are ignored during cold-start recovery', () => {
       run: run({ status: 'failed' }),
       doc: currentDoc,
       snapshot: undefined,
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'ignore-terminal' },
   )
@@ -138,6 +176,7 @@ test('writing checkpoint recovery fails incomplete or unverified snapshots', () 
       run: run({ status: 'writing', snapshotKey: undefined }),
       doc: currentDoc,
       snapshot: undefined,
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'fail-run', reason: 'missing-snapshot' },
   )
@@ -147,6 +186,7 @@ test('writing checkpoint recovery fails incomplete or unverified snapshots', () 
       run: run({ status: 'writing' }),
       doc: currentDoc,
       snapshot: { exists: true, verified: false },
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'fail-run', reason: 'unverified-snapshot' },
   )
@@ -158,6 +198,7 @@ test('writing checkpoint recovery resumes only after the snapshot is verified', 
       run: run({ status: 'writing' }),
       doc: currentDoc,
       snapshot: verifiedSnapshot,
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'mark-r2-written' },
   )
@@ -169,6 +210,7 @@ test('r2-written checkpoint recovery advances only non-stale verified snapshots'
       run: run({ status: 'r2-written', upperSeq: 11 }),
       doc: currentDoc,
       snapshot: verifiedSnapshot,
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'advance-pointer' },
   )
@@ -178,6 +220,7 @@ test('r2-written checkpoint recovery advances only non-stale verified snapshots'
       run: run({ status: 'r2-written', upperSeq: 9 }),
       doc: currentDoc,
       snapshot: verifiedSnapshot,
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'mark-stale', reason: 'would-rewind-pointer' },
   )
@@ -189,6 +232,7 @@ test('r2-written checkpoint recovery refuses missing snapshots', () => {
       run: run({ status: 'r2-written' }),
       doc: currentDoc,
       snapshot: { exists: false, verified: false },
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'fail-run', reason: 'missing-snapshot' },
   )
@@ -200,8 +244,9 @@ test('pointer-updated checkpoint recovery compacts only after pointer verificati
       run: run({ status: 'pointer-updated', upperSeq: 10 }),
       doc: currentDoc,
       snapshot: undefined,
+      retainedSnapshotFloorSeq: undefined,
     }),
-    { action: 'compact-op-log' },
+    { action: 'compact-op-log', compactedSeq: 10 },
   )
 
   assert.deepEqual(
@@ -209,6 +254,7 @@ test('pointer-updated checkpoint recovery compacts only after pointer verificati
       run: run({ status: 'pointer-updated', upperSeq: 10 }),
       doc: { latestSnapshotSeq: 10, pointerVerified: false },
       snapshot: undefined,
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'block-compact', reason: 'pointer-unverified' },
   )
@@ -218,7 +264,42 @@ test('pointer-updated checkpoint recovery compacts only after pointer verificati
       run: run({ status: 'pointer-updated', upperSeq: 11 }),
       doc: currentDoc,
       snapshot: undefined,
+      retainedSnapshotFloorSeq: undefined,
     }),
     { action: 'block-compact', reason: 'pointer-behind-run' },
+  )
+})
+
+test('pointer-updated checkpoint recovery clamps compact to the retained snapshot floor', () => {
+  assert.deepEqual(
+    decideOrphanedCheckpointRecovery({
+      run: run({ status: 'pointer-updated', upperSeq: 10 }),
+      doc: currentDoc,
+      snapshot: undefined,
+      retainedSnapshotFloorSeq: 6,
+    }),
+    { action: 'compact-op-log', compactedSeq: 6 },
+  )
+
+  assert.deepEqual(
+    decideOrphanedCheckpointRecovery({
+      run: run({ status: 'pointer-updated', upperSeq: 10 }),
+      doc: currentDoc,
+      snapshot: undefined,
+      retainedSnapshotFloorSeq: 10,
+    }),
+    { action: 'compact-op-log', compactedSeq: 10 },
+  )
+
+  // An untrustworthy floor blocks compaction entirely rather than risk
+  // deleting op_log a retained older snapshot still needs.
+  assert.deepEqual(
+    decideOrphanedCheckpointRecovery({
+      run: run({ status: 'pointer-updated', upperSeq: 10 }),
+      doc: currentDoc,
+      snapshot: undefined,
+      retainedSnapshotFloorSeq: -1,
+    }),
+    { action: 'block-compact', reason: 'invalid-retained-floor' },
   )
 })

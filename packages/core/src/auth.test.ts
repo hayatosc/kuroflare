@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   DEVICE_TOKEN_ISSUER,
   makeDeviceId,
@@ -7,7 +5,7 @@ import {
   type DeviceTokenClaims,
   type SetupExchangeResponse,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   CLIENT_AUTH_REFRESH_RETRY_POLICY,

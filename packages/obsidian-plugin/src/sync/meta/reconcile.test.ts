@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   canonicalizeVaultPath,
   isMetaFile,
@@ -11,7 +9,7 @@ import {
   type FileId,
   type MetaFile,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
 import { reconcileMetaDoc } from '../meta/reconcile'

@@ -1,8 +1,6 @@
-import assert from 'node:assert/strict'
-
 import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type ClientStartupLocalState } from '@kuroflare/core'
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   planSyncRuntimeStartup,
@@ -247,7 +245,7 @@ test('sync runtime startup gates setup response paths by the setup vault local s
   })
   assert.deepEqual(
     plan.effects.slice(1).map((effect) => effect.kind),
-    Array.from({ length: 6 }, () => 'run-sync-startup-effect'),
+    Array.from({ length: 7 }, () => 'run-sync-startup-effect'),
   )
 })
 

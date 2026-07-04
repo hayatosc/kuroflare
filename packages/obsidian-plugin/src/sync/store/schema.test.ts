@@ -1,8 +1,6 @@
-import assert from 'node:assert/strict'
-
 import { DEFAULT_LOCAL_STORE_OBJECT_STORES } from '@kuroflare/core'
 import { makeVaultId } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION,

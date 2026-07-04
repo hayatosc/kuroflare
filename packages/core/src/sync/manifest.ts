@@ -42,9 +42,16 @@ export class BlobAssemblyError extends Error {
   }
 }
 
-const DEFAULT_MIN_SIZE = 64 * 1024
-const DEFAULT_AVG_SIZE = 256 * 1024
-const DEFAULT_MAX_SIZE = 1024 * 1024
+/**
+ * Default CDC chunking parameters. Changing them is safe for correctness
+ * because manifests are self-describing, but it changes chunk boundaries and
+ * defeats dedup against previously written chunks.
+ */
+export const DEFAULT_CHUNKING_OPTIONS = {
+  minSize: 64 * 1024,
+  avgSize: 256 * 1024,
+  maxSize: 1024 * 1024,
+} as const satisfies Required<ChunkingOptions>
 
 /**
  * Splits bytes into deterministic content-defined chunks.
@@ -198,9 +205,9 @@ export async function assembleBlobBytes(
 }
 
 function normalizeChunkingOptions(options: ChunkingOptions): Required<ChunkingOptions> {
-  const minSize = options.minSize ?? DEFAULT_MIN_SIZE
-  const avgSize = options.avgSize ?? DEFAULT_AVG_SIZE
-  const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE
+  const minSize = options.minSize ?? DEFAULT_CHUNKING_OPTIONS.minSize
+  const avgSize = options.avgSize ?? DEFAULT_CHUNKING_OPTIONS.avgSize
+  const maxSize = options.maxSize ?? DEFAULT_CHUNKING_OPTIONS.maxSize
 
   if (!isPositivePowerOfTwo(avgSize)) {
     throw new Error(`avgSize must be a positive power of two: ${avgSize}`)

@@ -1,8 +1,6 @@
-import assert from 'node:assert/strict'
-
 import { type ClientStartupLocalState } from '@kuroflare/core'
 import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import { planSyncEngineStartup, startupStepPhase } from '../engine/engine'
 
@@ -50,6 +48,7 @@ test('sync engine converts new-vault startup into ordered plugin effects', () =>
       'run-startup-step',
       'run-startup-step',
       'run-startup-step',
+      'run-startup-step',
     ],
   )
   assert.deepEqual(plan.effects, [
@@ -74,8 +73,14 @@ test('sync engine converts new-vault startup into ordered plugin effects', () =>
     {
       kind: 'run-startup-step',
       vaultId,
-      step: 'enqueue-initial-file-uploads',
-      phase: 'outbox',
+      step: 'publish-local-meta-snapshot',
+      phase: 'snapshot',
+    },
+    {
+      kind: 'run-startup-step',
+      vaultId,
+      step: 'publish-initial-file-snapshots',
+      phase: 'snapshot',
     },
     {
       kind: 'run-startup-step',
@@ -147,6 +152,8 @@ test('sync engine exposes revoked and reauth states as auth-blocked effects', ()
 test('startup step phases keep local, websocket, snapshot, and outbox work separate', () => {
   assert.equal(startupStepPhase('load-indexeddb-ydocs'), 'local-store')
   assert.equal(startupStepPhase('send-client-hello'), 'websocket')
+  assert.equal(startupStepPhase('publish-local-meta-snapshot'), 'snapshot')
+  assert.equal(startupStepPhase('publish-initial-file-snapshots'), 'snapshot')
   assert.equal(startupStepPhase('sync-meta-state-vector'), 'snapshot')
   assert.equal(startupStepPhase('resume-background-queues'), 'outbox')
 })

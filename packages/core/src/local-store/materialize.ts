@@ -5,6 +5,14 @@ export interface LastMaterializedRecord {
   readonly path: string
   readonly writtenAt: number
   readonly writeId?: string
+  /**
+   * `TFile.stat.mtime` observed at the time this record was written. Used by
+   * {@link decideWatcherStatPrefilter} to skip hash computation for watcher
+   * events that carry no actual filesystem change.
+   */
+  readonly diskMtimeMs?: number
+  /** `TFile.stat.size` observed at the time this record was written. */
+  readonly diskSize?: number
 }
 
 /** Decision for a filesystem watcher event on a materialized file. */
@@ -31,21 +39,30 @@ export type MaterializeWriteDecision =
 
 /** Input for the final compare-and-swap gate before writing to disk. */
 export interface MaterializeWriteInput {
-  readonly activeEditorBound: boolean
+  /** Vault-relative path of the file this materialize write targets. */
+  readonly path: string
+  /**
+   * Vault-relative path of the file currently bound to the active editor, or
+   * `undefined` if no file is bound. Callers must report their live binding
+   * state here instead of pre-computing a boolean, so the active-editor guard
+   * cannot be bypassed by passing a stale or hardcoded value.
+   */
+  readonly activeFilePath: string | undefined
   readonly currentDiskHash: string
   readonly lastMaterialized: LastMaterializedRecord | undefined
 }
 
 /** Build a last-materialized record without assigning absent optional fields. */
 export function makeLastMaterializedRecord(input: LastMaterializedRecord): LastMaterializedRecord {
-  return input.writeId === undefined
-    ? {
-        ydocHash: input.ydocHash,
-        diskHash: input.diskHash,
-        path: input.path,
-        writtenAt: input.writtenAt,
-      }
-    : { ...input }
+  return {
+    ydocHash: input.ydocHash,
+    diskHash: input.diskHash,
+    path: input.path,
+    writtenAt: input.writtenAt,
+    ...(input.writeId === undefined ? {} : { writeId: input.writeId }),
+    ...(input.diskMtimeMs === undefined ? {} : { diskMtimeMs: input.diskMtimeMs }),
+    ...(input.diskSize === undefined ? {} : { diskSize: input.diskSize }),
+  }
 }
 
 /**
@@ -72,9 +89,11 @@ export function decideWatcherHashGate(input: WatcherHashGateInput): WatcherHashG
  * The write is allowed only when the disk hash still matches the last
  * materialized base. Missing base information is treated as unsafe because the
  * materializer cannot distinguish a fresh write from an unobserved disk edit.
+ * A file currently bound to the active editor is never written directly because
+ * doing so can race live editor updates and overwrite in-memory edits.
  */
 export function decideMaterializeWrite(input: MaterializeWriteInput): MaterializeWriteDecision {
-  if (input.activeEditorBound) {
+  if (input.activeFilePath === input.path) {
     return { action: 'skip-active-editor' }
   }
 
@@ -87,4 +106,43 @@ export function decideMaterializeWrite(input: MaterializeWriteInput): Materializ
   }
 
   return { action: 'write' }
+}
+
+/** Decision for whether a background watcher event needs a content-hash check. */
+export type WatcherStatPrefilterDecision =
+  | { readonly action: 'skip-unchanged-stat' }
+  | { readonly action: 'check-hash' }
+
+/** Input for deciding whether a watcher event's stat alone rules out a change. */
+export interface WatcherStatPrefilterInput {
+  readonly currentMtimeMs: number
+  readonly currentSize: number
+  readonly lastMaterialized: LastMaterializedRecord | undefined
+}
+
+/**
+ * Decide whether a filesystem watcher event needs a full canonical-text hash
+ * comparison, or can be skipped using mtime/size alone.
+ *
+ * Hashing requires reading the whole file, which is too costly to do for
+ * every watcher event across a large vault (e.g. a `git pull` touching
+ * thousands of files). `TFile.stat` mtime/size come for free with the event,
+ * so a file whose mtime and size both still match the last observed
+ * materialize/import baseline cannot have changed and is skipped without
+ * hashing. Any mismatch, or a missing baseline (file never observed before),
+ * falls through to the real hash gate.
+ */
+export function decideWatcherStatPrefilter(
+  input: WatcherStatPrefilterInput,
+): WatcherStatPrefilterDecision {
+  const last = input.lastMaterialized
+  if (
+    last?.diskMtimeMs !== undefined &&
+    last.diskSize !== undefined &&
+    last.diskMtimeMs === input.currentMtimeMs &&
+    last.diskSize === input.currentSize
+  ) {
+    return { action: 'skip-unchanged-stat' }
+  }
+  return { action: 'check-hash' }
 }

@@ -1,6 +1,4 @@
-import assert from 'node:assert/strict'
-
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   createSyncRuntimeObsidianSetupExchangeEvidenceReader,
@@ -165,16 +163,15 @@ test('Obsidian startup settings evidence reader throws non-secret errors', () =>
     },
   })
 
-  assert.throws(
-    () => reader.readEvidence({ kind: 'run-setup-exchange', reason: 'setup-required' }),
-    (error: unknown) => {
-      assert.ok(error instanceof Error)
-      assert.equal(
-        error.message,
-        'setup-exchange-settings:invalid-setup-request:invalid-requested-device-name',
-      )
-      assert.equal(error.message.includes(token), false)
-      return true
-    },
-  )
+  try {
+    reader.readEvidence({ kind: 'run-setup-exchange', reason: 'setup-required' })
+    throw new Error('expected setup evidence read to fail')
+  } catch (error) {
+    assert.instanceOf(error, Error)
+    assert.equal(
+      error.message,
+      'setup-exchange-settings:invalid-setup-request:invalid-requested-device-name',
+    )
+    assert.equal(error.message.includes(token), false)
+  }
 })

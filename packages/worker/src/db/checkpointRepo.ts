@@ -11,6 +11,19 @@ export interface CheckpointRunRow {
   readonly snapshotKey: string | null
 }
 
+export interface SnapshotRetentionCheckpointRunRow {
+  readonly status: string
+  readonly snapshotKey: string | null
+}
+
+export interface SnapshotRetentionEventRow {
+  readonly docId: string
+  readonly snapshotKey: string
+  readonly action: string
+  readonly error: string | null
+  readonly attemptedAt: number
+}
+
 export interface CheckpointDocRecoveryRow {
   readonly latestSnapshotSeq: number
   readonly latestSnapshotKey: string | null
@@ -118,6 +131,55 @@ export async function getRecoverableCheckpointRuns(
     .execute()
 }
 
+export async function getSnapshotRetentionCheckpointRuns(
+  db: Kysely<Database>,
+  docKey: string,
+): Promise<readonly SnapshotRetentionCheckpointRunRow[]> {
+  return db
+    .selectFrom('checkpoint_runs')
+    .select(['status', 'snapshot_key as snapshotKey'])
+    .where('doc_id', '=', docKey)
+    .execute()
+}
+
+export async function insertSnapshotRetentionEvent(
+  db: Kysely<Database>,
+  docKey: string,
+  snapshotKey: string,
+  action: string,
+  error: string | null,
+  attemptedAt: number,
+): Promise<void> {
+  await db
+    .insertInto('snapshot_retention_events')
+    .values({
+      doc_id: docKey,
+      snapshot_key: snapshotKey,
+      action,
+      error,
+      attempted_at: attemptedAt,
+    })
+    .execute()
+}
+
+export async function getSnapshotRetentionEvents(
+  db: Kysely<Database>,
+  limit: number,
+): Promise<readonly SnapshotRetentionEventRow[]> {
+  return db
+    .selectFrom('snapshot_retention_events')
+    .select((eb) => [
+      eb.ref('doc_id').as('docId'),
+      eb.ref('snapshot_key').as('snapshotKey'),
+      'action',
+      'error',
+      eb.ref('attempted_at').as('attemptedAt'),
+    ])
+    .orderBy('attempted_at', 'desc')
+    .limit(limit)
+    .execute()
+}
+
 export async function getCheckpointDocRecoveryState(
   db: Kysely<Database>,
   docKey: string,
@@ -206,4 +268,8 @@ export async function getQuarantinedUpdateBytes(
     .select((eb) => eb.ref('update_bytes').as('updateBytes'))
     .where('id', '=', id)
     .executeTakeFirst()
+}
+
+export async function deleteQuarantinedUpdate(db: Kysely<Database>, id: string): Promise<void> {
+  await db.deleteFrom('quarantined_updates').where('id', '=', id).execute()
 }

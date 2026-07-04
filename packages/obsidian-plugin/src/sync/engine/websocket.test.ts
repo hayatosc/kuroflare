@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   hashBytesSha256,
   makeOutboxPlanItemId,
@@ -17,7 +15,7 @@ import {
   type ClientHello,
   type DocId,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, expect, test } from 'vitest'
 import * as Y from 'yjs'
 
 import {
@@ -29,12 +27,14 @@ import {
   createSyncRuntimeWebSocketRemoteUpdateApplyPort,
   createSyncRuntimeWebSocketSession,
   createSyncRuntimeWebSocketStartupStepPort,
+  createSyncRuntimeWebSocketSyncRequestSendPort,
   createSyncRuntimeWebSocketSyncRequestAnswerPort,
   createSyncRuntimeWebSocketYjsRemoteUpdateApplyPort,
   decodeSyncRuntimeWebSocketRemoteUpdate,
   dispatchSyncRuntimeWebSocketInboundMessage,
   parseSyncRuntimeWebSocketMessage,
   planSyncRuntimeWebSocketHelloAdmission,
+  planSyncRuntimeWebSocketSyncRequestSend,
   planSyncRuntimeWebSocketSyncRequestAnswer,
   planSyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction,
   planSyncRuntimeWebSocketOutboxCompletion,
@@ -167,7 +167,7 @@ test('websocket runtime rejects hello before open and missing access token', asy
     webSocket,
   })
 
-  await assert.rejects(
+  await expect(
     async () =>
       await missingTokenPort.openWebSocket({
         kind: 'run-startup-step',
@@ -175,8 +175,7 @@ test('websocket runtime rejects hello before open and missing access token', asy
         step: 'open-websocket',
         phase: 'websocket',
       }),
-    /websocket-access-token-missing/,
-  )
+  ).rejects.toThrow(/websocket-access-token-missing/)
 
   const unopenedPort = createSyncRuntimeWebSocketStartupStepPort({
     metadata: { setup, accessTokenSecretKey: 'access-token-key' },
@@ -184,7 +183,7 @@ test('websocket runtime rejects hello before open and missing access token', asy
     webSocket,
   })
 
-  await assert.rejects(
+  await expect(
     async () =>
       await unopenedPort.sendClientHello({
         kind: 'run-startup-step',
@@ -192,8 +191,7 @@ test('websocket runtime rejects hello before open and missing access token', asy
         step: 'send-client-hello',
         phase: 'websocket',
       }),
-    /websocket-not-open/,
-  )
+  ).rejects.toThrow(/websocket-not-open/)
 })
 
 test('websocket runtime parses inbound control messages at the trust boundary', () => {
@@ -205,7 +203,7 @@ test('websocket runtime parses inbound control messages at the trust boundary', 
     messageId: 'websocket-message-1',
     docId: { kind: 'meta', ydocId: 'websocket-meta-doc-1' },
     durableSeq: 42,
-  }
+  } as const
 
   assert.deepEqual(
     parseSyncRuntimeWebSocketMessage(
@@ -308,7 +306,7 @@ test('websocket runtime rejects hello admission close and identity mismatch', as
   await Promise.resolve()
   connection?.close()
 
-  await assert.rejects(async () => await admitted, /websocket-closed-before-hello-accepted/)
+  await expect(async () => await admitted).rejects.toThrow(/websocket-closed-before-hello-accepted/)
 })
 
 test('websocket runtime attaches inbound parser to opened connections', async () => {
@@ -711,6 +709,9 @@ test('websocket runtime ignores unmatched or ambiguous inbound outbox completion
     },
   })
   assert.equal(ambiguous.ok, false)
+  if (ambiguous.ok) {
+    throw new Error('expected ambiguous completion plan to be rejected')
+  }
   assert.equal(ambiguous.reason, 'ambiguous-matching-outbox-record')
 
   const commit = new FakeOutboxCompletionCommitPort()
@@ -788,15 +789,52 @@ test('websocket runtime fails outbound send when the shared session is not open'
     session: createSyncRuntimeWebSocketSession(),
   })
 
-  await assert.rejects(
+  await expect(
     async () =>
       await port.sendSyncUpdate({
         record: { ...yUpdateRecord(), updateBytesBase64: 'AQID' },
         vaultId,
         deviceId,
       }),
-    /websocket-session-missing/,
-  )
+  ).rejects.toThrow(/websocket-session-missing/)
+})
+
+test('websocket runtime sends sync requests through the active session', async () => {
+  const stateVector = Uint8Array.from([1, 2, 3])
+  const requestMessageId = makeMessageId('websocket-sync-request-send-1')
+  const plan = planSyncRuntimeWebSocketSyncRequestSend({
+    vaultId,
+    deviceId,
+    messageId: requestMessageId,
+    docId: fileDocId,
+    stateVector,
+  })
+  assert.deepEqual(plan.message, {
+    type: 'sync-request',
+    protocolVersion: CURRENT_PROTOCOL_VERSION,
+    vaultId,
+    deviceId,
+    messageId: requestMessageId,
+    docId: fileDocId,
+    stateVector: 'AQID',
+  })
+
+  const connection = new FakeWebSocketConnection('wss://worker.example/ws/vault')
+  const session = createSyncRuntimeWebSocketSession()
+  session.attach(connection)
+  connection.open()
+  const port = createSyncRuntimeWebSocketSyncRequestSendPort({ session })
+
+  const sent = await port.sendSyncRequest({
+    vaultId,
+    deviceId,
+    messageId: requestMessageId,
+    docId: fileDocId,
+    stateVector,
+  })
+
+  assert.deepEqual(sent, plan)
+  assert.deepEqual(parseControlMessage(connection.sent[0] ?? ''), plan.message)
 })
 
 test('websocket runtime verifies and applies peer remote updates before durable commit', async () => {

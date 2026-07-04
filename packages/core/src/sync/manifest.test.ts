@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import { hashBytesSha256 } from '@kuroflare/core'
 import {
   blobManifestMatchesMetaFile,
@@ -9,9 +7,25 @@ import {
   makeSha256Hex,
   type BinaryMetaFile,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, expect, test } from 'vitest'
 
-import { assembleBlobBytes, BlobAssemblyError, buildBlobManifest, chunkBytes } from '../index'
+import {
+  assembleBlobBytes,
+  BlobAssemblyError,
+  buildBlobManifest,
+  chunkBytes,
+  DEFAULT_CHUNKING_OPTIONS,
+} from '../index'
+
+test('default chunking parameters stay pinned', () => {
+  // Changing these silently defeats dedup against previously written chunks;
+  // treat this pin as a storage-format compatibility boundary when tuning them.
+  assert.deepEqual(DEFAULT_CHUNKING_OPTIONS, {
+    minSize: 64 * 1024,
+    avgSize: 256 * 1024,
+    maxSize: 1024 * 1024,
+  })
+})
 
 test('chunkBytes produces deterministic chunks that cover the input', () => {
   const bytes = new TextEncoder().encode('abcdefghijklmnopqrstuvwxyz')
@@ -110,22 +124,29 @@ test('assembleBlobBytes rejects missing or corrupt chunks', async () => {
   const firstChunk = built.chunks[0]
   assert(firstChunk)
 
-  await assert.rejects(
-    () => assembleBlobBytes(built.manifest, new Map()),
-    (error) => error instanceof BlobAssemblyError && error.code === 'missing-chunk',
-  )
+  await expect(assembleBlobBytes(built.manifest, new Map())).rejects.toThrow(BlobAssemblyError)
+  try {
+    await assembleBlobBytes(built.manifest, new Map())
+  } catch (error) {
+    assert.instanceOf(error, BlobAssemblyError)
+    assert.equal(error.code, 'missing-chunk')
+  }
 
-  await assert.rejects(
-    () => assembleBlobBytes(built.manifest, new Map([[firstChunk.sha256, Uint8Array.from([1])]])),
-    (error) => error instanceof BlobAssemblyError && error.code === 'chunk-size-mismatch',
-  )
+  try {
+    await assembleBlobBytes(built.manifest, new Map([[firstChunk.sha256, Uint8Array.from([1])]]))
+  } catch (error) {
+    assert.instanceOf(error, BlobAssemblyError)
+    assert.equal(error.code, 'chunk-size-mismatch')
+  }
 
   const sameSizeCorrupt = Uint8Array.from(firstChunk.bytes)
   sameSizeCorrupt[0] = (sameSizeCorrupt[0] ?? 0) ^ 0xff
-  await assert.rejects(
-    () => assembleBlobBytes(built.manifest, new Map([[firstChunk.sha256, sameSizeCorrupt]])),
-    (error) => error instanceof BlobAssemblyError && error.code === 'chunk-hash-mismatch',
-  )
+  try {
+    await assembleBlobBytes(built.manifest, new Map([[firstChunk.sha256, sameSizeCorrupt]]))
+  } catch (error) {
+    assert.instanceOf(error, BlobAssemblyError)
+    assert.equal(error.code, 'chunk-hash-mismatch')
+  }
 })
 
 test('assembleBlobBytes rejects content hash mismatch', async () => {
@@ -137,14 +158,15 @@ test('assembleBlobBytes rejects content hash mismatch', async () => {
     { minSize: 4, avgSize: 8, maxSize: 10 },
   )
 
-  await assert.rejects(
-    () =>
-      assembleBlobBytes(
-        { ...built.manifest, contentSha256: makeSha256Hex('0'.repeat(64)) },
-        new Map(built.chunks.map((chunk) => [chunk.sha256, chunk.bytes])),
-      ),
-    (error) => error instanceof BlobAssemblyError && error.code === 'content-hash-mismatch',
-  )
+  try {
+    await assembleBlobBytes(
+      { ...built.manifest, contentSha256: makeSha256Hex('0'.repeat(64)) },
+      new Map(built.chunks.map((chunk) => [chunk.sha256, chunk.bytes])),
+    )
+  } catch (error) {
+    assert.instanceOf(error, BlobAssemblyError)
+    assert.equal(error.code, 'content-hash-mismatch')
+  }
 })
 
 function sumByteLengths(chunks: readonly Uint8Array[]): number {

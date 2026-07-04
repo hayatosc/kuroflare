@@ -1,12 +1,10 @@
-import assert from 'node:assert/strict'
-
 import {
   DEVICE_TOKEN_ISSUER,
   makeDeviceId,
   makeVaultId,
   type DeviceTokenClaims,
 } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import type { DeviceRegistryEntry } from '../devices'
 import { decideAuthAdmission } from '../http/auth'

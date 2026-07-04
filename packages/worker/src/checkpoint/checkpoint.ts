@@ -30,6 +30,14 @@ export interface CheckpointCompactInput {
   readonly status: CheckpointRunStatus
   readonly upperSeq: number
   readonly latestSnapshotSeq: number
+  /**
+   * The `upperSeq` of the oldest snapshot that snapshot retention (see
+   * `db/retention.ts`) still requires op_log to roll back to, or `undefined`
+   * when no other retained snapshot predates this checkpoint. Op-log rows
+   * newer than this floor must survive compaction so a rollback to that
+   * older snapshot can still replay forward to it.
+   */
+  readonly retainedSnapshotFloorSeq: number | undefined
   readonly now: number
 }
 
@@ -67,10 +75,10 @@ export type OrphanedCheckpointRecoveryDecision =
   | { readonly action: 'mark-r2-written' }
   | { readonly action: 'advance-pointer' }
   | { readonly action: 'mark-stale'; readonly reason: 'would-rewind-pointer' }
-  | { readonly action: 'compact-op-log' }
+  | { readonly action: 'compact-op-log'; readonly compactedSeq: number }
   | {
       readonly action: 'block-compact'
-      readonly reason: 'pointer-unverified' | 'pointer-behind-run'
+      readonly reason: 'pointer-unverified' | 'pointer-behind-run' | 'invalid-retained-floor'
     }
 
 /** Input for deciding how to recover a checkpoint run after a crash. */
@@ -78,6 +86,14 @@ export interface OrphanedCheckpointRecoveryInput {
   readonly run: CheckpointRunRecoveryInput
   readonly doc: CheckpointDocRecoveryState
   readonly snapshot: CheckpointSnapshotEvidence | undefined
+  /**
+   * The `upperSeq` of the oldest snapshot that snapshot retention still
+   * requires op_log to roll back to, or `undefined` when no other retained
+   * snapshot predates this run. Only consulted when `run.status` is
+   * `pointer-updated`; see `decideCheckpointCompact` for the same clamp
+   * applied to normal (non-recovery) compaction.
+   */
+  readonly retainedSnapshotFloorSeq: number | undefined
 }
 
 /**
@@ -113,14 +129,21 @@ export function decideCheckpointWrite(input: CheckpointWriteInput): CheckpointWr
 /**
  * Decides whether op-log rows covered by a checkpoint can be compacted.
  *
- * @param input Checkpoint run state, current doc pointer, and timestamp.
+ * The compaction boundary is clamped to `retainedSnapshotFloorSeq` so that
+ * op_log needed to roll back to an older snapshot retained by
+ * `planSnapshotRetention` (see `db/retention.ts`) and replay forward is never
+ * deleted.
+ *
+ * @param input Checkpoint run state, current doc pointer, retention floor, and timestamp.
  * @returns A compact plan once the pointer is confirmed, otherwise a skip reason.
  */
 export function decideCheckpointCompact(input: CheckpointCompactInput): CheckpointCompactDecision {
   if (
     !isPositiveSafeInteger(input.upperSeq) ||
     !isNonNegativeSafeInteger(input.latestSnapshotSeq) ||
-    !isNonNegativeSafeInteger(input.now)
+    !isNonNegativeSafeInteger(input.now) ||
+    (input.retainedSnapshotFloorSeq !== undefined &&
+      !isPositiveSafeInteger(input.retainedSnapshotFloorSeq))
   ) {
     return { action: 'skip', reason: 'invalid-clock' }
   }
@@ -133,9 +156,14 @@ export function decideCheckpointCompact(input: CheckpointCompactInput): Checkpoi
     return { action: 'skip', reason: 'pointer-behind-run' }
   }
 
+  const compactedSeq =
+    input.retainedSnapshotFloorSeq === undefined
+      ? input.upperSeq
+      : Math.min(input.upperSeq, input.retainedSnapshotFloorSeq)
+
   return {
     action: 'compact',
-    compactedSeq: input.upperSeq,
+    compactedSeq,
     compactedAt: input.now,
   }
 }
@@ -145,8 +173,12 @@ export function decideCheckpointCompact(input: CheckpointCompactInput): Checkpoi
  *
  * The decision never rewinds the document pointer. Snapshot evidence must be
  * gathered from R2 before adopting an orphaned snapshot or compacting op_log.
+ * When resuming a `pointer-updated` run, `compact-op-log` clamps its
+ * `compactedSeq` to `retainedSnapshotFloorSeq` the same way
+ * `decideCheckpointCompact` does for normal compaction, so recovery cannot
+ * delete op_log a retained older snapshot still needs.
  *
- * @param input Checkpoint run row, current doc pointer state, and R2 evidence.
+ * @param input Checkpoint run row, current doc pointer state, R2 evidence, and retention floor.
  * @returns The single recovery action the caller should apply transactionally.
  */
 export function decideOrphanedCheckpointRecovery(
@@ -161,7 +193,7 @@ export function decideOrphanedCheckpointRecovery(
     case 'r2-written':
       return decideR2WrittenRecovery(input.run, input.doc, input.snapshot)
     case 'pointer-updated':
-      return decidePointerUpdatedRecovery(input.run, input.doc)
+      return decidePointerUpdatedRecovery(input.run, input.doc, input.retainedSnapshotFloorSeq)
   }
 }
 
@@ -197,6 +229,7 @@ function decideR2WrittenRecovery(
 function decidePointerUpdatedRecovery(
   run: CheckpointRunRecoveryInput,
   doc: CheckpointDocRecoveryState,
+  retainedSnapshotFloorSeq: number | undefined,
 ): OrphanedCheckpointRecoveryDecision {
   if (!doc.pointerVerified) {
     return { action: 'block-compact', reason: 'pointer-unverified' }
@@ -206,7 +239,18 @@ function decidePointerUpdatedRecovery(
     return { action: 'block-compact', reason: 'pointer-behind-run' }
   }
 
-  return { action: 'compact-op-log' }
+  if (retainedSnapshotFloorSeq !== undefined && !isPositiveSafeInteger(retainedSnapshotFloorSeq)) {
+    // Retention evidence could not be trusted: refuse to compact rather than
+    // risk deleting op_log still needed to roll back to an older snapshot.
+    return { action: 'block-compact', reason: 'invalid-retained-floor' }
+  }
+
+  const compactedSeq =
+    retainedSnapshotFloorSeq === undefined
+      ? run.upperSeq
+      : Math.min(run.upperSeq, retainedSnapshotFloorSeq)
+
+  return { action: 'compact-op-log', compactedSeq }
 }
 
 function classifySnapshotProblem(

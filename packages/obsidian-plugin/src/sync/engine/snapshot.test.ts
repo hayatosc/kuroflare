@@ -1,12 +1,10 @@
-import assert from 'node:assert/strict'
-
 import {
   makeOutboxPlanItemId,
   type OutboxPlanItemId,
   type OutboxRunningLease,
 } from '@kuroflare/core'
 import { makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/core'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 
 import {
   commitFullSnapshotApplyIndexedDbTransaction,
