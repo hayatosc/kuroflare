@@ -43,9 +43,9 @@ export class BlobAssemblyError extends Error {
 }
 
 /**
- * Default CDC chunking parameters. Changing them is safe for correctness
- * because manifests are self-describing, but it changes chunk boundaries and
- * defeats dedup against previously written chunks.
+ * Default parameters for splitting files into chunks.
+ * Changing these parameters will alter chunk boundaries, affecting
+ * deduplication efficiency, but does not affect the correctness of existing files.
  */
 export const DEFAULT_CHUNKING_OPTIONS = {
   minSize: 64 * 1024,
@@ -74,9 +74,7 @@ export function chunkBytes(
   let start = 0
   let rolling = 0
 
-  // MVP chunker: deterministic content-defined boundaries, but not a fixed-window
-  // FastCDC/Gear hash. A future format version may replace this for stronger
-  // insertion-stable deduplication without changing manifest verification.
+  // Split the file bytes at deterministic content-defined boundaries.
   for (let index = 0; index < bytes.byteLength; index += 1) {
     const byte = bytes[index]
     if (byte === undefined) {

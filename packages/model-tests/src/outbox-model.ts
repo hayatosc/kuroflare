@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict'
+import { assert } from 'vitest'
 
 export type OutboxItemId = string
 export type FileId = string

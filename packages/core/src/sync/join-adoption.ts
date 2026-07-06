@@ -20,14 +20,11 @@ export interface JoinFileAdoptionInput {
 }
 
 /**
- * Decide how a local markdown file should be reconciled with remote join meta.
+ * Decides how a local file should be associated with remote files when joining a vault.
  *
- * A local path with no remote counterpart is local-only and gets a freshly
- * allocated `fileId`. A path that also exists remotely must always adopt the
- * remote `fileId`, even when content differs, to avoid creating two file IDs
- * for the same path; content that differs is imported through the ordinary
- * external-edit path afterward instead of being discarded or silently
- * overwritten.
+ * Files with no remote counterpart are treated as local-only and assigned a new ID.
+ * Files sharing a path with a remote file adopt the remote ID to prevent duplicate entries,
+ * even if their content differs.
  */
 export function decideJoinFileAdoption(input: JoinFileAdoptionInput): JoinFileAdoptionDecision {
   if (input.remoteEntry === undefined) {

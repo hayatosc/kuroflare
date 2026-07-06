@@ -31,12 +31,7 @@ export type DeleteVsEditRepair =
 export type MetaRepair = PathConflictRepair | DeleteVsEditRepair
 
 /**
- * Plans deterministic renames for active meta entries that share one canonical path.
- *
- * @param entries - Valid meta entries from the meta YDoc.
- * @param updatedAt - Logical repair timestamp to write into repaired entries.
- * @param updatedBy - Device or synthetic repair actor ID to write into repaired entries.
- * @returns Rename operations for losing entries. The winner keeps its path.
+ * Plans renames for active files that share the same folder path, resolving conflicts deterministically.
  */
 export function planPathConflictRepairs(
   entries: readonly MetaFile[],
@@ -82,13 +77,7 @@ export function planPathConflictRepairs(
 }
 
 /**
- * Plans tombstone repairs when a file was edited after it was deleted.
- *
- * @param entries - Valid meta entries from the meta YDoc.
- * @param restorableBinaryFileIds - Binary file IDs whose manifest and chunks are verified.
- * @param updatedAt - Logical repair timestamp to write into repaired entries.
- * @param updatedBy - Device or synthetic repair actor ID to write into repaired entries.
- * @returns Restore plans for text/complete binary files and keep-deleted plans for incomplete binaries.
+ * Plans how to resolve situations where a file is edited on one device after being deleted on another.
  */
 export function planDeleteVsEditRepairs(
   entries: readonly MetaFile[],
@@ -143,11 +132,7 @@ export function planDeleteVsEditRepairs(
 }
 
 /**
- * Applies one repair plan to a metadata entry without mutating the input.
- *
- * @param entry - Metadata entry to update.
- * @param repair - Repair plan for the same file ID.
- * @returns Updated metadata entry, or the original entry when the repair does not apply.
+ * Applies a repair plan to a metadata entry, returning a new updated entry.
  */
 export function applyMetaRepair(entry: MetaFile, repair: MetaRepair): MetaFile {
   if (entry.fileId !== repair.fileId) {

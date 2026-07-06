@@ -1,4 +1,4 @@
-/** Hash record for the most recent successful YDoc-to-disk materialization. */
+/** Record of the most recent in-memory document state written to disk. */
 export interface LastMaterializedRecord {
   readonly ydocHash: string
   readonly diskHash: string
@@ -84,13 +84,12 @@ export function decideWatcherHashGate(input: WatcherHashGateInput): WatcherHashG
 }
 
 /**
- * Decide whether a materializer may write the current YDoc state to disk.
+ * Decides whether the in-memory document state can be written to disk.
  *
- * The write is allowed only when the disk hash still matches the last
- * materialized base. Missing base information is treated as unsafe because the
- * materializer cannot distinguish a fresh write from an unobserved disk edit.
- * A file currently bound to the active editor is never written directly because
- * doing so can race live editor updates and overwrite in-memory edits.
+ * The write is permitted only if the current file content on disk matches the
+ * last recorded write. This prevents overwriting unexpected local edits.
+ * Additionally, files open in the active editor are skipped to avoid conflict
+ * with in-progress edits.
  */
 export function decideMaterializeWrite(input: MaterializeWriteInput): MaterializeWriteDecision {
   if (input.activeFilePath === input.path) {
@@ -121,16 +120,12 @@ export interface WatcherStatPrefilterInput {
 }
 
 /**
- * Decide whether a filesystem watcher event needs a full canonical-text hash
- * comparison, or can be skipped using mtime/size alone.
+ * Decides whether a file change event requires a full content hash check,
+ * or if it can be skipped using file size and modification time (mtime).
  *
- * Hashing requires reading the whole file, which is too costly to do for
- * every watcher event across a large vault (e.g. a `git pull` touching
- * thousands of files). `TFile.stat` mtime/size come for free with the event,
- * so a file whose mtime and size both still match the last observed
- * materialize/import baseline cannot have changed and is skipped without
- * hashing. Any mismatch, or a missing baseline (file never observed before),
- * falls through to the real hash gate.
+ * Using metadata helps avoid reading and hashing the entire file unnecessarily.
+ * If size and mtime match the last recorded baseline, the file content is
+ * assumed unchanged. Any mismatch triggers a full hash validation.
  */
 export function decideWatcherStatPrefilter(
   input: WatcherStatPrefilterInput,

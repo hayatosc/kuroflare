@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   CURRENT_PROTOCOL_VERSION,
   makeDeviceId,
@@ -12,6 +10,7 @@ import {
   type SyncUpdate,
 } from '@kuroflare/core'
 import { decideSyncUpdateAppend, type SyncUpdateAppendDecision } from '@kuroflare/worker'
+import { assert } from 'vitest'
 
 /** Message tracked by the sync update model. */
 export interface SyncUpdateModelMessage {
