@@ -1,6 +1,6 @@
-# Kuroflare CM6 Spike
+# Kuroflare Obsidian Plugin
 
-This package is a disposable Obsidian plugin spike for validating:
+This package is an Obsidian plugin prototype for validating:
 
 - CodeMirror 6 editor binding through `Compartment.reconfigure`
 - Yjs binding through `y-codemirror.next` with the Y undo plugin disabled
@@ -12,7 +12,7 @@ This package is a disposable Obsidian plugin spike for validating:
 
 It is intentionally scoped to one active Markdown file and does not talk to a
 backend. The first file you bind becomes the target for that plugin session;
-other active files are ignored to avoid writing the fixed spike YText into the
+other active files are ignored to avoid writing the fixed editor buffer into the
 wrong note.
 
 ## Build

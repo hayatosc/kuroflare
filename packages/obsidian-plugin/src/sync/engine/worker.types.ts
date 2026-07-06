@@ -113,6 +113,13 @@ export interface OutboxWorkerHttpRequestPlan {
   readonly bodySource?: 'canonical-blob-manifest-json' | undefined
 }
 
+/** HTTP byte upload the side-effect runner performs after receiving an upload URL. */
+export interface OutboxWorkerHttpUploadBytesPlan {
+  readonly method: 'PUT'
+  readonly url: string
+  readonly headers: Readonly<Record<string, string>>
+}
+
 /** Local blob-cache read the side-effect runner must perform before uploading bytes. */
 export interface OutboxWorkerBlobCacheReadPlan {
   readonly key: string
@@ -274,6 +281,44 @@ export type OutboxWorkerSideEffectPlan =
   | OutboxWorkerMetaRefUpdateSideEffectPlan
   | OutboxWorkerMaterializeSideEffectPlan
   | OutboxWorkerSideEffectRejectPlan
+
+/** Vault file evidence read by a local side-effect runner before materializing bytes. */
+export type OutboxWorkerVaultFileEvidence =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'folder' }
+  | { readonly kind: 'file'; readonly bytes: Uint8Array }
+
+/** Ports used by the local side-effect runner for fake vault and production adapters. */
+export interface OutboxWorkerLocalSideEffectRunnerPorts {
+  readonly sendJsonRequest: (
+    request: OutboxWorkerHttpRequestPlan,
+  ) => Promise<
+    | { readonly kind: 'success'; readonly body: unknown }
+    | Exclude<OutboxWorkerSideEffectResultEvidence, { readonly kind: 'success' }>
+  >
+  readonly uploadBytes: (
+    request: OutboxWorkerHttpUploadBytesPlan,
+    bytes: Uint8Array,
+  ) => Promise<OutboxWorkerSideEffectResultEvidence>
+  readonly downloadBytes: (
+    request: OutboxWorkerHttpRequestPlan,
+  ) => Promise<
+    | { readonly kind: 'success'; readonly bytes: Uint8Array }
+    | Exclude<OutboxWorkerSideEffectResultEvidence, { readonly kind: 'success' }>
+  >
+  readonly readBlobCache: (plan: OutboxWorkerBlobCacheReadPlan) => Promise<Uint8Array | undefined>
+  readonly writeBlobCache: (
+    plan: OutboxWorkerBlobCacheWritePlan,
+    bytes: Uint8Array,
+  ) => Promise<void>
+  readonly readVaultFile: (path: string) => Promise<OutboxWorkerVaultFileEvidence>
+  readonly ensureVaultParentFolders: (path: string) => Promise<boolean>
+  readonly writeVaultFile: (path: string, bytes: Uint8Array) => Promise<void>
+  readonly getActiveFilePath: () => string | undefined
+  readonly writeLastMaterialized: (record: LastMaterializedRecord) => void
+  readonly now: () => number
+  readonly sha256Hex: (bytes: Uint8Array) => Promise<string>
+}
 
 /** Evidence returned by a concrete side-effect runner before local-store completion planning. */
 export type OutboxWorkerSideEffectResultEvidence =

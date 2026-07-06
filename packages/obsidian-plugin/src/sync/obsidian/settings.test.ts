@@ -2,6 +2,7 @@ import { assert, test } from 'vitest'
 
 import {
   createSyncRuntimeObsidianSetupExchangeEvidenceReader,
+  planSyncRuntimeObsidianLegacySettingsSecretCleanup,
   planSyncRuntimeObsidianStartupSettings,
 } from '../obsidian/settings'
 import { type SetupExchangeStartupEffect } from '../setup-exchange-http'
@@ -174,4 +175,31 @@ test('Obsidian startup settings evidence reader throws non-secret errors', () =>
     )
     assert.equal(error.message.includes(token), false)
   }
+})
+
+test('legacy settings secret cleanup removes plaintext token fields and keeps other settings', () => {
+  const plan = planSyncRuntimeObsidianLegacySettingsSecretCleanup({
+    endpoint: 'https://sync.example.test',
+    setupVaultId: 'settings-vault-1',
+    accessToken: 'leaked-access-token',
+    refreshToken: 'leaked-refresh-token',
+    setupResponse: { accessToken: 'leaked-access-token', refreshToken: 'leaked-refresh-token' },
+  })
+
+  assert.deepEqual(plan.settings, {
+    endpoint: 'https://sync.example.test',
+    setupVaultId: 'settings-vault-1',
+  })
+  assert.deepEqual(
+    [...plan.removedLegacySecretKeys].sort(),
+    ['accessToken', 'refreshToken', 'setupResponse'].sort(),
+  )
+})
+
+test('legacy settings secret cleanup is a no-op when no legacy secret fields are present', () => {
+  const loaded = { endpoint: 'https://sync.example.test', setupVaultId: 'settings-vault-1' }
+  const plan = planSyncRuntimeObsidianLegacySettingsSecretCleanup(loaded)
+
+  assert.deepEqual(plan.settings, loaded)
+  assert.deepEqual(plan.removedLegacySecretKeys, [])
 })

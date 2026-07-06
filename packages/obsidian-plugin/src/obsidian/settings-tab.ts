@@ -278,6 +278,27 @@ export class KuroflareSettingTab extends PluginSettingTab {
     }
 
     containerEl.createEl('h3', { text: 'Repair log' })
+    const invalidMetaIsolation = this.plugin.getInvalidMetaIsolationSnapshot()
+    if (invalidMetaIsolation !== null) {
+      new Setting(containerEl)
+        .setName(`Isolated invalid meta: ${invalidMetaIsolation.fileId}`)
+        .setDesc(
+          `${invalidMetaIsolation.reason} at ${new Date(
+            invalidMetaIsolation.inspectedAt,
+          ).toISOString()}${invalidMetaIsolation.truncated ? ' (truncated)' : ''}`,
+        )
+      containerEl.createEl('pre', { text: invalidMetaIsolation.rawJson })
+    }
+    const binaryRestoreCheck = this.plugin.getBinaryRestoreCheckSnapshot()
+    if (binaryRestoreCheck !== null) {
+      new Setting(containerEl)
+        .setName(`Binary restore check degraded: ${binaryRestoreCheck.fileId}`)
+        .setDesc(
+          `${binaryRestoreCheck.reason}: ${binaryRestoreCheck.path} at ${new Date(
+            binaryRestoreCheck.checkedAt,
+          ).toISOString()}`,
+        )
+    }
     const repairLog = settings.repairLog ?? []
     if (repairLog.length === 0) {
       containerEl.createEl('p', { text: 'No repair events recorded.' })
@@ -299,6 +320,13 @@ export class KuroflareSettingTab extends PluginSettingTab {
           .setDesc(
             `${repairLogDescription(entry)}. Type ${INVALID_META_DISCARD_CONFIRMATION} to discard the invalid meta key.`,
           )
+          .addButton((button) => {
+            button.setButtonText('Inspect invalid meta').onClick(() => {
+              void this.plugin.inspectInvalidMetaRepairEntry(entry).then(() => {
+                this.display()
+              })
+            })
+          })
           .addText((text) => {
             text.setPlaceholder(INVALID_META_DISCARD_CONFIRMATION).onChange((value) => {
               invalidMetaConfirmation = value.trim()
@@ -316,6 +344,13 @@ export class KuroflareSettingTab extends PluginSettingTab {
       } else if (entry.kind === 'remote-materialize-blocked') {
         setting
           .addButton((button) => {
+            button.setButtonText('Resolve to conflict path').onClick(() => {
+              void this.plugin.resolveRemoteMaterializeBlockedRepairEntry(entry).then(() => {
+                this.display()
+              })
+            })
+          })
+          .addButton((button) => {
             button.setButtonText('Retry materialize').onClick(() => {
               void this.plugin.retryRemoteMaterializeBlockedRepairEntry(entry).then(() => {
                 this.display()
@@ -331,6 +366,13 @@ export class KuroflareSettingTab extends PluginSettingTab {
           })
       } else if (entry.kind === 'path-conflict') {
         setting
+          .addButton((button) => {
+            button.setButtonText('Resolve to conflict path').onClick(() => {
+              void this.plugin.resolvePathConflictRepairEntry(entry).then(() => {
+                this.display()
+              })
+            })
+          })
           .addButton((button) => {
             button.setButtonText('Retry path materialize').onClick(() => {
               void this.plugin.retryPathConflictRepairEntry(entry).then(() => {

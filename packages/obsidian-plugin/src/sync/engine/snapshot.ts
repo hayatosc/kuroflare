@@ -172,10 +172,7 @@ export type FullSnapshotApplyRuntimePlan =
     }
 
 /**
- * Plans local application of a verified full snapshot response.
- *
- * @param input Guarded response, verified bytes, local safety evidence, and local-store snapshot.
- * @returns Apply effects plus outbox release transaction, or the reason local state must not change.
+ * Plans applying a verified full snapshot to the local store.
  */
 export function planFullSnapshotApplyRuntime(
   input: FullSnapshotApplyRuntimeInput,
@@ -232,10 +229,7 @@ export function planFullSnapshotApplyRuntime(
 }
 
 /**
- * Converts an accepted full snapshot apply patch into one concrete IndexedDB write transaction.
- *
- * @param input Apply patch, verified update bytes, and matching outbox release plan.
- * @returns Store/key/value writes for YDoc state, remote cursor state, and outbox release patches.
+ * Converts a snapshot patch into a database write transaction.
  */
 export function planFullSnapshotApplyIndexedDbWriteTransaction(input: {
   readonly patch: FullSnapshotApplyPatch
@@ -254,10 +248,7 @@ export function planFullSnapshotApplyIndexedDbWriteTransaction(input: {
 }
 
 /**
- * Creates a full snapshot apply database port from a concrete IndexedDB database.
- *
- * @param database Open IndexedDB database containing YDoc, cursor, outbox, and lease stores.
- * @returns Database port that opens one readwrite transaction for full snapshot apply commits.
+ * Creates a database port for snapshot write transactions.
  */
 export function createFullSnapshotApplyIndexedDbDatabasePort(
   database: IDBDatabase,
@@ -283,14 +274,7 @@ export function createFullSnapshotApplyIndexedDbDatabasePort(
 }
 
 /**
- * Commits a full snapshot apply as one IndexedDB transaction.
- *
- * All write requests are queued before awaiting request success, so IndexedDB cannot auto-commit
- * between local YDoc replacement, remote cursor update, and outbox release persistence.
- *
- * @param input Planned snapshot apply transaction and database transaction opener.
- * @returns Resolves after every write request succeeds and the transaction completes.
- * @throws When a write request rejects or the IndexedDB transaction aborts/errors.
+ * Commits a snapshot apply transaction to the database, ensuring all updates succeed together.
  */
 export async function commitFullSnapshotApplyIndexedDbTransaction(
   input: FullSnapshotApplyIndexedDbCommitInput,

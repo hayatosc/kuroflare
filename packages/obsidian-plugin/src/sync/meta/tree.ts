@@ -80,7 +80,7 @@ export function applyFileCreate(metaMap: Y.Map<unknown>, input: FileCreateInput)
 /**
  * Renames a file by updating the `path` of its existing entry, preserving the file ID.
  *
- * This is the core MVP-2 guarantee: a rename is a path-field update on a stable file ID, never a
+ * This is the core stable-identifier design guarantee: a rename is a path-field update on a stable file ID, never a
  * delete + create. The losing-side path collision (two files at one canonical path) is resolved
  * separately and deterministically by `reconcileMetaDoc`.
  *

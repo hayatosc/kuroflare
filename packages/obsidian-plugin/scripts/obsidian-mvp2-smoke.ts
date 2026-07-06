@@ -145,7 +145,7 @@ if (created.type !== 'text') {
   throw new Error(`expected a text meta entry, got: ${JSON.stringify(created)}`)
 }
 
-// Rename inside Obsidian. The MVP-2 invariant: the entry keeps its fileId; only the path updates.
+// Rename inside Obsidian. The file-tree invariant: the entry keeps its fileId; only the path updates.
 evalInObsidian(`(async () => {
   await app.fileManager.renameFile(app.vault.getAbstractFileByPath(${JSON.stringify(notePath)}), ${JSON.stringify(renamedPath)});
   return JSON.stringify('renamed');

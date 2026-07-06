@@ -191,3 +191,36 @@ function hasSetupExchangeEvidence(input: SyncRuntimeObsidianStartupSettingsInput
 function hasValue(value: string | undefined): boolean {
   return value !== undefined && value.trim().length > 0
 }
+
+/** Settings keys that historically stored secret token material directly in plugin data. */
+const LEGACY_SETTINGS_SECRET_KEYS = ['accessToken', 'refreshToken', 'setupResponse'] as const
+
+/** Result of removing legacy plaintext token fields from loaded Obsidian plugin settings. */
+export interface SyncRuntimeObsidianLegacySettingsSecretCleanupPlan {
+  readonly settings: Record<string, unknown>
+  readonly removedLegacySecretKeys: readonly string[]
+}
+
+/**
+ * Removes legacy plaintext token fields from settings loaded from Obsidian plugin data.
+ *
+ * Token material now lives in SecretStorage and IndexedDB metadata; any of these keys
+ * surviving in `data.json` from a pre-migration install must be dropped before the
+ * settings object is ever written back to disk.
+ *
+ * @param loaded Raw settings object as read from `Plugin.loadData()`.
+ * @returns Sanitized settings plus the legacy keys that were removed, if any.
+ */
+export function planSyncRuntimeObsidianLegacySettingsSecretCleanup(
+  loaded: Record<string, unknown>,
+): SyncRuntimeObsidianLegacySettingsSecretCleanupPlan {
+  const removedLegacySecretKeys: string[] = []
+  const settings = { ...loaded }
+  for (const key of LEGACY_SETTINGS_SECRET_KEYS) {
+    if (key in settings) {
+      delete settings[key]
+      removedLegacySecretKeys.push(key)
+    }
+  }
+  return { settings, removedLegacySecretKeys }
+}

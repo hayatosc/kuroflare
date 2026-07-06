@@ -24,6 +24,28 @@ export interface KuroflareRepairLogEntry {
   readonly createdAt: number
 }
 
+export interface KuroflareInvalidMetaIsolationDetail {
+  readonly fileId: string
+  readonly reason: string
+  readonly inspectedAt: number
+  readonly rawJson: string
+  readonly truncated: boolean
+}
+
+export interface KuroflareBinaryRestoreCheckDetail {
+  readonly fileId: string
+  readonly path: string
+  readonly checkedAt: number
+  readonly reason:
+    | 'setup-missing'
+    | 'access-token-missing'
+    | 'manifest-unavailable'
+    | 'head-unavailable'
+    | 'chunk-missing'
+    | 'chunk-size-unknown'
+    | 'chunk-size-mismatch'
+}
+
 export interface KuroflareLocalRepairExportMetadata {
   readonly path: string
   readonly exportedAt: number

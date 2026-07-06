@@ -16,7 +16,11 @@ import {
   type SyncRuntimeStartupEffect,
   type SyncRuntimeStartupFromSchemaEvidenceInput,
 } from '../engine/startup'
-import { createSyncRuntimeObsidianShellLifecycle } from '../obsidian/lifecycle'
+import {
+  createSyncRuntimeObsidianResumePort,
+  createSyncRuntimeObsidianShellLifecycle,
+  type SyncRuntimeObsidianResumePort,
+} from '../obsidian/lifecycle'
 import { type SyncRuntimeObsidianShellEvidenceReadResult } from '../obsidian/shell'
 import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
 import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
@@ -64,6 +68,7 @@ test('Obsidian shell lifecycle runs transport tick, applies UI, and retains driv
   })
   const executor = new RecordingShellEffectExecutor()
   const startupStep = new RecordingStartupStepPort()
+  const resume = new RecordingResumePort()
   const ui = new RecordingObsidianShellUiPort()
   const setupExchange = createSyncRuntimeSetupExchangePort({
     async exchange() {
@@ -72,7 +77,7 @@ test('Obsidian shell lifecycle runs transport tick, applies UI, and retains driv
     async scheduleReplan() {},
   })
   const lifecycle = createSyncRuntimeObsidianShellLifecycle({
-    ports: { evidence, executor, setupExchange, startupStep, ui },
+    ports: { evidence, executor, setupExchange, startupStep, resume, ui },
   })
 
   const first = await lifecycle.runStartupTick()
@@ -116,6 +121,7 @@ test('Obsidian shell lifecycle serializes concurrent startup ticks', async () =>
   })
   const executor = new RecordingShellEffectExecutor()
   const startupStep = new RecordingStartupStepPort()
+  const resume = new RecordingResumePort()
   const ui = new RecordingObsidianShellUiPort()
   const setupExchange = createSyncRuntimeSetupExchangePort({
     async exchange() {
@@ -124,7 +130,7 @@ test('Obsidian shell lifecycle serializes concurrent startup ticks', async () =>
     async scheduleReplan() {},
   })
   const lifecycle = createSyncRuntimeObsidianShellLifecycle({
-    ports: { evidence, executor, setupExchange, startupStep, ui },
+    ports: { evidence, executor, setupExchange, startupStep, resume, ui },
   })
 
   const [first, second] = await Promise.all([
@@ -136,6 +142,124 @@ test('Obsidian shell lifecycle serializes concurrent startup ticks', async () =>
   assert.equal(evidence.readCount, 1)
   assert.equal(ui.operations.filter((operation) => operation.kind === 'set-status-text').length, 1)
   assert.equal(lifecycle.snapshot().tickInFlight, false)
+})
+
+test('Obsidian shell lifecycle runs foreground resume after startup tick and schedules outbox', async () => {
+  const evidence = new StaticStartupEvidencePort({
+    intent: 'reconnect',
+    local: baseLocalState,
+    localStoreEvidence: {
+      ok: true,
+      evidence: {
+        dbExists: true,
+        currentVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+        presentStores: DEFAULT_LOCAL_STORE_OBJECT_STORES,
+        pendingOutboxCount: 0,
+      },
+    },
+  })
+  const executor = new RecordingShellEffectExecutor()
+  const startupStep = new RecordingStartupStepPort()
+  const resume = new RecordingResumePort()
+  const ui = new RecordingObsidianShellUiPort()
+  const setupExchange = createSyncRuntimeSetupExchangePort({
+    async exchange() {
+      throw new Error('setup-exchange-should-not-run')
+    },
+    async scheduleReplan() {},
+  })
+  const lifecycle = createSyncRuntimeObsidianShellLifecycle({
+    ports: { evidence, executor, setupExchange, startupStep, resume, ui },
+  })
+
+  const result = await lifecycle.runResumeTick('focus')
+
+  assert.equal(result.action, 'ran')
+  assert.equal(evidence.readCount, 1)
+  assert.deepEqual(resume.operations, [
+    { kind: 'can-resume' },
+    { kind: 'foreground', reason: 'focus' },
+    { kind: 'outbox', reason: 'lifecycle:focus' },
+  ])
+  assert.deepEqual(
+    startupStep.effects.map((effect) => effect.step),
+    [
+      'load-indexeddb-ydocs',
+      'open-websocket',
+      'send-client-hello',
+      'sync-meta-state-vector',
+      'sync-active-file-state-vector',
+      'resume-background-queues',
+    ],
+  )
+})
+
+test('Obsidian shell lifecycle skips resume side effects when the resume gate is closed', async () => {
+  const evidence = new StaticStartupEvidencePort({
+    intent: 'reconnect',
+    local: baseLocalState,
+    localStoreEvidence: {
+      ok: true,
+      evidence: {
+        dbExists: true,
+        currentVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+        presentStores: DEFAULT_LOCAL_STORE_OBJECT_STORES,
+        pendingOutboxCount: 0,
+      },
+    },
+  })
+  const executor = new RecordingShellEffectExecutor()
+  const startupStep = new RecordingStartupStepPort()
+  const resume = new RecordingResumePort(false)
+  const ui = new RecordingObsidianShellUiPort()
+  const setupExchange = createSyncRuntimeSetupExchangePort({
+    async exchange() {
+      throw new Error('setup-exchange-should-not-run')
+    },
+    async scheduleReplan() {},
+  })
+  const lifecycle = createSyncRuntimeObsidianShellLifecycle({
+    ports: { evidence, executor, setupExchange, startupStep, resume, ui },
+  })
+
+  const result = await lifecycle.runResumeTick('hidden')
+
+  assert.deepEqual(result, { action: 'skipped' })
+  assert.equal(evidence.readCount, 0)
+  assert.deepEqual(resume.operations, [{ kind: 'can-resume' }])
+})
+
+test('Obsidian resume port gates hidden or blocked documents and forwards runnable effects', async () => {
+  const operations: (
+    | { readonly kind: 'foreground'; readonly reason: string }
+    | { readonly kind: 'outbox'; readonly reason: string }
+  )[] = []
+  let hidden = false
+  let blocked = false
+  const port = createSyncRuntimeObsidianResumePort({
+    isDocumentHidden: () => hidden,
+    isSyncBlocked: () => blocked,
+    runForegroundResume: async (reason) => {
+      operations.push({ kind: 'foreground', reason })
+    },
+    scheduleOutboxTick: (reason) => {
+      operations.push({ kind: 'outbox', reason })
+    },
+  })
+
+  assert.equal(port.canResume(), true)
+  await port.runForegroundResume('focus')
+  port.scheduleOutboxTick('lifecycle:focus')
+  assert.deepEqual(operations, [
+    { kind: 'foreground', reason: 'focus' },
+    { kind: 'outbox', reason: 'lifecycle:focus' },
+  ])
+
+  hidden = true
+  assert.equal(port.canResume(), false)
+  hidden = false
+  blocked = true
+  assert.equal(port.canResume(), false)
 })
 
 class StaticStartupEvidencePort {
@@ -166,6 +290,29 @@ class RecordingStartupStepPort implements SyncRuntimeStartupStepEffectPort {
 
   async run(effect: SyncRuntimeStartupStepEffect<ClientStartupStep>): Promise<void> {
     this.effects.push(effect)
+  }
+}
+
+class RecordingResumePort implements SyncRuntimeObsidianResumePort {
+  readonly operations: (
+    | { readonly kind: 'can-resume' }
+    | { readonly kind: 'foreground'; readonly reason: string }
+    | { readonly kind: 'outbox'; readonly reason: string }
+  )[] = []
+
+  constructor(private readonly allowed = true) {}
+
+  canResume(): boolean {
+    this.operations.push({ kind: 'can-resume' })
+    return this.allowed
+  }
+
+  async runForegroundResume(reason: string): Promise<void> {
+    this.operations.push({ kind: 'foreground', reason })
+  }
+
+  scheduleOutboxTick(reason: string): void {
+    this.operations.push({ kind: 'outbox', reason })
   }
 }
 

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import {
   buildBinaryDownloadOutboxPlan,
   buildBinaryUploadOutboxPlan,
@@ -13,8 +15,10 @@ import {
   makeSha256Hex,
   makeVaultId,
   makeYDocId,
+  type Ack,
   type BlobManifest,
   type DocId,
+  type OutboxRunningLease,
 } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
@@ -31,11 +35,21 @@ import {
   planOutboxWorkerLeaseRenewal,
   planOutboxWorkerLeaseRenewalIndexedDbWriteTransaction,
   planOutboxWorkerQuarantineCompletion,
+  runOutboxWorkerLocalSideEffect,
   planOutboxWorkerSideEffect,
   planOutboxWorkerSuccessCompletion,
   planOutboxWorkerTick,
   planOutboxWorkerTickIndexedDbWriteTransactions,
 } from '../engine/worker'
+import {
+  type OutboxWorkerBlobCacheReadPlan,
+  type OutboxWorkerBlobCacheWritePlan,
+  type OutboxWorkerHttpUploadBytesPlan,
+  type OutboxWorkerHttpRequestPlan,
+  type OutboxWorkerLocalSideEffectRunnerPorts,
+  type OutboxWorkerSideEffectResultEvidence,
+  type OutboxWorkerVaultFileEvidence,
+} from '../engine/worker.types'
 import { type LocalStoreOutboxRecord } from '../store/store'
 
 const yUpdateId = outboxId('worker-y-update-1')
@@ -1188,6 +1202,212 @@ test('outbox worker preserves one binary manifest across plugin upload and downl
   }
 })
 
+test('outbox worker fake harness uploads, downloads, materializes, and completes websocket ack', async () => {
+  const firstChunk = new Uint8Array([1, 2, 3])
+  const secondChunk = new Uint8Array([4, 5])
+  const content = new Uint8Array([...firstChunk, ...secondChunk])
+  const firstHash = sha256Hex(firstChunk)
+  const secondHash = sha256Hex(secondChunk)
+  const contentHash = sha256Hex(content)
+  const upload = buildBinaryUploadOutboxPlan({
+    fileId,
+    blobManifestHash: manifestHash,
+    chunks: [
+      {
+        id: outboxId('harness-upload-chunk-1'),
+        sha256: firstHash,
+        localCacheKey: `blob-cache/upload-${firstHash}`,
+        size: firstChunk.byteLength,
+      },
+      {
+        id: outboxId('harness-upload-chunk-2'),
+        sha256: secondHash,
+        localCacheKey: `blob-cache/upload-${secondHash}`,
+        size: secondChunk.byteLength,
+      },
+    ],
+    manifestPutId: outboxId('harness-upload-manifest'),
+    metaRefUpdateId: outboxId('harness-upload-meta-ref'),
+  })
+  const download = buildBinaryDownloadOutboxPlan({
+    fileId,
+    expectedHash: contentHash,
+    chunks: [
+      {
+        id: outboxId('harness-download-chunk-1'),
+        sha256: firstHash,
+        localCacheKey: `blob-cache/${firstHash}`,
+        size: firstChunk.byteLength,
+      },
+      {
+        id: outboxId('harness-download-chunk-2'),
+        sha256: secondHash,
+        localCacheKey: `blob-cache/${secondHash}`,
+        size: secondChunk.byteLength,
+      },
+    ],
+    materializeId: outboxId('harness-materialize'),
+  })
+  assert.equal(upload.ok, true)
+  assert.equal(download.ok, true)
+  if (!upload.ok || !download.ok) {
+    return
+  }
+  const metaRefMessageId = makeMessageId('harness-meta-ref-message')
+  const manifest = {
+    version: 1,
+    fileId,
+    contentSha256: contentHash,
+    size: content.byteLength,
+    chunks: [
+      { sha256: firstHash, offset: 0, size: firstChunk.byteLength },
+      { sha256: secondHash, offset: firstChunk.byteLength, size: secondChunk.byteLength },
+    ],
+    createdBy: deviceId,
+    createdAt: 1_000,
+  } satisfies BlobManifest
+  const harness = new FakeOutboxHarness(
+    [
+      {
+        ...outboxRecord(upload.plan.chunkPuts[0] ?? outboxId('missing'), 'blob-put'),
+        fileId,
+        blobSha256: firstHash,
+        localCacheKey: `blob-cache/upload-${firstHash}`,
+        blobSize: firstChunk.byteLength,
+      },
+      {
+        ...outboxRecord(upload.plan.chunkPuts[1] ?? outboxId('missing'), 'blob-put'),
+        fileId,
+        blobSha256: secondHash,
+        localCacheKey: `blob-cache/upload-${secondHash}`,
+        blobSize: secondChunk.byteLength,
+      },
+      {
+        ...outboxRecord(upload.plan.manifestPut, 'manifest-put'),
+        fileId,
+        dependsOn: [...upload.plan.chunkPuts],
+        blobManifestHash: manifestHash,
+        blobManifest: manifest,
+      },
+      {
+        ...outboxRecord(upload.plan.metaRefUpdate, 'meta-ref-update'),
+        fileId,
+        dependsOn: [...upload.plan.chunkPuts, upload.plan.manifestPut],
+        docId: metaDocId,
+        messageId: metaRefMessageId,
+        updateSha256: contentHash,
+        updateBytesBase64: 'AQID',
+        blobManifestHash: manifestHash,
+        blobManifest: manifest,
+      },
+      {
+        ...outboxRecord(download.plan.chunkGets[0] ?? outboxId('missing'), 'blob-get'),
+        fileId,
+        blobSha256: firstHash,
+        localCacheKey: `blob-cache/${firstHash}`,
+        blobSize: firstChunk.byteLength,
+      },
+      {
+        ...outboxRecord(download.plan.chunkGets[1] ?? outboxId('missing'), 'blob-get'),
+        fileId,
+        blobSha256: secondHash,
+        localCacheKey: `blob-cache/${secondHash}`,
+        blobSize: secondChunk.byteLength,
+      },
+      {
+        ...outboxRecord(download.plan.materialize, 'materialize'),
+        fileId,
+        dependsOn: [...download.plan.chunkGets],
+        expectedHash: contentHash,
+        targetPath: 'Assets/payload.bin',
+        blobManifestHash: sha256Hex(new TextEncoder().encode('manifest')),
+        blobManifest: manifest,
+        materializeChunks: manifest.chunks.map((chunk) => ({
+          sha256: chunk.sha256,
+          localCacheKey: `blob-cache/${chunk.sha256}`,
+          size: chunk.size,
+        })),
+      },
+      {
+        ...outboxRecord(yUpdateId, 'y-update'),
+        dependsOn: [download.plan.materialize],
+        docId: fileDocId,
+        messageId,
+        updateSha256: updateHash,
+        updateBytesBase64: 'AQID',
+      },
+    ],
+    {},
+  )
+  harness.blobCache.set(`blob-cache/upload-${firstHash}`, firstChunk)
+  harness.blobCache.set(`blob-cache/upload-${secondHash}`, secondChunk)
+
+  await harness.runSideEffectTick(2)
+  assert.deepEqual(
+    harness.records.filter((record) => record.kind === 'blob-put').map((record) => record.status),
+    ['done', 'done'],
+  )
+  assert.deepEqual(
+    harness.uploadedBlobs.get(`https://sync.example.test/blobs/${firstHash}`),
+    firstChunk,
+  )
+  assert.deepEqual(
+    harness.uploadedBlobs.get(`https://sync.example.test/blobs/${secondHash}`),
+    secondChunk,
+  )
+  await harness.runSideEffectTick(1)
+  assert.equal(
+    harness.records.find((record) => record.id === upload.plan.manifestPut)?.status,
+    'done',
+  )
+  assert.deepEqual(
+    harness.manifests.get(`https://sync.example.test/blob-manifests/${manifestHash}.json`),
+    manifest,
+  )
+
+  await harness.acquireOne(upload.plan.metaRefUpdate)
+  harness.completeAck({
+    type: 'ack',
+    protocolVersion: CURRENT_PROTOCOL_VERSION,
+    vaultId,
+    deviceId,
+    docId: metaDocId,
+    messageId: metaRefMessageId,
+    durableSeq: 41,
+  })
+  const metaRef = harness.records.find((record) => record.id === upload.plan.metaRefUpdate)
+  assert.equal(metaRef?.status, 'done')
+  assert.equal(metaRef?.durableSeq, 41)
+
+  await harness.runSideEffectTick(2)
+  assert.deepEqual(
+    harness.records.filter((record) => record.kind === 'blob-get').map((record) => record.status),
+    ['done', 'done'],
+  )
+  await harness.runSideEffectTick(1)
+  assert.deepEqual(harness.vaultFiles.get('Assets/payload.bin'), content)
+  assert.equal(harness.lastMaterialized.get('Assets/payload.bin')?.diskHash, contentHash)
+  assert.equal(
+    harness.records.find((record) => record.id === download.plan.materialize)?.status,
+    'done',
+  )
+
+  await harness.acquireOne(yUpdateId)
+  harness.completeAck({
+    type: 'ack',
+    protocolVersion: CURRENT_PROTOCOL_VERSION,
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    messageId,
+    durableSeq: 42,
+  })
+  const yUpdate = harness.records.find((record) => record.id === yUpdateId)
+  assert.equal(yUpdate?.status, 'done')
+  assert.equal(yUpdate?.durableSeq, 42)
+  assert.deepEqual(harness.leases, [])
+})
+
 test('outbox worker rejects unsafe materialize side effects before disk I/O', () => {
   const lease = runningLease(pausedId, 'materialize', 'worker-1', 31_000)
   const manifest = blobManifest()
@@ -1855,6 +2075,277 @@ test('outbox worker rejects stale failed-attempt completions', () => {
   )
 })
 
+class FakeOutboxHarness implements OutboxWorkerLocalSideEffectRunnerPorts {
+  records: LocalStoreOutboxRecord[]
+  leases: OutboxRunningLease[] = []
+  readonly blobCache = new Map<string, Uint8Array>()
+  readonly uploadedBlobs = new Map<string, Uint8Array>()
+  readonly manifests = new Map<string, unknown>()
+  readonly vaultFiles = new Map<string, Uint8Array>()
+  readonly lastMaterialized = new Map<
+    string,
+    NonNullable<LocalStoreOutboxRecord['lastMaterialized']>
+  >()
+  private nowMs = 1_000
+
+  constructor(
+    records: readonly LocalStoreOutboxRecord[],
+    private readonly downloads: Readonly<Record<string, Uint8Array>>,
+  ) {
+    this.records = [...records]
+  }
+
+  async runSideEffectTick(maxStarts: number): Promise<void> {
+    const workerTick = this.planTick(maxStarts)
+    this.records = [...workerTick.nextOutboxRecords]
+    this.leases = [...workerTick.nextLeaseRows]
+    for (const start of workerTick.starts) {
+      const record = this.records.find((candidate) => candidate.id === start.start.id)
+      const sideEffect = planOutboxWorkerSideEffect({
+        effect: start,
+        record,
+        endpoint: 'https://sync.example.test',
+        accessToken: 'access-token',
+      })
+      if (!sideEffect.ok) {
+        throw new Error(sideEffect.reason)
+      }
+      assert.equal(sideEffect.ok, true)
+      if (sideEffect.action === 'meta-ref-update') {
+        continue
+      }
+      const result = await runOutboxWorkerLocalSideEffect(sideEffect, this)
+      this.completeNonAck(record, result)
+    }
+  }
+
+  async acquireOne(id: OutboxPlanItemId): Promise<void> {
+    const workerTick = this.planTick(1)
+    assert.equal(
+      workerTick.starts.some((start) => start.start.id === id),
+      true,
+    )
+    this.records = [...workerTick.nextOutboxRecords]
+    this.leases = [...workerTick.nextLeaseRows]
+  }
+
+  completeAck(message: Ack): void {
+    const record = this.records.find((candidate) => candidate.messageId === message.messageId)
+    assert.notEqual(record, undefined)
+    if (record === undefined || record.docId === undefined || record.messageId === undefined) {
+      throw new Error('ack record missing')
+    }
+    const plan = planOutboxWorkerAckCompletion({
+      itemId: record.id,
+      status: record.status,
+      vaultId,
+      deviceId,
+      docId: record.docId,
+      messageId: record.messageId,
+      message,
+      ownerId: 'worker-1',
+      now: this.nextNow(),
+      currentOutboxRecords: this.records,
+      currentLeaseRows: this.leases,
+    })
+    assert.equal(plan.ok, true)
+    if (!plan.ok) {
+      throw new Error(plan.reason)
+    }
+    this.records = [...plan.nextOutboxRecords]
+    this.leases = [...plan.nextLeaseRows]
+  }
+
+  async sendJsonRequest(
+    request: OutboxWorkerHttpRequestPlan,
+  ): Promise<
+    | { readonly kind: 'success'; readonly body: unknown }
+    | Exclude<OutboxWorkerSideEffectResultEvidence, { readonly kind: 'success' }>
+  > {
+    const url = new URL(request.url)
+    if (request.method === 'POST' && url.pathname === '/blobs/head') {
+      const hashes = jsonHashes(request.bodyJson)
+      if (hashes === undefined) {
+        return { kind: 'invalid-payload', code: 'blob-head-request-invalid' }
+      }
+      return {
+        kind: 'success',
+        body: {
+          exists: Object.fromEntries(
+            hashes.map((hash) => {
+              const bytes = this.uploadedBlobs.get(`https://sync.example.test/blobs/${hash}`)
+              return [
+                hash,
+                bytes === undefined ? { found: false } : { found: true, size: bytes.byteLength },
+              ]
+            }),
+          ),
+        },
+      }
+    }
+    if (request.method === 'POST' && url.pathname === '/blobs/upload-url') {
+      const body = uploadUrlRequestBody(request.bodyJson)
+      if (body === undefined) {
+        return { kind: 'invalid-payload', code: 'blob-upload-url-request-invalid' }
+      }
+      if (this.uploadedBlobs.has(`https://sync.example.test/blobs/${body.sha256}`)) {
+        return { kind: 'success', body: { kind: 'already-exists' } }
+      }
+      return {
+        kind: 'success',
+        body: {
+          kind: 'single-put',
+          url: `https://upload.example.test/${body.sha256}`,
+          headers: { 'content-type': 'application/octet-stream' },
+          expiresAt: this.nextNow() + 30_000,
+        },
+      }
+    }
+    if (request.method === 'PUT' && url.pathname.startsWith('/blob-manifests/')) {
+      this.manifests.set(request.url, request.bodyJson)
+      return { kind: 'success', body: { ok: true } }
+    }
+    return { kind: 'http-response', status: 404, code: 'not-found' }
+  }
+
+  async uploadBytes(
+    request: OutboxWorkerHttpUploadBytesPlan,
+    bytes: Uint8Array,
+  ): Promise<OutboxWorkerSideEffectResultEvidence> {
+    const url = new URL(request.url)
+    const hash = url.pathname.slice(1)
+    if (request.method !== 'PUT' || hash.length === 0) {
+      return { kind: 'invalid-payload', code: 'blob-upload-request-invalid' }
+    }
+    this.uploadedBlobs.set(`https://sync.example.test/blobs/${hash}`, bytes)
+    return { kind: 'success' }
+  }
+
+  async downloadBytes(
+    request: OutboxWorkerHttpRequestPlan,
+  ): Promise<
+    | { readonly kind: 'success'; readonly bytes: Uint8Array }
+    | Exclude<OutboxWorkerSideEffectResultEvidence, { readonly kind: 'success' }>
+  > {
+    const bytes = this.downloads[request.url] ?? this.uploadedBlobs.get(request.url)
+    return bytes === undefined
+      ? { kind: 'http-response', status: 404, code: 'not-found' }
+      : { kind: 'success', bytes }
+  }
+
+  async readBlobCache(plan: OutboxWorkerBlobCacheReadPlan): Promise<Uint8Array | undefined> {
+    return this.blobCache.get(plan.key)
+  }
+
+  async writeBlobCache(plan: OutboxWorkerBlobCacheWritePlan, bytes: Uint8Array): Promise<void> {
+    this.blobCache.set(plan.key, bytes)
+  }
+
+  async readVaultFile(path: string): Promise<OutboxWorkerVaultFileEvidence> {
+    const bytes = this.vaultFiles.get(path)
+    return bytes === undefined ? { kind: 'missing' } : { kind: 'file', bytes }
+  }
+
+  async ensureVaultParentFolders(): Promise<boolean> {
+    return true
+  }
+
+  async writeVaultFile(path: string, bytes: Uint8Array): Promise<void> {
+    this.vaultFiles.set(path, bytes)
+  }
+
+  getActiveFilePath(): string | undefined {
+    return undefined
+  }
+
+  writeLastMaterialized(record: NonNullable<LocalStoreOutboxRecord['lastMaterialized']>): void {
+    this.lastMaterialized.set(record.path, record)
+  }
+
+  now(): number {
+    return this.nextNow()
+  }
+
+  async sha256Hex(bytes: Uint8Array): Promise<string> {
+    return sha256Hex(bytes)
+  }
+
+  private completeNonAck(
+    record: LocalStoreOutboxRecord | undefined,
+    result: OutboxWorkerSideEffectResultEvidence,
+  ): void {
+    assert.notEqual(record, undefined)
+    if (record === undefined) {
+      throw new Error('side effect record missing')
+    }
+    const evidence = classifyOutboxWorkerSideEffectCompletionEvidence({
+      itemId: record.id,
+      kind: record.kind,
+      status: record.status,
+      retryCount: record.retryCount ?? 0,
+      result,
+    })
+    const plan = evidence.ok
+      ? planOutboxWorkerSuccessCompletion({
+          itemId: evidence.itemId,
+          kind: evidence.kind,
+          status: evidence.status,
+          ownerId: 'worker-1',
+          now: this.nextNow(),
+          currentOutboxRecords: this.records,
+          currentLeaseRows: this.leases,
+        })
+      : planOutboxWorkerFailureCompletion({
+          itemId: evidence.itemId,
+          kind: evidence.kind,
+          retryCount: evidence.retryCount,
+          error: evidence.error,
+          ownerId: 'worker-1',
+          now: this.nextNow(),
+          currentOutboxRecords: this.records,
+          currentLeaseRows: this.leases,
+        })
+    assert.equal(plan.ok, true)
+    if (!plan.ok) {
+      throw new Error(plan.reason)
+    }
+    this.records = [...plan.nextOutboxRecords]
+    this.leases = [...plan.nextLeaseRows]
+  }
+
+  private planTick(
+    maxStarts: number,
+  ): Extract<ReturnType<typeof planOutboxWorkerTick>, { readonly ok: true }> {
+    const tick = planOutboundQueueTick({
+      items: this.records,
+      now: this.nextNow(),
+      profile: 'desktop',
+      resumeEvents: [],
+      leases: this.leases,
+      maxStarts,
+      authRefreshState: { status: 'idle' },
+    })
+    const workerTick = planOutboxWorkerTick({
+      tick,
+      currentOutboxRecords: this.records,
+      currentLeaseRows: this.leases,
+      ownerId: 'worker-1',
+      now: this.nextNow(),
+      leaseDurationMs: 30_000,
+    })
+    assert.equal(workerTick.ok, true)
+    if (!workerTick.ok) {
+      throw new Error(workerTick.reason)
+    }
+    return workerTick
+  }
+
+  private nextNow(): number {
+    this.nowMs += 1
+    return this.nowMs
+  }
+}
+
 function runnableSchedulerItem(
   id: OutboxPlanItemId,
   kind: OutboxSchedulerItem['kind'],
@@ -1937,4 +2428,38 @@ function outboxId(value: string): OutboxPlanItemId {
   const id = makeOutboxPlanItemId(value)
   assert(id !== null)
   return id
+}
+
+function sha256Hex(bytes: Uint8Array): ReturnType<typeof makeSha256Hex> {
+  return makeSha256Hex(createHash('sha256').update(bytes).digest('hex'))
+}
+
+function jsonHashes(body: unknown): readonly string[] | undefined {
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    !('hashes' in body) ||
+    !Array.isArray(body.hashes)
+  ) {
+    return undefined
+  }
+  return body.hashes.every((hash): hash is string => typeof hash === 'string')
+    ? body.hashes
+    : undefined
+}
+
+function uploadUrlRequestBody(
+  body: unknown,
+): { readonly sha256: string; readonly size: number } | undefined {
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    !('sha256' in body) ||
+    !('size' in body) ||
+    typeof body.sha256 !== 'string' ||
+    typeof body.size !== 'number'
+  ) {
+    return undefined
+  }
+  return { sha256: body.sha256, size: body.size }
 }

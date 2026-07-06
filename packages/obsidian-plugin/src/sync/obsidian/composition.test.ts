@@ -9,6 +9,7 @@ import {
   type SyncRuntimeStartupStepEffectPort,
 } from '../engine/actuation'
 import { createSyncRuntimeObsidianComposition } from '../obsidian/composition'
+import { type SyncRuntimeObsidianResumePort } from '../obsidian/lifecycle'
 import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
 import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
 
@@ -82,6 +83,7 @@ test('Obsidian runtime composition wires startup evidence through the lifecycle'
     localStore: new NoopLocalStoreEffectPort(),
     localStoreRebuild: new NoopLocalStoreRebuildEffectPort(),
     startupStep,
+    resume: new NoopResumePort(),
   })
 
   const result = await composition.lifecycle.runStartupTick()
@@ -125,6 +127,16 @@ class NoopSetupExchangePort implements SyncRuntimeSetupExchangePort {
 
 class NoopLocalStoreRebuildEffectPort implements SyncRuntimeLocalStoreRebuildEffectPort {
   async rerunStartup(): Promise<void> {}
+}
+
+class NoopResumePort implements SyncRuntimeObsidianResumePort {
+  canResume(): boolean {
+    return true
+  }
+
+  async runForegroundResume(): Promise<void> {}
+
+  scheduleOutboxTick(): void {}
 }
 
 class RecordingUiPort implements SyncRuntimeObsidianShellUiPort {

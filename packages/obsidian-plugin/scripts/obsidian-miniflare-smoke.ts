@@ -26,7 +26,14 @@ const localObsidianText = `Obsidian local edit ${runId}`
 const metaLocalPath = `meta-local-${runId}.md`
 const metaPeerPath = `meta-peer-${runId}.md`
 const metaSharedPath = `meta-shared-${runId}.md`
+const pathConflictRepairSourcePath = `path-conflict-source-${runId}.md`
+const pathConflictRepairTargetPath = `path-conflict-target-${runId}.md`
+const renameRepairSourcePath = `rename-repair-source-${runId}.md`
+const renameRepairTargetPath = `rename-repair-target-${runId}.md`
+const remoteMaterializeBlockedPath = `remote-materialize-blocked-${runId}.md`
 const binaryPath = `asset-${runId}.bin`
+const localBinaryPath = `local-asset-${runId}.bin`
+const localBinaryRenamedPath = `local-asset-renamed-${runId}.bin`
 const initialFullSyncPath = `initial-full-sync-${runId}.md`
 const initialFullSyncText = `Initial full sync snapshot content ${runId}`
 const initialFullSyncFileId = `initial-full-sync-file-${runId}`
@@ -92,6 +99,55 @@ interface ActiveMetaEntry {
 interface VaultFileReadResult {
   readonly exists: boolean
   readonly text: string
+}
+
+interface VaultBinaryReadResult {
+  readonly exists: boolean
+  readonly size: number
+  readonly sha256: string
+}
+
+interface RepairRetryResult {
+  readonly deleted?: boolean | undefined
+  readonly path?: string | undefined
+  readonly repairLogContainsEntry: boolean
+}
+
+interface DegradedBinaryRestoreCheckResult {
+  readonly repairLogContainsEntry: boolean
+  readonly degradedReason?: string | undefined
+}
+
+interface InvalidMetaDiscardResult {
+  readonly isolatedBeforeDiscard: boolean
+  readonly isolatedAfterDiscard: boolean
+  readonly existsAfterWrongConfirmation: boolean
+  readonly existsAfterDiscard: boolean
+  readonly repairLogContainsEntry: boolean
+}
+
+interface PathConflictRetryResult {
+  readonly sourceExists: boolean
+  readonly targetExists: boolean
+  readonly entryPath?: string | undefined
+  readonly repairLogContainsEntry: boolean
+}
+
+interface RenameMaterializeResolveResult {
+  readonly sourceExists: boolean
+  readonly blockedTargetExists: boolean
+  readonly resolvedPath?: string | undefined
+  readonly resolvedExists: boolean
+  readonly repairLogContainsEntry: boolean
+}
+
+interface RemoteMaterializeBlockedActionResult {
+  readonly retryRepairLogContainsEntry: boolean
+  readonly retryPendingPath?: string | undefined
+  readonly clearRepairLogContainsEntry: boolean
+  readonly autoResolvedPath?: string | undefined
+  readonly autoPendingPath?: string | undefined
+  readonly autoRepairLogContainsEntry: boolean
 }
 
 interface StartupSyncResult {
@@ -174,6 +230,80 @@ function isVaultFileReadResult(value: unknown): value is VaultFileReadResult {
   return isRecord(value) && typeof value.exists === 'boolean' && typeof value.text === 'string'
 }
 
+function isVaultBinaryReadResult(value: unknown): value is VaultBinaryReadResult {
+  return (
+    isRecord(value) &&
+    typeof value.exists === 'boolean' &&
+    typeof value.size === 'number' &&
+    typeof value.sha256 === 'string'
+  )
+}
+
+function isRepairRetryResult(value: unknown): value is RepairRetryResult {
+  return (
+    isRecord(value) &&
+    (value.deleted === undefined || typeof value.deleted === 'boolean') &&
+    (value.path === undefined || typeof value.path === 'string') &&
+    typeof value.repairLogContainsEntry === 'boolean'
+  )
+}
+
+function isDegradedBinaryRestoreCheckResult(
+  value: unknown,
+): value is DegradedBinaryRestoreCheckResult {
+  return (
+    isRecord(value) &&
+    typeof value.repairLogContainsEntry === 'boolean' &&
+    (value.degradedReason === undefined || typeof value.degradedReason === 'string')
+  )
+}
+
+function isInvalidMetaDiscardResult(value: unknown): value is InvalidMetaDiscardResult {
+  return (
+    isRecord(value) &&
+    typeof value.isolatedBeforeDiscard === 'boolean' &&
+    typeof value.isolatedAfterDiscard === 'boolean' &&
+    typeof value.existsAfterWrongConfirmation === 'boolean' &&
+    typeof value.existsAfterDiscard === 'boolean' &&
+    typeof value.repairLogContainsEntry === 'boolean'
+  )
+}
+
+function isPathConflictRetryResult(value: unknown): value is PathConflictRetryResult {
+  return (
+    isRecord(value) &&
+    typeof value.sourceExists === 'boolean' &&
+    typeof value.targetExists === 'boolean' &&
+    (value.entryPath === undefined || typeof value.entryPath === 'string') &&
+    typeof value.repairLogContainsEntry === 'boolean'
+  )
+}
+
+function isRenameMaterializeResolveResult(value: unknown): value is RenameMaterializeResolveResult {
+  return (
+    isRecord(value) &&
+    typeof value.sourceExists === 'boolean' &&
+    typeof value.blockedTargetExists === 'boolean' &&
+    (value.resolvedPath === undefined || typeof value.resolvedPath === 'string') &&
+    typeof value.resolvedExists === 'boolean' &&
+    typeof value.repairLogContainsEntry === 'boolean'
+  )
+}
+
+function isRemoteMaterializeBlockedActionResult(
+  value: unknown,
+): value is RemoteMaterializeBlockedActionResult {
+  return (
+    isRecord(value) &&
+    typeof value.retryRepairLogContainsEntry === 'boolean' &&
+    (value.retryPendingPath === undefined || typeof value.retryPendingPath === 'string') &&
+    typeof value.clearRepairLogContainsEntry === 'boolean' &&
+    (value.autoResolvedPath === undefined || typeof value.autoResolvedPath === 'string') &&
+    (value.autoPendingPath === undefined || typeof value.autoPendingPath === 'string') &&
+    typeof value.autoRepairLogContainsEntry === 'boolean'
+  )
+}
+
 function isStartupSyncResult(value: unknown): value is StartupSyncResult {
   return (
     isRecord(value) &&
@@ -246,6 +376,18 @@ function makeBinaryBytes(): Uint8Array {
   const bytes = new Uint8Array(160 * 1024)
   for (let index = 0; index < bytes.byteLength; index += 1) {
     bytes[index] = (index * 31 + runId.charCodeAt(index % runId.length)) % 256
+  }
+  return bytes
+}
+
+function makeLocalBinaryBytes(): Uint8Array {
+  const bytes = makeBinaryBytes()
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    const byte = bytes[index]
+    if (byte === undefined) {
+      throw new Error(`missing local binary byte at ${index}`)
+    }
+    bytes[index] = byte ^ 0xa5
   }
   return bytes
 }
@@ -547,6 +689,60 @@ async function downloadWorkerBytes(
   return new Uint8Array(await response.arrayBuffer())
 }
 
+async function downloadWorkerBinaryByManifest(
+  setup: SetupExchangeResponse,
+  manifestHash: string,
+): Promise<Uint8Array> {
+  const manifestBytes = await downloadWorkerBytes(setup, `/blob-manifests/${manifestHash}.json`)
+  if ((await sha256Hex(manifestBytes)) !== manifestHash) {
+    throw new Error(`downloaded manifest hash mismatch for ${manifestHash}`)
+  }
+  const parsed: unknown = JSON.parse(new TextDecoder().decode(manifestBytes))
+  if (!isBlobManifest(parsed)) {
+    throw new Error(`downloaded manifest was invalid: ${JSON.stringify(parsed)}`)
+  }
+  const chunks = []
+  for (const chunk of parsed.chunks) {
+    const bytes = await downloadWorkerBytes(setup, `/blobs/${chunk.sha256}`)
+    if (bytes.byteLength !== chunk.size || (await sha256Hex(bytes)) !== chunk.sha256) {
+      throw new Error(`downloaded blob chunk mismatch: ${chunk.sha256}`)
+    }
+    chunks.push(bytes)
+  }
+  const assembled = new Uint8Array(parsed.size)
+  for (const [index, chunk] of parsed.chunks.entries()) {
+    const bytes = chunks[index]
+    if (bytes === undefined) {
+      throw new Error(`missing downloaded chunk at ${index}`)
+    }
+    assembled.set(bytes, chunk.offset)
+  }
+  if ((await sha256Hex(assembled)) !== parsed.contentSha256) {
+    throw new Error(`downloaded binary content mismatch for manifest ${manifestHash}`)
+  }
+  return assembled
+}
+
+function isBlobManifest(value: unknown): value is BlobManifest {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    typeof value.fileId === 'string' &&
+    typeof value.contentSha256 === 'string' &&
+    typeof value.size === 'number' &&
+    typeof value.createdBy === 'string' &&
+    typeof value.createdAt === 'number' &&
+    Array.isArray(value.chunks) &&
+    value.chunks.every(
+      (chunk) =>
+        isRecord(chunk) &&
+        typeof chunk.sha256 === 'string' &&
+        typeof chunk.offset === 'number' &&
+        typeof chunk.size === 'number',
+    )
+  )
+}
+
 async function exchangeSetupToken(
   token: string,
   requestedDeviceName: string,
@@ -700,6 +896,20 @@ function readActiveMetaEntry(path: string): ActiveMetaEntry | null {
   throw new Error(`invalid active meta entry: ${JSON.stringify(value)}`)
 }
 
+function readMetaEntryByFileId(fileId: string): JsonRecord | null {
+  const value = evalInObsidian(`(() => {
+    const plugin = app.plugins.plugins.kuroflare;
+    const map = plugin?.metaDoc?.getMap('meta');
+    if (!map) return JSON.stringify(null);
+    const value = map.get(${JSON.stringify(fileId)});
+    return JSON.stringify(value ?? null);
+  })()`)
+  if (value === null || isRecord(value)) {
+    return value
+  }
+  throw new Error(`invalid meta entry for ${fileId}: ${JSON.stringify(value)}`)
+}
+
 async function waitForActiveMetaEntry(
   path: string,
   timeoutMs = 5000,
@@ -713,6 +923,45 @@ async function waitForActiveMetaEntry(
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   return readActiveMetaEntry(path)
+}
+
+async function waitForMetaEntryByFileId(
+  fileId: string,
+  predicate: (entry: JsonRecord) => boolean,
+  label: string,
+  timeoutMs = 5000,
+): Promise<JsonRecord> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const entry = readMetaEntryByFileId(fileId)
+    if (entry !== null && predicate(entry)) {
+      return entry
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  const entry = readMetaEntryByFileId(fileId)
+  if (entry !== null && predicate(entry)) {
+    return entry
+  }
+  throw new Error(`${label} timed out: ${JSON.stringify(entry)}`)
+}
+
+async function waitForActiveMetaEntryByFileId(
+  fileId: string,
+  predicate: (entry: ActiveMetaEntry) => boolean,
+  label: string,
+  timeoutMs = 5000,
+): Promise<ActiveMetaEntry> {
+  const entry = await waitForMetaEntryByFileId(
+    fileId,
+    (candidate) => isActiveMetaEntry(candidate) && predicate(candidate),
+    label,
+    timeoutMs,
+  )
+  if (!isActiveMetaEntry(entry)) {
+    throw new Error(`${label} did not return an active meta entry: ${JSON.stringify(entry)}`)
+  }
+  return entry
 }
 
 async function waitForVaultPath(path: string, timeoutMs = 5000): Promise<boolean> {
@@ -756,6 +1005,466 @@ async function waitForVaultFileIncludes(
   })()`)
   if (!isVaultFileReadResult(result)) {
     throw new Error(`invalid vault file read result: ${JSON.stringify(result)}`)
+  }
+  return result
+}
+
+async function waitForVaultBinaryHash(
+  path: string,
+  expectedSha256: string,
+  timeoutMs = 5000,
+): Promise<VaultBinaryReadResult> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const result = readVaultBinaryHash(path)
+    if (result.exists === true && result.sha256 === expectedSha256) {
+      return result
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return readVaultBinaryHash(path)
+}
+
+function readVaultBinaryHash(path: string): VaultBinaryReadResult {
+  const result = evalInObsidian(`(async () => {
+    const path = ${JSON.stringify(path)};
+    const file = app.vault.getAbstractFileByPath(path);
+    if (!file) return JSON.stringify({ exists: false, size: 0, sha256: '' });
+    const buffer = await app.vault.adapter.readBinary(path);
+    const hash = await crypto.subtle.digest('SHA-256', buffer);
+    const sha256 = Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return JSON.stringify({ exists: true, size: buffer.byteLength, sha256 });
+  })()`)
+  if (!isVaultBinaryReadResult(result)) {
+    throw new Error(`invalid vault binary read result: ${JSON.stringify(result)}`)
+  }
+  return result
+}
+
+function createObsidianBinary(path: string, bytes: Uint8Array): void {
+  evalInObsidian(`(async () => {
+    const base64 = ${JSON.stringify(encodeBase64(bytes))};
+    const binary = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const existing = app.vault.getAbstractFileByPath(${JSON.stringify(path)});
+    if (existing) {
+      await app.vault.adapter.writeBinary(${JSON.stringify(path)}, binary.buffer.slice(binary.byteOffset, binary.byteOffset + binary.byteLength));
+      return JSON.stringify({ action: 'modified', size: binary.byteLength });
+    }
+    await app.vault.createBinary(${JSON.stringify(path)}, binary.buffer.slice(binary.byteOffset, binary.byteOffset + binary.byteLength));
+    return JSON.stringify({ action: 'created', size: binary.byteLength });
+  })()`)
+}
+
+function renameObsidianFile(fromPath: string, toPath: string): void {
+  evalInObsidian(`(async () => {
+    const file = app.vault.getAbstractFileByPath(${JSON.stringify(fromPath)});
+    if (!file) return JSON.stringify({ renamed: false, reason: 'missing-file' });
+    await app.fileManager.renameFile(file, ${JSON.stringify(toPath)});
+    return JSON.stringify({ renamed: true });
+  })()`)
+}
+
+function deleteObsidianFile(path: string): void {
+  evalInObsidian(`(async () => {
+    const file = app.vault.getAbstractFileByPath(${JSON.stringify(path)});
+    if (!file) return JSON.stringify({ deleted: false, reason: 'missing-file' });
+    await app.vault.delete(file);
+    return JSON.stringify({ deleted: true });
+  })()`)
+}
+
+async function retryBinaryRestoreCheck(fileId: string): Promise<RepairRetryResult> {
+  const result = evalInObsidian(`(async () => {
+    const plugin = app.plugins.plugins.kuroflare;
+    const map = plugin?.metaDoc?.getMap('meta');
+    if (!plugin || !map) return JSON.stringify({ repairLogContainsEntry: false });
+    const current = map.get(${JSON.stringify(fileId)});
+    if (!current) return JSON.stringify({ repairLogContainsEntry: false });
+    const deletedAt = typeof current.deletedAt === 'number' ? current.deletedAt : Date.now();
+    map.doc.transact(() => {
+      map.set(${JSON.stringify(fileId)}, {
+        ...current,
+        deleted: true,
+        deletedAt,
+        deletedBy: 'e2e-delete-device',
+        contentUpdatedAt: deletedAt + 1,
+        contentUpdatedBy: 'e2e-edit-device',
+        updatedAt: deletedAt + 1,
+        updatedBy: 'e2e-edit-device',
+      });
+    }, 'kuroflare:repair');
+    const repairEntry = {
+      id: 'delete-vs-edit:' + ${JSON.stringify(fileId)} + ':keep-deleted',
+      kind: 'delete-vs-edit',
+      fileId: ${JSON.stringify(fileId)},
+      reason: 'missing-binary-content',
+      createdAt: Date.now(),
+    };
+    await plugin.updateSettings({
+      repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), repairEntry],
+    });
+    await plugin.retryKeepDeletedRepairEntry(repairEntry);
+    const after = map.get(${JSON.stringify(fileId)});
+    return JSON.stringify({
+      deleted: after?.deleted,
+      path: after?.path,
+      repairLogContainsEntry: Boolean(
+        plugin.kuroflareSettings.repairLog?.some((entry) => entry.id === repairEntry.id),
+      ),
+    });
+  })()`)
+  if (!isRepairRetryResult(result)) {
+    throw new Error(`invalid binary restore retry result: ${JSON.stringify(result)}`)
+  }
+  return result
+}
+
+async function retryDegradedBinaryRestoreCheck(
+  fileId: string,
+): Promise<DegradedBinaryRestoreCheckResult> {
+  const result = evalInObsidian(`(async () => {
+    const plugin = app.plugins.plugins.kuroflare;
+    const map = plugin?.metaDoc?.getMap('meta');
+    if (!plugin || !map) {
+      return JSON.stringify({ repairLogContainsEntry: false });
+    }
+    const now = Date.now();
+    const repairEntry = {
+      id: 'delete-vs-edit:' + ${JSON.stringify(fileId)} + ':keep-deleted',
+      kind: 'delete-vs-edit',
+      fileId: ${JSON.stringify(fileId)},
+      reason: 'missing-binary-content',
+      createdAt: now,
+    };
+    map.doc.transact(() => {
+      map.set(${JSON.stringify(fileId)}, {
+        schemaVersion: 1,
+        fileId: ${JSON.stringify(fileId)},
+        path: 'degraded-binary-restore-' + ${JSON.stringify(runId)} + '.bin',
+        canonicalPath: 'degraded-binary-restore-' + ${JSON.stringify(runId)} + '.bin',
+        type: 'binary',
+        blobManifestHash: 'f'.repeat(64),
+        blobChunks: ['e'.repeat(64)],
+        deleted: true,
+        deletedAt: now,
+        deletedBy: 'e2e-delete-device',
+        createdAt: now - 10,
+        createdBy: 'e2e-create-device',
+        contentUpdatedAt: now + 1,
+        contentUpdatedBy: 'e2e-edit-device',
+        updatedAt: now + 1,
+        updatedBy: 'e2e-edit-device',
+        mtime: now,
+      });
+    }, 'kuroflare:repair');
+    await plugin.updateSettings({
+      repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), repairEntry],
+    });
+    await plugin.retryKeepDeletedRepairEntry(repairEntry);
+    return JSON.stringify({
+      repairLogContainsEntry: Boolean(
+        plugin.kuroflareSettings.repairLog?.some((entry) => entry.id === repairEntry.id),
+      ),
+      degradedReason: plugin.getBinaryRestoreCheckSnapshot()?.reason,
+    });
+  })()`)
+  if (!isDegradedBinaryRestoreCheckResult(result)) {
+    throw new Error(`invalid degraded binary restore check result: ${JSON.stringify(result)}`)
+  }
+  return result
+}
+
+async function discardInvalidMetaEntry(fileId: string): Promise<InvalidMetaDiscardResult> {
+  const result = evalInObsidian(`(async () => {
+    const plugin = app.plugins.plugins.kuroflare;
+    const map = plugin?.metaDoc?.getMap('meta');
+    if (!plugin || !map) {
+      return JSON.stringify({
+        isolatedBeforeDiscard: false,
+        isolatedAfterDiscard: false,
+        existsAfterWrongConfirmation: false,
+        existsAfterDiscard: false,
+        repairLogContainsEntry: false,
+      });
+    }
+    map.set(${JSON.stringify(fileId)}, { invalid: true, path: 'invalid-meta.bin' });
+    const repairEntry = {
+      id: 'invalid-meta:' + ${JSON.stringify(fileId)},
+      kind: 'invalid-meta',
+      fileId: ${JSON.stringify(fileId)},
+      reason: 'meta-schema-invalid',
+      createdAt: Date.now(),
+    };
+    await plugin.updateSettings({
+      repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), repairEntry],
+    });
+    await plugin.inspectInvalidMetaRepairEntry(repairEntry);
+    const isolatedBeforeDiscard = Boolean(
+      plugin.getInvalidMetaIsolationSnapshot()?.rawJson.includes('"invalid": true'),
+    );
+    await plugin.discardInvalidMetaRepairEntry(repairEntry, 'wrong confirmation');
+    const existsAfterWrongConfirmation = map.has(${JSON.stringify(fileId)});
+    await plugin.discardInvalidMetaRepairEntry(repairEntry, 'DISCARD INVALID META');
+    return JSON.stringify({
+      isolatedBeforeDiscard,
+      isolatedAfterDiscard: plugin.getInvalidMetaIsolationSnapshot() !== null,
+      existsAfterWrongConfirmation,
+      existsAfterDiscard: map.has(${JSON.stringify(fileId)}),
+      repairLogContainsEntry: Boolean(
+        plugin.kuroflareSettings.repairLog?.some((entry) => entry.id === repairEntry.id),
+      ),
+    });
+  })()`)
+  if (!isInvalidMetaDiscardResult(result)) {
+    throw new Error(`invalid invalid-meta discard result: ${JSON.stringify(result)}`)
+  }
+  return result
+}
+
+async function retryPathConflictMaterialize(input: {
+  readonly fileId: string
+  readonly sourcePath: string
+  readonly targetPath: string
+}): Promise<PathConflictRetryResult> {
+  const result = evalInObsidian(`(async () => {
+    const plugin = app.plugins.plugins.kuroflare;
+    const map = plugin?.metaDoc?.getMap('meta');
+    if (!plugin || !map) {
+      return JSON.stringify({
+        sourceExists: false,
+        targetExists: false,
+        repairLogContainsEntry: false,
+      });
+    }
+    const current = map.get(${JSON.stringify(input.fileId)});
+    if (!current) {
+      return JSON.stringify({
+        sourceExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.sourcePath)})),
+        targetExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.targetPath)})),
+        repairLogContainsEntry: false,
+      });
+    }
+    const now = Date.now();
+    map.doc.transact(() => {
+      map.set(${JSON.stringify(input.fileId)}, {
+        ...current,
+        path: ${JSON.stringify(input.targetPath)},
+        canonicalPath: ${JSON.stringify(canonicalizeVaultPath(input.targetPath))},
+        updatedAt: now,
+        updatedBy: 'e2e-path-repair-device',
+      });
+    }, 'kuroflare:repair');
+    const repairEntry = {
+      id: 'path-conflict:' + ${JSON.stringify(input.fileId)},
+      kind: 'path-conflict',
+      fileId: ${JSON.stringify(input.fileId)},
+      path: ${JSON.stringify(input.targetPath)},
+      reason: 'path-conflict-renamed',
+      createdAt: Date.now(),
+    };
+    await plugin.updateSettings({
+      repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), repairEntry],
+    });
+    await plugin.retryPathConflictRepairEntry(repairEntry);
+    const after = map.get(${JSON.stringify(input.fileId)});
+    return JSON.stringify({
+      sourceExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.sourcePath)})),
+      targetExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.targetPath)})),
+      entryPath: after?.path,
+      repairLogContainsEntry: Boolean(
+        plugin.kuroflareSettings.repairLog?.some((entry) => entry.id === repairEntry.id),
+      ),
+    });
+  })()`)
+  if (!isPathConflictRetryResult(result)) {
+    throw new Error(`invalid path-conflict retry result: ${JSON.stringify(result)}`)
+  }
+  return result
+}
+
+async function resolveRenameMaterializeFailure(input: {
+  readonly fileId: string
+  readonly sourcePath: string
+  readonly targetPath: string
+}): Promise<RenameMaterializeResolveResult> {
+  const result = evalInObsidian(`(async () => {
+    const plugin = app.plugins.plugins.kuroflare;
+    const map = plugin?.metaDoc?.getMap('meta');
+    if (!plugin || !map) {
+      return JSON.stringify({
+        sourceExists: false,
+        blockedTargetExists: false,
+        resolvedExists: false,
+        repairLogContainsEntry: false,
+      });
+    }
+    const current = map.get(${JSON.stringify(input.fileId)});
+    if (!current) {
+      return JSON.stringify({
+        sourceExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.sourcePath)})),
+        blockedTargetExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.targetPath)})),
+        resolvedExists: false,
+        repairLogContainsEntry: false,
+      });
+    }
+    if (!app.vault.getAbstractFileByPath(${JSON.stringify(input.targetPath)})) {
+      await app.vault.createFolder(${JSON.stringify(input.targetPath)});
+    }
+    const now = Date.now();
+    map.doc.transact(() => {
+      map.set(${JSON.stringify(input.fileId)}, {
+        ...current,
+        path: ${JSON.stringify(input.targetPath)},
+        canonicalPath: ${JSON.stringify(canonicalizeVaultPath(input.targetPath))},
+        updatedAt: now,
+        updatedBy: 'e2e-rename-repair-device',
+      });
+    }, 'kuroflare:repair');
+    const repairEntry = {
+      id: 'path-conflict:' + ${JSON.stringify(input.fileId)} + ':rename-materialize-failed',
+      kind: 'path-conflict',
+      fileId: ${JSON.stringify(input.fileId)},
+      path: ${JSON.stringify(input.targetPath)},
+      reason: 'rename-materialize-failed',
+      createdAt: Date.now(),
+    };
+    await plugin.updateSettings({
+      repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), repairEntry],
+    });
+    await plugin.resolvePathConflictRepairEntry(repairEntry);
+    const after = map.get(${JSON.stringify(input.fileId)});
+    const resolvedPath = after?.path;
+    return JSON.stringify({
+      sourceExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.sourcePath)})),
+      blockedTargetExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.targetPath)})),
+      resolvedPath,
+      resolvedExists:
+        typeof resolvedPath === 'string' && Boolean(app.vault.getAbstractFileByPath(resolvedPath)),
+      repairLogContainsEntry: Boolean(
+        plugin.kuroflareSettings.repairLog?.some((entry) => entry.id === repairEntry.id),
+      ),
+    });
+  })()`)
+  if (!isRenameMaterializeResolveResult(result)) {
+    throw new Error(`invalid rename materialize resolve result: ${JSON.stringify(result)}`)
+  }
+  return result
+}
+
+async function runRemoteMaterializeBlockedActions(): Promise<RemoteMaterializeBlockedActionResult> {
+  const result = evalInObsidian(`(async () => {
+    const plugin = app.plugins.plugins.kuroflare;
+    const map = plugin?.metaDoc?.getMap('meta');
+    if (!plugin || !map) {
+      return JSON.stringify({
+        retryRepairLogContainsEntry: false,
+        clearRepairLogContainsEntry: false,
+        autoRepairLogContainsEntry: false,
+      });
+    }
+    const now = Date.now();
+    const retryFileId = 'remote-materialize-blocked-retry-' + ${JSON.stringify(runId)};
+    const retryYDocId = 'remote-materialize-blocked-retry-doc-' + ${JSON.stringify(runId)};
+    const retryEntry = {
+      id: 'remote-materialize-blocked:' + retryYDocId + ':path-collision',
+      kind: 'remote-materialize-blocked',
+      fileId: retryFileId,
+      path: ${JSON.stringify(remoteMaterializeBlockedPath)},
+      reason: 'path-collision',
+      createdAt: now,
+    };
+    map.doc.transact(() => {
+      map.set(retryFileId, {
+        schemaVersion: 1,
+        fileId: retryFileId,
+        path: ${JSON.stringify(remoteMaterializeBlockedPath)},
+        canonicalPath: ${JSON.stringify(canonicalizeVaultPath(remoteMaterializeBlockedPath))},
+        type: 'text',
+        ydocId: retryYDocId,
+        deleted: false,
+        createdAt: now,
+        createdBy: 'e2e-remote-materialize-blocked',
+        contentUpdatedAt: now,
+        contentUpdatedBy: 'e2e-remote-materialize-blocked',
+        updatedAt: now,
+        updatedBy: 'e2e-remote-materialize-blocked',
+        mtime: now,
+      });
+    }, 'kuroflare:repair');
+    await plugin.updateSettings({
+      repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), retryEntry],
+    });
+    await plugin.retryRemoteMaterializeBlockedRepairEntry(retryEntry);
+
+    const clearFileId = 'remote-materialize-blocked-clear-' + ${JSON.stringify(runId)};
+    const clearEntry = {
+      id: 'remote-materialize-blocked:' + clearFileId + ':parent-collision',
+      kind: 'remote-materialize-blocked',
+      fileId: clearFileId,
+      path: 'blocked-clear-' + ${JSON.stringify(runId)} + '.md',
+      reason: 'parent-collision',
+      createdAt: Date.now(),
+    };
+    await plugin.updateSettings({
+      repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), clearEntry],
+    });
+    await plugin.clearRepairLogEntry(clearEntry);
+
+    const autoFileId = 'remote-materialize-blocked-auto-' + ${JSON.stringify(runId)};
+    const autoYDocId = 'remote-materialize-blocked-auto-doc-' + ${JSON.stringify(runId)};
+    const autoPath = 'remote-materialize-blocked-auto-' + ${JSON.stringify(runId)} + '.md';
+    if (!app.vault.getAbstractFileByPath(autoPath)) {
+      await app.vault.createFolder(autoPath);
+    }
+    const autoEntry = {
+      id: 'remote-materialize-blocked:' + autoYDocId + ':path-collision',
+      kind: 'remote-materialize-blocked',
+      fileId: autoFileId,
+      path: autoPath,
+      reason: 'path-collision',
+      createdAt: Date.now(),
+    };
+    map.doc.transact(() => {
+      map.set(autoFileId, {
+        schemaVersion: 1,
+        fileId: autoFileId,
+        path: autoPath,
+        canonicalPath: autoPath.normalize('NFC').replace(/\\/+/g, '/').toLowerCase(),
+        type: 'text',
+        ydocId: autoYDocId,
+        deleted: false,
+        createdAt: now,
+        createdBy: 'e2e-remote-materialize-blocked',
+        contentUpdatedAt: now,
+        contentUpdatedBy: 'e2e-remote-materialize-blocked',
+        updatedAt: now,
+        updatedBy: 'e2e-remote-materialize-blocked',
+        mtime: now,
+      });
+    }, 'kuroflare:repair');
+    await plugin.updateSettings({
+      repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), autoEntry],
+    });
+    await plugin.resolveRemoteMaterializeBlockedRepairEntry(autoEntry);
+    const autoResolved = map.get(autoFileId);
+
+    return JSON.stringify({
+      retryRepairLogContainsEntry: Boolean(
+        plugin.kuroflareSettings.repairLog?.some((entry) => entry.id === retryEntry.id),
+      ),
+      retryPendingPath: plugin.pendingRemoteTextFiles?.get(retryYDocId),
+      clearRepairLogContainsEntry: Boolean(
+        plugin.kuroflareSettings.repairLog?.some((entry) => entry.id === clearEntry.id),
+      ),
+      autoResolvedPath: autoResolved?.path,
+      autoPendingPath: plugin.pendingRemoteTextFiles?.get(autoYDocId),
+      autoRepairLogContainsEntry: Boolean(
+        plugin.kuroflareSettings.repairLog?.some((entry) => entry.id === autoEntry.id),
+      ),
+    });
+  })()`)
+  if (!isRemoteMaterializeBlockedActionResult(result)) {
+    throw new Error(`invalid remote-materialize-blocked action result: ${JSON.stringify(result)}`)
   }
   return result
 }
@@ -1062,6 +1771,252 @@ try {
     )
   }
 
+  evalInObsidian(`(async () => {
+    await app.vault.create(${JSON.stringify(pathConflictRepairSourcePath)}, 'path conflict repair source');
+    return JSON.stringify('created');
+  })()`)
+  const pathConflictRepairEntry = await waitForActiveMetaEntry(pathConflictRepairSourcePath)
+  if (pathConflictRepairEntry === null) {
+    throw new Error('Obsidian did not register path-conflict repair source')
+  }
+  const pathConflictRetry = await retryPathConflictMaterialize({
+    fileId: pathConflictRepairEntry.fileId,
+    sourcePath: pathConflictRepairSourcePath,
+    targetPath: pathConflictRepairTargetPath,
+  })
+  if (
+    pathConflictRetry.sourceExists !== false ||
+    pathConflictRetry.targetExists !== true ||
+    pathConflictRetry.entryPath !== pathConflictRepairTargetPath ||
+    pathConflictRetry.repairLogContainsEntry
+  ) {
+    throw new Error(`path-conflict repair retry failed: ${JSON.stringify(pathConflictRetry)}`)
+  }
+  await waitForRemoteMeta(
+    remote,
+    remoteMetaDoc,
+    (doc) =>
+      Reflect.get(doc.getMap('meta').get(pathConflictRepairEntry.fileId) ?? {}, 'path') ===
+      pathConflictRepairTargetPath,
+    'path-conflict repair meta broadcast',
+  )
+
+  evalInObsidian(`(async () => {
+    await app.vault.create(${JSON.stringify(renameRepairSourcePath)}, 'rename materialize repair source');
+    return JSON.stringify('created');
+  })()`)
+  const renameRepairEntry = await waitForActiveMetaEntry(renameRepairSourcePath)
+  if (renameRepairEntry === null) {
+    throw new Error('Obsidian did not register rename materialize repair source')
+  }
+  const renameResolve = await resolveRenameMaterializeFailure({
+    fileId: renameRepairEntry.fileId,
+    sourcePath: renameRepairSourcePath,
+    targetPath: renameRepairTargetPath,
+  })
+  if (
+    renameResolve.sourceExists !== false ||
+    renameResolve.blockedTargetExists !== true ||
+    renameResolve.resolvedPath === undefined ||
+    !renameResolve.resolvedPath.includes(' (conflict ') ||
+    renameResolve.resolvedExists !== true ||
+    renameResolve.repairLogContainsEntry
+  ) {
+    throw new Error(`rename materialize resolve failed: ${JSON.stringify(renameResolve)}`)
+  }
+
+  const remoteMaterializeBlockedActions = await runRemoteMaterializeBlockedActions()
+  if (
+    remoteMaterializeBlockedActions.retryRepairLogContainsEntry ||
+    remoteMaterializeBlockedActions.retryPendingPath !== remoteMaterializeBlockedPath ||
+    remoteMaterializeBlockedActions.clearRepairLogContainsEntry ||
+    remoteMaterializeBlockedActions.autoResolvedPath === undefined ||
+    !remoteMaterializeBlockedActions.autoResolvedPath.includes(' (conflict ') ||
+    remoteMaterializeBlockedActions.autoPendingPath !==
+      remoteMaterializeBlockedActions.autoResolvedPath ||
+    remoteMaterializeBlockedActions.autoRepairLogContainsEntry
+  ) {
+    throw new Error(
+      `remote-materialize-blocked repair actions failed: ${JSON.stringify(
+        remoteMaterializeBlockedActions,
+      )}`,
+    )
+  }
+
+  const localBinaryBytes = makeLocalBinaryBytes()
+  const localBinaryHash = await sha256Hex(localBinaryBytes)
+  createObsidianBinary(localBinaryPath, localBinaryBytes)
+  const localBinaryEntry = await waitForActiveMetaEntry(localBinaryPath)
+  if (
+    localBinaryEntry?.type !== 'binary' ||
+    localBinaryEntry.blobManifestHash === undefined ||
+    localBinaryEntry.blobChunks === undefined
+  ) {
+    throw new Error(
+      `Obsidian did not publish local binary meta: ${JSON.stringify(localBinaryEntry)}`,
+    )
+  }
+  await waitForRemoteMeta(
+    remote,
+    remoteMetaDoc,
+    (doc) => {
+      const entry = doc.getMap('meta').get(localBinaryEntry.fileId)
+      return (
+        Reflect.get(entry ?? {}, 'path') === localBinaryPath &&
+        Reflect.get(entry ?? {}, 'type') === 'binary' &&
+        Reflect.get(entry ?? {}, 'blobManifestHash') === localBinaryEntry.blobManifestHash
+      )
+    },
+    'local binary upload meta broadcast',
+  )
+  const remoteDownloadedLocalBinary = await downloadWorkerBinaryByManifest(
+    remoteSetup,
+    localBinaryEntry.blobManifestHash,
+  )
+  if ((await sha256Hex(remoteDownloadedLocalBinary)) !== localBinaryHash) {
+    throw new Error('remote client downloaded different bytes for Obsidian binary upload')
+  }
+
+  const modifiedLocalBinaryBytes = makeBinaryBytes()
+  const modifiedLocalBinaryHash = await sha256Hex(modifiedLocalBinaryBytes)
+  createObsidianBinary(localBinaryPath, modifiedLocalBinaryBytes)
+  const modifiedLocalBinaryEntry = await waitForActiveMetaEntryByFileId(
+    localBinaryEntry.fileId,
+    (entry) =>
+      entry.path === localBinaryPath &&
+      entry.type === 'binary' &&
+      typeof entry.blobManifestHash === 'string' &&
+      entry.blobManifestHash !== localBinaryEntry.blobManifestHash,
+    'local binary modify meta update',
+  )
+  if (
+    modifiedLocalBinaryEntry.blobManifestHash === undefined ||
+    modifiedLocalBinaryEntry.blobChunks === undefined
+  ) {
+    throw new Error(
+      `Obsidian did not publish modified binary manifest: ${JSON.stringify(modifiedLocalBinaryEntry)}`,
+    )
+  }
+  await waitForRemoteMeta(
+    remote,
+    remoteMetaDoc,
+    (doc) => {
+      const entry = doc.getMap('meta').get(localBinaryEntry.fileId)
+      return (
+        Reflect.get(entry ?? {}, 'path') === localBinaryPath &&
+        Reflect.get(entry ?? {}, 'blobManifestHash') === modifiedLocalBinaryEntry.blobManifestHash
+      )
+    },
+    'local binary modify meta broadcast',
+  )
+  const remoteDownloadedModifiedBinary = await downloadWorkerBinaryByManifest(
+    remoteSetup,
+    modifiedLocalBinaryEntry.blobManifestHash,
+  )
+  if ((await sha256Hex(remoteDownloadedModifiedBinary)) !== modifiedLocalBinaryHash) {
+    throw new Error('remote client downloaded different bytes for modified Obsidian binary')
+  }
+
+  renameObsidianFile(localBinaryPath, localBinaryRenamedPath)
+  const renamedLocalBinaryEntry = await waitForActiveMetaEntryByFileId(
+    localBinaryEntry.fileId,
+    (entry) =>
+      entry.path === localBinaryRenamedPath &&
+      entry.type === 'binary' &&
+      entry.blobManifestHash === modifiedLocalBinaryEntry.blobManifestHash,
+    'local binary rename meta update',
+  )
+  await waitForRemoteMeta(
+    remote,
+    remoteMetaDoc,
+    (doc) => {
+      const entry = doc.getMap('meta').get(localBinaryEntry.fileId)
+      return (
+        Reflect.get(entry ?? {}, 'path') === localBinaryRenamedPath &&
+        Reflect.get(entry ?? {}, 'blobManifestHash') === modifiedLocalBinaryEntry.blobManifestHash
+      )
+    },
+    'local binary rename meta broadcast',
+  )
+  if (renamedLocalBinaryEntry.fileId !== localBinaryEntry.fileId) {
+    throw new Error(
+      `binary rename changed fileId: ${JSON.stringify({ before: localBinaryEntry, after: renamedLocalBinaryEntry })}`,
+    )
+  }
+
+  deleteObsidianFile(localBinaryRenamedPath)
+  const deletedLocalBinaryEntry = await waitForMetaEntryByFileId(
+    localBinaryEntry.fileId,
+    (entry) => entry.deleted === true && entry.path === localBinaryRenamedPath,
+    'local binary delete tombstone',
+  )
+  await waitForRemoteMeta(
+    remote,
+    remoteMetaDoc,
+    (doc) => {
+      const entry = doc.getMap('meta').get(localBinaryEntry.fileId)
+      return Reflect.get(entry ?? {}, 'deleted') === true
+    },
+    'local binary delete broadcast',
+  )
+  if (deletedLocalBinaryEntry.deleted !== true) {
+    throw new Error(
+      `binary delete did not tombstone meta: ${JSON.stringify(deletedLocalBinaryEntry)}`,
+    )
+  }
+
+  const repairRetry = await retryBinaryRestoreCheck(localBinaryEntry.fileId)
+  if (
+    repairRetry.deleted !== false ||
+    repairRetry.path !== localBinaryRenamedPath ||
+    repairRetry.repairLogContainsEntry
+  ) {
+    throw new Error(`binary restore repair retry failed: ${JSON.stringify(repairRetry)}`)
+  }
+  await waitForRemoteMeta(
+    remote,
+    remoteMetaDoc,
+    (doc) => {
+      const entry = doc.getMap('meta').get(localBinaryEntry.fileId)
+      return (
+        Reflect.get(entry ?? {}, 'deleted') === false &&
+        Reflect.get(entry ?? {}, 'path') === localBinaryRenamedPath
+      )
+    },
+    'local binary restore repair broadcast',
+  )
+  const restoredLocalBinary = await waitForVaultBinaryHash(
+    localBinaryRenamedPath,
+    modifiedLocalBinaryHash,
+  )
+  if (
+    restoredLocalBinary.exists !== true ||
+    restoredLocalBinary.size !== modifiedLocalBinaryBytes.byteLength ||
+    restoredLocalBinary.sha256 !== modifiedLocalBinaryHash
+  ) {
+    throw new Error(
+      `binary restore repair did not materialize bytes: ${JSON.stringify(restoredLocalBinary)}`,
+    )
+  }
+  const degradedRetry = await retryDegradedBinaryRestoreCheck(`degraded-binary-restore-${runId}`)
+  if (
+    !degradedRetry.repairLogContainsEntry ||
+    degradedRetry.degradedReason !== 'manifest-unavailable'
+  ) {
+    throw new Error(`degraded binary restore check retry failed: ${JSON.stringify(degradedRetry)}`)
+  }
+
+  const invalidMetaDiscard = await discardInvalidMetaEntry(`invalid-meta-${runId}`)
+  if (
+    invalidMetaDiscard.isolatedBeforeDiscard !== true ||
+    invalidMetaDiscard.isolatedAfterDiscard !== false ||
+    invalidMetaDiscard.existsAfterWrongConfirmation !== true ||
+    invalidMetaDiscard.existsAfterDiscard !== false ||
+    invalidMetaDiscard.repairLogContainsEntry
+  ) {
+    throw new Error(`invalid-meta discard repair failed: ${JSON.stringify(invalidMetaDiscard)}`)
+  }
+
   const binaryFileId = `binary-${runId}`
   const binaryBytes = makeBinaryBytes()
   const builtBinary = await buildBinaryManifest(binaryFileId, binaryBytes, remoteSetup.deviceId)
@@ -1122,24 +2077,23 @@ try {
     )
   }
 
-  const downloadedManifestBytes = await downloadWorkerBytes(
-    remoteSetup,
-    `/blob-manifests/${builtBinary.manifestHash}.json`,
+  const materializedBinary = await waitForVaultBinaryHash(
+    binaryPath,
+    builtBinary.manifest.contentSha256,
   )
-  if ((await sha256Hex(downloadedManifestBytes)) !== builtBinary.manifestHash) {
-    throw new Error('downloaded manifest hash mismatch')
+  if (
+    materializedBinary.exists !== true ||
+    materializedBinary.size !== binaryBytes.byteLength ||
+    materializedBinary.sha256 !== builtBinary.manifest.contentSha256
+  ) {
+    throw new Error(
+      `Obsidian did not materialize remote binary bytes: ${JSON.stringify(materializedBinary)}`,
+    )
   }
-  const downloadedChunks = []
-  for (const chunk of builtBinary.manifest.chunks) {
-    const downloaded = await downloadWorkerBytes(remoteSetup, `/blobs/${chunk.sha256}`)
-    if ((await sha256Hex(downloaded)) !== chunk.sha256) {
-      throw new Error(`downloaded blob chunk hash mismatch: ${chunk.sha256}`)
-    }
-    downloadedChunks.push(downloaded)
-  }
-  const reassembled = Buffer.concat(downloadedChunks.map((chunk) => Buffer.from(chunk)))
+
+  const reassembled = await downloadWorkerBinaryByManifest(remoteSetup, builtBinary.manifestHash)
   if ((await sha256Hex(reassembled)) !== builtBinary.manifest.contentSha256) {
-    throw new Error('reassembled binary content hash mismatch')
+    throw new Error('remote binary reassembly mismatch')
   }
 } finally {
   remoteObservedDoc.destroy()

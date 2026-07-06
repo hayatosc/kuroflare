@@ -143,7 +143,7 @@ requireIncludes(diskContent, initialContent, 'disk content')
 requireIncludes(diskContent, 'remote ', 'disk content')
 
 // Other round-trip leg: an external disk edit (git pull / another app) is imported
-// into YText via the vault watcher + hash gate, not overwritten by stale YText.
+// into YText via the vault watcher + content-hash gate, not overwritten by stale YText.
 const externalMarker = 'external edit applied'
 writeFileSync(noteFile, `${initialContent}\n${externalMarker}`)
 

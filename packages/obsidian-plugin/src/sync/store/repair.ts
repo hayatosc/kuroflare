@@ -60,16 +60,16 @@ export type {
   LocalStoreRepairExportBuildPlan,
 }
 
-/** Vault-relative directory used for degraded local-store repair exports. */
+/** Directory path used for exporting outbox records during repair. */
 export const LOCAL_STORE_REPAIR_EXPORT_DIRECTORY = '.obsidian/kuroflare/repair-exports'
 
-/** Minimal Vault adapter surface needed for local-store repair export files. */
+/** Vault storage operations required to export repair files. */
 export interface LocalStoreRepairExportFileAdapter {
   readonly read: (path: string) => Promise<string>
   readonly write: (path: string, data: string) => Promise<void>
 }
 
-/** Result of reading and validating a local-store repair export JSON file. */
+/** Result of reading and validating a repair export file. */
 export type LocalStoreRepairExportFileReadPlan =
   | {
       readonly ok: true
@@ -82,16 +82,14 @@ export type LocalStoreRepairExportFileReadPlan =
     }
 
 /**
- * Builds the Vault-relative path for a degraded local-store repair export.
+ * Builds the file path for a repair export.
  */
 export function localStoreRepairExportPath(exportName: string): string {
   return `${LOCAL_STORE_REPAIR_EXPORT_DIRECTORY}/${exportName}`
 }
 
 /**
- * Writes a protocol-valid local-store repair export JSON file through the Vault adapter.
- *
- * @param input Vault adapter, target path, and export payload produced by the repair builder.
+ * Writes a validated repair export JSON file to the vault.
  */
 export async function writeLocalStoreRepairExportFile(input: {
   readonly adapter: Pick<LocalStoreRepairExportFileAdapter, 'write'>
@@ -102,10 +100,7 @@ export async function writeLocalStoreRepairExportFile(input: {
 }
 
 /**
- * Reads and validates a local-store repair export JSON file from the Vault adapter.
- *
- * @param input Vault adapter and Vault-relative path to read.
- * @returns A validated export payload or a typed rejection reason.
+ * Reads and validates a repair export JSON file.
  */
 export async function readLocalStoreRepairExportFile(input: {
   readonly adapter: Pick<LocalStoreRepairExportFileAdapter, 'read'>
@@ -124,7 +119,7 @@ export async function readLocalStoreRepairExportFile(input: {
 }
 
 /**
- * Converts core degraded local-store repair decisions into plugin Vault and IndexedDB effects.
+ * Converts core database repair decisions into storage and database actions.
  */
 export function planLocalStoreRepair(input: LocalStoreRepairPlanInput): LocalStoreRepairPlan {
   const targetVersion = input.targetVersion ?? LOCAL_STORE_INDEXEDDB_TARGET_VERSION
@@ -197,7 +192,7 @@ export function planLocalStoreRepair(input: LocalStoreRepairPlanInput): LocalSto
 }
 
 /**
- * Builds the protocol JSON payload for a degraded local-store outbox repair export.
+ * Builds the JSON payload for exporting the outbox records.
  */
 export function buildLocalStoreRepairExport(
   input: LocalStoreRepairExportBuildInput,
@@ -256,7 +251,7 @@ export function buildLocalStoreRepairExport(
 }
 
 /**
- * Converts safe core repair-import candidates into plugin local-outbox staging effects.
+ * Converts imported updates into staging actions for the local queue.
  */
 export function planLocalStoreRepairImport(
   input: LocalStoreRepairImportPlanInput,
@@ -302,7 +297,7 @@ export function planLocalStoreRepairImport(
 }
 
 /**
- * Plans whether one staged repair import may be manually resumed.
+ * Plans whether a staged imported record can be resumed.
  */
 export function planLocalStoreRepairImportResume(
   input: LocalStoreRepairImportResumePlanInput,
@@ -351,7 +346,7 @@ export function planLocalStoreRepairImportResume(
 }
 
 /**
- * Converts staged repair-import effects into absence-guarded local outbox insert operations.
+ * Converts staged imported records into database insert operations.
  */
 export function planLocalStoreRepairImportStageTransaction(
   plan: SuccessfulLocalStoreRepairImportPlan,
@@ -365,7 +360,7 @@ export function planLocalStoreRepairImportStageTransaction(
 }
 
 /**
- * Converts a confirmed repair-import resume effect into a local outbox patch operation.
+ * Converts a confirmed resume effect into an outbox update operation.
  */
 export function planLocalStoreRepairImportResumeTransaction(
   plan: SuccessfulLocalStoreRepairImportResumePlan,

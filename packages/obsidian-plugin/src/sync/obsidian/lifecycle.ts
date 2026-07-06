@@ -22,7 +22,26 @@ export interface SyncRuntimeObsidianShellLifecyclePorts {
   readonly executor: SyncRuntimeShellEffectExecutor
   readonly setupExchange: SyncRuntimeSetupExchangePort
   readonly startupStep: SyncRuntimeStartupStepEffectPort
+  readonly resume: SyncRuntimeObsidianResumePort
   readonly ui: SyncRuntimeObsidianShellUiPort
+}
+
+/** Runtime hooks for foreground resume work that lives outside pure startup planning. */
+export interface SyncRuntimeObsidianResumePort {
+  /** Returns whether background resume is allowed now. */
+  canResume(): boolean
+  /** Runs synchronization after startup completes. */
+  runForegroundResume(reason: string): Promise<void>
+  /** Schedules the queue runner to process pending updates. */
+  scheduleOutboxTick(reason: string): void
+}
+
+/** Input callbacks used to create the default Obsidian foreground resume port. */
+export interface SyncRuntimeObsidianResumePortInput {
+  readonly isDocumentHidden: () => boolean
+  readonly isSyncBlocked: () => boolean
+  readonly runForegroundResume: (reason: string) => Promise<void>
+  readonly scheduleOutboxTick: (reason: string) => void
 }
 
 /** Static options for the Obsidian shell lifecycle adapter. */
@@ -51,6 +70,16 @@ export interface SyncRuntimeObsidianShellLifecycleTickResult {
   readonly ui: SyncRuntimeObsidianShellUiApplyResult
 }
 
+/** Result of one serialized Obsidian foreground resume tick. */
+export type SyncRuntimeObsidianShellLifecycleResumeResult =
+  | {
+      readonly action: 'skipped'
+    }
+  | {
+      readonly action: 'ran'
+      readonly startup: SyncRuntimeObsidianShellLifecycleTickResult
+    }
+
 /** Stateful adapter that Obsidian plugin lifecycle hooks can call without reimplementing driver wiring. */
 export interface SyncRuntimeObsidianShellLifecycle {
   /**
@@ -61,6 +90,14 @@ export interface SyncRuntimeObsidianShellLifecycle {
   runStartupTick(): Promise<SyncRuntimeObsidianShellLifecycleTickResult>
 
   /**
+   * Runs the production resume sequence: startup tick, foreground sync, then outbox tick scheduling.
+   *
+   * @param reason Caller-provided lifecycle reason used for logging and worker scheduling.
+   * @returns Whether the resume sequence ran or was skipped by the resume gate.
+   */
+  runResumeTick(reason: string): Promise<SyncRuntimeObsidianShellLifecycleResumeResult>
+
+  /**
    * Reads the current lifecycle state without triggering I/O.
    *
    * @returns Driver state, last applied UI values, and whether a tick is currently running.
@@ -69,10 +106,7 @@ export interface SyncRuntimeObsidianShellLifecycle {
 }
 
 /**
- * Creates a stateful lifecycle adapter around the Obsidian shell driver and UI presenter.
- *
- * @param input Runtime ports, optional execution limits, and optional restored driver state.
- * @returns A lifecycle object that serializes startup ticks and keeps driver state durable in memory.
+ * Creates an adapter to manage startup tasks and UI updates.
  */
 export function createSyncRuntimeObsidianShellLifecycle(
   input: SyncRuntimeObsidianShellLifecycleInput,
@@ -107,12 +141,40 @@ export function createSyncRuntimeObsidianShellLifecycle(
       })
       return tickInFlight
     },
+    async runResumeTick(reason): Promise<SyncRuntimeObsidianShellLifecycleResumeResult> {
+      if (!input.ports.resume.canResume()) {
+        return { action: 'skipped' }
+      }
+      const startup = await this.runStartupTick()
+      await input.ports.resume.runForegroundResume(reason)
+      input.ports.resume.scheduleOutboxTick(`lifecycle:${reason}`)
+      return { action: 'ran', startup }
+    },
     snapshot(): SyncRuntimeObsidianShellLifecycleSnapshot {
       return {
         driverState,
         lastUiApply,
         tickInFlight: tickInFlight !== undefined,
       }
+    },
+  }
+}
+
+/**
+ * Creates a port to handle app resume gates based on visibility and sync state.
+ */
+export function createSyncRuntimeObsidianResumePort(
+  input: SyncRuntimeObsidianResumePortInput,
+): SyncRuntimeObsidianResumePort {
+  return {
+    canResume() {
+      return !input.isDocumentHidden() && !input.isSyncBlocked()
+    },
+    async runForegroundResume(reason) {
+      await input.runForegroundResume(reason)
+    },
+    scheduleOutboxTick(reason) {
+      input.scheduleOutboxTick(reason)
     },
   }
 }

@@ -22,10 +22,6 @@ import {
   DocLatestSnapshotResponseSchema,
   LocalOutboxRepairEvidenceResponseSchema,
   MetaLatestSnapshotResponseSchema,
-  QuarantinedUpdateActionDryRunResponseSchema,
-  QuarantinedUpdateActionResponseSchema,
-  QuarantinedUpdateDetailResponseSchema,
-  QuarantinedUpdateListResponseSchema,
   RevokeDeviceResponseSchema,
   SnapshotImportResponseSchema,
   type LastMaterializedRecord,
@@ -34,7 +30,6 @@ import {
   type SnapshotImportResponse,
   type LocalOutboxRepairEvidenceResponse,
   type QuarantinedUpdateActionDryRunResponse,
-  type QuarantinedUpdateActionRequest,
   type QuarantinedUpdateDetailResponse,
   type QuarantinedUpdateEntry,
 } from '@kuroflare/core'
@@ -88,6 +83,8 @@ import * as Y from 'yjs'
 import type {
   KuroflareSettings,
   KuroflareRepairLogEntry,
+  KuroflareInvalidMetaIsolationDetail,
+  KuroflareBinaryRestoreCheckDetail,
   KuroflareLocalRepairExportMetadata,
   FileDocId,
   LoadedTextDoc,
@@ -173,8 +170,25 @@ import {
   createSyncRuntimeObsidianComposition,
   type SyncRuntimeObsidianComposition,
 } from './sync/obsidian/composition'
+import { planInvalidMetaIsolationDetail } from './sync/obsidian/invalid-meta-isolation'
+import { createSyncRuntimeObsidianResumePort } from './sync/obsidian/lifecycle'
 import { type SyncRuntimeObsidianRepairPresentation } from './sync/obsidian/presentation'
-import { createSyncRuntimeObsidianSetupExchangeEvidenceReader } from './sync/obsidian/settings'
+import {
+  executeQuarantineAdminAction as executeQuarantineAdminActionHttp,
+  fetchQuarantineAdminDetail,
+  fetchQuarantineAdminEntries,
+  prepareQuarantineAdminAction as prepareQuarantineAdminActionHttp,
+  type QuarantineAdminAction,
+} from './sync/obsidian/quarantine-admin'
+import {
+  planPathConflictAutoResolve,
+  planRemoteMaterializeBlockedAutoResolve,
+  retryRemoteMaterializeBlockedRepairEntryWithPorts,
+} from './sync/obsidian/repair-actions'
+import {
+  createSyncRuntimeObsidianSetupExchangeEvidenceReader,
+  planSyncRuntimeObsidianLegacySettingsSecretCleanup,
+} from './sync/obsidian/settings'
 import {
   createEvidenceBackedHttpSyncRuntimeSetupExchangePort,
   type SetupExchangeStartupEffect,
@@ -237,8 +251,6 @@ type LocalOutboxRepairEvidenceQueryItem = {
   readonly messageId: MessageId
   readonly updateSha256?: Sha256Hex | undefined
 }
-
-export type QuarantineAdminAction = QuarantinedUpdateActionRequest['action']
 
 type QuarantineAdminPendingAction = {
   readonly action: QuarantineAdminAction
@@ -394,6 +406,8 @@ export default class KuroflareSpikePlugin extends Plugin {
   private quarantineAdminEntries: readonly QuarantinedUpdateEntry[] = []
   private quarantineAdminDetail: QuarantinedUpdateDetailResponse | null = null
   private quarantineAdminPendingAction: QuarantineAdminPendingAction | null = null
+  private invalidMetaIsolationDetail: KuroflareInvalidMetaIsolationDetail | null = null
+  private binaryRestoreCheckDetail: KuroflareBinaryRestoreCheckDetail | null = null
   private kuroflareSettings: KuroflareSettings = DEFAULT_SETTINGS
   private readonly workerWebSocketSession: SyncRuntimeWebSocketSessionPort =
     createSyncRuntimeWebSocketSession()
@@ -415,7 +429,7 @@ export default class KuroflareSpikePlugin extends Plugin {
   private targetPath: string | null = null
   private fileModifyRef: EventRef | null = null
 
-  // File-tree subsystem (MVP-2): the meta YDoc holds fileId -> MetaFile for the whole vault.
+  // File-tree subsystem: the meta YDoc holds fileId -> MetaFile for the whole vault.
   private readonly metaDoc = new Y.Doc()
   private metaPersistence: IndexeddbPersistence | null = null
   private localStoreDb: IDBDatabase | null = null
@@ -513,9 +527,13 @@ export default class KuroflareSpikePlugin extends Plugin {
   private async loadSettings(): Promise<void> {
     const loaded = await this.loadData()
     const loadedSettings = isPartialSettings(loaded) ? loaded : {}
+    // Security guard: pre-migration data.json may still carry plaintext token fields.
+    // Token material now lives in SecretStorage/IndexedDB metadata only, so drop any
+    // legacy fields here and persist the sanitized settings back immediately.
+    const secretCleanup = planSyncRuntimeObsidianLegacySettingsSecretCleanup(loadedSettings)
     this.kuroflareSettings = {
       ...DEFAULT_SETTINGS,
-      ...loadedSettings,
+      ...secretCleanup.settings,
     }
     this.kuroflareSettings = {
       ...this.kuroflareSettings,
@@ -527,6 +545,12 @@ export default class KuroflareSpikePlugin extends Plugin {
       )
         ? this.kuroflareSettings.localRepairExport
         : undefined,
+    }
+    if (secretCleanup.removedLegacySecretKeys.length > 0) {
+      console.warn('[kuroflare] removed legacy plaintext token fields from settings', {
+        keys: secretCleanup.removedLegacySecretKeys,
+      })
+      await this.saveData(this.kuroflareSettings)
     }
   }
 
@@ -1023,6 +1047,24 @@ export default class KuroflareSpikePlugin extends Plugin {
     })
   }
 
+  private async recordRenameMaterializeBlocked(
+    fileId: string,
+    path: string,
+    reason: 'rename-materialize-failed',
+  ): Promise<void> {
+    const entry: KuroflareRepairLogEntry = {
+      id: `path-conflict:${fileId}:${reason}`,
+      kind: 'path-conflict',
+      fileId,
+      path,
+      reason,
+      createdAt: Date.now(),
+    }
+    await this.updateSettings({
+      repairLog: mergeRepairLogEntries(this.kuroflareSettings.repairLog ?? [], [entry]),
+    })
+  }
+
   private async removeRepairLogEntry(entryId: string): Promise<void> {
     await this.updateSettings({
       repairLog: (this.kuroflareSettings.repairLog ?? []).filter((entry) => entry.id !== entryId),
@@ -1035,8 +1077,48 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   async retryRemoteMaterializeBlockedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    if (entry.kind !== 'remote-materialize-blocked') {
-      new Notice('Kuroflare repair: only remote materialize entries can be retried here')
+    await retryRemoteMaterializeBlockedRepairEntryWithPorts(entry, {
+      getMetaEntry: (fileId) => this.metaMap.get(fileId),
+      requestMissingRemoteTextFile: async (current) => {
+        await this.requestMissingRemoteTextFile(current)
+      },
+      enqueueMissingRemoteBinaryDownloads: async (reason) => {
+        await this.enqueueMissingRemoteBinaryDownloads(reason)
+      },
+      removeRepairLogEntry: async (entryId) => {
+        await this.removeRepairLogEntry(entryId)
+      },
+      showNotice: (message) => {
+        new Notice(message)
+      },
+    })
+  }
+
+  async resolveRemoteMaterializeBlockedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
+    const plan = planRemoteMaterializeBlockedAutoResolve({
+      entry,
+      current: this.metaMap.get(entry.fileId),
+      isPathAvailable: (path) => this.isRepairConflictPathAvailable(path),
+    })
+    if (plan.action === 'ignored-kind') {
+      new Notice('Kuroflare repair: only remote materialize entries can be resolved here')
+      return
+    }
+    if (plan.action === 'unsupported-reason') {
+      new Notice(`Kuroflare repair: ${plan.reason} must be fixed manually`)
+      return
+    }
+    if (plan.action === 'stale') {
+      await this.removeRepairLogEntry(entry.id)
+      new Notice('Kuroflare repair: stale remote materialize entry cleared')
+      return
+    }
+    if (plan.action === 'unsupported-meta-type') {
+      new Notice(`Kuroflare repair: unsupported remote materialize type ${plan.type}`)
+      return
+    }
+    if (plan.action === 'no-path-available') {
+      new Notice('Kuroflare repair: could not allocate a conflict path')
       return
     }
 
@@ -1046,14 +1128,18 @@ export default class KuroflareSpikePlugin extends Plugin {
       new Notice('Kuroflare repair: stale remote materialize entry cleared')
       return
     }
-
-    if (current.type === 'text') {
-      await this.requestMissingRemoteTextFile(current)
-    } else {
-      await this.enqueueMissingRemoteBinaryDownloads('repair:remote-materialize-retry')
-    }
-    await this.removeRepairLogEntry(entry.id)
-    new Notice(`Kuroflare repair: remote materialize retry queued (${current.path})`)
+    const updatedAt = Date.now()
+    this.metaDoc.transact(() => {
+      this.metaMap.set(entry.fileId, {
+        ...current,
+        path: plan.toPath,
+        canonicalPath: plan.toCanonicalPath,
+        updatedAt,
+        updatedBy: REPAIR_DEVICE,
+      })
+    }, REPAIR_ORIGIN)
+    await this.retryRemoteMaterializeBlockedRepairEntry(entry)
+    new Notice(`Kuroflare repair: moved remote file to ${plan.toPath}`)
   }
 
   async retryPathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
@@ -1073,6 +1159,47 @@ export default class KuroflareSpikePlugin extends Plugin {
     new Notice(`Kuroflare repair: path materialize retried (${current.path})`)
   }
 
+  async resolvePathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
+    const plan = planPathConflictAutoResolve({
+      entry,
+      current: this.metaMap.get(entry.fileId),
+      isPathAvailable: (path) => this.isRepairConflictPathAvailable(path),
+    })
+    if (plan.action === 'ignored-kind') {
+      new Notice('Kuroflare repair: only path conflict entries can be resolved here')
+      return
+    }
+    if (plan.action === 'stale') {
+      await this.removeRepairLogEntry(entry.id)
+      new Notice('Kuroflare repair: stale path conflict entry cleared')
+      return
+    }
+    if (plan.action === 'no-path-available') {
+      new Notice('Kuroflare repair: could not allocate a conflict path')
+      return
+    }
+
+    const current = this.metaMap.get(entry.fileId)
+    if (!isMetaFile(current, entry.fileId) || current.deleted) {
+      await this.removeRepairLogEntry(entry.id)
+      new Notice('Kuroflare repair: stale path conflict entry cleared')
+      return
+    }
+    const updatedAt = Date.now()
+    this.metaDoc.transact(() => {
+      this.metaMap.set(entry.fileId, {
+        ...current,
+        path: plan.toPath,
+        canonicalPath: plan.toCanonicalPath,
+        updatedAt,
+        updatedBy: REPAIR_DEVICE,
+      })
+    }, REPAIR_ORIGIN)
+    await this.materializeMetaRenames()
+    await this.removeRepairLogEntry(entry.id)
+    new Notice(`Kuroflare repair: moved path conflict to ${plan.toPath}`)
+  }
+
   async retryKeepDeletedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'delete-vs-edit' || entry.reason !== 'missing-binary-content') {
       new Notice('Kuroflare repair: only missing binary delete-vs-edit entries can be retried here')
@@ -1085,7 +1212,12 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
 
+    if (!(await this.checkDeletedBinaryRestoreAvailability(current))) {
+      new Notice(`Kuroflare repair: binary restore check still degraded (${current.path})`)
+      return
+    }
     await this.reconcileAndMaterializeMeta()
+    await this.enqueueMissingRemoteBinaryDownloads('repair:keep-deleted-retry')
     await this.removeRepairLogEntry(entry.id)
     new Notice(`Kuroflare repair: binary restore check retried (${current.path})`)
   }
@@ -1113,8 +1245,34 @@ export default class KuroflareSpikePlugin extends Plugin {
     this.metaDoc.transact(() => {
       this.metaMap.delete(entry.fileId)
     }, REPAIR_ORIGIN)
+    if (this.invalidMetaIsolationDetail?.fileId === entry.fileId) {
+      this.invalidMetaIsolationDetail = null
+    }
     await this.removeRepairLogEntry(entry.id)
     new Notice(`Kuroflare repair: invalid meta discarded (${entry.fileId})`)
+  }
+
+  async inspectInvalidMetaRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
+    const plan = planInvalidMetaIsolationDetail({
+      entry,
+      current: this.metaMap.get(entry.fileId),
+      inspectedAt: Date.now(),
+    })
+    if (plan.action === 'ignored-kind') {
+      new Notice('Kuroflare repair: only invalid meta entries can be inspected here')
+      return
+    }
+    if (plan.action === 'stale') {
+      if (this.invalidMetaIsolationDetail?.fileId === entry.fileId) {
+        this.invalidMetaIsolationDetail = null
+      }
+      await this.removeRepairLogEntry(entry.id)
+      new Notice('Kuroflare repair: stale invalid meta entry cleared')
+      return
+    }
+
+    this.invalidMetaIsolationDetail = plan.detail
+    new Notice(`Kuroflare repair: invalid meta isolated (${entry.fileId})`)
   }
 
   private repairLogEntryFromMetaRepair(
@@ -1144,29 +1302,76 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async findRestorableBinaryFileIdsForReconcile(): Promise<ReadonlySet<FileId>> {
-    const setup = this.currentSetupMetadata()
-    if (setup === undefined) {
-      return new Set()
-    }
-    const accessToken = await this.readAccessToken(accessTokenSecretKeyForSetup(setup))
-    if (accessToken === undefined) {
-      return new Set()
-    }
-
     const restorable = new Set<FileId>()
     for (const [fileId, value] of this.metaMap.entries()) {
       if (!isMetaFile(value, fileId) || !value.deleted || value.type !== 'binary') {
         continue
       }
-      const manifest = await this.fetchBlobManifestForMeta(setup, accessToken, value)
-      if (manifest === undefined) {
-        continue
-      }
-      if (await this.remoteBlobChunksExist(setup, accessToken, manifest)) {
+      if (await this.checkDeletedBinaryRestoreAvailability(value)) {
         restorable.add(value.fileId)
       }
     }
     return restorable
+  }
+
+  private async checkDeletedBinaryRestoreAvailability(value: BinaryMetaFile): Promise<boolean> {
+    const checkedAt = Date.now()
+    const setDegraded = (reason: KuroflareBinaryRestoreCheckDetail['reason']): false => {
+      this.binaryRestoreCheckDetail = {
+        fileId: value.fileId,
+        path: value.path,
+        checkedAt,
+        reason,
+      }
+      return false
+    }
+
+    const setup = this.currentSetupMetadata()
+    if (setup === undefined) {
+      return setDegraded('setup-missing')
+    }
+    const accessToken = await this.readAccessToken(accessTokenSecretKeyForSetup(setup))
+    if (accessToken === undefined) {
+      return setDegraded('access-token-missing')
+    }
+
+    const manifest = await this.fetchBlobManifestForMeta(setup, accessToken, value)
+    if (manifest === undefined) {
+      return setDegraded('manifest-unavailable')
+    }
+
+    const url = new URL(setup.endpoint)
+    url.pathname = '/blobs/head'
+    const head = await this.fetchJsonSideEffect({
+      method: 'POST',
+      url: url.toString(),
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        'content-type': 'application/json',
+      },
+      bodyJson: {
+        hashes: manifest.chunks.map((chunk) => chunk.sha256),
+      },
+    })
+    if (head.kind !== 'success' || !v.is(BlobHeadResponseSchema, head.body)) {
+      return setDegraded('head-unavailable')
+    }
+    for (const chunk of manifest.chunks) {
+      const entry = head.body.exists[chunk.sha256]
+      if (entry?.found !== true) {
+        return setDegraded('chunk-missing')
+      }
+      if (entry.size === undefined) {
+        return setDegraded('chunk-size-unknown')
+      }
+      if (entry.size !== chunk.size) {
+        return setDegraded('chunk-size-mismatch')
+      }
+    }
+    if (this.binaryRestoreCheckDetail?.fileId === value.fileId) {
+      this.binaryRestoreCheckDetail = null
+    }
+    return true
   }
 
   private async enqueueMissingDownloads(): Promise<void> {
@@ -1339,34 +1544,6 @@ export default class KuroflareSpikePlugin extends Plugin {
     return body
   }
 
-  private async remoteBlobChunksExist(
-    setup: LocalSetupMetadata,
-    accessToken: string,
-    manifest: BlobManifest,
-  ): Promise<boolean> {
-    const url = new URL(setup.endpoint)
-    url.pathname = '/blobs/head'
-    const head = await this.fetchJsonSideEffect({
-      method: 'POST',
-      url: url.toString(),
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        'content-type': 'application/json',
-      },
-      bodyJson: {
-        hashes: manifest.chunks.map((chunk) => chunk.sha256),
-      },
-    })
-    if (head.kind !== 'success' || !v.is(BlobHeadResponseSchema, head.body)) {
-      return false
-    }
-    const body = head.body
-    return manifest.chunks.every((chunk) => {
-      const entry = body.exists[chunk.sha256]
-      return entry?.found === true && (entry.size === undefined || entry.size === chunk.size)
-    })
-  }
-
   /** Moves real vault files to match meta entries whose path converged elsewhere. */
   private async materializeMetaRenames(): Promise<void> {
     for (const [fileId, value] of this.metaMap.entries()) {
@@ -1412,6 +1589,11 @@ export default class KuroflareSpikePlugin extends Plugin {
           to: value.path,
           error: safeLogError(error),
         })
+        await this.recordRenameMaterializeBlocked(
+          value.fileId,
+          value.path,
+          'rename-materialize-failed',
+        )
       }
     }
   }
@@ -1606,6 +1788,16 @@ export default class KuroflareSpikePlugin extends Plugin {
         },
       }),
       startupStep: this.createStartupStepPort(),
+      resume: createSyncRuntimeObsidianResumePort({
+        isDocumentHidden: () => document.hidden,
+        isSyncBlocked: () => this.syncStoppedByAuth !== null,
+        runForegroundResume: async (reason) => {
+          await this.handleForegroundResume(reason)
+        },
+        scheduleOutboxTick: (reason) => {
+          void this.runOutboxWorkerTick(reason)
+        },
+      }),
       ui: {
         setStatusText: (text) => {
           this.syncStatusEl?.setText(text)
@@ -1736,12 +1928,19 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async handleLifecycleResume(reason: string): Promise<void> {
-    if (document.hidden || this.syncStoppedByAuth !== null) {
+    const runtime = this.syncRuntime
+    if (runtime === null) {
       return
     }
-    await this.runSyncStartupTick(reason)
-    await this.handleForegroundResume(reason)
-    void this.runOutboxWorkerTick(`lifecycle:${reason}`)
+    const result = await runtime.lifecycle.runResumeTick(reason)
+    console.info('[kuroflare] sync lifecycle resume tick', {
+      reason,
+      action: result.action,
+      completedEffects:
+        result.action === 'ran'
+          ? result.startup.driver.state.shell.completedEffects.length
+          : undefined,
+    })
   }
 
   private async persistPendingSetupResponse(): Promise<void> {
@@ -2775,6 +2974,22 @@ export default class KuroflareSpikePlugin extends Plugin {
     return true
   }
 
+  private isRepairConflictPathAvailable(path: string): boolean {
+    if (this.app.vault.getAbstractFileByPath(path) !== null || this.findActiveFileId(path)) {
+      return false
+    }
+    const segments = path.split('/').slice(0, -1)
+    let current = ''
+    for (const segment of segments) {
+      current = current.length === 0 ? segment : `${current}/${segment}`
+      const existing = this.app.vault.getAbstractFileByPath(current)
+      if (existing !== null && !(existing instanceof TFolder)) {
+        return false
+      }
+    }
+    return true
+  }
+
   private async blobBytesMatch(
     bytes: Uint8Array,
     expectedSha256: NonNullable<LocalStoreOutboxRecord['blobSha256']>,
@@ -3156,27 +3371,6 @@ export default class KuroflareSpikePlugin extends Plugin {
     return url.toString()
   }
 
-  private quarantineAdminUrl(setup: LocalSetupMetadata, id?: string): string {
-    const url = new URL(setup.endpoint)
-    url.pathname =
-      id === undefined ? '/admin/quarantine' : `/admin/quarantine/${encodeURIComponent(id)}`
-    url.search = ''
-    url.hash = ''
-    return url.toString()
-  }
-
-  private quarantineAdminActionUrl(
-    setup: LocalSetupMetadata,
-    id: string,
-    action: QuarantineAdminAction,
-  ): string {
-    const url = new URL(setup.endpoint)
-    url.pathname = `/admin/quarantine/${encodeURIComponent(id)}/${action}`
-    url.search = ''
-    url.hash = ''
-    return url.toString()
-  }
-
   private async fetchLocalOutboxRepairEvidence(
     setup: LocalSetupMetadata,
     items: readonly LocalOutboxRepairEvidenceQueryItem[],
@@ -3460,6 +3654,14 @@ export default class KuroflareSpikePlugin extends Plugin {
     return this.syncRepairEntries
   }
 
+  getInvalidMetaIsolationSnapshot(): KuroflareInvalidMetaIsolationDetail | null {
+    return this.invalidMetaIsolationDetail
+  }
+
+  getBinaryRestoreCheckSnapshot(): KuroflareBinaryRestoreCheckDetail | null {
+    return this.binaryRestoreCheckDetail
+  }
+
   getQuarantineAdminSnapshot(): {
     readonly entries: readonly QuarantinedUpdateEntry[]
     readonly detail: QuarantinedUpdateDetailResponse | null
@@ -3484,29 +3686,30 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
 
-    const response = await fetch(this.quarantineAdminUrl(setup), {
-      headers: { Authorization: `Bearer ${accessToken}` },
+    const result = await fetchQuarantineAdminEntries({
+      setup,
+      accessToken,
+      http: { fetch },
     })
-    if (!response.ok) {
-      new Notice(`Kuroflare quarantine: list failed (${response.status})`)
-      console.warn('[kuroflare] quarantine list fetch failed', { status: response.status })
-      return
-    }
-    const body: unknown = await response.json().catch(() => undefined)
-    if (!v.is(QuarantinedUpdateListResponseSchema, body)) {
+    if (!result.ok) {
+      if (result.reason === 'http-failed') {
+        new Notice(`Kuroflare quarantine: list failed (${result.status})`)
+        console.warn('[kuroflare] quarantine list fetch failed', { status: result.status })
+        return
+      }
       new Notice('Kuroflare quarantine: invalid list response')
       console.warn('[kuroflare] quarantine list response rejected by guard')
       return
     }
 
-    this.quarantineAdminEntries = body.entries
+    this.quarantineAdminEntries = result.entries
     if (
       this.quarantineAdminDetail !== null &&
-      !body.entries.some((entry) => entry.id === this.quarantineAdminDetail?.entry.id)
+      !result.entries.some((entry) => entry.id === this.quarantineAdminDetail?.entry.id)
     ) {
       this.quarantineAdminDetail = null
     }
-    new Notice(`Kuroflare quarantine entries: ${body.entries.length}`)
+    new Notice(`Kuroflare quarantine entries: ${result.entries.length}`)
   }
 
   async inspectQuarantineAdminEntry(id: string): Promise<void> {
@@ -3521,22 +3724,24 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
 
-    const response = await fetch(this.quarantineAdminUrl(setup, id), {
-      headers: { Authorization: `Bearer ${accessToken}` },
+    const result = await fetchQuarantineAdminDetail({
+      setup,
+      accessToken,
+      id,
+      http: { fetch },
     })
-    if (!response.ok) {
-      new Notice(`Kuroflare quarantine: inspect failed (${response.status})`)
-      console.warn('[kuroflare] quarantine detail fetch failed', { id, status: response.status })
-      return
-    }
-    const body: unknown = await response.json().catch(() => undefined)
-    if (!v.is(QuarantinedUpdateDetailResponseSchema, body)) {
+    if (!result.ok) {
+      if (result.reason === 'http-failed') {
+        new Notice(`Kuroflare quarantine: inspect failed (${result.status})`)
+        console.warn('[kuroflare] quarantine detail fetch failed', { id, status: result.status })
+        return
+      }
       new Notice('Kuroflare quarantine: invalid detail response')
       console.warn('[kuroflare] quarantine detail response rejected by guard', { id })
       return
     }
 
-    this.quarantineAdminDetail = body
+    this.quarantineAdminDetail = result.detail
     new Notice(`Kuroflare quarantine inspected: ${id}`)
   }
 
@@ -3552,29 +3757,23 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
 
-    const response = await fetch(this.quarantineAdminActionUrl(setup, id, action), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ mode: 'dry-run' }),
+    const result = await prepareQuarantineAdminActionHttp({
+      setup,
+      accessToken,
+      id,
+      action,
+      http: { fetch },
     })
-    if (!response.ok) {
-      new Notice(`Kuroflare quarantine: ${action} dry-run failed (${response.status})`)
-      console.warn('[kuroflare] quarantine action dry-run failed', {
-        id,
-        action,
-        status: response.status,
-      })
-      return
-    }
-    const body: unknown = await response.json().catch(() => undefined)
-    if (
-      !v.is(QuarantinedUpdateActionDryRunResponseSchema, body) ||
-      body.id !== id ||
-      body.action !== action
-    ) {
+    if (!result.ok) {
+      if (result.reason === 'http-failed') {
+        new Notice(`Kuroflare quarantine: ${action} dry-run failed (${result.status})`)
+        console.warn('[kuroflare] quarantine action dry-run failed', {
+          id,
+          action,
+          status: result.status,
+        })
+        return
+      }
       new Notice('Kuroflare quarantine: invalid dry-run response')
       console.warn('[kuroflare] quarantine action dry-run response rejected by guard', {
         id,
@@ -3584,10 +3783,10 @@ export default class KuroflareSpikePlugin extends Plugin {
     }
 
     this.quarantineAdminPendingAction = {
-      action: body.action,
-      id: body.id,
-      confirmationToken: body.confirmationToken,
-      effects: body.effects,
+      action: result.dryRun.action,
+      id: result.dryRun.id,
+      confirmationToken: result.dryRun.confirmationToken,
+      effects: result.dryRun.effects,
       preparedAt: Date.now(),
     }
     new Notice(`Kuroflare quarantine ${action} prepared: ${id}`)
@@ -3619,33 +3818,24 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
 
-    const response = await fetch(this.quarantineAdminActionUrl(setup, id, action), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        mode: 'execute',
-        confirmationToken: pending.confirmationToken,
-        reason: 'obsidian-plugin-admin',
-      }),
+    const result = await executeQuarantineAdminActionHttp({
+      setup,
+      accessToken,
+      id,
+      action,
+      confirmationToken: pending.confirmationToken,
+      http: { fetch },
     })
-    if (!response.ok) {
-      new Notice(`Kuroflare quarantine: ${action} execute failed (${response.status})`)
-      console.warn('[kuroflare] quarantine action execute failed', {
-        id,
-        action,
-        status: response.status,
-      })
-      return
-    }
-    const body: unknown = await response.json().catch(() => undefined)
-    if (
-      !v.is(QuarantinedUpdateActionResponseSchema, body) ||
-      body.id !== id ||
-      body.action !== action
-    ) {
+    if (!result.ok) {
+      if (result.reason === 'http-failed') {
+        new Notice(`Kuroflare quarantine: ${action} execute failed (${result.status})`)
+        console.warn('[kuroflare] quarantine action execute failed', {
+          id,
+          action,
+          status: result.status,
+        })
+        return
+      }
       new Notice('Kuroflare quarantine: invalid action response')
       console.warn('[kuroflare] quarantine action response rejected by guard', { id, action })
       return

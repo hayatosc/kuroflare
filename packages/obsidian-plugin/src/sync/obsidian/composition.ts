@@ -13,6 +13,7 @@ import {
 } from '../obsidian/evidence'
 import {
   createSyncRuntimeObsidianShellLifecycle,
+  type SyncRuntimeObsidianResumePort,
   type SyncRuntimeObsidianShellLifecycle,
 } from '../obsidian/lifecycle'
 import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
@@ -26,6 +27,7 @@ export interface SyncRuntimeObsidianCompositionInput {
   readonly startupStep: SyncRuntimeStartupStepEffectPort
   readonly localStore: SyncRuntimeLocalStoreEffectPort
   readonly localStoreRebuild: SyncRuntimeLocalStoreRebuildEffectPort
+  readonly resume: SyncRuntimeObsidianResumePort
 }
 
 /** Runtime lifecycle plus the concrete ports used by the production composition root. */
@@ -66,6 +68,7 @@ export function createSyncRuntimeObsidianComposition(
         executor,
         setupExchange: input.setupExchange,
         startupStep: input.startupStep,
+        resume: input.resume,
         ui: input.ui,
       },
     }),
