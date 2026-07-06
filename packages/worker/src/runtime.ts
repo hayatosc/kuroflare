@@ -55,6 +55,9 @@ import {
   getQuarantinedUpdates,
   getQuarantinedUpdateById,
   getQuarantinedUpdateBytes,
+  getSnapshotRetentionCheckpointRuns,
+  getSnapshotRetentionEvents,
+  insertSnapshotRetentionEvent,
   type QuarantinedUpdateRow,
 } from './db/checkpointRepo'
 import { createDb } from './db/db'
@@ -86,6 +89,7 @@ import {
 } from './db/docRepo'
 import { readSqlUpdateBytes } from './db/helpers'
 import { decideSchemaMigration } from './db/migrations'
+import { planSnapshotRetention } from './db/retention'
 import { SCHEMA_MIGRATIONS } from './db/schema'
 import { createSchemaMigrationsTable, getAppliedMigrations, insertMigration } from './db/schemaRepo'
 import { upsertSetupToken, getSetupToken, consumeSetupToken } from './db/setupRepo'
@@ -147,6 +151,8 @@ import {
   makeArrayBuffer,
   makeOpaqueToken,
   makeGeneratedDeviceId,
+  logEvent,
+  retentionErrorMessage,
 } from './runtime/utils'
 import { decideSyncRequest, type SyncRequestDocState } from './sync/request'
 import {
@@ -196,6 +202,8 @@ const REFRESH_ACCESS_TOKEN_TTL_MS = 60 * 60 * 1_000
 const CHECKPOINT_ALARM_DELAY_MS = 30_000
 const CHECKPOINT_ALARM_DOC_LIMIT = 16
 const CHECKPOINT_OP_THRESHOLD = 128
+const SNAPSHOT_RETENTION_MIN_GENERATIONS = 3
+const SNAPSHOT_RETENTION_EVENT_LIMIT = 50
 const BLOB_MULTIPART_THRESHOLD_BYTES = 16 * 1024 * 1024
 const BLOB_SINGLE_PUT_MAX_BYTES = BLOB_MULTIPART_THRESHOLD_BYTES - 1
 const BLOB_MANIFEST_MAX_BYTES = 1024 * 1024
@@ -552,6 +560,50 @@ export class VaultRoom {
           200,
         )
       })
+      .get('/admin/retention', async (c) => {
+        const db = this.getDb()
+        const secret = this.env.DEVICE_TOKEN_SECRET
+        if (db === undefined || secret === undefined)
+          return c.text('Retention inspect unavailable', 503)
+        await this.ensureSchema()
+
+        const rejection = await this.authorizeHttpRequest(c, ['sync:write'])
+        if (rejection !== undefined) return rejection
+
+        return c.json(
+          {
+            events: await getSnapshotRetentionEvents(db, SNAPSHOT_RETENTION_EVENT_LIMIT),
+          },
+          200,
+        )
+      })
+      .get('/vaults/:vaultId/meta/latest', async (c) => {
+        const db = this.getDb()
+        const secret = this.env.DEVICE_TOKEN_SECRET
+        if (db === undefined || secret === undefined)
+          return c.text('Snapshot fetch unavailable', 503)
+        await this.ensureSchema()
+
+        const rejection = await this.authorizeHttpRequest(c, ['sync:read'])
+        if (rejection !== undefined) return rejection
+
+        return this.handleLatestSnapshotRequest(c, { kind: 'meta' })
+      })
+      .get('/vaults/:vaultId/files/:ydocId/latest', async (c) => {
+        const db = this.getDb()
+        const secret = this.env.DEVICE_TOKEN_SECRET
+        if (db === undefined || secret === undefined)
+          return c.text('Snapshot fetch unavailable', 503)
+        await this.ensureSchema()
+
+        const rawYDocId = c.req.param('ydocId')
+        if (!v.is(YDocIdSchema, rawYDocId)) return c.json({ error: 'invalid-ydoc-id' }, 400)
+
+        const rejection = await this.authorizeHttpRequest(c, ['sync:read'])
+        if (rejection !== undefined) return rejection
+
+        return this.handleLatestSnapshotRequest(c, { kind: 'file', ydocId: rawYDocId })
+      })
       .post('/blobs/head', async (c) => {
         if (this.env.SNAPSHOT_BUCKET === undefined) return c.text('Blob storage unavailable', 503)
 
@@ -868,55 +920,113 @@ export class VaultRoom {
       return { action: 'skipped', reason: decision.reason }
     }
 
-    const snapshotBytes = Y.encodeStateAsUpdate(doc)
-    const stateVector = Y.encodeStateVector(doc)
-    await insertCheckpointRun(
-      db,
-      decision.runId,
-      docKey(docId),
-      decision.upperSeq,
-      decision.snapshotKey,
-      stateVector,
-      'writing',
-      decision.createdAt,
-    )
-    await bucket.put(decision.snapshotKey, snapshotBytes)
-    await updateCheckpointR2Written(db, decision.runId, now)
-    await updateDocSnapshotPointer(
-      db,
-      decision.upperSeq,
-      decision.snapshotKey,
-      stateVector,
-      now,
-      docKey(docId),
-      decision.upperSeq,
-    )
-    await updateCheckpointPointerUpdated(db, decision.runId, now)
-    const compact = decideCheckpointCompact({
-      status: 'pointer-updated',
-      upperSeq: decision.upperSeq,
-      latestSnapshotSeq: decision.upperSeq,
-      retainedSnapshotFloorSeq: undefined,
-      now,
-    })
-    if (compact.action === 'compact') {
-      await deleteOpLogBelowSeq(db, docKey(docId), compact.compactedSeq)
-      await updateDocCompact(
+    logEvent('checkpoint-start', { vaultId, docId, upperSeq: decision.upperSeq })
+    try {
+      const snapshotBytes = Y.encodeStateAsUpdate(doc)
+      const stateVector = Y.encodeStateVector(doc)
+      await insertCheckpointRun(
         db,
-        compact.compactedSeq,
-        stateVector,
-        compact.compactedAt,
+        decision.runId,
         docKey(docId),
-        compact.compactedSeq,
+        decision.upperSeq,
+        decision.snapshotKey,
+        stateVector,
+        'writing',
+        decision.createdAt,
       )
-      await updateCheckpointCompacted(db, decision.runId, compact.compactedAt)
+      await bucket.put(decision.snapshotKey, snapshotBytes)
+      await updateCheckpointR2Written(db, decision.runId, now)
+      await updateDocSnapshotPointer(
+        db,
+        decision.upperSeq,
+        decision.snapshotKey,
+        stateVector,
+        now,
+        docKey(docId),
+        decision.upperSeq,
+      )
+      await updateCheckpointPointerUpdated(db, decision.runId, now)
+      const compact = decideCheckpointCompact({
+        status: 'pointer-updated',
+        upperSeq: decision.upperSeq,
+        latestSnapshotSeq: decision.upperSeq,
+        retainedSnapshotFloorSeq: undefined,
+        now,
+      })
+      if (compact.action === 'compact') {
+        await deleteOpLogBelowSeq(db, docKey(docId), compact.compactedSeq)
+        await updateDocCompact(
+          db,
+          compact.compactedSeq,
+          stateVector,
+          compact.compactedAt,
+          docKey(docId),
+          compact.compactedSeq,
+        )
+        await updateCheckpointCompacted(db, decision.runId, compact.compactedAt)
+      }
+      await this.cleanupSnapshotRetention(docId, now)
+
+      logEvent('checkpoint-complete', { vaultId, docId, upperSeq: decision.upperSeq })
+      return {
+        action: 'checkpointed',
+        snapshotKey: decision.snapshotKey,
+        upperSeq: decision.upperSeq,
+        compactedSeq: compact.action === 'compact' ? compact.compactedSeq : undefined,
+      }
+    } catch (error) {
+      logEvent('checkpoint-failed', {
+        vaultId,
+        docId,
+        upperSeq: decision.upperSeq,
+        error: retentionErrorMessage(error),
+      })
+      throw error
+    }
+  }
+
+  private async cleanupSnapshotRetention(docId: DocId, now: number): Promise<void> {
+    const db = this.getDb()
+    const bucket = this.env.SNAPSHOT_BUCKET
+    const vaultId = await this.resolveVaultId()
+    if (db === undefined || bucket === undefined || vaultId === undefined) {
+      return
     }
 
-    return {
-      action: 'checkpointed',
-      snapshotKey: decision.snapshotKey,
-      upperSeq: decision.upperSeq,
-      compactedSeq: compact.action === 'compact' ? compact.compactedSeq : undefined,
+    const prefix = makeSnapshotListPrefix(vaultId, docId)
+    const listed = await bucket.list({ prefix })
+    const snapshots = listed.objects
+      .map((object) => snapshotCandidateFromKey(prefix, object.key))
+      .filter((snapshot): snapshot is SnapshotCandidate => snapshot !== undefined)
+    const pointer = await this.readSnapshotPointer(docId)
+    const checkpointRuns = (await getSnapshotRetentionCheckpointRuns(db, docKey(docId))).map(
+      (run) => ({
+        status: isCheckpointRunStatus(run.status) ? run.status : 'failed',
+        snapshotKey: run.snapshotKey ?? undefined,
+      }),
+    )
+    const plan = planSnapshotRetention({
+      snapshots,
+      checkpointRuns,
+      currentPointerKey: pointer?.latestSnapshotKey,
+      minGenerationCount: SNAPSHOT_RETENTION_MIN_GENERATIONS,
+    })
+
+    for (const snapshotKey of plan.deleteKeys) {
+      try {
+        await bucket.delete(snapshotKey)
+        await insertSnapshotRetentionEvent(db, docKey(docId), snapshotKey, 'delete', null, now)
+        logEvent('snapshot-retention-delete', { vaultId, docId, snapshotKey })
+      } catch (error) {
+        const message = retentionErrorMessage(error)
+        await insertSnapshotRetentionEvent(db, docKey(docId), snapshotKey, 'delete', message, now)
+        logEvent('snapshot-retention-delete-failed', {
+          vaultId,
+          docId,
+          snapshotKey,
+          error: message,
+        })
+      }
     }
   }
 
@@ -1030,6 +1140,7 @@ export class VaultRoom {
     const secret = this.env.DEVICE_TOKEN_SECRET
     if (secret === undefined) {
       if (this.state.storage.sql !== undefined) {
+        logEvent('auth-reject', { vaultId: hello.vaultId, reason: 'missing-secret' })
         webSocket.close(1008, 'auth-reject:missing-secret')
         return undefined
       }
@@ -1038,12 +1149,14 @@ export class VaultRoom {
 
     const token = this.readSocketToken(webSocket)
     if (token === undefined) {
+      logEvent('auth-reject', { vaultId: hello.vaultId, reason: 'missing-token' })
       webSocket.close(1008, 'auth-reject:missing-token')
       return undefined
     }
 
     const claims = await verifyHs256DeviceToken({ token, secret })
     if (claims === undefined) {
+      logEvent('auth-reject', { vaultId: hello.vaultId, reason: 'invalid-token' })
       webSocket.close(1008, 'auth-reject:invalid-token')
       return undefined
     }
@@ -1056,6 +1169,7 @@ export class VaultRoom {
       now: Date.now(),
     })
     if (admission.action === 'reject') {
+      logEvent('auth-reject', { vaultId: hello.vaultId, reason: admission.reason })
       webSocket.close(1008, `auth-reject:${admission.reason}`)
       return undefined
     }
@@ -1078,6 +1192,7 @@ export class VaultRoom {
   ): Promise<Response | undefined> {
     const claims = await this.verifyRequestClaims(c)
     if (claims === undefined) {
+      logEvent('auth-reject', { vaultId: this.vaultId, reason: 'invalid-token' })
       return c.json({ error: 'auth-reject:invalid-token' }, 401)
     }
     if (this.vaultId !== undefined && claims.aud !== this.vaultId) {
@@ -1094,9 +1209,58 @@ export class VaultRoom {
       now: Date.now(),
     })
     if (admission.action === 'reject') {
+      logEvent('auth-reject', { vaultId: claims.aud, reason: admission.reason })
       return c.json({ error: `auth-reject:${admission.reason}` }, 403)
     }
     return undefined
+  }
+
+  /**
+   * Serves the authoritative latest snapshot for one doc: the hydrated Y.Doc
+   * (R2 snapshot + replayed op_log) re-encoded as a full update, alongside its
+   * state vector and the current `docs.latest_seq`. Hydration counts as a doc
+   * access, same as sync-request/sync-update handling.
+   */
+  private async handleLatestSnapshotRequest(c: Context, docId: DocId): Promise<Response> {
+    const clock = await this.readDocClock(docId)
+    if (clock === undefined) {
+      return c.json({ error: 'doc-not-found' }, 404)
+    }
+
+    try {
+      await this.ensureDocHydrated(docId)
+    } catch (error) {
+      logEvent('snapshot-hydrate-failed', {
+        vaultId: this.vaultId,
+        docId,
+        error: retentionErrorMessage(error),
+      })
+      return c.json({ error: 'snapshot-hydrate-failed' }, 500)
+    }
+
+    const doc = this.docs.get(docKey(docId))
+    const vaultId = this.vaultId
+    if (doc === undefined || vaultId === undefined) {
+      return c.json({ error: 'doc-not-found' }, 404)
+    }
+
+    const updateBytes = Y.encodeStateAsUpdate(doc)
+    const stateVectorBytes = Y.encodeStateVector(doc)
+    // deliberate: no vault-wide snapshot manifest (`sync/snapshots.ts`
+    // SnapshotManifestSchema) is ever built by checkpointDoc() today, so
+    // `manifestSeq`/`snapshotKey` have no independent meaning yet. Both are
+    // derived from the per-doc snapshot sequence until a real manifest exists.
+    const snapshotKey = makeSnapshotObjectKey(vaultId, docId, clock.latestSeq)
+    const body = {
+      manifestSeq: clock.latestSeq,
+      snapshotKey,
+      snapshotSeq: clock.latestSeq,
+      updateSha256: makeSha256Hex(await sha256Hex(updateBytes)),
+      stateVectorSha256: makeSha256Hex(await sha256Hex(stateVectorBytes)),
+      stateVector: encodeBase64(stateVectorBytes),
+      updateBytesBase64: encodeBase64(updateBytes),
+    }
+    return c.json(docId.kind === 'meta' ? body : { ...body, docId }, 200)
   }
 
   private async readBlobHeadEvidence(
@@ -1390,6 +1554,7 @@ export class VaultRoom {
       updateBytes,
       row.createdAt,
     )
+    logEvent('quarantine', { vaultId: this.vaultId, docId: row.docId, reason: row.reason })
   }
 
   private async persistAppend(

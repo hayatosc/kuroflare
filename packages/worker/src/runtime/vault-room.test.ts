@@ -6,6 +6,7 @@ import {
   encodeBlobManifestJson,
   AckSchema,
   AdminOperationResponseSchema,
+  decodeFullSnapshotBytesFromResponse,
   DocLatestSnapshotResponseSchema,
   LocalOutboxRepairEvidenceResponseSchema,
   MetaLatestSnapshotResponseSchema,
@@ -81,6 +82,38 @@ import {
   findAckForMessage,
   makeArrayBuffer,
 } from './test-helpers'
+
+interface RetentionAdminResponse {
+  readonly events: readonly RetentionAdminEvent[]
+}
+
+interface RetentionAdminEvent {
+  readonly docId: string
+  readonly snapshotKey: string
+  readonly action: string
+  readonly error: string | null
+  readonly attemptedAt: number
+}
+
+function isRetentionAdminResponse(value: unknown): value is RetentionAdminResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Array.isArray(Reflect.get(value, 'events')) &&
+    Reflect.get(value, 'events').every(
+      (event: unknown) =>
+        typeof event === 'object' &&
+        event !== null &&
+        !Array.isArray(event) &&
+        typeof Reflect.get(event, 'docId') === 'string' &&
+        typeof Reflect.get(event, 'snapshotKey') === 'string' &&
+        typeof Reflect.get(event, 'action') === 'string' &&
+        (Reflect.get(event, 'error') === null || typeof Reflect.get(event, 'error') === 'string') &&
+        typeof Reflect.get(event, 'attemptedAt') === 'number',
+    )
+  )
+}
 
 test('VaultRoom accepts websocket upgrades and rejects malformed binary frames', async () => {
   const previousPair = installFakeWebSocketPair()
@@ -1072,6 +1105,81 @@ test('VaultRoom checkpoints an active document to R2 and advances the SQL snapsh
   }
 })
 
+test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes admin events', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const oldSnapshotDoc = new Y.Doc()
+    const oldSnapshotBytes = Y.encodeStateAsUpdate(oldSnapshotDoc)
+    oldSnapshotDoc.destroy()
+    for (const seq of [1, 2, 3, 4]) {
+      bucket.set(`snapshots/vault-1/meta/${seq}.yupdate`, oldSnapshotBytes)
+    }
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    for (let index = 1; index <= 5; index += 1) {
+      await room.webSocketMessage(
+        server,
+        JSON.stringify(makeSyncUpdate(makeMessageId(`message-retention-${index}`))),
+      )
+    }
+
+    assert.deepEqual(await room.checkpointDoc({ kind: 'meta' }, 99), {
+      action: 'checkpointed',
+      snapshotKey: 'snapshots/vault-1/meta/5.yupdate',
+      upperSeq: 5,
+      compactedSeq: 5,
+    })
+
+    assert.deepEqual(bucket.deletes, [
+      'snapshots/vault-1/meta/1.yupdate',
+      'snapshots/vault-1/meta/2.yupdate',
+    ])
+    assert.equal(await bucket.get('snapshots/vault-1/meta/1.yupdate'), null)
+    assert.notEqual(await bucket.get('snapshots/vault-1/meta/3.yupdate'), null)
+    assert.deepEqual(
+      storage.sql.snapshotRetentionEvents.map((event) => ({
+        snapshotKey: event.snapshotKey,
+        error: event.error,
+      })),
+      [
+        { snapshotKey: 'snapshots/vault-1/meta/1.yupdate', error: undefined },
+        { snapshotKey: 'snapshots/vault-1/meta/2.yupdate', error: undefined },
+      ],
+    )
+
+    restoreResponse(previousResponse)
+    const response = await room.fetch(
+      new Request('https://worker.example/admin/retention', {
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+            tokenVersion: 1,
+          })}`,
+        },
+      }),
+    )
+    assert.equal(response.status, 200)
+    const body = await response.json()
+    assert(
+      isRetentionAdminResponse(body) &&
+        body.events.some((event) => event.snapshotKey === 'snapshots/vault-1/meta/1.yupdate'),
+    )
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
 test('VaultRoom schedules and runs checkpoint alarms after durable appends', async () => {
   const previousPair = installFakeWebSocketPair()
   const previousResponse = installFakeUpgradeResponse()
@@ -2003,6 +2111,222 @@ test('VaultRoom exposes authenticated quarantine list and detail inspection', as
   )
   assert.equal(missingResponse.status, 404)
   assert.deepEqual(await missingResponse.json(), { error: 'unknown-quarantine' })
+})
+
+test('VaultRoom serves the latest meta snapshot from the production HTTP route', async () => {
+  const storage = new SqlOnlyStorage()
+  const messageId = makeMessageId('message-meta-snapshot')
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 1,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.opLog.set(`meta:${messageId}`, {
+    docId: 'meta',
+    seq: 1,
+    messageId,
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: makeYjsUpdateBytes(messageId),
+    updateSha256: 'a'.repeat(64),
+    createdAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+
+  const response = await room.fetch(
+    new Request('https://worker.example/vaults/vault-1/meta/latest', {
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+      },
+    }),
+  )
+
+  assert.equal(response.status, 200)
+  const body: unknown = await response.json()
+  assert(v.is(MetaLatestSnapshotResponseSchema, body))
+  assert.equal(body.snapshotSeq, 1)
+  assert.equal(body.manifestSeq, 1)
+
+  const decoded = await decodeFullSnapshotBytesFromResponse({ response: body })
+  assert(decoded.ok)
+  const doc = new Y.Doc()
+  Y.applyUpdate(doc, decoded.updateBytes)
+  assert.equal(doc.getMap('meta').has(makeFileId('file-message-meta-snapshot')), true)
+})
+
+test('VaultRoom serves the latest file snapshot from the production HTTP route', async () => {
+  const storage = new SqlOnlyStorage()
+  const ydocId = makeYDocId('ydoc-file-snapshot')
+  const messageId = makeMessageId('message-file-snapshot')
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.opLog.set(`file:${ydocId}:${messageId}`, {
+    docId: `file:${ydocId}`,
+    seq: 1,
+    messageId,
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: makeYjsUpdateBytes(messageId),
+    updateSha256: 'a'.repeat(64),
+    createdAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+
+  const response = await room.fetch(
+    new Request(`https://worker.example/vaults/vault-1/files/${ydocId}/latest`, {
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+      },
+    }),
+  )
+
+  assert.equal(response.status, 200)
+  const body: unknown = await response.json()
+  assert(v.is(DocLatestSnapshotResponseSchema, body))
+  assert.deepEqual(body.docId, { kind: 'file', ydocId })
+  assert.equal(body.snapshotSeq, 1)
+})
+
+test('VaultRoom rejects latest snapshot requests without a valid access token', async () => {
+  const room = new VaultRoom(
+    new FakeState(new SqlOnlyStorage()),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+
+  const response = await room.fetch(
+    new Request('https://worker.example/vaults/vault-1/meta/latest'),
+  )
+
+  assert.equal(response.status, 401)
+  assert.deepEqual(await response.json(), { error: 'auth-reject:invalid-token' })
+})
+
+test('VaultRoom rejects latest snapshot requests missing the sync:read scope', async () => {
+  const room = new VaultRoom(
+    new FakeState(new SqlOnlyStorage()),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+
+  const response = await room.fetch(
+    new Request('https://worker.example/vaults/vault-1/meta/latest', {
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+          scope: ['sync:write'],
+        })}`,
+      },
+    }),
+  )
+
+  assert.equal(response.status, 403)
+  assert.deepEqual(await response.json(), { error: 'auth-reject:missing-scope' })
+})
+
+test('VaultRoom returns doc-not-found for a latest snapshot request on an unknown doc', async () => {
+  const room = new VaultRoom(
+    new FakeState(new SqlOnlyStorage()),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+
+  const response = await room.fetch(
+    new Request(
+      `https://worker.example/vaults/vault-1/files/${makeYDocId('ydoc-missing')}/latest`,
+      {
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+            tokenVersion: 1,
+          })}`,
+        },
+      },
+    ),
+  )
+
+  assert.equal(response.status, 404)
+  assert.deepEqual(await response.json(), { error: 'doc-not-found' })
+})
+
+test('VaultRoom logs a structured event when a checkpoint fails', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-checkpoint-fail'))),
+    )
+
+    storage.sql.failOnQueryIncludes = 'insert into checkpoint_runs'
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    let thrown: unknown
+    try {
+      await room.checkpointDoc({ kind: 'meta' }, 99)
+    } catch (error) {
+      thrown = error
+    }
+    const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+    logSpy.mockRestore()
+
+    assert(thrown instanceof Error)
+    assert(events.some((event) => event.event === 'checkpoint-start'))
+    assert(
+      events.some(
+        (event) => event.event === 'checkpoint-failed' && typeof event.error === 'string',
+      ),
+    )
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom logs a structured event when an HTTP request is auth-rejected', async () => {
+  const room = new VaultRoom(
+    new FakeState(new SqlOnlyStorage()),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/quarantine', {
+      headers: { Authorization: 'Bearer not-a-real-token' },
+    }),
+  )
+  const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+  logSpy.mockRestore()
+
+  assert.equal(response.status, 401)
+  assert(events.some((event) => event.event === 'auth-reject' && event.reason === 'invalid-token'))
 })
 
 test('VaultRoom rejects non-upgrade requests', async () => {

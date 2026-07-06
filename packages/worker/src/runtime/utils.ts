@@ -386,6 +386,16 @@ export function retentionErrorMessage(error: unknown): string {
   return message.length <= 256 ? message : `${message.slice(0, 253)}...`
 }
 
+/**
+ * Emits a single-line structured JSON log entry for one of the runtime's
+ * minimal operational events (checkpoint lifecycle, quarantine, auth reject).
+ * Callers must not pass token material, update bytes, or user content in
+ * `fields`.
+ */
+export function logEvent(event: string, fields: Record<string, unknown>): void {
+  console.log(JSON.stringify({ event, ...fields }))
+}
+
 export async function sha256Text(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')

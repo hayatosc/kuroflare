@@ -28,13 +28,11 @@ export type DocEvictionDecision =
     }
 
 /**
- * Decides whether a hydrated file YDoc may be evicted from the in-memory doc
- * map. The meta doc is always resident. A file doc evicts only once it is fully
- * checkpointed, no currently connected socket has touched it, and it has been
- * idle for at least `idleThresholdMs`.
+ * Decides whether an in-memory document state can be removed from memory.
  *
- * @param input Document kind, checkpoint state, socket/access evidence, and clocks.
- * @returns `evict` once all three conditions hold, otherwise `keep` with the blocking reason.
+ * The metadata document is always kept in memory. Other documents can be
+ * removed if they are fully saved, have no active client connections, and
+ * have been idle for a threshold duration.
  */
 export function decideDocEviction(input: DocEvictionInput): DocEvictionDecision {
   if (input.isMeta) {

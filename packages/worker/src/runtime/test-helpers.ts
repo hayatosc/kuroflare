@@ -1,5 +1,3 @@
-import assert from 'node:assert/strict'
-
 import {
   CURRENT_PROTOCOL_VERSION,
   DEVICE_TOKEN_ISSUER,
@@ -25,7 +23,7 @@ import {
   type SyncUpdate,
 } from '@kuroflare/core'
 import * as v from 'valibot'
-import { test } from 'vitest'
+import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
 import workerEntrypoint, {
@@ -187,12 +185,21 @@ export interface RecordedMessageDedupRow {
   readonly seenAt: number
 }
 
+export interface RecordedSnapshotRetentionEventRow {
+  readonly docId: string
+  readonly snapshotKey: string
+  readonly action: string
+  readonly error: string | undefined
+  readonly attemptedAt: number
+}
+
 export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
   readonly docs = new Map<string, RecordedDocRow>()
   readonly opLog = new Map<string, RecordedOpLogRow>()
   readonly messageDedup = new Map<string, RecordedMessageDedupRow>()
   readonly quarantines = new Map<string, RecordedQuarantineRow>()
   readonly checkpointRuns = new Map<string, RecordedCheckpointRunRow>()
+  readonly snapshotRetentionEvents: RecordedSnapshotRetentionEventRow[] = []
   readonly setupTokens = new Map<string, RecordedSetupTokenRow>()
   readonly refreshTokens = new Map<string, RecordedRefreshTokenRow>()
   readonly devices = new Map<string, RecordedDeviceRow>([
@@ -437,6 +444,40 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
           status: run.status,
           upperSeq: run.upperSeq,
           snapshotKey: run.snapshotKey,
+        }))
+      return rows as Iterable<T>
+    }
+    if (normalized.includes('from checkpoint_runs') && normalized.includes('snapshot_key')) {
+      const docId = expectString(bindings[0])
+      const rows = [...this.checkpointRuns.values()]
+        .filter((run) => run.docId === docId)
+        .map((run) => ({
+          status: run.status,
+          snapshotKey: run.snapshotKey,
+        }))
+      return rows as Iterable<T>
+    }
+    if (normalized.includes('insert into snapshot_retention_events')) {
+      this.snapshotRetentionEvents.push({
+        docId: expectString(bindings[0]),
+        snapshotKey: expectString(bindings[1]),
+        action: expectString(bindings[2]),
+        error: bindings[3] === null ? undefined : expectString(bindings[3]),
+        attemptedAt: expectNumber(bindings[4]),
+      })
+      return []
+    }
+    if (normalized.includes('from snapshot_retention_events')) {
+      const limit = expectNumber(bindings[0])
+      const rows = [...this.snapshotRetentionEvents]
+        .sort((left, right) => right.attemptedAt - left.attemptedAt)
+        .slice(0, limit)
+        .map((event) => ({
+          docId: event.docId,
+          snapshotKey: event.snapshotKey,
+          action: event.action,
+          error: event.error ?? null,
+          attemptedAt: event.attemptedAt,
         }))
       return rows as Iterable<T>
     }

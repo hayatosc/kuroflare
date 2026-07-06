@@ -28,11 +28,10 @@ export interface SnapshotRetentionPlan {
 }
 
 /**
- * Plans which snapshot objects may be deleted during retention cleanup.
+ * Decides which snapshot files can be safely deleted.
  *
- * @param input Snapshot list, current pointer, active checkpoint runs, and minimum generation count.
- * @returns Deterministic retain/delete key lists. The caller should only delete keys in `deleteKeys`.
- * @throws If `minGenerationCount` is not a positive safe integer.
+ * It ensures that the current active snapshot, recent snapshots, and snapshots
+ * referenced by active checkpoint runs are retained.
  */
 export function planSnapshotRetention(input: SnapshotRetentionPlanInput): SnapshotRetentionPlan {
   if (!Number.isSafeInteger(input.minGenerationCount) || input.minGenerationCount <= 0) {

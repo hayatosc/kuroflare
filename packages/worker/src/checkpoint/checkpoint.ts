@@ -31,11 +31,8 @@ export interface CheckpointCompactInput {
   readonly upperSeq: number
   readonly latestSnapshotSeq: number
   /**
-   * The `upperSeq` of the oldest snapshot that snapshot retention (see
-   * `db/retention.ts`) still requires op_log to roll back to, or `undefined`
-   * when no other retained snapshot predates this checkpoint. Op-log rows
-   * newer than this floor must survive compaction so a rollback to that
-   * older snapshot can still replay forward to it.
+   * The oldest snapshot sequence that must be retained.
+   * Updates newer than this sequence are preserved to allow rollback.
    */
   readonly retainedSnapshotFloorSeq: number | undefined
   readonly now: number
@@ -97,10 +94,7 @@ export interface OrphanedCheckpointRecoveryInput {
 }
 
 /**
- * Decides whether a document needs a new checkpoint snapshot.
- *
- * @param input Current document sequence state and caller-built snapshot key.
- * @returns A write plan when the doc has uncheckpointed ops, otherwise a skip reason.
+ * Decides whether to write a new checkpoint for the document.
  */
 export function decideCheckpointWrite(input: CheckpointWriteInput): CheckpointWriteDecision {
   if (
@@ -127,15 +121,8 @@ export function decideCheckpointWrite(input: CheckpointWriteInput): CheckpointWr
 }
 
 /**
- * Decides whether op-log rows covered by a checkpoint can be compacted.
- *
- * The compaction boundary is clamped to `retainedSnapshotFloorSeq` so that
- * op_log needed to roll back to an older snapshot retained by
- * `planSnapshotRetention` (see `db/retention.ts`) and replay forward is never
- * deleted.
- *
- * @param input Checkpoint run state, current doc pointer, retention floor, and timestamp.
- * @returns A compact plan once the pointer is confirmed, otherwise a skip reason.
+ * Decides whether past document updates can be compacted, ensuring we
+ * do not delete data needed for rolling back to older snapshots.
  */
 export function decideCheckpointCompact(input: CheckpointCompactInput): CheckpointCompactDecision {
   if (
@@ -169,17 +156,7 @@ export function decideCheckpointCompact(input: CheckpointCompactInput): Checkpoi
 }
 
 /**
- * Decides the next safe recovery step for a checkpoint run left mid-flight.
- *
- * The decision never rewinds the document pointer. Snapshot evidence must be
- * gathered from R2 before adopting an orphaned snapshot or compacting op_log.
- * When resuming a `pointer-updated` run, `compact-op-log` clamps its
- * `compactedSeq` to `retainedSnapshotFloorSeq` the same way
- * `decideCheckpointCompact` does for normal compaction, so recovery cannot
- * delete op_log a retained older snapshot still needs.
- *
- * @param input Checkpoint run row, current doc pointer state, R2 evidence, and retention floor.
- * @returns The single recovery action the caller should apply transactionally.
+ * Decides how to recover a checkpoint run that was interrupted mid-flight.
  */
 export function decideOrphanedCheckpointRecovery(
   input: OrphanedCheckpointRecoveryInput,
@@ -240,8 +217,7 @@ function decidePointerUpdatedRecovery(
   }
 
   if (retainedSnapshotFloorSeq !== undefined && !isPositiveSafeInteger(retainedSnapshotFloorSeq)) {
-    // Retention evidence could not be trusted: refuse to compact rather than
-    // risk deleting op_log still needed to roll back to an older snapshot.
+    // Skip compaction if the retention floor is invalid to prevent data loss.
     return { action: 'block-compact', reason: 'invalid-retained-floor' }
   }
 

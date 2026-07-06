@@ -4,7 +4,7 @@ import * as v from 'valibot'
 import type { YClientId } from './devices'
 import type { SyncUpdateQuarantineReason } from './sync/update'
 
-/** Durable quarantined update row available to admin repair flows. */
+/** Quarantined update data available for repair. */
 export interface QuarantinedUpdateRecord {
   readonly id: string
   readonly docId: DocId
@@ -16,10 +16,10 @@ export interface QuarantinedUpdateRecord {
   readonly createdAt: number
 }
 
-/** Admin operation requested for a quarantined update. */
+/** Admin action for a quarantined update. */
 export type QuarantinedUpdateAdminAction = 'inspect' | 'discard' | 'force-apply'
 
-/** Input for deciding how an admin repair operation may handle a quarantined update. */
+/** Input for deciding how to handle a quarantined update. */
 export interface QuarantinedUpdateAdminDecisionInput {
   readonly action: QuarantinedUpdateAdminAction
   readonly record: QuarantinedUpdateRecord | undefined
@@ -31,14 +31,14 @@ export interface QuarantinedUpdateAdminDecisionInput {
   readonly metaSchemaValid: boolean | undefined
 }
 
-/** Patch for deleting a quarantined update row after an explicit admin decision. */
+/** Data patch for deleting a quarantine record. */
 export interface QuarantinedUpdateDeletePatch {
   readonly id: string
   readonly deletedAt: number
   readonly reason: 'discarded-by-admin' | 'force-applied-by-admin'
 }
 
-/** Row the caller should append to op_log when a quarantined update is force-applied. */
+/** Data to append to the log when force-applying an update. */
 export interface QuarantinedUpdateForceApplyOpLogAppend {
   readonly seq: number
   readonly docId: DocId
@@ -49,13 +49,13 @@ export interface QuarantinedUpdateForceApplyOpLogAppend {
   readonly createdAt: number
 }
 
-/** Patch the caller should apply to docs after force-applying a quarantined update. */
+/** Patch to apply to documents when force-applying an update. */
 export interface QuarantinedUpdateForceApplyDocPatch {
   readonly latestSeq: number
   readonly updatedAt: number
 }
 
-/** Admin repair decision for a quarantined update. */
+/** Decision outcome for a quarantined update. */
 export type QuarantinedUpdateAdminDecision =
   | {
       readonly action: 'inspect'
@@ -84,10 +84,7 @@ export type QuarantinedUpdateAdminDecision =
     }
 
 /**
- * Decides how an admin repair operation may inspect, discard, or force-apply a quarantined update.
- *
- * @param input Requested action, durable quarantine row, confirmation state, and revalidation evidence.
- * @returns A read-only inspection, a delete patch, a force-apply plan, or a rejection.
+ * Decides how to handle a quarantined update (inspect, discard, or force-apply).
  */
 export function decideQuarantinedUpdateAdmin(
   input: QuarantinedUpdateAdminDecisionInput,
