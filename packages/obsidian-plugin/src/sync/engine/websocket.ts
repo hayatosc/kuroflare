@@ -197,7 +197,10 @@ export function planSyncRuntimeWebSocketInboundRoute(
       }
       return { action: 'outbox-completion', message }
     case 'sync-update':
-      if (message.deviceId === input.deviceId) {
+      if (
+        message.deviceId === input.deviceId &&
+        !(input.pendingSyncRequestMessageIds?.has(message.messageId) ?? false)
+      ) {
         return { action: 'drop', reason: 'self-broadcast' }
       }
       return { action: 'apply-remote-update', message }

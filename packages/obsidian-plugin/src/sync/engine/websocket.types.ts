@@ -5,6 +5,7 @@ import {
   type DeviceId,
   type DocId,
   type HelloAccepted,
+  type MessageId,
   type SyncRequest,
   type SyncUpdate,
   type VaultId,
@@ -110,6 +111,15 @@ export interface SyncRuntimeWebSocketInboundRouteInput {
   readonly inbound: SyncRuntimeWebSocketInboundMessage
   readonly vaultId: VaultId
   readonly deviceId: DeviceId
+  /**
+   * Message IDs of sync-requests this device has sent and is still awaiting a
+   * reply for. The server addresses a sync-request's direct reply using the
+   * requesting device's own `deviceId` (see `decideSyncRequest`), which is
+   * otherwise indistinguishable from the server re-broadcasting this device's
+   * own past edit to a reconnected session, so a match here overrides the
+   * self-broadcast drop.
+   */
+  readonly pendingSyncRequestMessageIds?: ReadonlySet<MessageId> | undefined
 }
 
 /** Local runtime route selected for one inbound WebSocket control message. */
@@ -179,6 +189,7 @@ export interface SyncRuntimeWebSocketInboundDispatchInput {
   readonly inbound: SyncRuntimeWebSocketInboundMessage
   readonly vaultId: VaultId
   readonly deviceId: DeviceId
+  readonly pendingSyncRequestMessageIds?: ReadonlySet<MessageId> | undefined
   readonly ports: SyncRuntimeWebSocketInboundRoutePorts
 }
 

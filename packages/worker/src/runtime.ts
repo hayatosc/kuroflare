@@ -11,6 +11,7 @@ import {
   BlobUploadUrlRequestSchema,
   RevokeDeviceRequestSchema,
   SetupExchangeRequestSchema,
+  SnapshotImportRequestSchema,
   MessageIdSchema,
   Sha256HexSchema,
   YDocIdSchema,
@@ -220,6 +221,7 @@ export class VaultRoom {
   private readonly socketTokens = new Map<RuntimeWebSocket, string | undefined>()
   private readonly docs = new Map<string, Y.Doc>()
   private readonly hydratedDocs = new Set<string>()
+  private readonly hydrationInFlight = new Map<string, Promise<void>>()
   private readonly docWriteQueues = new Map<string, Promise<void>>()
   private vaultId: VaultId | undefined
   private schemaReady = false
@@ -604,6 +606,33 @@ export class VaultRoom {
 
         return this.handleLatestSnapshotRequest(c, { kind: 'file', ydocId: rawYDocId })
       })
+      .put('/vaults/:vaultId/meta/snapshot', async (c) => {
+        const db = this.getDb()
+        const bucket = this.env.SNAPSHOT_BUCKET
+        if (db === undefined || bucket === undefined)
+          return c.text('Snapshot import unavailable', 503)
+        await this.ensureSchema()
+
+        const rejection = await this.authorizeHttpRequest(c, ['sync:write'])
+        if (rejection !== undefined) return rejection
+
+        return this.handleSnapshotImportRequest(c, { kind: 'meta' })
+      })
+      .put('/vaults/:vaultId/files/:ydocId/snapshot', async (c) => {
+        const db = this.getDb()
+        const bucket = this.env.SNAPSHOT_BUCKET
+        if (db === undefined || bucket === undefined)
+          return c.text('Snapshot import unavailable', 503)
+        await this.ensureSchema()
+
+        const rawYDocId = c.req.param('ydocId')
+        if (!v.is(YDocIdSchema, rawYDocId)) return c.json({ error: 'invalid-ydoc-id' }, 400)
+
+        const rejection = await this.authorizeHttpRequest(c, ['sync:write'])
+        if (rejection !== undefined) return rejection
+
+        return this.handleSnapshotImportRequest(c, { kind: 'file', ydocId: rawYDocId })
+      })
       .post('/blobs/head', async (c) => {
         if (this.env.SNAPSHOT_BUCKET === undefined) return c.text('Blob storage unavailable', 503)
 
@@ -796,7 +825,15 @@ export class VaultRoom {
         this.sessions.add(server)
         this.rememberSocketToken(server, extractWebSocketBearerToken(c.req.raw))
 
-        const upgradeInit: WebSocketResponseInit = { status: 101, webSocket: client }
+        // Browser WebSocket clients (unlike Node's `ws`) fail the connection
+        // if they offered subprotocols and the response omits a matching
+        // Sec-WebSocket-Protocol header, so the app-identifying protocol must
+        // be echoed back explicitly here.
+        const upgradeInit: WebSocketResponseInit = {
+          status: 101,
+          webSocket: client,
+          headers: { 'Sec-WebSocket-Protocol': 'kuroflare.v1' },
+        }
         return new Response(null, upgradeInit)
       })
   }
@@ -1263,6 +1300,58 @@ export class VaultRoom {
     return c.json(docId.kind === 'meta' ? body : { ...body, docId }, 200)
   }
 
+  /**
+   * Bootstraps or joins a doc's authoritative state from a caller-supplied
+   * full snapshot (device's initial full sync). A device joining a vault
+   * that already has remote content for this doc (e.g. another device's
+   * prior CLI/live import) must union with it via a Yjs merge, not
+   * overwrite it — otherwise the second device to import always clobbers
+   * whatever the first one wrote. Gated by real device-token auth instead
+   * of the `/__e2e/snapshot` seed path's e2e secret.
+   */
+  private async handleSnapshotImportRequest(c: Context, docId: DocId): Promise<Response> {
+    const db = this.getDb()
+    const bucket = this.env.SNAPSHOT_BUCKET
+    const vaultId = this.vaultId
+    if (db === undefined || bucket === undefined || vaultId === undefined) {
+      return c.json({ error: 'vault-unavailable' }, 500)
+    }
+
+    const body: unknown = await c.req.json().catch(() => undefined)
+    if (!v.is(SnapshotImportRequestSchema, body)) {
+      return c.json({ error: 'invalid-snapshot-import-request' }, 400)
+    }
+
+    const update = decodeBase64(body.updateBytesBase64)
+    if (update === null || !canApplyYjsUpdate(update)) {
+      return c.json({ error: 'invalid-snapshot-import-update' }, 400)
+    }
+
+    let existingLatestSeq: number
+    try {
+      await this.ensureDocHydrated(docId)
+      existingLatestSeq = (await this.readDocClock(docId))?.latestSeq ?? 0
+    } catch {
+      return c.json({ error: 'snapshot-import-hydrate-failed' }, 500)
+    }
+
+    const key = docKey(docId)
+    const doc = this.docs.get(key) ?? new Y.Doc()
+    Y.applyUpdate(doc, update)
+    this.docs.set(key, doc)
+    this.hydratedDocs.add(key)
+    const mergedBytes = Y.encodeStateAsUpdate(doc)
+    const stateVector = Y.encodeStateVector(doc)
+
+    const now = Date.now()
+    const snapshotSeq = existingLatestSeq + 1
+    const snapshotKey = makeSnapshotObjectKey(vaultId, docId, snapshotSeq)
+    await bucket.put(snapshotKey, mergedBytes)
+    await insertDoc(db, key, docId.kind, snapshotSeq, snapshotSeq, snapshotKey, stateVector, 0, now)
+
+    return c.json({ ok: true, vaultId, docId, snapshotKey, snapshotSeq }, 200)
+  }
+
   private async readBlobHeadEvidence(
     vaultId: VaultId,
     sha256: Sha256Hex,
@@ -1289,8 +1378,10 @@ export class VaultRoom {
     webSocket: RuntimeWebSocket,
     request: SyncRequest,
   ): Promise<void> {
+    logEvent('debug-sync-request-received', { docId: request.docId, messageId: request.messageId })
     const session = this.readSession(webSocket)
     if (session === undefined) {
+      logEvent('debug-sync-request-no-session', { docId: request.docId })
       webSocket.close(1008, 'hello-required')
       return
     }
@@ -1321,6 +1412,7 @@ export class VaultRoom {
       const doc = this.docs.get(docKey(request.docId))
       if (doc !== undefined) {
         const diffUpdate = Y.encodeStateAsUpdate(doc, clientStateVector)
+        const diffIsEmpty = isEmptyYjsUpdate(diffUpdate)
         docState = {
           ...persisted,
           stateVectorCoversHorizon: stateVectorCoversHorizon(
@@ -1328,7 +1420,8 @@ export class VaultRoom {
             persisted.horizonStateVector,
           ),
           diffSourceAvailable: true,
-          diffUpdateBase64: isEmptyYjsUpdate(diffUpdate) ? undefined : encodeBase64(diffUpdate),
+          diffUpdateBase64: diffIsEmpty ? undefined : encodeBase64(diffUpdate),
+          diffUpdateSha256: diffIsEmpty ? undefined : makeSha256Hex(await sha256Hex(diffUpdate)),
         }
       }
     }
@@ -1337,6 +1430,13 @@ export class VaultRoom {
       request,
       doc: docState,
       serverProtocolVersion: CURRENT_PROTOCOL_VERSION,
+    })
+    logEvent('debug-sync-request-decision', {
+      docId: request.docId,
+      messageId: request.messageId,
+      persisted,
+      docState,
+      action: decision.action,
     })
 
     if (decision.action === 'send-update') {
@@ -1641,6 +1741,24 @@ export class VaultRoom {
       return
     }
 
+    // `handleSyncRequest` (read) hydrates outside the per-doc write queue, so
+    // it can race a concurrent `handleSyncUpdateSerialized` (write) hydrating
+    // the same doc. Without sharing the in-flight attempt, both would build
+    // an independent Y.Doc from the same R2 snapshot/op_log and whichever
+    // finishes last would silently clobber `this.docs` with a copy that
+    // never saw the other's live update.
+    const existing = this.hydrationInFlight.get(key)
+    if (existing !== undefined) {
+      return existing
+    }
+    const attempt = this.hydrateDoc(docId, key).finally(() => {
+      this.hydrationInFlight.delete(key)
+    })
+    this.hydrationInFlight.set(key, attempt)
+    return attempt
+  }
+
+  private async hydrateDoc(docId: DocId, key: string): Promise<void> {
     const db = this.getDb()
     if (db === undefined) {
       throw new Error('sql-unavailable')
@@ -1928,7 +2046,7 @@ export class VaultRoom {
   ): Promise<
     | (Omit<
         SyncRequestDocState,
-        'stateVectorCoversHorizon' | 'diffSourceAvailable' | 'diffUpdateBase64'
+        'stateVectorCoversHorizon' | 'diffSourceAvailable' | 'diffUpdateBase64' | 'diffUpdateSha256'
       > & { readonly horizonStateVector: Uint8Array | undefined })
     | undefined
   > {

@@ -2318,8 +2318,10 @@ mobile 対応着手前に必ず潰す判断分岐:
 ### 未検証・未配線の「長い棒」
 
 > 2026-06-29 更新で 1・2・4・7 が解消した（実 Linux Obsidian app + obsidian-cli を実機で回せるようになった）。2026-06-30 更新で MVP-2 の Worker 経由 meta 同期と text 本文 per-file YDoc 化を実機 e2e に載せた。下記は更新後の状態。
+>
+> **2026-07-07 更新: 1 の「実機で検証済み」は現時点で不正確。** `test:e2e:obsidian:miniflare` を実 Linux Obsidian + miniflare で再実行したところ、2026-06-30 以降の複数のリファクタ・機能追加（`c5cf819` monolith 分割、`8dcd512` invalid-meta isolation/quarantine admin など）で退行しており、現状は **green ではない**。詳細と直した/残っているバグの一覧は付録「2026-07-07 miniflare e2e 実施記録」を参照。
 
-1. **plugin↔Worker のフル e2e を実機で検証済み**。`packages/worker/vitest.e2e.config.ts` + `test/e2e/sync.e2e.test.ts` の workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集収束、meta YDoc broadcast + late join 復元、後続参加者の sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）に加え、`packages/obsidian-plugin/scripts/obsidian-miniflare-smoke.mjs` が **実 Linux Obsidian + miniflare Worker** 上で setup token 交換 → R2 snapshot→Obsidian disk 反映 → 別デバイスのリモート編集→disk 反映 → Obsidian ローカル編集→リモートへブロードキャスト → meta YDoc の cross-device concurrent rename → deterministic conflict repair → disk materialize → plugin reload 後の再接続まで、dev:errors なしで通す（`pnpm --filter @kuroflare/worker dev:local` + `pnpm --filter @kuroflare/obsidian-plugin test:e2e:obsidian:miniflare`）。
+1. **plugin↔Worker のフル e2e — 2026-07-07 時点で not green（退行あり、詳細は下の付録）**。`packages/worker/vitest.e2e.config.ts` + `test/e2e/sync.e2e.test.ts` の workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集収束、meta YDoc broadcast + late join 復元、後続参加者の sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は引き続き green。一方、`packages/obsidian-plugin/scripts/obsidian-miniflare-smoke.ts` を **実 Linux Obsidian + miniflare Worker** で実行すると、setup token 交換 → R2 snapshot→Obsidian disk 反映のステップで、アクティブファイルの初回フルシンクが content-loss を起こして止まる（付録参照）。以前このセクションが記述していた「dev:errors なしで通る」状態は退行済み。
 2. **ワークスペース全体ビルド・typecheck・lint・format は全て通過**。`pnpm typecheck` / `oxlint .` / `oxfmt --check .` / `pnpm build` が green。node 単体 647 + worker e2e 6。
 3. **終端状態の actuation 未配線**。`enter-auth-blocked` / `enter-degraded` は shell command 化までは実装済みだが、実 Obsidian の UI / repair flow へは未接続。
 4. **CM6 ⇄ Y.Text ⇄ disk の往復を実 Obsidian シェルで検証済み（MVP-0 受け入れ）**。headless の `src/obsidian/editor-binding.test.ts`（jsdom + 実 CodeMirror6 + 実 yjs/y-codemirror.next）に加え、`scripts/obsidian-cli-smoke.mjs` が [obsidian-cli](https://github.com/chhoumann/obsidian-e2e)（実 Linux Obsidian + 実 vault）上で binding seed → remote insert→YText→disk flush（materialize CAS 経由）、外部 disk 編集→watcher hash gate→YText 取り込み、2 つの Markdown file を開き分けても text YDoc が混ざらない per-file YDoc レグ、watcher を意図的に落とした際の materialize CAS conflict-copy 退避を dev:errors なしで通す（`pnpm --filter @kuroflare/obsidian-plugin test:e2e:obsidian`）。
@@ -2335,13 +2337,44 @@ mobile 対応着手前に必ず潰す判断分岐:
 ### MVP チェックリスト（§11.1 対応）
 
 - [x] MVP-0: local editor loop（実 Linux Obsidian + obsidian-cli で CM6 ⇄ Y.Text ⇄ disk の両レグ、per-file YDoc、watcher-drop CAS conflict-copy を往復。`test:e2e:obsidian`）
-- [x] MVP-1: one file remote sync（workerd e2e に加え、実 Linux Obsidian + miniflare で plugin↔Worker フル同期・リモート並行編集・再接続を証明。`test:e2e:obsidian:miniflare`）
+- [ ] MVP-1: one file remote sync — **2026-07-07 時点で退行し not green**（workerd e2e は引き続き green だが、実 Linux Obsidian + miniflare の `test:e2e:obsidian:miniflare` はアクティブファイル初回フルシンクの content-loss で失敗。詳細は付録「2026-07-07 miniflare e2e 実施記録」）
 - [x] MVP-2: meta YDoc + path repair（decision + live 配線済み。rename=path 更新、Worker 経由 cross-device concurrent rename 収束、text 本文 per-file YDoc 化を実 Obsidian e2e で実証）
 - [x] MVP-3: initial sync + binary（binary blob PUT→meta 参照公開、manifest/chunk 再取得、初回 meta/file snapshot からの Markdown materialize を実機 e2e で証明。production API/UX 化は §11.2 に残す）
 
 ### 推奨する次の縦切り
 
-(a) 完了: 全体ビルド通過。(b) 完了: miniflare で MVP-1 の 1 ファイル同期 e2e。(c) 完了: 実 Linux Obsidian + obsidian-cli で MVP-0（CM6 往復 + disk materialize + 外部編集取り込み + watcher-drop CAS conflict-copy）と MVP-1（plugin↔Worker フル同期）を実機受け入れ。(d) 完了: MVP-2 の path repair / file-tree を live 配線し、`test:e2e:obsidian:mvp2` と `test:e2e:obsidian:miniflare` で rename=path 更新、Worker 経由 concurrent rename 収束、text 本文 per-file YDoc 化を実機実証。(e) 完了: MVP-3 の CDC バイナリ（blob PUT→meta 参照公開）と初回フルシンク（meta/file snapshot から Markdown materialize）を実機 e2e 化。**次は §11.2 の P0**: startup pipeline、production snapshot API、outbox runner を ad-hoc 実装から production runtime へ接続する。
+(a) 完了: 全体ビルド通過。(b) 完了（ただし 2026-07-07 時点で退行、下記付録参照）: miniflare で MVP-1 の 1 ファイル同期 e2e。(c) 完了: 実 Linux Obsidian + obsidian-cli で MVP-0（CM6 往復 + disk materialize + 外部編集取り込み + watcher-drop CAS conflict-copy）を実機受け入れ（MVP-1 の plugin↔Worker フル同期は (b) と同様に退行中）。(d) 完了: MVP-2 の path repair / file-tree を live 配線し、`test:e2e:obsidian:mvp2` と `test:e2e:obsidian:miniflare` で rename=path 更新、Worker 経由 concurrent rename 収束、text 本文 per-file YDoc 化を実機実証（同上、miniflare 経由の実証は退行中）。(e) 完了: MVP-3 の CDC バイナリ（blob PUT→meta 参照公開）と初回フルシンク（meta/file snapshot から Markdown materialize）を実機 e2e 化。**次にやるべきこと**: (1) 付録「2026-07-07 miniflare e2e 実施記録」に残る CM6/yCollab content-loss を実ブラウザ DevTools で調査・修正して MVP-1 を green に戻す。(2) その後 §11.2 の P0（startup pipeline、production snapshot API、outbox runner の production runtime 接続）。
+
+---
+
+## 付録: 2026-07-07 miniflare e2e 実施記録
+
+> 実 Linux Obsidian + miniflare Worker を起動し、任意の vault を作成して obsidian↔worker の e2e (`test:e2e:obsidian:miniflare`) が通ることを確認しようとしたセッションの記録。2026-06-30 時点で green だったはずのこの e2e が、その後の複数コミット（`c5cf819` monolith 分割、`8dcd512` invalid-meta isolation/quarantine admin）で退行していたため、原因追跡と修正を行った。`test:e2e:obsidian`（MVP-0）と `pnpm --filter @kuroflare/worker test` / `test:e2e`（Worker 単体）は最終的に green。`test:e2e:obsidian:miniflare` は 10 件の実バグを直した末、最後の 1 件が未解決で **not green のまま**。
+
+### 直した実バグ 10 件
+
+1. **materialize CAS の conflict-copy 経路が死んでいた**（`packages/obsidian-plugin/src/main.ts` `flushYTextToDisk`）。`decideMaterializeWrite` に渡す `path`/`activeFilePath` が同じ値になっており、7/5 のリファクタで `activeEditorBound: false` が自己参照の `activeFilePath: this.activeFile?.path` に置き換わったのが原因。`activeFilePath: undefined` に戻して修正。
+2. **setup 未完了時のローカル編集が `setup-metadata-missing` を投げていた**（同 `sendDocUpdateToWorker`）。outbox モデルへの移行時に「ソケットが開いている時だけ送る」旧ガードが失われていた。setup 未完了なら黙って no-op するよう修正。
+3. **`PUT /vaults/:id/{meta,files/:id}/snapshot` に DO 側ハンドラが存在しなかった**（426 Expected WebSocket upgrade）。エッジ側（`runtime/app.ts`）のルーティングだけあって DO（`runtime.ts`）に実装が無かった。`/__e2e/snapshot` と同じ `insertDoc`/R2 put を土台に実装を追加。
+4. **初回 "join-existing" setup が「壊れたローカルメタデータ」として拒否されていた**（`readLocalSetupMetadataSnapshot`）。「vaultId ヒントが無い」と「ヒントはあるが一度も persist されていない（=初回起動）」を区別できておらず、後者も evidence failure 扱いにしていた。
+5. **Obsidian の SecretStorage ID は 64 文字（小文字/数字/ハイフン）上限だが、`obsidianSecretIdForKey` の hex エンコードが現実的な vaultId/deviceId 長で軽く超過し、トークンが黙って永続化されていなかった**。SHA-256 hex（ちょうど 64 文字）に変更して修正。
+6. **DO の WebSocket upgrade 応答が `Sec-WebSocket-Protocol` を一切エコーしていなかった**。実ブラウザ/Electron の WebSocket クライアントはこれが無いとハンドシェイクを失敗させる（Node の `ws` は許容するため、Worker 自身の e2e では検出されなかった）。
+7. **sync-request への直接応答が `self-broadcast` として誤ってドロップされていた**。サーバーは応答の `deviceId` に requester 自身の ID を入れる仕様だが、クライアント側の自己ブロードキャストフィルタがこれを「自分の過去の書き込みのエコー」と区別できていなかった。クライアント側で送信中の sync-request messageId を追跡し、一致する応答は self-broadcast 扱いから除外するよう修正。
+8. **sync-request への応答に `updateSha256` が欠けていて、クライアントの整合性チェックで `missing-update-sha256` として拒否されていた**。
+9. **(自分で追加した) snapshot-import ルートが既存のリモート内容を上書きしていた**（マージせず）。2 台目のデバイスが自分の初回フルスナップショットを import すると、1 台目が import 済みの内容を消してしまう。hydrate してから `Y.applyUpdate` でマージし、その結果を再スナップショットするよう修正。
+10. **`ensureDocHydrated` が並行実行され得た**（sync-request の読み取りパスが `withDocWriteQueue` の外にあるため、書き込みパスと競合しうる）。片方が独立に hydrate した `Y.Doc` がもう片方の適用結果を握り潰す可能性があった。in-flight Promise を共有するよう修正。
+
+### 未解決: アクティブファイルの初回フルシンクで content-loss
+
+10 件を直した後も、CLI が事前投入したリモートのシード内容を、アクティブに開いているファイルが取り込めない症状が残った。Y.Doc の内部リンクドリスト（`text._start`）を直接調べると、ローカル・リモート両クライアントの insert が履歴には存在するが、リモート側だけ `deleted: true` になっており、ローカル側だけ再挿入されている——つまり **CRDT マージ自体は一度成功しているのに、直後に「ローカルの内容だけで delete+insert し直す」何かが走ってリモート側を消している**。
+
+`bindActiveMarkdownView` が起動時に2回連続で呼ばれ（`layout-ready` → `foreground-resume:layout-ready`）、2回目が同じ Y.Text に対して CM6 の yCollab 拡張を作り直している（`this.cmCompartment.reconfigure(...)`）ことを確認し、これが原因ではないかと同じファイル・同じ EditorView への冗長な再バインドをスキップするガードを追加した（`packages/obsidian-plugin/src/main.ts` の `bindActiveMarkdownView`）。単体テスト・MVP-0 には無害だが、**この特定の content-loss 自体は直らなかった**。
+
+`obsidian dev:console`/`dev:errors` は eval のポーリングループ中に起きたログを確実に捕捉できず、`window.__debugLog` への monkeypatch でしか正確な状態が追えなかった。CLI 経由の当てずっぽうな instrumentation を10ラウンド近く繰り返しても収束しなかったため中断。**次にこの問題に取り組む場合は、Electron プロセスに実ブラウザ DevTools を繋ぐか、Obsidian の外で yjs + y-codemirror.next の最小再現を作るほうが効率的。**
+
+### 変更ファイル
+
+`packages/obsidian-plugin/src/main.ts`、`packages/obsidian-plugin/src/sync/engine/websocket.{ts,types.ts,test.ts}`、`packages/worker/src/runtime.ts`、`packages/worker/src/sync/request.{ts,test.ts}`、および obsidian-cli 経由の e2e スクリプト3本（`console.warn` が eval 出力に混ざって JSON.parse が壊れる問題への耐性を追加）。typecheck / lint / format / 全パッケージの unit test は green。
 
 ---
 

@@ -57,7 +57,13 @@ async function waitForEvalIncludes(code: string, expected: string): Promise<stri
 }
 
 function evalInObsidian(code: string): unknown {
-  const parsed: unknown = JSON.parse(obsidian(['eval', `code=${code}`]).replace(/^=>\s*/, ''))
+  const output = obsidian(['eval', `code=${code}`])
+  // A console.warn/error fired during eval prints its own line(s) before the
+  // return value, so the marker must be found anywhere in the output (not
+  // just at the start) and only the text after the last occurrence parsed.
+  const marker = '=> '
+  const index = output.lastIndexOf(marker)
+  const parsed: unknown = JSON.parse(index === -1 ? output : output.slice(index + marker.length))
   return parsed
 }
 

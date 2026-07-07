@@ -26,6 +26,7 @@ const syncedDoc: SyncRequestDocState = {
   stateVectorCoversHorizon: true,
   diffSourceAvailable: true,
   diffUpdateBase64: 'BAUG',
+  diffUpdateSha256: 'a'.repeat(64),
 }
 
 test('sync request sends a validated diff update when horizon and diff source are available', () => {
@@ -48,6 +49,7 @@ test('sync request sends a validated diff update when horizon and diff source ar
         update: 'BAUG',
         baseStateVector: 'AQID',
         durableSeq: 12,
+        updateSha256: 'a'.repeat(64),
       },
     },
   )

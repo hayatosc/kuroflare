@@ -424,6 +424,7 @@ export default class KuroflareSpikePlugin extends Plugin {
   private foregroundResumeRunning = false
   private workerHelloAccepted = false
   private workerMessageCounter = 0
+  private pendingSyncRequestMessageIds = new Set<MessageId>()
   private activeFile: TFile | null = null
   private activeView: EditorView | null = null
   private targetPath: string | null = null
@@ -1996,6 +1997,16 @@ export default class KuroflareSpikePlugin extends Plugin {
         ) {
           await this.updateSettings({ setupMetadata: snapshot.snapshot.setup })
         }
+        return snapshot
+      }
+      // No prior completed setup is cached in settings, so a device that has
+      // never persisted local metadata for this vaultId hint is a normal
+      // first-time join/bootstrap, not a corrupted local state to reject.
+      if (
+        snapshot.reason === 'missing-setup-metadata' &&
+        this.kuroflareSettings.setupMetadata === undefined
+      ) {
+        return undefined
       }
       return snapshot
     } catch (error: unknown) {
@@ -2162,6 +2173,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       docId,
       stateVector,
     })
+    this.pendingSyncRequestMessageIds.add(sent.message.messageId)
     console.info('[kuroflare] requested worker sync state', {
       reason,
       messageId: sent.message.messageId,
@@ -2182,7 +2194,11 @@ export default class KuroflareSpikePlugin extends Plugin {
     update: Uint8Array,
     reason: string,
   ): Promise<void> {
-    const setup = this.requireSetupMetadata()
+    // Edits before device setup are local-only; there is no outbox to enqueue into yet.
+    const setup = this.currentSetupMetadata()
+    if (setup === undefined) {
+      return
+    }
     const messageId = this.nextWorkerMessageId()
     const updateSha256 = makeSha256Hex(await this.sha256Hex(update))
     const updateBytesBase64 = encodeBase64(update)
@@ -3141,6 +3157,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       inbound,
       vaultId: setup.vaultId,
       deviceId: setup.deviceId,
+      pendingSyncRequestMessageIds: this.pendingSyncRequestMessageIds,
       ports: {
         completeOutbox: async (message) => {
           if (message.type === 'need-full-snapshot') {
@@ -3167,6 +3184,7 @@ export default class KuroflareSpikePlugin extends Plugin {
           this.syncStatusEl?.setText(`Kuroflare sync: ack ${message.durableSeq}`)
         },
         applyRemoteUpdate: async (message) => {
+          this.pendingSyncRequestMessageIds.delete(message.messageId)
           await this.applyWorkerSyncUpdate(message)
         },
         answerSyncRequest: async (message) => {
@@ -3620,7 +3638,7 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async readAccessToken(key: string): Promise<string | undefined> {
-    const value = this.app.secretStorage.getSecret(obsidianSecretIdForKey(key))
+    const value = this.app.secretStorage.getSecret(await obsidianSecretIdForKey(key))
     return value !== null && value.length > 0 ? value : undefined
   }
 
@@ -4142,6 +4160,16 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
 
+    // Startup and foreground-resume can both call this in quick succession
+    // for the same still-active file (e.g. the automatic layout-ready resume
+    // firing right after the explicit startup bind). Re-running the full
+    // bind would reconfigure a second, independent yCollab CM6 extension on
+    // the same YText and re-send a duplicate sync-request, racing the first
+    // extension's remote-update observer and corrupting the merge.
+    if (this.activeFile?.path === file.path && this.activeView === editorView) {
+      return
+    }
+
     const docId = await this.fileDocIdForPath(file.path)
     const loaded = await this.loadTextDoc(docId)
     this.setActiveTextDoc(loaded)
@@ -4332,7 +4360,10 @@ export default class KuroflareSpikePlugin extends Plugin {
     const last = this.lastMaterialized.get(file.path)
     const decision = decideMaterializeWrite({
       path: file.path,
-      activeFilePath: this.activeFile?.path,
+      // This flush always targets the plugin's own active file, so the
+      // active-editor guard (meant to protect files open elsewhere from
+      // background writes) must not compare against itself here.
+      activeFilePath: undefined,
       currentDiskHash: diskHash,
       lastMaterialized: last,
     })
@@ -4675,7 +4706,7 @@ function createObsidianAuthRevokeSecretStoragePort(
 ): AuthRevokeSecretStoragePort {
   return {
     async delete(key) {
-      secretStorage.setSecret(obsidianSecretIdForKey(key), '')
+      secretStorage.setSecret(await obsidianSecretIdForKey(key), '')
     },
   }
 }
@@ -4685,14 +4716,14 @@ function createObsidianAuthRefreshSecretStoragePort(
 ): AuthRefreshSecretStoragePort {
   return {
     async get(key) {
-      const value = secretStorage.getSecret(obsidianSecretIdForKey(key))
+      const value = secretStorage.getSecret(await obsidianSecretIdForKey(key))
       return value !== null && value.length > 0 ? value : undefined
     },
     async set(key, value) {
-      secretStorage.setSecret(obsidianSecretIdForKey(key), value)
+      secretStorage.setSecret(await obsidianSecretIdForKey(key), value)
     },
     async delete(key) {
-      secretStorage.setSecret(obsidianSecretIdForKey(key), '')
+      secretStorage.setSecret(await obsidianSecretIdForKey(key), '')
     },
   }
 }
@@ -4769,17 +4800,23 @@ function createObsidianSecretStoragePort(
 ): LocalSetupPersistSecretStoragePort {
   return {
     async set(key, value) {
-      secretStorage.setSecret(obsidianSecretIdForKey(key), value)
+      secretStorage.setSecret(await obsidianSecretIdForKey(key), value)
     },
     async delete(key) {
       // Obsidian SecretStorage has no delete API; blanking removes reusable token material.
-      secretStorage.setSecret(obsidianSecretIdForKey(key), '')
+      secretStorage.setSecret(await obsidianSecretIdForKey(key), '')
     },
   }
 }
 
-function obsidianSecretIdForKey(key: string): string {
-  return `kuroflare-${hexEncode(new TextEncoder().encode(key))}`
+/**
+ * Obsidian's SecretStorage IDs are capped at 64 lowercase alphanumeric/hyphen
+ * characters, far shorter than a hex-encoded `vaultId:deviceId:token` key can
+ * be. Hashing to a fixed-length SHA-256 hex digest keeps every key within
+ * that limit regardless of vaultId/deviceId length.
+ */
+async function obsidianSecretIdForKey(key: string): Promise<string> {
+  return await hashBytesSha256(new TextEncoder().encode(key))
 }
 
 function accessTokenExpiresAtFromJwt(token: string): number | undefined {
@@ -4790,10 +4827,6 @@ function decodeBase64Url(value: string): Uint8Array | null {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
   const padding = (4 - (normalized.length % 4)) % 4
   return decodeBase64(`${normalized}${'='.repeat(padding)}`)
-}
-
-function hexEncode(value: Uint8Array): string {
-  return [...value].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function decodeBase64(value: string): Uint8Array | null {

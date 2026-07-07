@@ -866,7 +866,12 @@ async function connectRemoteDevice(setup: SetupExchangeResponse): Promise<Remote
 
 function evalInObsidian(code: string): unknown {
   const output = obsidian(['eval', `code=${code}`])
-  const parsed: unknown = JSON.parse(output.replace(/^=>\s*/, ''))
+  // A console.warn/error fired during eval prints its own line(s) before the
+  // return value, so the marker must be found anywhere in the output (not
+  // just at the start) and only the text after the last occurrence parsed.
+  const marker = '=> '
+  const index = output.lastIndexOf(marker)
+  const parsed: unknown = JSON.parse(index === -1 ? output : output.slice(index + marker.length))
   return parsed
 }
 

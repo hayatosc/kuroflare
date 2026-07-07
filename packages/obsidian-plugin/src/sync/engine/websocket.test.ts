@@ -511,6 +511,27 @@ test('websocket runtime drops unsafe inbound control messages before local side 
     }),
     { action: 'drop', reason: 'self-broadcast' },
   )
+  // The server addresses a sync-request's direct reply using the requester's
+  // own deviceId, so a reply matching a still-pending request must not be
+  // mistaken for the server re-broadcasting this device's own past edit.
+  assert.deepEqual(
+    planSyncRuntimeWebSocketInboundRoute({
+      inbound: { ok: true, message: selfBroadcast },
+      vaultId,
+      deviceId,
+      pendingSyncRequestMessageIds: new Set([selfBroadcast.messageId]),
+    }),
+    { action: 'apply-remote-update', message: selfBroadcast },
+  )
+  assert.deepEqual(
+    planSyncRuntimeWebSocketInboundRoute({
+      inbound: { ok: true, message: selfBroadcast },
+      vaultId,
+      deviceId,
+      pendingSyncRequestMessageIds: new Set([makeMessageId('websocket-other-pending-message')]),
+    }),
+    { action: 'drop', reason: 'self-broadcast' },
+  )
   assert.deepEqual(
     planSyncRuntimeWebSocketInboundRoute({
       inbound: { ok: true, message: hello },

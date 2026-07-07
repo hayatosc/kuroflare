@@ -13,6 +13,7 @@ export interface SyncRequestDocState {
   readonly stateVectorCoversHorizon: boolean
   readonly diffSourceAvailable: boolean
   readonly diffUpdateBase64: string | undefined
+  readonly diffUpdateSha256: string | undefined
 }
 
 /** Input for deciding how a Durable Object should answer a sync request. */
@@ -93,6 +94,9 @@ export function decideSyncRequest(input: SyncRequestDecisionInput): SyncRequestD
     update: input.doc.diffUpdateBase64,
     baseStateVector: input.request.stateVector,
     durableSeq: input.doc.latestSeq,
+    ...(input.doc.diffUpdateSha256 === undefined
+      ? {}
+      : { updateSha256: input.doc.diffUpdateSha256 }),
   }
 
   if (!v.is(SyncUpdateSchema, response)) {
