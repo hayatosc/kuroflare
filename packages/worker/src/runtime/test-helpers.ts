@@ -1,15 +1,9 @@
 import {
   CURRENT_PROTOCOL_VERSION,
   DEVICE_TOKEN_ISSUER,
-  decodeBinaryFrame,
-  encodeBinaryFrame,
-  encodeBlobManifestJson,
   AckSchema,
-  QuarantinedUpdateDetailResponseSchema,
-  QuarantinedUpdateListResponseSchema,
   makeDeviceId,
   makeFileId,
-  makeMessageId,
   makeSha256Hex,
   makeVaultId,
   makeYDocId,
@@ -18,7 +12,6 @@ import {
   type DeviceTokenClaims,
   type DeviceTokenScope,
   type BlobManifest,
-  type NeedFullSnapshot,
   type SyncRequest,
   type SyncUpdate,
 } from '@kuroflare/core'
@@ -27,7 +20,6 @@ import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
 import workerEntrypoint, {
-  VaultRoom,
   type DurableObjectIdBinding,
   type DurableObjectSqlStorageBinding,
   type DurableObjectStateBinding,

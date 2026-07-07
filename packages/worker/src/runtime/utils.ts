@@ -10,7 +10,6 @@ import {
   type AdminOperationEffect,
   type DeviceId,
   type DocId,
-  type MessageId,
   type Sha256Hex,
   type SyncUpdate,
   type VaultId,

@@ -1,61 +1,11 @@
-import {
-  CURRENT_PROTOCOL_VERSION,
-  DEVICE_TOKEN_ISSUER,
-  decodeBinaryFrame,
-  encodeBinaryFrame,
-  encodeBlobManifestJson,
-  AckSchema,
-  AdminOperationResponseSchema,
-  DocLatestSnapshotResponseSchema,
-  LocalOutboxRepairEvidenceResponseSchema,
-  MetaLatestSnapshotResponseSchema,
-  SnapshotImportResponseSchema,
-  QuarantinedUpdateActionDryRunResponseSchema,
-  QuarantinedUpdateActionResponseSchema,
-  QuarantinedUpdateDetailResponseSchema,
-  QuarantinedUpdateListResponseSchema,
-  makeDeviceId,
-  makeFileId,
-  makeMessageId,
-  makeSha256Hex,
-  makeVaultId,
-  makeYDocId,
-  type Ack,
-  type ClientHello,
-  type DeviceTokenClaims,
-  type DeviceTokenScope,
-  type BlobManifest,
-  type NeedFullSnapshot,
-  type SyncRequest,
-  type SyncUpdate,
-} from '@kuroflare/core'
-import * as v from 'valibot'
-import { assert, test, vi } from 'vitest'
-import * as Y from 'yjs'
+import { assert, test } from 'vitest'
 
 import workerEntrypoint, {
   type WorkerEnv,
   type DurableObjectIdBinding,
   type DurableObjectStubBinding,
 } from '../runtime'
-import {
-  TEST_DEVICE_TOKEN_SECRET,
-  FakeSocket,
-  FakeWebSocketPair,
-  FakeUpgradeResponse,
-  MemoryStorage,
-  RecordingSqlStorage,
-  FakeState,
-  installFakeWebSocketPair,
-  installFakeUpgradeResponse,
-  restoreWebSocketPair,
-  restoreResponse,
-  makeEnv,
-  makeDeviceToken,
-  makeEnvWithDeviceTokenSecret,
-  makeEnvWithSnapshotBucket,
-  makeEnvWithSnapshotBucketAndDeviceTokenSecret,
-} from './test-helpers'
+import { makeEnv, makeDeviceToken, makeEnvWithDeviceTokenSecret } from './test-helpers'
 
 test('worker entrypoint keeps the e2e setup token seed endpoint disabled without a secret', async () => {
   const response = await workerEntrypoint.fetch(
