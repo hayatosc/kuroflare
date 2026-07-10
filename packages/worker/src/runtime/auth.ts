@@ -1,0 +1,239 @@
+import {
+  CURRENT_PROTOCOL_VERSION,
+  VaultIdSchema,
+  verifyHs256DeviceToken,
+  type ClientHello,
+  type DeviceTokenClaims,
+  type DeviceTokenScope,
+} from '@kuroflare/core'
+import { type Context } from 'hono'
+import * as v from 'valibot'
+
+import { decideClientHelloRegistry, isValidYClientId, type DeviceRegistryEntry } from '../devices'
+import { decideAuthAdmission } from '../http/auth'
+import { readDeviceRegistryEntry, persistVaultId } from './storage'
+import type { RuntimeWebSocket, SessionState, WebSocketAttachment } from './types'
+import { logEvent, extractBearerToken, isWebSocketAttachment } from './utils'
+import type { VaultRoom } from './vault-room'
+
+export async function acceptHello(
+  room: VaultRoom,
+  webSocket: RuntimeWebSocket,
+  hello: ClientHello,
+): Promise<void> {
+  if (room.vaultId !== undefined && hello.vaultId !== room.vaultId) {
+    webSocket.close(1008, 'vault-mismatch')
+    return
+  }
+  if (!isValidYClientId(hello.yClientId)) {
+    webSocket.close(1003, 'invalid-y-client-id')
+    return
+  }
+
+  const device = await readDeviceRegistryEntry(room, hello.deviceId)
+  const tokenVersion = await authorizeHello(room, webSocket, hello, device)
+  if (tokenVersion === undefined) return
+  const registry = decideClientHelloRegistry({
+    device,
+    claimedYClientId: hello.yClientId,
+    tokenVersion,
+  })
+  if (registry.action === 'reject') {
+    webSocket.close(1008, `hello-reject:${registry.reason}`)
+    return
+  }
+  if (registry.action === 'require-full-snapshot') {
+    webSocket.close(1008, `hello-requires-full-snapshot:${registry.reason}`)
+    return
+  }
+
+  rememberSession(room, webSocket, {
+    vaultId: hello.vaultId,
+    deviceId: hello.deviceId,
+    yClientId: hello.yClientId,
+  })
+  await persistVaultId(room, hello.vaultId)
+  webSocket.send(
+    JSON.stringify({
+      type: 'hello-accepted',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId: hello.vaultId,
+      deviceId: hello.deviceId,
+      yClientId: hello.yClientId,
+    }),
+  )
+}
+
+export async function authorizeHello(
+  room: VaultRoom,
+  webSocket: RuntimeWebSocket,
+  hello: ClientHello,
+  device: DeviceRegistryEntry | undefined,
+): Promise<number | undefined> {
+  const secret = room.env.DEVICE_TOKEN_SECRET
+  if (secret === undefined) {
+    if (room.state.storage.sql !== undefined) {
+      logEvent('auth-reject', { vaultId: hello.vaultId, reason: 'missing-secret' })
+      webSocket.close(1008, 'auth-reject:missing-secret')
+      return undefined
+    }
+    return device?.tokenVersion ?? 1
+  }
+
+  const token = readSocketToken(room, webSocket)
+  if (token === undefined) {
+    logEvent('auth-reject', { vaultId: hello.vaultId, reason: 'missing-token' })
+    webSocket.close(1008, 'auth-reject:missing-token')
+    return undefined
+  }
+
+  const claims = await verifyHs256DeviceToken({ token, secret })
+  if (claims === undefined) {
+    logEvent('auth-reject', { vaultId: hello.vaultId, reason: 'invalid-token' })
+    webSocket.close(1008, 'auth-reject:invalid-token')
+    return undefined
+  }
+
+  const admission = decideAuthAdmission({
+    claims,
+    expectedVaultId: hello.vaultId,
+    device,
+    requiredScopes: ['sync:read', 'sync:write'],
+    now: Date.now(),
+  })
+  if (admission.action === 'reject') {
+    logEvent('auth-reject', { vaultId: hello.vaultId, reason: admission.reason })
+    webSocket.close(1008, `auth-reject:${admission.reason}`)
+    return undefined
+  }
+
+  return claims.tokenVersion
+}
+
+export async function verifyRequestClaims(
+  room: VaultRoom,
+  c: Context,
+): Promise<DeviceTokenClaims | undefined> {
+  const secret = room.env.DEVICE_TOKEN_SECRET
+  const token = extractBearerToken(c.req.header('Authorization') ?? null)
+  if (secret === undefined || token === undefined) return undefined
+  return verifyHs256DeviceToken({ token, secret })
+}
+
+export async function authorizeHttpRequest(
+  room: VaultRoom,
+  c: Context,
+  requiredScopes: readonly DeviceTokenScope[],
+): Promise<Response | undefined> {
+  const claims = await verifyRequestClaims(room, c)
+  if (claims === undefined) {
+    logEvent('auth-reject', { vaultId: room.vaultId, reason: 'invalid-token' })
+    return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  }
+  if (room.vaultId !== undefined && claims.aud !== room.vaultId) {
+    return c.json({ error: 'vault-mismatch' }, 400)
+  }
+  room.vaultId = claims.aud
+
+  const actorDevice = await readDeviceRegistryEntry(room, claims.sub)
+  const admission = decideAuthAdmission({
+    claims,
+    expectedVaultId: claims.aud,
+    device: actorDevice,
+    requiredScopes,
+    now: Date.now(),
+  })
+  if (admission.action === 'reject') {
+    logEvent('auth-reject', { vaultId: claims.aud, reason: admission.reason })
+    return c.json({ error: `auth-reject:${admission.reason}` }, 403)
+  }
+  return undefined
+}
+
+export function messageMatchesSession(
+  session: SessionState,
+  message: { vaultId: string; deviceId: string },
+): boolean {
+  return message.vaultId === session.vaultId && message.deviceId === session.deviceId
+}
+
+export function rememberSocketToken(
+  room: VaultRoom,
+  webSocket: RuntimeWebSocket,
+  authToken: string | undefined,
+): void {
+  room.socketTokens.set(webSocket, authToken)
+  writeSocketAttachment(webSocket, {
+    ...readSocketAttachment(webSocket),
+    ...(authToken === undefined ? {} : { authToken }),
+  })
+}
+
+export function readSocketToken(room: VaultRoom, webSocket: RuntimeWebSocket): string | undefined {
+  const token = room.socketTokens.get(webSocket)
+  if (token !== undefined) return token
+
+  const attachmentToken = readSocketAttachment(webSocket).authToken
+  if (attachmentToken !== undefined) room.socketTokens.set(webSocket, attachmentToken)
+  return attachmentToken
+}
+
+export function rememberSession(
+  room: VaultRoom,
+  webSocket: RuntimeWebSocket,
+  session: SessionState,
+): void {
+  room.sessions.add(webSocket)
+  room.sessionStates.set(webSocket, session)
+  writeSocketAttachment(webSocket, { ...readSocketAttachment(webSocket), session })
+}
+
+export function readSession(
+  room: VaultRoom,
+  webSocket: RuntimeWebSocket,
+): SessionState | undefined {
+  const session = room.sessionStates.get(webSocket)
+  if (session !== undefined) return session
+
+  const attachmentSession = readSocketAttachment(webSocket).session
+  if (attachmentSession !== undefined) {
+    room.sessions.add(webSocket)
+    room.sessionStates.set(webSocket, attachmentSession)
+  }
+  return attachmentSession
+}
+
+export function readSocketAttachment(webSocket: RuntimeWebSocket): WebSocketAttachment {
+  const attachment = webSocket.deserializeAttachment?.()
+  return isWebSocketAttachment(attachment) ? attachment : {}
+}
+
+export function writeSocketAttachment(
+  webSocket: RuntimeWebSocket,
+  attachment: WebSocketAttachment,
+): void {
+  webSocket.serializeAttachment?.(attachment)
+}
+
+export function broadcast(
+  room: VaultRoom,
+  sender: RuntimeWebSocket,
+  message: string | ArrayBuffer,
+): void {
+  for (const session of connectedAuthenticatedSockets(room)) {
+    if (session !== sender) session.send(message)
+  }
+}
+
+export function connectedAuthenticatedSockets(room: VaultRoom): readonly RuntimeWebSocket[] {
+  const hibernated = room.state.getWebSockets?.() ?? []
+  return [...new Set([...room.sessions, ...hibernated])].filter(
+    (session) => readSession(room, session) !== undefined,
+  )
+}
+
+export function rememberVaultId(room: VaultRoom, request: Request): void {
+  const match = /^\/ws\/([^/]+)$/.exec(new URL(request.url).pathname)
+  const id = match?.[1]
+  if (id !== undefined && v.is(VaultIdSchema, id)) room.vaultId = id
+}

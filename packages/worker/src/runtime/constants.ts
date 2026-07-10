@@ -1,0 +1,21 @@
+import type { YClientIdRange } from '../devices'
+
+export const WEBSOCKET_UPGRADE = 'websocket'
+export const LARGE_UPDATE_THRESHOLD_BYTES = 512 * 1024
+export const SETUP_REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1_000
+export const SETUP_ACCESS_TOKEN_TTL_MS = 60 * 60 * 1_000
+export const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1_000
+export const REFRESH_ACCESS_TOKEN_TTL_MS = 60 * 60 * 1_000
+export const CHECKPOINT_ALARM_DELAY_MS = 30_000
+export const CHECKPOINT_ALARM_DOC_LIMIT = 16
+export const CHECKPOINT_OP_THRESHOLD = 128
+export const SNAPSHOT_RETENTION_MIN_GENERATIONS = 3
+export const SNAPSHOT_RETENTION_EVENT_LIMIT = 50
+export const BLOB_MULTIPART_THRESHOLD_BYTES = 16 * 1024 * 1024
+export const BLOB_SINGLE_PUT_MAX_BYTES = BLOB_MULTIPART_THRESHOLD_BYTES - 1
+export const BLOB_MANIFEST_MAX_BYTES = 1024 * 1024
+export const BLOB_UPLOAD_URL_TTL_MS = 10 * 60 * 1_000
+export const VAULT_ID_STORAGE_KEY = 'vault:id'
+export const Y_CLIENT_ID_RANGE: YClientIdRange = { min: 1, max: 2_147_483_647 }
+export const E2E_SETUP_TOKEN_PATH = '/__e2e/setup-token'
+export const E2E_SNAPSHOT_PATH = '/__e2e/snapshot'

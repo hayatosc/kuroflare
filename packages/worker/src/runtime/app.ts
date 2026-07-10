@@ -7,13 +7,13 @@ import {
   RevokeDeviceRequestSchema,
   SetupExchangeRequestSchema,
   SnapshotImportRequestSchema,
+  VaultIdSchema,
   YDocIdSchema,
   verifyHs256DeviceToken,
   type DeviceTokenClaims,
   type VaultId,
 } from '@kuroflare/core'
-import { VaultIdSchema } from '@kuroflare/core'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import * as v from 'valibot'
 
@@ -42,6 +42,12 @@ function routeVaultRoom(request: Request, env: WorkerEnv, vaultId: VaultId): Pro
   const id = env.VAULT_ROOM.idFromName(vaultId)
   const room = env.VAULT_ROOM.get(id)
   return Promise.resolve(room.fetch(request))
+}
+
+async function routeAuthorizedVaultRoom(c: Context<{ Bindings: WorkerEnv }>): Promise<Response> {
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  return routeVaultRoom(c.req.raw, c.env, claims.aud)
 }
 
 const workerApp = new Hono<{ Bindings: WorkerEnv }>()
@@ -121,28 +127,12 @@ workerApp.post('/devices/:deviceId/revoke', async (c) => {
   if (!v.is(RevokeDeviceRequestSchema, body)) {
     return c.json({ error: 'invalid-revoke-device-request' }, 400)
   }
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
+  return routeAuthorizedVaultRoom(c)
 })
 
-workerApp.get('/admin/quarantine', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.get('/admin/quarantine/:id', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.get('/admin/retention', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
+workerApp.get('/admin/quarantine', routeAuthorizedVaultRoom)
+workerApp.get('/admin/quarantine/:id', routeAuthorizedVaultRoom)
+workerApp.get('/admin/retention', routeAuthorizedVaultRoom)
 
 for (const operation of ['gc', 'force-local', 'force-remote', 'rebuild'] as const) {
   workerApp.post(`/admin/${operation}`, async (c) => {
@@ -153,37 +143,22 @@ for (const operation of ['gc', 'force-local', 'force-remote', 'rebuild'] as cons
     if (!v.is(AdminOperationRequestSchema, body) || body.operation !== operation) {
       return c.json({ error: 'invalid-admin-operation-request' }, 400)
     }
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-    return routeVaultRoom(c.req.raw, c.env, claims.aud)
+    return routeAuthorizedVaultRoom(c)
   })
 }
 
-workerApp.post('/admin/quarantine/:id/discard', async (c) => {
-  const body: unknown = await c.req.raw
-    .clone()
-    .json()
-    .catch(() => undefined)
-  if (!v.is(QuarantinedUpdateActionHttpRequestSchema, body)) {
-    return c.json({ error: 'invalid-quarantine-action-request' }, 400)
-  }
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.post('/admin/quarantine/:id/force-apply', async (c) => {
-  const body: unknown = await c.req.raw
-    .clone()
-    .json()
-    .catch(() => undefined)
-  if (!v.is(QuarantinedUpdateActionHttpRequestSchema, body)) {
-    return c.json({ error: 'invalid-quarantine-action-request' }, 400)
-  }
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
+for (const action of ['discard', 'force-apply'] as const) {
+  workerApp.post(`/admin/quarantine/:id/${action}`, async (c) => {
+    const body: unknown = await c.req.raw
+      .clone()
+      .json()
+      .catch(() => undefined)
+    if (!v.is(QuarantinedUpdateActionHttpRequestSchema, body)) {
+      return c.json({ error: 'invalid-quarantine-action-request' }, 400)
+    }
+    return routeAuthorizedVaultRoom(c)
+  })
+}
 
 workerApp.post('/repair/local-outbox/evidence', async (c) => {
   const body: unknown = await c.req.raw
@@ -193,9 +168,7 @@ workerApp.post('/repair/local-outbox/evidence', async (c) => {
   if (!v.is(LocalOutboxRepairEvidenceRequestSchema, body)) {
     return c.json({ error: 'invalid-local-outbox-repair-evidence-request' }, 400)
   }
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
+  return routeAuthorizedVaultRoom(c)
 })
 
 workerApp.get('/vaults/:vaultId/meta/latest', async (c) => {
@@ -252,29 +225,10 @@ workerApp.put('/vaults/:vaultId/files/:ydocId/snapshot', async (c) => {
   return routeVaultRoom(c.req.raw, c.env, claims.aud)
 })
 
-workerApp.post('/blobs/head', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.post('/blobs/upload-url', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.on(['GET', 'PUT'], '/blobs/:hash', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
-
-workerApp.on(['GET', 'PUT'], '/blob-manifests/*', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  return routeVaultRoom(c.req.raw, c.env, claims.aud)
-})
+workerApp.post('/blobs/head', routeAuthorizedVaultRoom)
+workerApp.post('/blobs/upload-url', routeAuthorizedVaultRoom)
+workerApp.on(['GET', 'PUT'], '/blobs/:hash', routeAuthorizedVaultRoom)
+workerApp.on(['GET', 'PUT'], '/blob-manifests/*', routeAuthorizedVaultRoom)
 
 workerApp.get('/ws/:vaultId', async (c) => {
   const vaultId = c.req.param('vaultId')
