@@ -85,6 +85,81 @@ test('built manifests match binary meta fast-path chunk references', async () =>
   assert.equal(blobManifestMatchesMetaFile(built.manifest, metaFile), true)
 })
 
+test('buildBlobManifest is deterministic for identical inputs', async () => {
+  const fileId = makeFileId('file-1')
+  const createdBy = makeDeviceId('device-1')
+  const bytes = new TextEncoder().encode('hello deterministic blob manifest')
+  const options = { minSize: 4, avgSize: 8, maxSize: 10 }
+
+  const first = await buildBlobManifest(fileId, bytes, createdBy, 123, options)
+  const second = await buildBlobManifest(fileId, bytes, createdBy, 123, options)
+
+  assert.equal(second.manifestHash, first.manifestHash)
+  assert.equal(second.manifest.contentSha256, first.manifest.contentSha256)
+  assert.deepEqual(
+    second.manifest.chunks.map((chunk) => chunk.sha256),
+    first.manifest.chunks.map((chunk) => chunk.sha256),
+  )
+})
+
+test('re-uploading identical content under a new createdAt changes the manifest hash but not the content address', async () => {
+  // `manifestHash` is the SHA-256 of the full canonical manifest, which embeds `createdAt`/
+  // `createdBy` (see stringifyBlobManifest field order) -- so it is not itself a stable content
+  // address across separate upload attempts. The chunk hashes and `contentSha256` are the actual
+  // content-addressed data, and stay identical. Callers deciding whether a re-upload is a no-op
+  // must compare at that level (e.g. via `blobManifestMatchesMetaFile`), not by comparing
+  // `manifestHash` values -- comparing manifest hashes would never settle and would re-enqueue
+  // the "upload" on every attempt.
+  const fileId = makeFileId('file-1')
+  const bytes = new TextEncoder().encode('same bytes, uploaded twice')
+  const options = { minSize: 4, avgSize: 8, maxSize: 10 }
+
+  const firstAttempt = await buildBlobManifest(
+    fileId,
+    bytes,
+    makeDeviceId('device-1'),
+    1_000,
+    options,
+  )
+  const secondAttempt = await buildBlobManifest(
+    fileId,
+    bytes,
+    makeDeviceId('device-2'),
+    2_000,
+    options,
+  )
+
+  assert.notEqual(secondAttempt.manifestHash, firstAttempt.manifestHash)
+  assert.equal(secondAttempt.manifest.contentSha256, firstAttempt.manifest.contentSha256)
+  assert.deepEqual(
+    secondAttempt.manifest.chunks.map((chunk) => chunk.sha256),
+    firstAttempt.manifest.chunks.map((chunk) => chunk.sha256),
+  )
+
+  const metaFileFromFirstAttempt: BinaryMetaFile = {
+    schemaVersion: 1,
+    fileId,
+    path: 'Assets/payload.bin',
+    canonicalPath: 'assets/payload.bin',
+    type: 'binary',
+    blobManifestHash: firstAttempt.manifestHash,
+    blobChunks: firstAttempt.manifest.chunks.map((chunk) => chunk.sha256),
+    deleted: false,
+    createdAt: 1,
+    createdBy: makeDeviceId('device-1'),
+    contentUpdatedAt: 1,
+    contentUpdatedBy: makeDeviceId('device-1'),
+    updatedAt: 1,
+    updatedBy: makeDeviceId('device-1'),
+    mtime: 1,
+  }
+
+  // The settlement check an outbox re-enqueue path must use: does the freshly built manifest's
+  // content already match what meta already references? True here even though manifestHash
+  // differs, so re-uploading the same content must be skipped instead of looping forever.
+  assert.equal(blobManifestMatchesMetaFile(secondAttempt.manifest, metaFileFromFirstAttempt), true)
+})
+
 test('buildBlobManifest handles empty files', async () => {
   const built = await buildBlobManifest(
     makeFileId('file-1'),

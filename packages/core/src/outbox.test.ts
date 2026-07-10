@@ -526,6 +526,42 @@ test('outbox ack completion marks matching y-update a durable done', () => {
   )
 })
 
+test('outbox ack completion marks a matching meta-ref-update a durable done, same as y-update', () => {
+  // `meta-ref-update` is the DAG-scheduled meta write that follows a binary
+  // upload's blob-put/manifest-put chain; it is sent over the same
+  // sync-update WebSocket frame as `y-update` and must be ack-completable
+  // identically, or its lease never releases and permanently starves the
+  // single-slot `sync-control` concurrency lane.
+  assert.deepEqual(
+    decideOutboxAckCompletion({
+      kind: 'meta-ref-update',
+      status: 'retrying',
+      vaultId,
+      deviceId,
+      docId: fileDocId,
+      messageId,
+      minDurableSeqExclusive: 40,
+      message: {
+        type: 'ack',
+        protocolVersion: 1,
+        vaultId,
+        deviceId,
+        docId: fileDocId,
+        messageId,
+        durableSeq: 41,
+      },
+    }),
+    {
+      action: 'complete',
+      patch: {
+        status: 'done',
+        nextAttemptAt: undefined,
+        durableSeq: 41,
+      },
+    },
+  )
+})
+
 test('outbox ack completion rejects stale or mismatched evidence', () => {
   const ack = {
     type: 'ack',
