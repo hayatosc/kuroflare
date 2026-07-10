@@ -1,12 +1,11 @@
-import { type ClientStartupIntent } from '@kuroflare/core'
-import { type SetupBootstrapMode } from '@kuroflare/core'
+import { type ClientStartupIntent, type SetupBootstrapMode } from '@kuroflare/core'
 
 import {
   applySyncRuntimeShellCommands,
   planSyncRuntimeStartupActuation,
+  type SyncRuntimeSetupExchangeReplanRequest,
   type SyncRuntimeShellCommand,
   type SyncRuntimeShellState,
-  type SyncRuntimeSetupExchangeReplanRequest,
   type SyncRuntimeStartupActuationPlan,
 } from '../engine/actuation'
 import {

@@ -1,5 +1,4 @@
-import { type ClientStartupLocalState } from '@kuroflare/core'
-import { type VaultId } from '@kuroflare/core'
+import { type ClientStartupLocalState, type VaultId } from '@kuroflare/core'
 
 import {
   planSyncEngineStartup,

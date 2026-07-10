@@ -1,5 +1,4 @@
-import { type ClientAuthMetadata } from '@kuroflare/core'
-import { makeDeviceId, type RevokeDeviceResponse } from '@kuroflare/core'
+import { makeDeviceId, type ClientAuthMetadata, type RevokeDeviceResponse } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
 import {

@@ -1,5 +1,9 @@
-import { type ClientStartupLocalState } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
+import {
+  makeDeviceId,
+  makeVaultId,
+  type ClientStartupLocalState,
+  type SetupExchangeResponse,
+} from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
 import { planSyncEngineStartup, startupStepPhase } from '../engine/engine'

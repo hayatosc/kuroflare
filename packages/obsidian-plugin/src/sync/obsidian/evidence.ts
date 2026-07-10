@@ -1,5 +1,8 @@
-import { type ClientStartupIntent } from '@kuroflare/core'
-import { type SetupBootstrapMode, type SetupExchangeResponse } from '@kuroflare/core'
+import {
+  type ClientStartupIntent,
+  type SetupBootstrapMode,
+  type SetupExchangeResponse,
+} from '@kuroflare/core'
 
 import { type LocalSetupMetadataSnapshotDecision } from '../engine/setup'
 import {

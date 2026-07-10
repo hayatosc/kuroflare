@@ -1,15 +1,13 @@
 import {
-  makeOutboxPlanItemId,
-  type OutboxPlanItemId,
-  type OutboxRunningLease,
-} from '@kuroflare/core'
-import {
   CURRENT_PROTOCOL_VERSION,
   makeDeviceId,
   makeMessageId,
+  makeOutboxPlanItemId,
   makeVaultId,
   makeYDocId,
   type DocId,
+  type OutboxPlanItemId,
+  type OutboxRunningLease,
 } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 

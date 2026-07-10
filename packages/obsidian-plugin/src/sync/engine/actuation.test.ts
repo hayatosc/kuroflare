@@ -1,13 +1,11 @@
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
-  type ClientStartupLocalState,
-  type ClientStartupStep,
-  type LocalStoreObjectStore,
-} from '@kuroflare/core'
-import {
   makeDeviceId,
   makeVaultId,
+  type ClientStartupLocalState,
+  type ClientStartupStep,
   type DeviceTokenClaims,
+  type LocalStoreObjectStore,
   type SetupExchangeResponse,
 } from '@kuroflare/core'
 import { assert, expect, test } from 'vitest'
@@ -25,9 +23,9 @@ import {
   INITIAL_SYNC_RUNTIME_SHELL_STATE,
   planSyncRuntimeNoNetworkEffectPump,
   planSyncRuntimeStartupActuation,
+  type SyncRuntimeShellEffectExecutor,
   type SyncRuntimeStartupEffectExecutorPorts,
   type SyncRuntimeStartupStepExecutorPorts,
-  type SyncRuntimeShellEffectExecutor,
 } from '../engine/actuation'
 import { type SyncEngineStartupEffect } from '../engine/engine'
 import {
@@ -36,8 +34,8 @@ import {
 } from '../engine/persist'
 import { planSyncRuntimeStartup, type SyncRuntimeStartupEffect } from '../engine/startup'
 import {
-  type LocalStoreIndexedDbMetadataWriteOperation,
   type LocalStoreIndexedDbFactoryPort,
+  type LocalStoreIndexedDbMetadataWriteOperation,
   type LocalStoreIndexedDbObjectStoreNameList,
   type LocalStoreIndexedDbOpenRequest,
   type LocalStoreIndexedDbRequest,

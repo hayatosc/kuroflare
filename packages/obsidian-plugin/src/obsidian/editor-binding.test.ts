@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
-import { assert, afterEach, test } from 'vitest'
+import { afterEach, assert, test } from 'vitest'
 import * as Y from 'yjs'
 
 import {

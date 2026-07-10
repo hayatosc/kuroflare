@@ -1,9 +1,11 @@
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
+  makeDeviceId,
+  makeVaultId,
   type ClientStartupLocalState,
   type ClientStartupStep,
+  type SetupExchangeResponse,
 } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
 import {

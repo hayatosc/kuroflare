@@ -1,17 +1,15 @@
 import {
-  DEFAULT_LOCAL_STORE_OBJECT_STORES,
-  makeOutboxPlanItemId,
-  type LocalStoreObjectStore,
-  type OutboxPlanItemId,
-  type OutboxRunningLease,
-} from '@kuroflare/core'
-import {
   CURRENT_PROTOCOL_VERSION,
+  DEFAULT_LOCAL_STORE_OBJECT_STORES,
   makeDeviceId,
   makeMessageId,
+  makeOutboxPlanItemId,
   makeVaultId,
   makeYDocId,
   type DocId,
+  type LocalStoreObjectStore,
+  type OutboxPlanItemId,
+  type OutboxRunningLease,
 } from '@kuroflare/core'
 import { assert, expect, test } from 'vitest'
 
@@ -19,8 +17,8 @@ import { planOutboundQueueAckCompletion, planOutboundQueueSuccessCompletion } fr
 import {
   applyLocalStoreIndexedDbOpenEffect,
   commitLocalStoreIndexedDbConcreteWriteTransaction,
-  commitLocalStoreIndexedDbTransaction,
   commitLocalStoreIndexedDbDatabaseTransaction,
+  commitLocalStoreIndexedDbTransaction,
   createLocalStoreIndexedDbTransactionPort,
   planLocalStoreIndexedDbReads,
   planLocalStoreIndexedDbWrites,

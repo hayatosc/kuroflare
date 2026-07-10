@@ -1,10 +1,13 @@
 import {
   applyMetaRepair,
+  isMetaFile,
   planDeleteVsEditRepairs,
   planPathConflictRepairs,
+  type DeviceId,
+  type FileId,
+  type MetaFile,
   type MetaRepair,
 } from '@kuroflare/core'
-import { isMetaFile, type DeviceId, type FileId, type MetaFile } from '@kuroflare/core'
 import type * as Y from 'yjs'
 
 const NO_RESTORABLE_BINARIES: ReadonlySet<FileId> = new Set()

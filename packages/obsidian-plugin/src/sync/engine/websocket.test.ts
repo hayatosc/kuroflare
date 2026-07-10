@@ -1,19 +1,17 @@
 import {
-  hashBytesSha256,
-  makeOutboxPlanItemId,
-  type OutboxPlanItemId,
-  type OutboxRunningLease,
-} from '@kuroflare/core'
-import {
   CURRENT_PROTOCOL_VERSION,
+  hashBytesSha256,
   makeDeviceId,
   makeMessageId,
+  makeOutboxPlanItemId,
   makeSha256Hex,
   makeVaultId,
   makeYDocId,
   parseControlMessage,
   type ClientHello,
   type DocId,
+  type OutboxPlanItemId,
+  type OutboxRunningLease,
 } from '@kuroflare/core'
 import { assert, expect, test } from 'vitest'
 import * as Y from 'yjs'
@@ -27,23 +25,24 @@ import {
   createSyncRuntimeWebSocketRemoteUpdateApplyPort,
   createSyncRuntimeWebSocketSession,
   createSyncRuntimeWebSocketStartupStepPort,
-  createSyncRuntimeWebSocketSyncRequestSendPort,
   createSyncRuntimeWebSocketSyncRequestAnswerPort,
+  createSyncRuntimeWebSocketSyncRequestSendPort,
   createSyncRuntimeWebSocketYjsRemoteUpdateApplyPort,
   decodeSyncRuntimeWebSocketRemoteUpdate,
   dispatchSyncRuntimeWebSocketInboundMessage,
   parseSyncRuntimeWebSocketMessage,
   planSyncRuntimeWebSocketHelloAdmission,
-  planSyncRuntimeWebSocketSyncRequestSend,
-  planSyncRuntimeWebSocketSyncRequestAnswer,
-  planSyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction,
+  planSyncRuntimeWebSocketInboundRoute,
   planSyncRuntimeWebSocketOutboxCompletion,
   planSyncRuntimeWebSocketOutboxSend,
-  planSyncRuntimeWebSocketInboundRoute,
+  planSyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction,
+  planSyncRuntimeWebSocketSyncRequestAnswer,
+  planSyncRuntimeWebSocketSyncRequestSend,
   type SyncRuntimeWebSocketAccessTokenReaderPort,
   type SyncRuntimeWebSocketAppliedYDocState,
   type SyncRuntimeWebSocketConnection,
   type SyncRuntimeWebSocketFactoryPort,
+  type SyncRuntimeWebSocketInboundRoutePorts,
   type SyncRuntimeWebSocketOutboxCompletionCommitPort,
   type SyncRuntimeWebSocketOutboxCompletionSnapshotReaderPort,
   type SyncRuntimeWebSocketRemoteUpdateApplyInput,
@@ -52,7 +51,6 @@ import {
   type SyncRuntimeWebSocketRemoteUpdateYDocApplyPort,
   type SyncRuntimeWebSocketSyncRequestAnswerRejectPort,
   type SyncRuntimeWebSocketYDocRegistryPort,
-  type SyncRuntimeWebSocketInboundRoutePorts,
 } from '../engine/websocket'
 import { type LocalStoreOutboxRecord } from '../store/store'
 
@@ -689,6 +687,36 @@ test('websocket runtime plans and commits inbound outbox completions', async () 
   assert.equal(commit.plans[0]?.action, 'ack-completion')
 })
 
+test('websocket runtime completes a meta-ref-update item on ack', () => {
+  const record = metaRefUpdateRecord()
+  const message = {
+    type: 'ack',
+    protocolVersion: CURRENT_PROTOCOL_VERSION,
+    vaultId,
+    deviceId,
+    messageId,
+    docId: fileDocId,
+    durableSeq: 10,
+  } as const
+
+  const plan = planSyncRuntimeWebSocketOutboxCompletion({
+    message,
+    ownerId: 'worker-1',
+    now: 1_000,
+    snapshot: {
+      outboxRecords: [record],
+      leaseRows: [{ ...runningLease(), itemId: record.id, kind: record.kind }],
+    },
+  })
+
+  assert.equal(plan.ok, true)
+  if (plan.ok) {
+    assert.equal(plan.record.id, record.id)
+    assert.equal(plan.completion.nextOutboxRecords[0]?.status, 'done')
+    assert.deepEqual(plan.completion.nextLeaseRows, [])
+  }
+})
+
 test('websocket runtime ignores unmatched or ambiguous inbound outbox completions', async () => {
   const record = yUpdateRecord()
   const lease = runningLease()
@@ -1232,6 +1260,14 @@ function yUpdateRecord(): LocalStoreOutboxRecord {
     docId: fileDocId,
     messageId,
     updateBytesBase64: 'AQID',
+  }
+}
+
+function metaRefUpdateRecord(): LocalStoreOutboxRecord {
+  return {
+    ...yUpdateRecord(),
+    id: outboxId('websocket-meta-ref-update-1'),
+    kind: 'meta-ref-update',
   }
 }
 

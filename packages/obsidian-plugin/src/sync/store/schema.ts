@@ -3,8 +3,8 @@ import {
   decideLocalStoreSchema,
   type LocalStoreObjectStore,
   type LocalStoreSchemaDecision,
+  type VaultId,
 } from '@kuroflare/core'
-import { type VaultId } from '@kuroflare/core'
 
 /** Current IndexedDB schema version created by this plugin bundle. */
 export const LOCAL_STORE_INDEXEDDB_TARGET_VERSION = 3

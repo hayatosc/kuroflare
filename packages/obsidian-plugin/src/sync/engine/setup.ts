@@ -1,15 +1,13 @@
 import {
-  isClientAuthMetadata,
-  planClientAuthMetadataFromSetupResponse,
-  type ClientAuthMetadata,
-  type ClientAuthMetadataSetupPersistDecision,
-} from '@kuroflare/core'
-import {
   DeviceIdSchema,
   HttpEndpointSchema,
+  isClientAuthMetadata,
+  planClientAuthMetadataFromSetupResponse,
   SetupBootstrapModeSchema,
   VaultIdSchema,
   WireYClientIdSchema,
+  type ClientAuthMetadata,
+  type ClientAuthMetadataSetupPersistDecision,
   type SetupExchangeResponse,
 } from '@kuroflare/core'
 import * as v from 'valibot'

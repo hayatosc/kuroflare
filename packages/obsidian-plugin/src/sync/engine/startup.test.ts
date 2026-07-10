@@ -1,11 +1,16 @@
-import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type ClientStartupLocalState } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
+import {
+  DEFAULT_LOCAL_STORE_OBJECT_STORES,
+  makeDeviceId,
+  makeVaultId,
+  type ClientStartupLocalState,
+  type SetupExchangeResponse,
+} from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
 import {
+  planSyncRuntimeLocalStateFromEvidence,
   planSyncRuntimeStartup,
   planSyncRuntimeStartupFromSchemaEvidence,
-  planSyncRuntimeLocalStateFromEvidence,
   type SyncRuntimeLocalStoreEvidence,
 } from '../engine/startup'
 import {

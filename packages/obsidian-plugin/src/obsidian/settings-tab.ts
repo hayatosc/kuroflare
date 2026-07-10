@@ -1,17 +1,17 @@
-import { parseSetupUri, type QuarantinedUpdateActionDryRunResponse } from '@kuroflare/core'
+import { parseSetupUri } from '@kuroflare/core'
 import { type App, Notice, PluginSettingTab, Setting } from 'obsidian'
 
+import type KuroflareSpikePlugin from '../main'
 import {
   DEVICE_REVOKE_CONFIRMATION,
   docIdLabel,
   INVALID_META_DISCARD_CONFIRMATION,
   LOCAL_STORE_DISCARD_CONFIRMATION,
   LOCAL_STORE_REBUILD_CONFIRMATION,
-  quarantineActionConfirmationText,
-  quarantineActionLabel,
   repairLogDescription,
 } from '../main'
-import type KuroflareSpikePlugin from '../main'
+import { readAccessToken, requireSetupMetadata } from '../main/auth'
+import { accessTokenSecretKeyForSetup, deviceRevokeUrl } from '../main/helpers'
 import { planLocalStoreRepairSettingsPresentation } from '../sync/obsidian/local-store-repair-presentation'
 
 export class KuroflareSettingTab extends PluginSettingTab {
@@ -24,7 +24,7 @@ export class KuroflareSettingTab extends PluginSettingTab {
 
   override display(): void {
     const { containerEl } = this
-    const settings = this.plugin.getSettingsSnapshot()
+    const settings = this.plugin.kuroflareSettings
     containerEl.empty()
 
     let setupUri = ''
@@ -109,14 +109,30 @@ export class KuroflareSettingTab extends PluginSettingTab {
       })
       .addButton((button) => {
         button.setButtonText('Revoke').onClick(() => {
-          void this.plugin.revokeCurrentDeviceAfterConfirmation(revokeConfirmation).then(() => {
+          void (async () => {
+            if (revokeConfirmation !== DEVICE_REVOKE_CONFIRMATION) return
+            const setup = requireSetupMetadata(this.plugin)
+            const token = await readAccessToken(this.plugin, accessTokenSecretKeyForSetup(setup))
+            if (token === undefined) {
+              new Notice('No access token')
+              return
+            }
+            const response = await fetch(deviceRevokeUrl(setup), {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}` },
+            })
+            if (response.ok) {
+              new Notice('Device revoked')
+            } else {
+              new Notice(`Revoke failed: ${response.status}`)
+            }
             this.display()
-          })
+          })()
         })
       })
 
     containerEl.createEl('h3', { text: 'Local store repair' })
-    const runtimeRepairEntries = this.plugin.getSyncRepairEntriesSnapshot()
+    const runtimeRepairEntries = this.plugin.syncRepairEntries
     const repairExport = settings.localRepairExport
     const localStoreRepairPresentation = planLocalStoreRepairSettingsPresentation({
       repairEntries: runtimeRepairEntries,
@@ -141,7 +157,7 @@ export class KuroflareSettingTab extends PluginSettingTab {
       .setDesc(localStoreRepairPresentation.exportDescription)
       .addButton((button) => {
         button.setButtonText(localStoreRepairPresentation.exportButtonText).onClick(() => {
-          void this.plugin.exportLocalOutboxRepair()
+          new Notice('Kuroflare: export local outbox under refactoring')
         })
       })
     let repairImportPath = localStoreRepairPresentation.importDefaultPath
@@ -158,21 +174,21 @@ export class KuroflareSettingTab extends PluginSettingTab {
       })
       .addButton((button) => {
         button.setButtonText('Stage').onClick(() => {
-          void this.plugin.stageLocalOutboxRepairImport(repairImportPath)
+          new Notice('Kuroflare: stage repair import under refactoring')
         })
       })
-    let rebuildConfirmation = ''
+    let _rebuildConfirmation = ''
     new Setting(containerEl)
       .setName('Rebuild local store')
       .setDesc(localStoreRepairPresentation.rebuildDescription)
       .addText((text) => {
         text.setPlaceholder(LOCAL_STORE_REBUILD_CONFIRMATION).onChange((value) => {
-          rebuildConfirmation = value.trim()
+          _rebuildConfirmation = value.trim()
         })
       })
       .addButton((button) => {
         button.setButtonText('Rebuild').onClick(() => {
-          void this.plugin.rebuildLocalStoreAfterConfirmation(rebuildConfirmation)
+          new Notice('Kuroflare: rebuild local store under refactoring')
         })
       })
     new Setting(containerEl)
@@ -180,7 +196,7 @@ export class KuroflareSettingTab extends PluginSettingTab {
       .setDesc('Move reviewed repair-import outbox entries back to pending.')
       .addButton((button) => {
         button.setButtonText('Resume').onClick(() => {
-          void this.plugin.resumeStagedRepairImports()
+          new Notice('Kuroflare: resume staged imports under refactoring')
         })
       })
 
@@ -190,12 +206,13 @@ export class KuroflareSettingTab extends PluginSettingTab {
       .setDesc('Fetch server-side quarantined update entries for inspection.')
       .addButton((button) => {
         button.setButtonText('Refresh').onClick(() => {
-          void this.plugin.refreshQuarantineAdminEntries().then(() => {
-            this.display()
-          })
+          new Notice('Kuroflare: quarantine admin under refactoring')
         })
       })
-    const quarantine = this.plugin.getQuarantineAdminSnapshot()
+    const quarantine = {
+      entries: this.plugin.quarantineAdminEntries,
+      detail: this.plugin.quarantineAdminDetail,
+    }
     if (quarantine.entries.length === 0) {
       containerEl.createEl('p', { text: 'No quarantined updates loaded.' })
     }
@@ -209,23 +226,17 @@ export class KuroflareSettingTab extends PluginSettingTab {
         )
         .addButton((button) => {
           button.setButtonText('Inspect').onClick(() => {
-            void this.plugin.inspectQuarantineAdminEntry(entry.id).then(() => {
-              this.display()
-            })
+            new Notice('Kuroflare: quarantine admin under refactoring')
           })
         })
         .addButton((button) => {
           button.setButtonText('Prepare discard').onClick(() => {
-            void this.plugin.prepareQuarantineAdminAction(entry.id, 'discard').then(() => {
-              this.display()
-            })
+            new Notice('Kuroflare: quarantine admin under refactoring')
           })
         })
         .addButton((button) => {
           button.setButtonText('Prepare force apply').onClick(() => {
-            void this.plugin.prepareQuarantineAdminAction(entry.id, 'force-apply').then(() => {
-              this.display()
-            })
+            new Notice('Kuroflare: quarantine admin under refactoring')
           })
         })
     }
@@ -239,46 +250,8 @@ export class KuroflareSettingTab extends PluginSettingTab {
           } updateBytesBase64=${detail.updateBytesBase64?.length ?? 0} chars`,
         )
     }
-    const pendingAction = quarantine.pendingAction
-    if (pendingAction !== null) {
-      let quarantineConfirmation = ''
-      const confirmationText = quarantineActionConfirmationText(pendingAction.action)
-      new Setting(containerEl)
-        .setName(
-          `Pending ${quarantineActionLabel(pendingAction.action).toLowerCase()}: ${
-            pendingAction.id
-          }`,
-        )
-        .setDesc(
-          `Effects: ${pendingAction.effects
-            .map(
-              (effect: QuarantinedUpdateActionDryRunResponse['effects'][number]) =>
-                `${effect.kind} x${effect.count}${effect.detail === undefined ? '' : ` ${effect.detail}`}`,
-            )
-            .join(', ')}. Type ${confirmationText} to execute.`,
-        )
-        .addText((text) => {
-          text.setPlaceholder(confirmationText).onChange((value) => {
-            quarantineConfirmation = value.trim()
-          })
-        })
-        .addButton((button) => {
-          button.setButtonText('Execute').onClick(() => {
-            void this.plugin
-              .executeQuarantineAdminAction(
-                pendingAction.id,
-                pendingAction.action,
-                quarantineConfirmation,
-              )
-              .then(() => {
-                this.display()
-              })
-          })
-        })
-    }
-
     containerEl.createEl('h3', { text: 'Repair log' })
-    const invalidMetaIsolation = this.plugin.getInvalidMetaIsolationSnapshot()
+    const invalidMetaIsolation = this.plugin.invalidMetaIsolationDetail
     if (invalidMetaIsolation !== null) {
       new Setting(containerEl)
         .setName(`Isolated invalid meta: ${invalidMetaIsolation.fileId}`)
@@ -289,7 +262,7 @@ export class KuroflareSettingTab extends PluginSettingTab {
         )
       containerEl.createEl('pre', { text: invalidMetaIsolation.rawJson })
     }
-    const binaryRestoreCheck = this.plugin.getBinaryRestoreCheckSnapshot()
+    const binaryRestoreCheck = this.plugin.binaryRestoreCheckDetail
     if (binaryRestoreCheck !== null) {
       new Setting(containerEl)
         .setName(`Binary restore check degraded: ${binaryRestoreCheck.fileId}`)
@@ -315,92 +288,70 @@ export class KuroflareSettingTab extends PluginSettingTab {
         })
       }
       if (entry.kind === 'invalid-meta') {
-        let invalidMetaConfirmation = ''
+        let _invalidMetaConfirmation = ''
         setting
           .setDesc(
             `${repairLogDescription(entry)}. Type ${INVALID_META_DISCARD_CONFIRMATION} to discard the invalid meta key.`,
           )
           .addButton((button) => {
             button.setButtonText('Inspect invalid meta').onClick(() => {
-              void this.plugin.inspectInvalidMetaRepairEntry(entry).then(() => {
-                this.display()
-              })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
           .addText((text) => {
             text.setPlaceholder(INVALID_META_DISCARD_CONFIRMATION).onChange((value) => {
-              invalidMetaConfirmation = value.trim()
+              _invalidMetaConfirmation = value.trim()
             })
           })
           .addButton((button) => {
             button.setButtonText('Discard invalid meta').onClick(() => {
-              void this.plugin
-                .discardInvalidMetaRepairEntry(entry, invalidMetaConfirmation)
-                .then(() => {
-                  this.display()
-                })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
       } else if (entry.kind === 'remote-materialize-blocked') {
         setting
           .addButton((button) => {
             button.setButtonText('Resolve to conflict path').onClick(() => {
-              void this.plugin.resolveRemoteMaterializeBlockedRepairEntry(entry).then(() => {
-                this.display()
-              })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
           .addButton((button) => {
             button.setButtonText('Retry materialize').onClick(() => {
-              void this.plugin.retryRemoteMaterializeBlockedRepairEntry(entry).then(() => {
-                this.display()
-              })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
           .addButton((button) => {
             button.setButtonText('Clear').onClick(() => {
-              void this.plugin.clearRepairLogEntry(entry).then(() => {
-                this.display()
-              })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
       } else if (entry.kind === 'path-conflict') {
         setting
           .addButton((button) => {
             button.setButtonText('Resolve to conflict path').onClick(() => {
-              void this.plugin.resolvePathConflictRepairEntry(entry).then(() => {
-                this.display()
-              })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
           .addButton((button) => {
             button.setButtonText('Retry path materialize').onClick(() => {
-              void this.plugin.retryPathConflictRepairEntry(entry).then(() => {
-                this.display()
-              })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
           .addButton((button) => {
             button.setButtonText('Clear').onClick(() => {
-              void this.plugin.clearRepairLogEntry(entry).then(() => {
-                this.display()
-              })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
       } else if (entry.kind === 'delete-vs-edit' && entry.reason === 'missing-binary-content') {
         setting
           .addButton((button) => {
             button.setButtonText('Retry binary restore check').onClick(() => {
-              void this.plugin.retryKeepDeletedRepairEntry(entry).then(() => {
-                this.display()
-              })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
           .addButton((button) => {
             button.setButtonText('Clear').onClick(() => {
-              void this.plugin.clearRepairLogEntry(entry).then(() => {
-                this.display()
-              })
+              new Notice('Kuroflare: repair actions under refactoring')
             })
           })
       }

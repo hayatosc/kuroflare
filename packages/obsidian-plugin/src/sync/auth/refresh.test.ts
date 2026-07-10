@@ -1,8 +1,8 @@
-import { type ClientAuthMetadata } from '@kuroflare/core'
 import {
   DEVICE_TOKEN_ISSUER,
   makeDeviceId,
   makeVaultId,
+  type ClientAuthMetadata,
   type DeviceTokenClaims,
   type DeviceTokenRefreshRequest,
   type DeviceTokenScope,

@@ -3,22 +3,20 @@ import { createHash } from 'node:crypto'
 import {
   buildBinaryDownloadOutboxPlan,
   buildBinaryUploadOutboxPlan,
-  makeOutboxPlanItemId,
-  type OutboxPlanItemId,
-  type OutboxSchedulerItem,
-} from '@kuroflare/core'
-import {
   CURRENT_PROTOCOL_VERSION,
   makeDeviceId,
   makeFileId,
   makeMessageId,
+  makeOutboxPlanItemId,
   makeSha256Hex,
   makeVaultId,
   makeYDocId,
   type Ack,
   type BlobManifest,
   type DocId,
+  type OutboxPlanItemId,
   type OutboxRunningLease,
+  type OutboxSchedulerItem,
 } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
@@ -27,25 +25,25 @@ import {
   classifyOutboxWorkerSideEffectCompletionEvidence,
   isSafeLocalBlobCacheKey,
   isSafeVaultRelativePath,
-  planOutboxWorkerCompletionIndexedDbWriteTransaction,
   planOutboxWorkerAckCompletion,
+  planOutboxWorkerCompletionIndexedDbWriteTransaction,
   planOutboxWorkerFailureCompletion,
   planOutboxWorkerFullSnapshotRelease,
   planOutboxWorkerFullSnapshotReleaseIndexedDbWriteTransaction,
   planOutboxWorkerLeaseRenewal,
   planOutboxWorkerLeaseRenewalIndexedDbWriteTransaction,
   planOutboxWorkerQuarantineCompletion,
-  runOutboxWorkerLocalSideEffect,
   planOutboxWorkerSideEffect,
   planOutboxWorkerSuccessCompletion,
   planOutboxWorkerTick,
   planOutboxWorkerTickIndexedDbWriteTransactions,
+  runOutboxWorkerLocalSideEffect,
 } from '../engine/worker'
 import {
   type OutboxWorkerBlobCacheReadPlan,
   type OutboxWorkerBlobCacheWritePlan,
-  type OutboxWorkerHttpUploadBytesPlan,
   type OutboxWorkerHttpRequestPlan,
+  type OutboxWorkerHttpUploadBytesPlan,
   type OutboxWorkerLocalSideEffectRunnerPorts,
   type OutboxWorkerSideEffectResultEvidence,
   type OutboxWorkerVaultFileEvidence,
@@ -1601,6 +1599,7 @@ test('outbox worker commits ack completion and releases the lease atomically', (
   const record = outboxRecord(yUpdateId, 'y-update', 'retrying')
   const plan = planOutboxWorkerAckCompletion({
     itemId: yUpdateId,
+    kind: record.kind,
     status: 'retrying',
     vaultId,
     deviceId,
@@ -1677,6 +1676,7 @@ test('outbox worker pauses for full snapshot and releases the lease atomically',
   const record = outboxRecord(yUpdateId, 'y-update', 'retrying')
   const plan = planOutboxWorkerAckCompletion({
     itemId: yUpdateId,
+    kind: record.kind,
     status: 'retrying',
     vaultId,
     deviceId,
@@ -1843,6 +1843,7 @@ test('outbox worker rejects stale completions before applying patches', () => {
   assert.deepEqual(
     planOutboxWorkerAckCompletion({
       itemId: yUpdateId,
+      kind: record.kind,
       status: 'retrying',
       vaultId,
       deviceId,
@@ -2137,6 +2138,7 @@ class FakeOutboxHarness implements OutboxWorkerLocalSideEffectRunnerPorts {
     }
     const plan = planOutboxWorkerAckCompletion({
       itemId: record.id,
+      kind: record.kind,
       status: record.status,
       vaultId,
       deviceId,

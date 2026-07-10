@@ -1,5 +1,4 @@
-import { DEFAULT_LOCAL_STORE_OBJECT_STORES } from '@kuroflare/core'
-import { makeVaultId } from '@kuroflare/core'
+import { DEFAULT_LOCAL_STORE_OBJECT_STORES, makeVaultId } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
 import {

@@ -1,8 +1,8 @@
 import type {
   SyncRuntimeDeferredStartupEffect,
+  SyncRuntimeSetupExchangePort,
   SyncRuntimeShellEffectExecutor,
   SyncRuntimeShellState,
-  SyncRuntimeSetupExchangePort,
   SyncRuntimeStartupStepEffectPort,
 } from '../engine/actuation'
 import type { SyncRuntimeSetupExchangeShellReplan } from '../engine/replan'

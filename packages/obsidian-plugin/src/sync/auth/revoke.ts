@@ -1,11 +1,12 @@
 import {
   applyClientAuthMetadataRevokePatch,
   decideClientDeviceRevoke,
+  RevokeDeviceResponseSchema,
   type ClientAuthMetadata,
   type ClientAuthMetadataPatchDecision,
   type ClientDeviceRevokeDecision,
+  type RevokeDeviceResponse,
 } from '@kuroflare/core'
-import { RevokeDeviceResponseSchema, type RevokeDeviceResponse } from '@kuroflare/core'
 import * as v from 'valibot'
 
 import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadataPutOperation } from '../engine/setup'

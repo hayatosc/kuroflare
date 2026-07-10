@@ -1,9 +1,11 @@
 import {
   DEFAULT_LOCAL_STORE_OBJECT_STORES,
+  makeDeviceId,
+  makeVaultId,
   type ClientStartupLocalState,
   type ClientStartupStep,
+  type SetupExchangeResponse,
 } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId, type SetupExchangeResponse } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
 import {
@@ -22,8 +24,8 @@ import {
   runSyncRuntimeObsidianShellDriverStartupStepTick,
   runSyncRuntimeObsidianShellDriverTick,
   runSyncRuntimeObsidianShellDriverTransportTick,
-  type SyncRuntimeObsidianShellEvidenceReadResult,
   type SyncRuntimeObsidianShellEvidencePort,
+  type SyncRuntimeObsidianShellEvidenceReadResult,
 } from '../obsidian/shell'
 import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
 

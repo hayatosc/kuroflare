@@ -1,5 +1,9 @@
-import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type ClientStartupLocalState } from '@kuroflare/core'
-import { makeDeviceId, makeVaultId } from '@kuroflare/core'
+import {
+  DEFAULT_LOCAL_STORE_OBJECT_STORES,
+  makeDeviceId,
+  makeVaultId,
+  type ClientStartupLocalState,
+} from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
 import {
