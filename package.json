@@ -9,8 +9,8 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "typecheck:compat": "pnpm -r typecheck:compat",
-    "lint": "oxlint src/main && pnpm -r exec oxlint .",
-    "lint:types": "oxlint --type-aware src/main && pnpm -r exec oxlint --type-aware .",
+    "lint": "pnpm -r exec oxlint .",
+    "lint:types": "pnpm -r exec oxlint --type-aware .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check ."
   },
