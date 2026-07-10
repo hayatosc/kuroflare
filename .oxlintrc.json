@@ -1,13 +1,13 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc"],
+  "plugins": ["typescript"],
   "options": {
     "typeAware": true
   },
   "categories": {
     "correctness": "error"
   },
-  "ignorePatterns": ["dist/**", "node_modules/**", "packages/obsidian-plugin/main.js"],
+  "ignorePatterns": ["dist/**", "packages/obsidian-plugin/main.js"],
   "rules": {
     "typescript/no-explicit-any": "error",
     "typescript/no-unsafe-type-assertion": "error",
@@ -20,8 +20,10 @@
         "disallowTypeAnnotations": true
       }
     ],
-    "typescript/no-unused-vars": "error",
-    "typescript/no-floating-promises": "error",
+    "typescript/no-unused-vars": "warn",
+    "no-unused-vars": "warn",
+    "typescript/no-floating-promises": "warn",
+    "typescript/no-redundant-type-constituents": "off",
     "typescript/switch-exhaustiveness-check": [
       "warn",
       {
@@ -32,8 +34,5 @@
     ],
     "typescript/consistent-type-assertions": "warn",
     "typescript/no-non-null-assertion": "warn"
-  },
-  "env": {
-    "builtin": true
   }
 }

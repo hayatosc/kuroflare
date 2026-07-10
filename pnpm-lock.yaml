@@ -98,9 +98,21 @@ importers:
 
   .:
     devDependencies:
+      '@codemirror/state':
+        specifier: 6.5.0
+        version: 6.5.0
+      '@codemirror/view':
+        specifier: 6.38.6
+        version: 6.38.6
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.21
       '@typescript/native-preview':
         specifier: 7.0.0-dev.20260615.1
         version: 7.0.0-dev.20260615.1
+      obsidian:
+        specifier: 1.13.0
+        version: 1.13.0(@codemirror/state@6.5.0)(@codemirror/view@6.38.6)
       oxfmt:
         specifier: ^0.55.0
         version: 0.55.0
@@ -113,9 +125,15 @@ importers:
       tsdown:
         specifier: ^0.22.2
         version: 0.22.2(@typescript/native-preview@7.0.0-dev.20260615.1)(typescript@5.9.3)
+      valibot:
+        specifier: ^1.4.1
+        version: 1.4.1(typescript@5.9.3)
       vitest:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@22.19.21)(jsdom@29.1.1)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.28.1))
+      yjs:
+        specifier: ^13.6.27
+        version: 13.6.31
 
   packages/core:
     dependencies:
