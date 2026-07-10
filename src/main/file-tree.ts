@@ -1,8 +1,8 @@
 import { v } from 'valibot'
 import { Y } from 'yjs'
 
-import { applyFileCreate, applyFileDelete, applyFileRename } from '../sync/meta/tree'
-import type { LocalStoreOutboxRecord } from '../sync/store/store'
+import { applyFileCreate, applyFileDelete, applyFileRename } from '@packages/obsidian-plugin/sync/meta/tree'
+import type { LocalStoreOutboxRecord } from '@packages/obsidian-plugin/sync/store/store'
 import type KuroflareSpikePlugin from './plugin'
 
 export function registerFileTreeWatcher(plugin: KuroflareSpikePlugin): void {

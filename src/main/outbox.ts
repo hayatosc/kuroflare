@@ -1,7 +1,7 @@
 import { v } from 'valibot'
 
-import { planOutboundQueueTick } from '../sync/engine/queue'
-import type { LocalStoreOutboxRecord } from '../sync/store/store'
+import { planOutboundQueueTick } from '@packages/obsidian-plugin/sync/engine/queue'
+import type { LocalStoreOutboxRecord } from '@packages/obsidian-plugin/sync/store/store'
 import type KuroflareSpikePlugin from './plugin'
 
 export async function runOutboxWorkerTick(

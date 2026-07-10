@@ -1,8 +1,8 @@
 import { v } from 'valibot'
 
-import { reconcileMetaDoc } from '../sync/meta/reconcile'
-import { planInvalidMetaIsolationDetail } from '../sync/obsidian/invalid-meta-isolation'
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../sync/store/schema'
+import { reconcileMetaDoc } from '@packages/obsidian-plugin/sync/meta/reconcile'
+import { planInvalidMetaIsolationDetail } from '@packages/obsidian-plugin/sync/obsidian/invalid-meta-isolation'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '@packages/obsidian-plugin/sync/store/schema'
 import type KuroflareSpikePlugin from './plugin'
 
 export async function reconcileAndMaterializeMeta(plugin: KuroflareSpikePlugin): Promise<void> {

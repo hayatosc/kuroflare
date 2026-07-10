@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "paths": {
+      "@packages/obsidian-plugin/*": ["./packages/obsidian-plugin/src/*"],
       "@kuroflare/core": ["./packages/core/src/index.ts"],
       "obsidian": ["./node_modules/obsidian/obsidian.d.ts"]
     }

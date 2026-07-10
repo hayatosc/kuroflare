@@ -1,7 +1,7 @@
 import { Y } from 'yjs'
 
-import { createSyncRuntimeObsidianResumePort } from '../sync/obsidian/lifecycle'
-import type { LocalStoreOutboxRecord } from '../sync/store/store'
+import { createSyncRuntimeObsidianResumePort } from '@packages/obsidian-plugin/sync/obsidian/lifecycle'
+import type { LocalStoreOutboxRecord } from '@packages/obsidian-plugin/sync/store/store'
 import type KuroflareSpikePlugin from './plugin'
 
 export function createSyncRuntime(plugin: KuroflareSpikePlugin): SyncRuntimeObsidianComposition {

@@ -1,4 +1,4 @@
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION, localStoreIndexedDbName } from '../sync/store/schema'
+import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION, localStoreIndexedDbName } from '@packages/obsidian-plugin/sync/store/schema'
 import type KuroflareSpikePlugin from './plugin'
 
 export async function openLocalStoreDatabase(

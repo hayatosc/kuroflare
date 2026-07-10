@@ -45,16 +45,16 @@ import type {
   KuroflareSettings,
   LoadedTextDoc,
 } from '../main-types'
-import { KuroflareSettingTab } from '../obsidian/settings-tab'
-import { type SyncRuntimeStartupStepEffectPort } from '../sync/engine/actuation'
-import { type LocalSetupMetadata } from '../sync/engine/setup'
-import { type VerifiedFullSnapshotBytes } from '../sync/engine/snapshot'
+import { KuroflareSettingTab } from '@packages/obsidian-plugin/obsidian/settings-tab'
+import { type SyncRuntimeStartupStepEffectPort } from '@packages/obsidian-plugin/sync/engine/actuation'
+import { type LocalSetupMetadata } from '@packages/obsidian-plugin/sync/engine/setup'
+import { type VerifiedFullSnapshotBytes } from '@packages/obsidian-plugin/sync/engine/snapshot'
 import {
   createSyncRuntimeWebSocketSession,
   type SyncRuntimeWebSocketInboundMessage,
   type SyncRuntimeWebSocketSessionPort,
   type SyncRuntimeWebSocketStartupStepPort,
-} from '../sync/engine/websocket'
+} from '@packages/obsidian-plugin/sync/engine/websocket'
 import {
   type OutboxWorkerBlobGetSideEffectPlan,
   type OutboxWorkerBlobPutSideEffectPlan,
@@ -62,12 +62,12 @@ import {
   type OutboxWorkerManifestPutSideEffectPlan,
   type OutboxWorkerMaterializeSideEffectPlan,
   type OutboxWorkerSideEffectResultEvidence,
-} from '../sync/engine/worker'
-import { type SyncRuntimeObsidianComposition } from '../sync/obsidian/composition'
-import { type SyncRuntimeObsidianRepairPresentation } from '../sync/obsidian/presentation'
-import { type QuarantineAdminAction } from '../sync/obsidian/quarantine-admin'
-import { planSyncRuntimeObsidianLegacySettingsSecretCleanup } from '../sync/obsidian/settings'
-import { type LocalStoreOutboxRecord } from '../sync/store/store'
+} from '@packages/obsidian-plugin/sync/engine/worker'
+import { type SyncRuntimeObsidianComposition } from '@packages/obsidian-plugin/sync/obsidian/composition'
+import { type SyncRuntimeObsidianRepairPresentation } from '@packages/obsidian-plugin/sync/obsidian/presentation'
+import { type QuarantineAdminAction } from '@packages/obsidian-plugin/sync/obsidian/quarantine-admin'
+import { planSyncRuntimeObsidianLegacySettingsSecretCleanup } from '@packages/obsidian-plugin/sync/obsidian/settings'
+import { type LocalStoreOutboxRecord } from '@packages/obsidian-plugin/sync/store/store'
 import {
   BINARY_UPLOAD_ORIGIN,
   DEFAULT_SETTINGS,
