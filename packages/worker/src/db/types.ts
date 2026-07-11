@@ -71,6 +71,7 @@ export interface MessageDedupTable {
   doc_id: string
   message_id: string
   durable_seq: number
+  update_sha256: string | null
   seen_at: number
 }
 

@@ -90,6 +90,7 @@ create table if not exists message_dedup (
   doc_id text not null,
   message_id text not null,
   durable_seq integer not null,
+  update_sha256 text,                 -- nullable only for legacy rows
   seen_at integer not null,
   primary key (doc_id, message_id)
 );
@@ -144,7 +145,9 @@ DO は `crypto.subtle` / R2 / hydrate の await 点で別 event とインター�
 
 **2. 重複の確定**。
 先に `message_dedup` を読み、duplicate なら何も変更せず保存済み `durable_seq` の ack だけを再送する。
-基準を op_log でなく `message_dedup` に置くのは、op_log に入らない snapshot-escape 済み message も同じ `durableSeq` で ack でき、NeedFullSnapshot 境界を繰り返さないためである。
+The acknowledgement is valid only when the stored `update_sha256` is non-null and matches the hash of the incoming update, and the document can be hydrated successfully.
+Legacy rows with a null hash are unsafe completion evidence: the server closes with `duplicate-unsafe` and sends no ack.
+Only updates that completed a durable append or snapshot transaction may create `message_dedup` evidence.
 
 **3. 適用前チェックと quarantine**。
 
@@ -152,7 +155,7 @@ DO は `crypto.subtle` / R2 / hydrate の await 点で別 event とインター�
 1. update bytes の size 上限を確認
 2. 空の temporary YDoc へ applyUpdate できるか try
 3. meta YDoc は hydrated copy へ適用し、全 entry を schema validation に通す
-4. 巨大 update は large update 経路へ逃がす
+4. reject oversized live updates with a stable close reason for manual recovery
 5. 合格した update だけ本 YDoc と op_log へ進める
 ```
 
@@ -164,12 +167,16 @@ quarantine は完了証拠ではなく retry / backoff と repair log の入口�
 **4. append transaction**。
 `Y.applyUpdate(activeYDoc)`、`op_log insert`、`docs.latest_seq = seq`、`message_dedup upsert` を一つの成功単位とし、ack は commit 後に送る。
 unique 制約に負けたら再読して duplicate ack に変換し、二重 seq を作らない。
-append が確定した場合だけ authoritative YDoc に適用し、duplicate や snapshot escape では doc を変えない。
+append が確定した場合だけ authoritative YDoc に適用し、duplicate や rejected updates では doc を変えない。
 
 **5. large update escape**。
-巨大 paste や初回 seed は op_log 1 行に詰めず、apply → snapshot R2 PUT → pointer 更新 → `docs.latest_snapshot_seq` と `latest_seq` を同 seq へ前進、の直接 snapshot 経路に逃がす。
-ack は「同じ seq の snapshot + pointer + docs clock が durable」という意味でだけ返し（decision は `snapshot-escape` として区別）、client には durable ack と `NeedFullSnapshot(reason="large-update-snapshot")` を返す。
-この経路でも `message_dedup` を保存し、R2 確定前に既存 op_log を消さない。
+The complete live snapshot escape is not implemented.
+Until it exists, the server rejects oversized live updates with `append-reject:large-update-requires-snapshot-import`, without an ack, `NeedFullSnapshot`, or any mutation to `op_log`, `docs`, `message_dedup`, or the active YDoc.
+Recovery currently requires an operator to use the authenticated snapshot-import route manually.
+Automatic client transition from this close reason to snapshot import is future work.
+A future live escape may acknowledge only after apply, immutable R2 snapshot write, pointer advancement, `docs.latest_snapshot_seq` / `latest_seq`, and `message_dedup` commit as one restorable boundary.
+
+Snapshot import accepts a `latestSeq` expected-current guard after bootstrap. Omitting it for an existing document returns `409 snapshot-import-latest-seq-required`; a defined mismatch returns `409 snapshot-import-stale-seq`, both before any YDoc, R2, or SQL mutation. Meta imports validate the merged temporary YDoc before writing and return `400 invalid-snapshot-import-meta-schema` on failure.
 
 binary frame 経由の update も envelope guard（[protocol.md](protocol.md) §2）通過後に同じ pipeline へ流す。
 
@@ -306,6 +313,7 @@ migration は冪等に書き、失敗時は DO を degraded にして同期を�
 - migration list は Worker bundle 側で version 1 からの contiguous な配列として持つ。
 - bundle に無い version が applied 済み、または applied versions が prefix でない場合は、破損 / 手動編集 / downgrade の可能性があるため degraded。
 - pending migration がある間は sync を受けず、適用完了後だけ ready。
+- The message-dedup hash migration is retry-safe: it introspects `message_dedup` before `ALTER TABLE ... ADD COLUMN`, so a successful DDL followed by a failed migration-record insert does not fail on a duplicate-column retry.
 
 health の責務分離は [protocol.md](protocol.md) §3 のとおり、global `/health` は概況、DO の startup check が vault 単位の権威である。
 

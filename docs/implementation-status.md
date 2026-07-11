@@ -25,9 +25,25 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ## 残タスク
 
+### Completed P0: atomic update append
+
+- `op_log`, `docs.latest_seq`, and `message_dedup` now commit in one Durable Object storage transaction.
+- Fault-injection tests cover failure after every SQL statement, stable-sequence retry, post-commit in-memory rehydration, and commit-before-broadcast ordering. This closes DR-002.
+
+### Completed P0: checkpoint boundary and rollback retention
+
+- Checkpoint capture and snapshot import now share the document write queue, while R2 I/O runs after checkpoint capture so later appends can continue.
+- Normal and orphan compaction use the oldest retained snapshot floor and its exact state vector. Invalid or incomplete retention evidence fails closed without deleting snapshots or operation-log rows. This closes DR-004.
+
+### P0: large-update snapshot escape
+
+- The unsafe live `snapshot-escape` branch is disabled. Oversized live updates are rejected without acknowledgement or durable mutation using a stable close reason. Recovery currently requires manual use of the authenticated snapshot-import route; automatic client transition is future work.
+- A transactional live escape remains future work if live updates above the configured threshold become a product requirement.
+
 ### P0: production startup pipeline の常用化
 
-- startup step port（`fetch-remote-meta-snapshot` / `apply-remote-meta-snapshot` / `adopt-local-files-after-remote-meta` / `enqueue-missing-downloads` / `load-indexeddb-ydocs` / `resume-background-queues`）と composition root は実処理に接続済み。残りは `main.ts` に残る ad-hoc 直呼び経路（直送 WebSocket / outbox、lifecycle 呼び出し）を runtime port 経由へ寄せ、production lifecycle で常時この経路を使うこと。
+- The startup step interfaces and composition are implemented and unit-tested, but the production plugin does not instantiate the composition root yet.
+- Production adapters for snapshot operations, IndexedDB YDoc loading, setup persistence, and local evidence must be connected before enabling the runtime. The existing ad-hoc WebSocket, outbox, metadata enqueue, and active-file request side effects must be replaced in the same migration to prevent duplicate sends and state-vector requests.
 - setup persistence は SecretStorage + IndexedDB metadata の実行境界を通り、`data.json` に token を保存しない。残りは `data.json.setupMetadata` mirror を UI / 復旧用 cache として明確化するか、完全廃止するかの決着。
 
 ### P0: full snapshot の production 経路

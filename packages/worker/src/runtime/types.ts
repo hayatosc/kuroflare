@@ -76,11 +76,14 @@ export interface R2ObjectBodyBinding {
 /** Minimal R2 list options used by cold-start snapshot fallback. */
 export interface R2ListOptionsBinding {
   readonly prefix: string
+  readonly cursor?: string
 }
 
 /** Minimal R2 list result used by cold-start snapshot fallback. */
 export interface R2ObjectsBinding {
   readonly objects: readonly R2ObjectBinding[]
+  readonly truncated: boolean
+  readonly cursor?: string
 }
 
 /** Minimal R2 listed object metadata used by cold-start snapshot fallback. */
@@ -137,6 +140,7 @@ export interface RuntimeCheckpointRunRecord {
   readonly status: CheckpointRunStatus
   readonly upperSeq: number
   readonly snapshotKey: string | undefined
+  readonly stateVector: Uint8Array | undefined
 }
 
 export interface RuntimeCheckpointDocRecoveryRecord {

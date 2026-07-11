@@ -24,7 +24,8 @@ import {
   updateDocCompact,
   deleteOpLogBelowSeq,
 } from '../db/docRepo'
-import { planSnapshotRetention } from '../db/retention'
+import { readSqlUpdateBytes } from '../db/helpers'
+import { planSnapshotRetention, type SnapshotRetentionPlan } from '../db/retention'
 import { makeSnapshotObjectKey, type SnapshotCandidate } from '../sync/snapshots'
 import { makeSnapshotListPrefix } from '../sync/snapshots'
 import { SNAPSHOT_RETENTION_MIN_GENERATIONS } from './constants'
@@ -36,7 +37,7 @@ import {
   resolveVaultId,
   ensureSchema,
 } from './storage'
-import { ensureDocHydrated } from './sync'
+import { ensureDocHydrated, listR2Objects, withDocWriteQueue } from './sync'
 import { PosIntSchema, NonNegIntSchema, type WorkerEnv } from './types'
 import type {
   RuntimeCheckpointResult,
@@ -82,32 +83,41 @@ export async function checkpointDoc(
     return { action: 'skipped', reason: 'runtime-unavailable' }
   }
 
-  try {
-    await ensureDocHydrated(room, docId)
-  } catch {
-    return { action: 'skipped', reason: 'hydrate-failed' }
-  }
+  const capture = await withDocWriteQueue(room, docId, async () => {
+    try {
+      await ensureDocHydrated(room, docId)
+    } catch {
+      return { action: 'skipped' as const, reason: 'hydrate-failed' as const }
+    }
 
-  const doc = room.docs.get(docKey(docId))
-  const clock = await readDocClock(room, docId)
-  const snapshotSeq = await readSnapshotSeq(room, docId)
-  if (doc === undefined) return { action: 'skipped', reason: 'doc-unavailable' }
-  if (clock === undefined || !v.is(PosIntSchema, clock.latestSeq))
-    return { action: 'skipped', reason: 'invalid-clock' }
+    const doc = room.docs.get(docKey(docId))
+    const clock = await readDocClock(room, docId)
+    const snapshotSeq = await readSnapshotSeq(room, docId)
+    if (doc === undefined) return { action: 'skipped' as const, reason: 'doc-unavailable' as const }
+    if (clock === undefined || !v.is(PosIntSchema, clock.latestSeq)) {
+      return { action: 'skipped' as const, reason: 'invalid-clock' as const }
+    }
 
-  const snapshotKey = makeSnapshotObjectKey(vaultId, docId, clock.latestSeq)
-  const decision = decideCheckpointWrite({
-    latestSeq: clock.latestSeq,
-    latestSnapshotSeq: snapshotSeq,
-    snapshotKey,
-    now,
+    const decision = decideCheckpointWrite({
+      latestSeq: clock.latestSeq,
+      latestSnapshotSeq: snapshotSeq,
+      snapshotKey: makeSnapshotObjectKey(vaultId, docId, clock.latestSeq),
+      now,
+    })
+    if (decision.action === 'skip') return { action: 'skipped' as const, reason: decision.reason }
+
+    return {
+      action: 'captured' as const,
+      decision,
+      snapshotBytes: Y.encodeStateAsUpdate(doc),
+      stateVector: Y.encodeStateVector(doc),
+    }
   })
-  if (decision.action === 'skip') return { action: 'skipped', reason: decision.reason }
+  if (capture.action === 'skipped') return capture
+  const { decision, snapshotBytes, stateVector } = capture
 
   logEvent('checkpoint-start', { vaultId, docId, upperSeq: decision.upperSeq })
   try {
-    const snapshotBytes = Y.encodeStateAsUpdate(doc)
-    const stateVector = Y.encodeStateVector(doc)
     await insertCheckpointRun(
       db,
       decision.runId,
@@ -130,33 +140,40 @@ export async function checkpointDoc(
       decision.upperSeq,
     )
     await updateCheckpointPointerUpdated(db, decision.runId, now)
+    const retention = await readSnapshotRetentionPlan(room, docId)
     const compact = decideCheckpointCompact({
       status: 'pointer-updated',
       upperSeq: decision.upperSeq,
       latestSnapshotSeq: decision.upperSeq,
-      retainedSnapshotFloorSeq: undefined,
+      // A missing or invalid retention plan must block compaction.
+      retainedSnapshotFloorSeq: retention?.retainedSnapshotFloorSeq ?? 0,
       now,
     })
-    if (compact.action === 'compact') {
+    if (compact.action === 'compact' && retention !== undefined) {
+      const horizonStateVector =
+        compact.compactedSeq === retention.retainedSnapshotFloorSeq
+          ? retention.retainedSnapshotStateVector
+          : stateVector
       await deleteOpLogBelowSeq(db, docKey(docId), compact.compactedSeq)
       await updateDocCompact(
         db,
         compact.compactedSeq,
-        stateVector,
+        horizonStateVector,
         compact.compactedAt,
         docKey(docId),
         compact.compactedSeq,
       )
       await updateCheckpointCompacted(db, decision.runId, compact.compactedAt)
+      await applySnapshotRetentionPlan(room, docId, retention.plan, now)
     }
-    await cleanupSnapshotRetention(room, docId, now)
 
     logEvent('checkpoint-complete', { vaultId, docId, upperSeq: decision.upperSeq })
     return {
       action: 'checkpointed',
       snapshotKey: decision.snapshotKey,
       upperSeq: decision.upperSeq,
-      compactedSeq: compact.action === 'compact' ? compact.compactedSeq : undefined,
+      compactedSeq:
+        compact.action === 'compact' && retention !== undefined ? compact.compactedSeq : undefined,
     }
   } catch (error) {
     logEvent('checkpoint-failed', {
@@ -169,30 +186,126 @@ export async function checkpointDoc(
   }
 }
 
-async function cleanupSnapshotRetention(room: VaultRoom, docId: DocId, now: number): Promise<void> {
+interface SnapshotRetentionExecutionPlan {
+  readonly plan: SnapshotRetentionPlan
+  readonly retainedSnapshotFloorSeq: number
+  readonly retainedSnapshotStateVector: Uint8Array
+}
+
+async function readSnapshotRetentionPlan(
+  room: VaultRoom,
+  docId: DocId,
+): Promise<SnapshotRetentionExecutionPlan | undefined> {
+  const db = getDb(room)
+  const bucket = room.env.SNAPSHOT_BUCKET
+  const vaultId = await resolveVaultId(room)
+  if (db === undefined || bucket === undefined || vaultId === undefined) return undefined
+
+  try {
+    const prefix = makeSnapshotListPrefix(vaultId, docId)
+    const listed = await listR2Objects(bucket, prefix)
+    const snapshots: SnapshotCandidate[] = []
+    const snapshotStateVectors = new Map<string, Uint8Array>()
+    const listedKeys = new Set<string>()
+    for (const object of listed) {
+      if (typeof object.key !== 'string') return undefined
+      if (listedKeys.has(object.key)) return undefined
+      listedKeys.add(object.key)
+      const snapshot = snapshotCandidateFromKey(prefix, object.key)
+      // Unknown objects in the snapshot prefix make the cleanup boundary
+      // untrustworthy; leave both compaction and deletion for a later retry.
+      if (snapshot === undefined) return undefined
+      const objectBody = await bucket.get(snapshot.key)
+      if (objectBody === null) return undefined
+      let healthy = false
+      let stateVector: Uint8Array | undefined
+      const candidateDoc = new Y.Doc()
+      try {
+        Y.applyUpdate(candidateDoc, new Uint8Array(await objectBody.arrayBuffer()))
+        stateVector = Y.encodeStateVector(candidateDoc)
+        healthy = true
+      } catch {
+        healthy = false
+      } finally {
+        candidateDoc.destroy()
+      }
+      snapshots.push({ ...snapshot, healthy })
+      if (stateVector !== undefined) snapshotStateVectors.set(snapshot.key, stateVector)
+    }
+    const pointer = await readSnapshotPointer(room, docId)
+    const checkpointRuns = []
+    const checkpointStateVectors = new Map<string, Uint8Array>()
+    const checkpointEvidenceMissing = new Set<string>()
+    for (const run of await getSnapshotRetentionCheckpointRuns(db, docKey(docId))) {
+      if (!isCheckpointRunStatus(run.status)) return undefined
+      if (run.snapshotKey !== null) {
+        const runSnapshot = snapshotCandidateFromKey(prefix, run.snapshotKey)
+        if (runSnapshot === undefined || runSnapshot.upperSeq !== run.upperSeq) return undefined
+        const stateVector = readSqlUpdateBytes(run.stateVector ?? undefined)
+        if (stateVector === undefined) checkpointEvidenceMissing.add(run.snapshotKey)
+        else {
+          const previous = checkpointStateVectors.get(run.snapshotKey)
+          if (previous !== undefined && !sameBytes(previous, stateVector)) return undefined
+          checkpointStateVectors.set(run.snapshotKey, stateVector)
+        }
+      }
+      checkpointRuns.push({ status: run.status, snapshotKey: run.snapshotKey ?? undefined })
+    }
+    const plan = planSnapshotRetention({
+      snapshots,
+      checkpointRuns,
+      currentPointerKey: pointer?.latestSnapshotKey,
+      minGenerationCount: SNAPSHOT_RETENTION_MIN_GENERATIONS,
+    })
+
+    const retainedKeys = new Set(plan.retainKeys)
+    const retainedSnapshots = snapshots.filter(
+      (snapshot) => snapshot.healthy && retainedKeys.has(snapshot.key),
+    )
+    if (
+      retainedSnapshots.length === 0 ||
+      plan.retainKeys.some((key) => !snapshots.some((snapshot) => snapshot.key === key))
+    ) {
+      return undefined
+    }
+
+    const floorSnapshot = retainedSnapshots.reduce((oldest, snapshot) =>
+      snapshot.upperSeq < oldest.upperSeq ? snapshot : oldest,
+    )
+    const retainedSnapshotFloorSeq = floorSnapshot.upperSeq
+    if (!v.is(PosIntSchema, retainedSnapshotFloorSeq)) return undefined
+
+    for (const snapshot of retainedSnapshots) {
+      const stateVector = snapshotStateVectors.get(snapshot.key)
+      const durableStateVector = checkpointStateVectors.get(snapshot.key)
+      if (
+        checkpointEvidenceMissing.has(snapshot.key) ||
+        stateVector === undefined ||
+        durableStateVector === undefined ||
+        !sameBytes(stateVector, durableStateVector)
+      ) {
+        return undefined
+      }
+    }
+    const retainedSnapshotStateVector = snapshotStateVectors.get(floorSnapshot.key)
+    if (retainedSnapshotStateVector === undefined) return undefined
+
+    return { plan, retainedSnapshotFloorSeq, retainedSnapshotStateVector }
+  } catch {
+    return undefined
+  }
+}
+
+async function applySnapshotRetentionPlan(
+  room: VaultRoom,
+  docId: DocId,
+  plan: SnapshotRetentionPlan,
+  now: number,
+): Promise<void> {
   const db = getDb(room)
   const bucket = room.env.SNAPSHOT_BUCKET
   const vaultId = await resolveVaultId(room)
   if (db === undefined || bucket === undefined || vaultId === undefined) return
-
-  const prefix = makeSnapshotListPrefix(vaultId, docId)
-  const listed = await bucket.list({ prefix })
-  const snapshots = listed.objects
-    .map((object) => snapshotCandidateFromKey(prefix, object.key))
-    .filter((snapshot): snapshot is SnapshotCandidate => snapshot !== undefined)
-  const pointer = await readSnapshotPointer(room, docId)
-  const checkpointRuns = (await getSnapshotRetentionCheckpointRuns(db, docKey(docId))).map(
-    (run) => ({
-      status: isCheckpointRunStatus(run.status) ? run.status : ('failed' as const),
-      snapshotKey: run.snapshotKey ?? undefined,
-    }),
-  )
-  const plan = planSnapshotRetention({
-    snapshots,
-    checkpointRuns,
-    currentPointerKey: pointer?.latestSnapshotKey,
-    minGenerationCount: SNAPSHOT_RETENTION_MIN_GENERATIONS,
-  })
 
   for (const snapshotKey of plan.deleteKeys) {
     try {
@@ -228,14 +341,39 @@ async function recoverOrphanedCheckpointRun(
   run: RuntimeCheckpointRunRecord,
   now: number,
 ): Promise<void> {
+  const snapshotKeyMatchesRun = await checkpointSnapshotKeyMatchesRun(room, run)
+  if (!snapshotKeyMatchesRun) {
+    if (run.status === 'writing' || run.status === 'r2-written') {
+      await markCheckpointRunFailed(room, db, run.runId)
+    }
+    return
+  }
   const doc = await readCheckpointDocRecoveryState(room, db, run.docId)
   const snapshot = await readCheckpointSnapshotEvidence(room, bucket, run.snapshotKey)
   const pointerVerified = await checkpointPointerVerified(room, bucket, doc)
+  const snapshotStateVectorMatchesRun =
+    snapshot?.stateVector !== undefined &&
+    run.stateVector !== undefined &&
+    sameBytes(snapshot.stateVector, run.stateVector)
+  if (run.status === 'writing' || run.status === 'r2-written') {
+    if (!snapshotStateVectorMatchesRun) {
+      await markCheckpointRunFailed(room, db, run.runId)
+      return
+    }
+  } else if (run.status === 'pointer-updated' && !snapshotStateVectorMatchesRun) {
+    // The pointer may already be durable, but compaction needs evidence that
+    // this run's snapshot is the one represented by its durable state vector.
+    return
+  }
+  const retention =
+    run.status === 'pointer-updated' ? await readSnapshotRetentionPlan(room, run.docId) : undefined
   const decision = decideOrphanedCheckpointRecovery({
     run,
     doc: { latestSnapshotSeq: doc.latestSnapshotSeq, pointerVerified },
     snapshot,
-    retainedSnapshotFloorSeq: undefined,
+    // A missing retention plan must block orphan compaction as well.
+    retainedSnapshotFloorSeq:
+      run.status === 'pointer-updated' ? (retention?.retainedSnapshotFloorSeq ?? 0) : undefined,
   })
 
   switch (decision.action) {
@@ -258,9 +396,37 @@ async function recoverOrphanedCheckpointRun(
       return
     case 'compact-op-log':
       if (snapshot === undefined || !snapshot.verified || snapshot.stateVector === undefined) return
-      await compactRecoveredCheckpointRun(room, db, run, snapshot.stateVector, now)
+      if (retention === undefined) return
+      const horizonStateVector =
+        decision.compactedSeq === retention.retainedSnapshotFloorSeq
+          ? retention.retainedSnapshotStateVector
+          : run.stateVector
+      if (horizonStateVector === undefined) return
+      await compactRecoveredCheckpointRun(
+        room,
+        db,
+        run,
+        decision.compactedSeq,
+        horizonStateVector,
+        now,
+      )
+      if (retention !== undefined) {
+        await applySnapshotRetentionPlan(room, run.docId, retention.plan, now)
+      }
       return
   }
+}
+
+async function checkpointSnapshotKeyMatchesRun(
+  room: VaultRoom,
+  run: RuntimeCheckpointRunRecord,
+): Promise<boolean> {
+  if (run.snapshotKey === undefined) return false
+  const vaultId = await resolveVaultId(room)
+  if (vaultId === undefined) return false
+  const prefix = makeSnapshotListPrefix(vaultId, run.docId)
+  const candidate = snapshotCandidateFromKey(prefix, run.snapshotKey)
+  return candidate?.upperSeq === run.upperSeq
 }
 
 async function readRecoverableCheckpointRuns(
@@ -282,6 +448,7 @@ async function readRecoverableCheckpointRuns(
         status: row.status,
         upperSeq: row.upperSeq,
         snapshotKey: row.snapshotKey ?? undefined,
+        stateVector: readSqlUpdateBytes(row.stateVector ?? undefined),
       })
     }
   }
@@ -358,27 +525,72 @@ async function advanceRecoveredCheckpointPointer(
   now: number,
 ): Promise<void> {
   if (run.snapshotKey === undefined || stateVector === undefined) return
+  const snapshotKey = run.snapshotKey
+  const capturedStateVector = stateVector
 
-  await updateDocSnapshotPointer(
-    db,
-    run.upperSeq,
-    run.snapshotKey,
-    stateVector,
-    now,
-    docKey(run.docId),
-    run.upperSeq,
-  )
-  await updateCheckpointPointerUpdated(db, run.runId, now)
+  await withDocWriteQueue(room, run.docId, async () => {
+    await updateDocSnapshotPointer(
+      db,
+      run.upperSeq,
+      snapshotKey,
+      capturedStateVector,
+      now,
+      docKey(run.docId),
+      run.upperSeq,
+    )
+    await updateCheckpointPointerUpdated(db, run.runId, now)
+    await rehydrateAfterCheckpointPointer(room, run.docId)
+  })
 }
 
 async function compactRecoveredCheckpointRun(
   room: VaultRoom,
   db: NonNullable<ReturnType<typeof getDb>>,
   run: RuntimeCheckpointRunRecord,
+  compactedSeq: number,
   horizonStateVector: Uint8Array,
   now: number,
 ): Promise<void> {
-  await deleteOpLogBelowSeq(db, docKey(run.docId), run.upperSeq)
-  await updateDocCompact(db, run.upperSeq, horizonStateVector, now, docKey(run.docId), run.upperSeq)
-  await updateCheckpointCompacted(db, run.runId, now)
+  await withDocWriteQueue(room, run.docId, async () => {
+    await deleteOpLogBelowSeq(db, docKey(run.docId), compactedSeq)
+    await updateDocCompact(
+      db,
+      compactedSeq,
+      horizonStateVector,
+      now,
+      docKey(run.docId),
+      compactedSeq,
+    )
+    await updateCheckpointCompacted(db, run.runId, now)
+    await rehydrateAfterCheckpointPointer(room, run.docId)
+  })
+}
+
+async function rehydrateAfterCheckpointPointer(room: VaultRoom, docId: DocId): Promise<void> {
+  const key = docKey(docId)
+  const inFlight = room.hydrationInFlight.get(key)
+  if (inFlight !== undefined) {
+    try {
+      await inFlight
+    } catch (error) {
+      // The stale hydration may have failed; retry against the recovered pointer below.
+      logEvent('checkpoint-rehydrate-stale-hydration-failed', {
+        docId,
+        error: retentionErrorMessage(error),
+      })
+    }
+  }
+  const current = room.docs.get(key)
+  room.docs.delete(key)
+  room.hydratedDocs.delete(key)
+  if (inFlight !== undefined && room.hydrationInFlight.get(key) === inFlight) {
+    room.hydrationInFlight.delete(key)
+  }
+  current?.destroy()
+  await ensureDocHydrated(room, docId)
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false
+  return left.every((byte, index) => byte === right[index])
 }

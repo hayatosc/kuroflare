@@ -33,8 +33,15 @@ import {
   readSnapshotPointer,
   readSnapshotSeq,
   scheduleCheckpointAlarm,
+  withSqlTransaction,
 } from './storage'
-import type { RuntimeWebSocket, SessionState, RuntimeDocClockRecord } from './types'
+import type {
+  R2BucketBinding,
+  R2ObjectBinding,
+  RuntimeWebSocket,
+  SessionState,
+  RuntimeDocClockRecord,
+} from './types'
 import {
   docKey,
   makeQuarantineId,
@@ -47,6 +54,7 @@ import {
   encodeBase64,
   sha256Hex,
   logEvent,
+  retentionErrorMessage,
 } from './utils'
 import type { VaultRoom } from './vault-room'
 
@@ -180,6 +188,30 @@ async function handleSyncUpdateSerialized(
   const doc = await readDocClock(room, update.docId)
   const duplicate = await readDuplicate(room, update.docId, update.messageId)
   if (duplicate !== undefined) {
+    if (
+      duplicate.updateSha256 !== updateSha256 ||
+      (update.updateSha256 !== undefined && update.updateSha256 !== updateSha256)
+    ) {
+      logEvent('sync-duplicate-unsafe', {
+        vaultId: room.vaultId,
+        docId: update.docId,
+        messageId: update.messageId,
+        durableSeq: duplicate.durableSeq,
+      })
+      webSocket.close(1011, 'duplicate-unsafe')
+      return { action: 'stop' }
+    }
+    try {
+      await ensureDocHydrated(room, update.docId)
+    } catch {
+      webSocket.close(1011, 'hydrate-failed')
+      return { action: 'stop' }
+    }
+    const hydratedKey = docKey(update.docId)
+    if (!room.hydratedDocs.has(hydratedKey) || room.docs.get(hydratedKey) === undefined) {
+      webSocket.close(1011, 'hydrate-failed')
+      return { action: 'stop' }
+    }
     const duplicateDecision = decideSyncUpdateAppend({
       update,
       doc,
@@ -249,17 +281,6 @@ async function handleSyncUpdateSerialized(
     webSocket.send(JSON.stringify(append.ack))
     return { action: 'stop' }
   }
-  if (append.action === 'snapshot-escape') {
-    await persistDocClock(room, update.docId, {
-      latestSeq: append.docPatch.latestSeq,
-      updatedAt: append.docPatch.updatedAt,
-    })
-    await persistDuplicate(room, update.docId, update.messageId, append.seq, now)
-    webSocket.send(JSON.stringify(append.ack))
-    webSocket.send(JSON.stringify(append.boundary))
-    return { action: 'stop' }
-  }
-
   await persistAppend(
     room,
     update,
@@ -270,14 +291,53 @@ async function handleSyncUpdateSerialized(
     quarantine.updateSha256,
     now,
   )
-  applyUpdate(room, update.docId, updateBytes)
-  await scheduleCheckpointAfterAppend(room, update.docId, append.docPatch.latestSeq, now)
+  try {
+    applyUpdate(room, update.docId, updateBytes)
+  } catch (error) {
+    logEvent('sync-apply-failed', {
+      vaultId: room.vaultId,
+      docId: update.docId,
+      error: retentionErrorMessage(error),
+    })
+    try {
+      await rehydrateAfterApplyFailure(room, update.docId)
+    } catch (rehydrateError) {
+      logEvent('sync-rehydrate-failed', {
+        vaultId: room.vaultId,
+        docId: update.docId,
+        error: retentionErrorMessage(rehydrateError),
+      })
+      webSocket.close(1011, 'hydrate-failed')
+      return { action: 'stop' }
+    }
+  }
+  try {
+    await scheduleCheckpointAfterAppend(room, update.docId, append.docPatch.latestSeq, now)
+  } catch (error) {
+    logEvent('checkpoint-schedule-failed', {
+      vaultId: room.vaultId,
+      docId: update.docId,
+      latestSeq: append.docPatch.latestSeq,
+      error: retentionErrorMessage(error),
+    })
+  }
   webSocket.send(JSON.stringify(append.ack))
 
   return { action: 'broadcast', durableSeq: append.opLogAppend.seq }
 }
 
-async function withDocWriteQueue<T>(
+/**
+ * Runs a document mutation in the same serialized turn as inbound updates.
+ *
+ * The caller may release the queue before performing external I/O by returning
+ * a captured value from the task.
+ *
+ * @param room Runtime room that owns the per-document queues.
+ * @param docId Document whose writes must be serialized.
+ * @param task Work to run after all earlier document writes complete.
+ * @returns The task result after the serialized turn completes.
+ */
+export async function withDocWriteQueue<T>(
   room: VaultRoom,
   docId: DocId,
   task: () => Promise<T>,
@@ -347,43 +407,21 @@ async function persistAppend(
   if (db === undefined) throw new Error('sql-unavailable')
 
   const docId = docKey(update.docId)
-  await insertOpLog(
-    db,
-    docId,
-    seq,
-    update.messageId,
-    update.deviceId,
-    yClientId,
-    updateBytes,
-    updateSha256,
-    now,
-  )
-  await upsertDocClock(db, docId, update.docId.kind, docPatch.latestSeq, docPatch.updatedAt)
-  await upsertMessageDedup(db, docId, update.messageId, seq, now)
-}
-
-async function persistDocClock(
-  room: VaultRoom,
-  docId: DocId,
-  docPatch: RuntimeDocClockRecord,
-): Promise<void> {
-  const db = getDb(room)
-  if (db === undefined) throw new Error('sql-unavailable')
-
-  await upsertDocClock(db, docKey(docId), docId.kind, docPatch.latestSeq, docPatch.updatedAt)
-}
-
-async function persistDuplicate(
-  room: VaultRoom,
-  docId: DocId,
-  messageId: string,
-  durableSeq: number,
-  now: number,
-): Promise<void> {
-  const db = getDb(room)
-  if (db === undefined) throw new Error('sql-unavailable')
-
-  await upsertMessageDedup(db, docKey(docId), messageId, durableSeq, now)
+  await withSqlTransaction(room, async () => {
+    await insertOpLog(
+      db,
+      docId,
+      seq,
+      update.messageId,
+      update.deviceId,
+      yClientId,
+      updateBytes,
+      updateSha256,
+      now,
+    )
+    await upsertDocClock(db, docId, update.docId.kind, docPatch.latestSeq, docPatch.updatedAt)
+    await upsertMessageDedup(db, docId, update.messageId, seq, updateSha256, now)
+  })
 }
 
 function applyUpdate(room: VaultRoom, docId: DocId, updateBytes: Uint8Array): void {
@@ -391,6 +429,15 @@ function applyUpdate(room: VaultRoom, docId: DocId, updateBytes: Uint8Array): vo
   const doc = room.docs.get(key) ?? new Y.Doc()
   room.docs.set(key, doc)
   Y.applyUpdate(doc, updateBytes)
+}
+
+async function rehydrateAfterApplyFailure(room: VaultRoom, docId: DocId): Promise<void> {
+  const key = docKey(docId)
+  const current = room.docs.get(key)
+  room.docs.delete(key)
+  room.hydratedDocs.delete(key)
+  current?.destroy()
+  await ensureDocHydrated(room, docId)
 }
 
 function metaSchemaValidAfterUpdate(room: VaultRoom, updateBytes: Uint8Array): boolean {
@@ -474,10 +521,43 @@ async function listSnapshotCandidates(
   if (bucket === undefined || vaultId === undefined) return []
 
   const prefix = makeSnapshotListPrefix(vaultId, docId)
-  const result = await bucket.list({ prefix })
-  return result.objects
+  const objects = await listR2Objects(bucket, prefix)
+  return objects
     .map((object) => snapshotCandidateFromKey(prefix, object.key))
     .filter((c): c is SnapshotCandidate => c !== undefined)
+}
+
+/**
+ * Lists every object under an R2 prefix, following opaque continuation cursors.
+ *
+ * @param bucket R2 bucket to query.
+ * @param prefix Prefix to list.
+ * @returns All listed object metadata in page order.
+ * @throws If a truncated response omits a usable continuation cursor or loops.
+ */
+export async function listR2Objects(
+  bucket: R2BucketBinding,
+  prefix: string,
+): Promise<readonly R2ObjectBinding[]> {
+  const objects: R2ObjectBinding[] = []
+  const seenCursors = new Set<string>()
+  let cursor: string | undefined
+
+  while (true) {
+    const result = await bucket.list(cursor === undefined ? { prefix } : { prefix, cursor })
+    objects.push(...result.objects)
+    if (typeof result.truncated !== 'boolean') throw new Error('invalid-r2-list-result')
+    if (!result.truncated) return objects
+    if (
+      typeof result.cursor !== 'string' ||
+      result.cursor.length === 0 ||
+      seenCursors.has(result.cursor)
+    ) {
+      throw new Error('invalid-r2-list-cursor')
+    }
+    seenCursors.add(result.cursor)
+    cursor = result.cursor
+  }
 }
 
 async function scheduleCheckpointAfterAppend(

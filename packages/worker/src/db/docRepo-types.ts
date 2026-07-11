@@ -23,4 +23,5 @@ export interface OpLogUpdateRow {
 
 export interface MessageDedupRow {
   readonly durableSeq: number
+  readonly updateSha256: string | null
 }

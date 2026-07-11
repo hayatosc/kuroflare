@@ -92,6 +92,11 @@ export class FakeR2Bucket implements R2BucketBinding {
   readonly lists: string[] = []
   readonly puts: string[] = []
   readonly deletes: string[] = []
+  beforePut: ((key: string, value: Uint8Array) => void | Promise<void>) | undefined
+  listOverride:
+    | ((options: R2ListOptionsBinding) => R2ObjectsBinding | Promise<R2ObjectsBinding>)
+    | undefined
+  listPageSize: number | undefined
   private readonly values = new Map<string, Uint8Array>()
 
   set(key: string, bytes: Uint8Array): void {
@@ -112,15 +117,29 @@ export class FakeR2Bucket implements R2BucketBinding {
 
   async list(options: R2ListOptionsBinding): Promise<R2ObjectsBinding> {
     this.lists.push(options.prefix)
+    if (this.listOverride !== undefined) return this.listOverride(options)
+    const keys = [...this.values.keys()].filter((key) => key.startsWith(options.prefix)).sort()
+    const start = options.cursor === undefined ? 0 : Number(options.cursor)
+    if (!Number.isSafeInteger(start) || start < 0 || start > keys.length) {
+      throw new Error('invalid-list-cursor')
+    }
+    const pageSize =
+      this.listPageSize === undefined ||
+      !Number.isSafeInteger(this.listPageSize) ||
+      this.listPageSize <= 0
+        ? keys.length
+        : this.listPageSize
+    const end = Math.min(start + pageSize, keys.length)
     return {
-      objects: [...this.values.keys()]
-        .filter((key) => key.startsWith(options.prefix))
-        .map((key) => ({ key })),
+      objects: keys.slice(start, end).map((key) => ({ key })),
+      truncated: end < keys.length,
+      ...(end < keys.length ? { cursor: String(end) } : {}),
     }
   }
 
   async put(key: string, value: Uint8Array): Promise<void> {
     this.puts.push(key)
+    await this.beforePut?.(key, value)
     this.values.set(key, value)
   }
 
@@ -172,6 +191,7 @@ export class SqlOnlyStorage implements DurableObjectStorageBinding {
       refreshTokens: new Map(this.sql.refreshTokens),
       devices: new Map(this.sql.devices),
       migrationVersions: new Set(this.sql.migrationVersions),
+      messageDedupColumns: new Set(this.sql.messageDedupColumns),
     }
   }
 
@@ -185,6 +205,7 @@ export class SqlOnlyStorage implements DurableObjectStorageBinding {
     replaceMap(this.sql.refreshTokens, snapshot.refreshTokens)
     replaceMap(this.sql.devices, snapshot.devices)
     replaceSet(this.sql.migrationVersions, snapshot.migrationVersions)
+    replaceSet(this.sql.messageDedupColumns, snapshot.messageDedupColumns)
   }
 }
 

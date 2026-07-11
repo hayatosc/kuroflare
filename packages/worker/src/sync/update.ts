@@ -129,18 +129,8 @@ function makeNewUpdateDecision(
 ): SyncUpdateAppendDecision {
   if (input.updateBytesLength > input.largeUpdateThresholdBytes) {
     return {
-      action: 'snapshot-escape',
-      seq,
-      docPatch: { latestSeq: seq, updatedAt: input.now },
-      ack: makeAck(input.update, seq),
-      boundary: {
-        type: 'need-full-snapshot',
-        protocolVersion: input.update.protocolVersion,
-        vaultId: input.update.vaultId,
-        deviceId: input.update.deviceId,
-        docId: input.update.docId,
-        reason: 'large-update-snapshot',
-      },
+      action: 'reject',
+      reason: 'large-update-requires-snapshot-import',
     }
   }
 

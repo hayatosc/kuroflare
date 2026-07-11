@@ -1,16 +1,10 @@
-import type {
-  Ack,
-  DocId,
-  DeviceId,
-  MessageId,
-  NeedFullSnapshot,
-  Sha256Hex,
-  SyncUpdate,
-} from '@kuroflare/core'
+import type { Ack, DocId, DeviceId, MessageId, Sha256Hex, SyncUpdate } from '@kuroflare/core'
 
 /** Durable evidence for an update message already processed by this document. */
 export interface SyncUpdateDuplicateEvidence {
   readonly durableSeq: number
+  /** Hash recorded with the durable append; absent means legacy unsafe evidence. */
+  readonly updateSha256?: Sha256Hex | undefined
 }
 
 /** Existing document clock used before appending inbound update. */
@@ -106,13 +100,6 @@ export type SyncUpdateAppendDecision =
       readonly ack: Ack
     }
   | {
-      readonly action: 'snapshot-escape'
-      readonly seq: number
-      readonly docPatch: SyncUpdateDocPatch
-      readonly ack: Ack
-      readonly boundary: NeedFullSnapshot
-    }
-  | {
       readonly action: 'reject'
       readonly reason:
         | 'invalid-clock'
@@ -120,4 +107,5 @@ export type SyncUpdateAppendDecision =
         | 'invalid-y-client-id'
         | 'invalid-now'
         | 'duplicate-ahead-of-doc'
+        | 'large-update-requires-snapshot-import'
     }

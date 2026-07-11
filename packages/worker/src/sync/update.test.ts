@@ -224,7 +224,7 @@ test('sync update append acks duplicates without allocating a new sequence', () 
   )
 })
 
-test('sync update append routes large updates to snapshot escape', () => {
+test('sync update append rejects large updates without durable evidence', () => {
   assert.deepEqual(
     decideSyncUpdateAppend({
       update,
@@ -237,26 +237,8 @@ test('sync update append routes large updates to snapshot escape', () => {
       largeUpdateThresholdBytes: 1024,
     }),
     {
-      action: 'snapshot-escape',
-      seq: 11,
-      docPatch: { latestSeq: 11, updatedAt: 1000 },
-      ack: {
-        type: 'ack',
-        protocolVersion: CURRENT_PROTOCOL_VERSION,
-        vaultId: update.vaultId,
-        deviceId: update.deviceId,
-        messageId: update.messageId,
-        docId: update.docId,
-        durableSeq: 11,
-      },
-      boundary: {
-        type: 'need-full-snapshot',
-        protocolVersion: CURRENT_PROTOCOL_VERSION,
-        vaultId: update.vaultId,
-        deviceId: update.deviceId,
-        docId: update.docId,
-        reason: 'large-update-snapshot',
-      },
+      action: 'reject',
+      reason: 'large-update-requires-snapshot-import',
     },
   )
 })

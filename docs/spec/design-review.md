@@ -8,20 +8,20 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 
 ## 1. Priority and status
 
-| ID     | Priority | Area                                       | Status                                            |
-| ------ | -------- | ------------------------------------------ | ------------------------------------------------- |
-| DR-001 | P0       | Durable authority and failure model        | Specification correction required                 |
-| DR-002 | P0       | Atomic update append                       | Implementation does not meet the contract         |
-| DR-003 | P0       | Large-update snapshot escape               | Data-loss path in the current runtime             |
-| DR-004 | P0       | Checkpoint boundary and rollback retention | Implementation does not meet the contract         |
-| DR-005 | P1       | Meta entry merge granularity               | Schema decision required                          |
-| DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                          |
-| DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship |
-| DR-008 | P1       | Snapshot health and rollback               | Health evidence is underspecified                 |
-| DR-009 | P1       | Quarantine and public error evidence       | Wire contract and runtime differ                  |
-| DR-010 | P2       | Empty binary files                         | Schema contradiction                              |
-| DR-011 | P2       | Portable path materialization              | Deterministic policy missing                      |
-| DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing              |
+| ID     | Priority | Area                                       | Status                                             |
+| ------ | -------- | ------------------------------------------ | -------------------------------------------------- |
+| DR-001 | P0       | Durable authority and failure model        | Specification correction required                  |
+| DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested             |
+| DR-003 | P0       | Large-update snapshot escape               | Safely disabled; full escape remains unimplemented |
+| DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                 |
+| DR-005 | P1       | Meta entry merge granularity               | Schema decision required                           |
+| DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                           |
+| DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship  |
+| DR-008 | P1       | Snapshot health and rollback               | Health evidence is underspecified                  |
+| DR-009 | P1       | Quarantine and public error evidence       | Wire contract and runtime differ                   |
+| DR-010 | P2       | Empty binary files                         | Schema contradiction                               |
+| DR-011 | P2       | Portable path materialization              | Deterministic policy missing                       |
+| DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing               |
 
 P0 items can acknowledge or delete durable user data incorrectly.
 P1 items can violate convergence, recovery, or interoperability under realistic concurrency.
@@ -61,10 +61,9 @@ Acceptance evidence:
 ### DR-002: Make the SQL append one transaction
 
 The server specification defines `op_log`, `docs.latest_seq`, and `message_dedup` as one success unit.
-`VaultRoom.persistAppend()` currently performs three awaited repository calls without a surrounding transaction.
-
-A failure after `op_log` insert but before `message_dedup` upsert leaves a row that cannot be retried cleanly.
-The retry can allocate the same or a later sequence and then fail a unique constraint instead of returning the original acknowledgement.
+`VaultRoom.persistAppend()` now writes all three records in one Durable Object storage transaction.
+The runtime applies the committed update to derived in-memory state only after commit and rehydrates that state from the durable log if application unexpectedly fails.
+Checkpoint scheduling failures no longer suppress the committed update acknowledgement or peer broadcast.
 
 Recommended contract:
 
@@ -85,9 +84,11 @@ Acceptance evidence:
 ### DR-003: Complete or remove the large-update escape before use
 
 The specification requires a large update to be applied, written as an R2 snapshot, and connected to a durable pointer before acknowledgement.
-The current `snapshot-escape` branch advances `docs.latest_seq`, writes `message_dedup`, sends an acknowledgement, and sends `NeedFullSnapshot` without applying the update or writing an R2 snapshot.
+The former `snapshot-escape` branch advanced `docs.latest_seq`, wrote `message_dedup`, sent an acknowledgement, and sent `NeedFullSnapshot` without applying the update or writing an R2 snapshot.
 
-This sequence permanently suppresses a retry because the dedup row proves a completion that never happened.
+That sequence permanently suppressed a retry because the dedup row proved a completion that never happened.
+The runtime now rejects oversized live updates without acknowledgement or durable mutation using the stable `append-reject:large-update-requires-snapshot-import` close reason.
+Recovery currently requires manual use of the authenticated snapshot-import route; automatic client transition is future work.
 
 Recommended contract:
 
@@ -97,10 +98,15 @@ Recommended contract:
 4. Replace or update the active in-memory YDoc.
 5. Only then send `Ack` and `NeedFullSnapshot(reason="large-update-snapshot")`.
 
-The simpler safe alternative is to reject oversized live updates without acknowledgement and require the authenticated snapshot-import route.
-That alternative is preferable until the full escape transaction exists.
+The simpler safe alternative is now active until the full escape transaction exists.
 
 Acceptance evidence:
+
+- An oversized live update closes with `large-update-requires-snapshot-import` and leaves `op_log`, `docs`, and `message_dedup` unchanged.
+- Retrying that message is not treated as a completed duplicate and receives no acknowledgement.
+- Ordinary live updates continue through the existing append path.
+
+Acceptance evidence for a future full escape:
 
 - Fault injection at every step never leaves an acknowledgement without a restorable snapshot.
 - A duplicate large update returns the original sequence and identical content.
@@ -108,8 +114,8 @@ Acceptance evidence:
 
 ### DR-004: Bind `upperSeq`, snapshot bytes, and state vector to one document boundary
 
-The specification relies on snapshot bytes and the state vector being encoded without an intervening `await`.
-The runtime reads `latestSeq` before encoding and performs awaited operations between clock reads and snapshot encoding while normal writes use a separate document queue.
+The runtime now captures `latestSeq`, snapshot bytes, and the state vector in the same document queue turn before releasing the queue for R2 and SQL I/O.
+Live appends, snapshot imports, checkpoint creation, and orphan pointer recovery share that document boundary.
 
 An await-free encoder is insufficient if the sequence boundary and encoded YDoc are captured in different critical sections.
 The snapshot can represent a state newer or older than its declared `upperSeq`.
@@ -123,8 +129,9 @@ Recommended contract:
 - Permit later updates to append above `upperSeq` while the R2 write is in flight.
 - Advance the pointer monotonically and compact only rows proven covered by the retained snapshot floor.
 
-The current runtime also passes no retained floor to normal compaction or orphan recovery.
-This conflicts with the rollback guarantee that older retained snapshots can replay later operations.
+Normal compaction and orphan recovery now clamp deletion to the oldest retained snapshot floor and persist the state vector for that exact floor.
+Retention candidates must match durable checkpoint state-vector evidence; missing or inconsistent evidence blocks compaction and cleanup.
+R2 listing follows pagination before calculating the retention plan.
 
 Acceptance evidence:
 

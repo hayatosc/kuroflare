@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely'
+import { sql, type Kysely } from 'kysely'
 
 import type { SchemaMigration } from './migrations'
 import type { Database } from './types'
@@ -10,7 +10,18 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     name: 'initial-schema',
     migrate: buildInitialSchema,
   },
+  {
+    version: 2,
+    name: 'message-dedup-update-hash',
+    migrate: buildMessageDedupUpdateHash,
+  },
 ]
+
+async function buildMessageDedupUpdateHash(db: Kysely<Database>): Promise<void> {
+  const columns = await sql<{ readonly name: string }>`pragma table_info(message_dedup)`.execute(db)
+  if (columns.rows.some((column) => column.name === 'update_sha256')) return
+  await db.schema.alterTable('message_dedup').addColumn('update_sha256', 'text').execute()
+}
 
 async function buildInitialSchema(db: Kysely<Database>): Promise<void> {
   await db.schema

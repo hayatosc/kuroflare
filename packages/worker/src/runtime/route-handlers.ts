@@ -15,7 +15,12 @@ import { type Context } from 'hono'
 import * as v from 'valibot'
 import * as Y from 'yjs'
 
-import { getSnapshotRetentionEvents } from '../db/checkpointRepo'
+import {
+  getSnapshotRetentionEvents,
+  insertCheckpointRun,
+  updateCheckpointR2Written,
+  updateCheckpointPointerUpdated,
+} from '../db/checkpointRepo'
 import { insertDoc } from '../db/docRepo'
 import { upsertSetupToken } from '../db/setupRepo'
 import { decideSetupExchange, decideRevokeDevice, planSetupExchangeCredentials } from '../devices'
@@ -57,8 +62,9 @@ import {
   persistDeviceRevocation,
   withSqlTransaction,
   readDocClock,
+  readSnapshotPointer,
 } from './storage'
-import { ensureDocHydrated } from './sync'
+import { ensureDocHydrated, withDocWriteQueue } from './sync'
 import type { RuntimeWebSocketPairConstructor, WebSocketResponseInit } from './types'
 import { E2eSetupTokenSeedRequestSchema, E2eSnapshotSeedRequestSchema } from './types'
 import {
@@ -73,6 +79,7 @@ import {
   sha256Text,
   sha256Hex,
   logEvent,
+  metaYDocSchemaValid,
   retentionErrorMessage,
 } from './utils'
 import type { VaultRoom } from './vault-room'
@@ -515,29 +522,131 @@ async function handleSnapshotImportRequest(
   if (update === null || !canApplyYjsUpdate(update))
     return c.json({ error: 'invalid-snapshot-import-update' }, 400)
 
-  let existingLatestSeq: number
+  return await withDocWriteQueue(room, docId, async () => {
+    let existingLatestSeq: number
+    try {
+      existingLatestSeq = (await readDocClock(room, docId))?.latestSeq ?? 0
+    } catch {
+      return c.json({ error: 'snapshot-import-hydrate-failed' }, 500)
+    }
+    if (existingLatestSeq > 0 && body.latestSeq === undefined) {
+      return c.json(
+        { error: 'snapshot-import-latest-seq-required', latestSeq: existingLatestSeq },
+        409,
+      )
+    }
+    if (body.latestSeq !== undefined && body.latestSeq !== existingLatestSeq) {
+      return c.json({ error: 'snapshot-import-stale-seq', latestSeq: existingLatestSeq }, 409)
+    }
+    try {
+      await ensureDocHydrated(room, docId)
+    } catch {
+      return c.json({ error: 'snapshot-import-hydrate-failed' }, 500)
+    }
+
+    const key = docKey(docId)
+    const importedDoc = new Y.Doc()
+    const existingDoc = room.docs.get(key)
+    if (existingDoc !== undefined) Y.applyUpdate(importedDoc, Y.encodeStateAsUpdate(existingDoc))
+    Y.applyUpdate(importedDoc, update)
+    if (docId.kind === 'meta' && !metaYDocSchemaValid(importedDoc)) {
+      importedDoc.destroy()
+      return c.json({ error: 'invalid-snapshot-import-meta-schema' }, 400)
+    }
+    const mergedBytes = Y.encodeStateAsUpdate(importedDoc)
+    const stateVector = Y.encodeStateVector(importedDoc)
+
+    const now = Date.now()
+    const snapshotSeq = existingLatestSeq + 1
+    const snapshotKey = makeSnapshotObjectKey(vaultId, docId, snapshotSeq)
+    const runId = `checkpoint:import:${snapshotKey}:${now}`
+    let pointerPersisted = false
+    try {
+      await insertCheckpointRun(
+        db,
+        runId,
+        key,
+        snapshotSeq,
+        snapshotKey,
+        stateVector,
+        'writing',
+        now,
+      )
+      await bucket.put(snapshotKey, mergedBytes)
+      await updateCheckpointR2Written(db, runId, now)
+      await insertDoc(
+        db,
+        key,
+        docId.kind,
+        snapshotSeq,
+        snapshotSeq,
+        snapshotKey,
+        stateVector,
+        0,
+        now,
+      )
+      pointerPersisted = true
+      await updateCheckpointPointerUpdated(db, runId, now)
+    } catch (error) {
+      const pointerAdvanced =
+        pointerPersisted ||
+        (await snapshotPointerMatchesImport(room, docId, snapshotSeq, snapshotKey))
+      if (pointerAdvanced) {
+        await activateImportedDoc(room, docId, importedDoc)
+      } else {
+        importedDoc.destroy()
+      }
+      throw error
+    }
+    room.docs.set(key, importedDoc)
+    room.hydratedDocs.add(key)
+
+    return c.json({ ok: true, vaultId, docId, snapshotKey, snapshotSeq }, 200)
+  })
+}
+
+async function snapshotPointerMatchesImport(
+  room: VaultRoom,
+  docId: DocId,
+  snapshotSeq: number,
+  snapshotKey: string,
+): Promise<boolean> {
   try {
-    await ensureDocHydrated(room, docId)
-    existingLatestSeq = (await readDocClock(room, docId))?.latestSeq ?? 0
+    const pointer = await readSnapshotPointer(room, docId)
+    return pointer?.latestSnapshotSeq === snapshotSeq && pointer.latestSnapshotKey === snapshotKey
   } catch {
-    return c.json({ error: 'snapshot-import-hydrate-failed' }, 500)
+    return false
   }
+}
 
+async function activateImportedDoc(
+  room: VaultRoom,
+  docId: DocId,
+  importedDoc: Y.Doc,
+): Promise<void> {
   const key = docKey(docId)
-  const doc = room.docs.get(key) ?? new Y.Doc()
-  Y.applyUpdate(doc, update)
-  room.docs.set(key, doc)
+  const inFlight = room.hydrationInFlight.get(key)
+  if (inFlight !== undefined) {
+    try {
+      await inFlight
+    } catch (error) {
+      // The stale hydration is superseded by the durable imported snapshot.
+      logEvent('snapshot-import-stale-hydration-failed', {
+        vaultId: room.vaultId,
+        docId,
+        error: retentionErrorMessage(error),
+      })
+    }
+  }
+  const current = room.docs.get(key)
+  room.docs.delete(key)
+  room.hydratedDocs.delete(key)
+  if (inFlight !== undefined && room.hydrationInFlight.get(key) === inFlight) {
+    room.hydrationInFlight.delete(key)
+  }
+  current?.destroy()
+  room.docs.set(key, importedDoc)
   room.hydratedDocs.add(key)
-  const mergedBytes = Y.encodeStateAsUpdate(doc)
-  const stateVector = Y.encodeStateVector(doc)
-
-  const now = Date.now()
-  const snapshotSeq = existingLatestSeq + 1
-  const snapshotKey = makeSnapshotObjectKey(vaultId, docId, snapshotSeq)
-  await bucket.put(snapshotKey, mergedBytes)
-  await insertDoc(db, key, docId.kind, snapshotSeq, snapshotSeq, snapshotKey, stateVector, 0, now)
-
-  return c.json({ ok: true, vaultId, docId, snapshotKey, snapshotSeq }, 200)
 }
 
 export async function handleWebSocketUpgrade(room: VaultRoom, c: Context): Promise<Response> {

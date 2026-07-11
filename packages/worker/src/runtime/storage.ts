@@ -1,5 +1,6 @@
 import {
   VaultIdSchema,
+  Sha256HexSchema,
   type DocId,
   type MessageId,
   type VaultId,
@@ -107,8 +108,10 @@ export async function readDuplicate(
   const db = getDb(room)
   if (db === undefined) return undefined
   const row = await getMessageDedupSeq(db, docKey(docId), messageId)
-  const durableSeq = row?.durableSeq
-  return v.is(PosIntSchema, durableSeq) ? { durableSeq } : undefined
+  if (row === undefined) return undefined
+  const durableSeq = v.is(PosIntSchema, row.durableSeq) ? row.durableSeq : 0
+  const updateSha256 = v.is(Sha256HexSchema, row.updateSha256) ? row.updateSha256 : undefined
+  return { durableSeq, updateSha256 }
 }
 
 export async function readSyncRequestDocState(

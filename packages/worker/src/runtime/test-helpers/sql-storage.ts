@@ -73,6 +73,7 @@ export interface RecordedMessageDedupRow {
   readonly docId: string
   readonly messageId: string
   readonly durableSeq: number
+  readonly updateSha256?: string | undefined
   readonly seenAt: number
 }
 
@@ -105,8 +106,10 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
     ],
   ])
   readonly migrationVersions = new Set<number>()
+  readonly messageDedupColumns = new Set<string>()
   readonly queries: string[] = []
   failOnQueryIncludes: string | undefined
+  failAfterQueryIncludes: string | undefined
 
   exec<T extends Record<string, unknown> = Record<string, unknown>>(
     query: string,
@@ -121,6 +124,16 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       throw new Error(`injected SQL failure: ${this.failOnQueryIncludes}`)
     }
     if (normalized.startsWith('create table') || normalized.startsWith('create index')) {
+      return []
+    }
+    if (normalized.startsWith('pragma table_info(message_dedup)')) {
+      return [...this.messageDedupColumns].map((name) => ({ name })) as Iterable<T>
+    }
+    if (normalized.includes('alter table message_dedup') && normalized.includes('update_sha256')) {
+      this.messageDedupColumns.add('update_sha256')
+      return []
+    }
+    if (normalized.startsWith('alter table')) {
       return []
     }
     if (normalized.includes('from schema_migrations')) {
@@ -315,7 +328,10 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       const docId = expectString(bindings[0])
       const messageId = expectString(bindings[1])
       const row = this.messageDedup.get(`${docId}:${messageId}`)
-      const rows = row === undefined ? [] : [{ durableSeq: row.durableSeq }]
+      const rows =
+        row === undefined
+          ? []
+          : [{ durableSeq: row.durableSeq, updateSha256: row.updateSha256 ?? null }]
       return rows as Iterable<T>
     }
     if (normalized.includes('from checkpoint_runs') && normalized.includes('status in')) {
@@ -335,6 +351,7 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
           status: run.status,
           upperSeq: run.upperSeq,
           snapshotKey: run.snapshotKey,
+          stateVector: run.stateVector,
         }))
       return rows as Iterable<T>
     }
@@ -344,7 +361,9 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         .filter((run) => run.docId === docId)
         .map((run) => ({
           status: run.status,
+          upperSeq: run.upperSeq,
           snapshotKey: run.snapshotKey,
+          stateVector: run.stateVector,
         }))
       return rows as Iterable<T>
     }
@@ -386,6 +405,21 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         updateSha256: expectString(bindings[6]),
         createdAt: expectNumber(bindings[7]),
       })
+      this.maybeFailAfterQuery(normalized)
+      return []
+    }
+    if (normalized.includes('insert into docs') && normalized.includes('latest_snapshot_seq')) {
+      const docId = expectString(bindings[0])
+      this.docs.set(docId, {
+        kind: expectString(bindings[1]),
+        latestSeq: expectNumber(bindings[2]),
+        latestSnapshotSeq: expectNumber(bindings[3]),
+        latestSnapshotKey: expectString(bindings[4]),
+        minRetainedSeq: expectNumber(bindings[6]),
+        horizonStateVector: undefined,
+        updatedAt: expectNumber(bindings[7]),
+      })
+      this.maybeFailAfterQuery(normalized)
       return []
     }
     if (normalized.includes('insert into docs')) {
@@ -399,6 +433,7 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         horizonStateVector: this.docs.get(docId)?.horizonStateVector,
         updatedAt: expectNumber(bindings[3]),
       })
+      this.maybeFailAfterQuery(normalized)
       return []
     }
     if (normalized.includes('insert into message_dedup')) {
@@ -408,8 +443,10 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         docId,
         messageId,
         durableSeq: expectNumber(bindings[2]),
-        seenAt: expectNumber(bindings[3]),
+        updateSha256: bindings[3] === null ? undefined : expectString(bindings[3]),
+        seenAt: expectNumber(bindings[4]),
       })
+      this.maybeFailAfterQuery(normalized)
       return []
     }
     if (normalized.includes('insert into quarantined_updates')) {
@@ -493,19 +530,20 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       return []
     }
     if (normalized.includes('update docs') && normalized.includes('latest_snapshot_seq')) {
-      const latestSnapshotSeq = expectNumber(bindings[0])
-      const latestSnapshotKey = expectString(bindings[1])
-      const docId = expectString(bindings[4])
-      const maxSnapshotSeq = expectNumber(bindings[5])
+      const latestSnapshotSeq = expectNumber(bindings[1])
+      const latestSnapshotKey = expectString(bindings[2])
+      const docId = expectString(bindings[5])
+      const maxSnapshotSeq = expectNumber(bindings[6])
       const existing = this.docs.get(docId)
       if (existing === undefined || existing.latestSnapshotSeq > maxSnapshotSeq) {
         return []
       }
       this.docs.set(docId, {
         ...existing,
+        latestSeq: Math.max(existing.latestSeq, expectNumber(bindings[0])),
         latestSnapshotSeq,
         latestSnapshotKey,
-        updatedAt: expectNumber(bindings[3]),
+        updatedAt: expectNumber(bindings[4]),
       })
       return []
     }
@@ -549,6 +587,15 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
     }
     throw new Error(`unexpected SQL query: ${query}`)
   }
+
+  private maybeFailAfterQuery(normalized: string): void {
+    if (
+      this.failAfterQueryIncludes !== undefined &&
+      normalized.includes(this.failAfterQueryIncludes)
+    ) {
+      throw new Error(`injected SQL failure after query: ${this.failAfterQueryIncludes}`)
+    }
+  }
 }
 
 export interface RecordingSqlSnapshot {
@@ -561,4 +608,5 @@ export interface RecordingSqlSnapshot {
   readonly refreshTokens: Map<string, RecordedRefreshTokenRow>
   readonly devices: Map<string, RecordedDeviceRow>
   readonly migrationVersions: Set<number>
+  readonly messageDedupColumns: Set<string>
 }

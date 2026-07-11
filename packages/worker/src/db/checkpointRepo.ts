@@ -9,11 +9,14 @@ export interface CheckpointRunRow {
   readonly status: string
   readonly upperSeq: number
   readonly snapshotKey: string | null
+  readonly stateVector: ArrayBuffer | null
 }
 
 export interface SnapshotRetentionCheckpointRunRow {
   readonly status: string
+  readonly upperSeq: number
   readonly snapshotKey: string | null
+  readonly stateVector: ArrayBuffer | null
 }
 
 export interface SnapshotRetentionEventRow {
@@ -124,6 +127,7 @@ export async function getRecoverableCheckpointRuns(
       'status',
       eb.ref('upper_seq').as('upperSeq'),
       eb.ref('snapshot_key').as('snapshotKey'),
+      eb.ref('state_vector').as('stateVector'),
     ])
     .where('status', 'in', ['writing', 'r2-written', 'pointer-updated'])
     .orderBy('created_at', 'asc')
@@ -137,7 +141,12 @@ export async function getSnapshotRetentionCheckpointRuns(
 ): Promise<readonly SnapshotRetentionCheckpointRunRow[]> {
   return db
     .selectFrom('checkpoint_runs')
-    .select(['status', 'snapshot_key as snapshotKey'])
+    .select((eb) => [
+      'status',
+      eb.ref('upper_seq').as('upperSeq'),
+      eb.ref('snapshot_key').as('snapshotKey'),
+      eb.ref('state_vector').as('stateVector'),
+    ])
     .where('doc_id', '=', docKey)
     .execute()
 }

@@ -694,6 +694,12 @@ test('VaultRoom persists JSON sync updates through Durable Object SQL storage', 
     await room.webSocketMessage(firstServer, JSON.stringify(makeHello()))
     await room.webSocketMessage(secondServer, JSON.stringify(makeHello()))
 
+    const peerSend = secondServer.send.bind(secondServer)
+    secondServer.send = (message) => {
+      assert(storage.sql.queries.includes('transaction commit'))
+      peerSend(message)
+    }
+
     const update = makeSyncUpdate(makeMessageId('message-sql'))
     const updateJson = JSON.stringify(update)
 
@@ -729,6 +735,232 @@ test('VaultRoom persists JSON sync updates through Durable Object SQL storage', 
   }
 })
 
+test('VaultRoom rolls back every append SQL statement failure and retries at the same durable sequence', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    for (const [failureIndex, failureNeedle] of [
+      'insert into op_log',
+      'insert into docs',
+      'insert into message_dedup',
+    ].entries()) {
+      const storage = new SqlOnlyStorage()
+      const state = new FakeState(storage)
+      const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+
+      void room.fetch(await makeAuthenticatedWebSocketRequest())
+      void room.fetch(await makeAuthenticatedWebSocketRequest())
+      const sender = state.accepted[0]
+      const peer = state.accepted[1]
+      assert(sender instanceof FakeSocket)
+      assert(peer instanceof FakeSocket)
+      await room.webSocketMessage(sender, JSON.stringify(makeHello()))
+      await room.webSocketMessage(peer, JSON.stringify(makeHello()))
+
+      const update = makeSyncUpdate(makeMessageId(`append-failure-${failureIndex}`))
+      storage.sql.failAfterQueryIncludes = failureNeedle
+      let failure: unknown
+      try {
+        await room.webSocketMessage(sender, JSON.stringify(update))
+      } catch (error) {
+        failure = error
+      }
+
+      assert(failure instanceof Error)
+      assert.equal(storage.sql.opLog.size, 0)
+      assert.equal(storage.sql.docs.size, 0)
+      assert.equal(storage.sql.messageDedup.size, 0)
+      assert.deepEqual(syncMessages(sender.sent), [])
+      assert.deepEqual(syncMessages(peer.sent), [])
+
+      storage.sql.failAfterQueryIncludes = undefined
+      await room.webSocketMessage(sender, JSON.stringify(update))
+
+      assert.equal(storage.sql.opLog.get(`meta:${update.messageId}`)?.seq, 1)
+      assert.equal(storage.sql.docs.get('meta')?.latestSeq, 1)
+      assert.equal(storage.sql.messageDedup.get(`meta:${update.messageId}`)?.durableSeq, 1)
+      assert.equal(findAckForMessage(sender.sent, update.messageId)?.durableSeq, 1)
+      assert.equal(syncMessages(peer.sent).length, 1)
+    }
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom rehydrates committed state after an active YDoc apply failure', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const sender = state.accepted[0]
+    const peer = state.accepted[1]
+    assert(sender instanceof FakeSocket)
+    assert(peer instanceof FakeSocket)
+    await room.webSocketMessage(sender, JSON.stringify(makeHello()))
+    await room.webSocketMessage(peer, JSON.stringify(makeHello()))
+
+    const baseUpdate = makeSyncUpdate(makeMessageId('apply-base'))
+    await room.webSocketMessage(sender, JSON.stringify(baseUpdate))
+    const staleDoc = room.docs.get('meta')
+    assert(staleDoc instanceof Y.Doc)
+    staleDoc.on('update', () => {
+      throw new Error('injected active YDoc observer failure')
+    })
+
+    const update = makeSyncUpdate(makeMessageId('apply-rehydrate'))
+    const expected = new Y.Doc()
+    Y.applyUpdate(expected, decodeTestBase64(baseUpdate.update))
+    Y.applyUpdate(expected, decodeTestBase64(update.update))
+    const expectedUpdate = Y.encodeStateAsUpdate(expected)
+    const assertRehydrated = (): void => {
+      const recovered = room.docs.get('meta')
+      assert(recovered instanceof Y.Doc)
+      assert.notEqual(recovered, staleDoc)
+      assert.equal(room.hydratedDocs.has('meta'), true)
+      assert.deepEqual(Y.encodeStateAsUpdate(recovered), expectedUpdate)
+    }
+    const senderSend = sender.send.bind(sender)
+    sender.send = (message) => {
+      if (typeof message === 'string' && message.includes(update.messageId)) assertRehydrated()
+      senderSend(message)
+    }
+    const peerSend = peer.send.bind(peer)
+    peer.send = (message) => {
+      if (typeof message === 'string' && message.includes(update.messageId)) assertRehydrated()
+      peerSend(message)
+    }
+
+    await room.webSocketMessage(sender, JSON.stringify(update))
+
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 2)
+    assert.equal(storage.sql.opLog.get(`meta:${update.messageId}`)?.seq, 2)
+    assert.equal(storage.sql.messageDedup.get(`meta:${update.messageId}`)?.durableSeq, 2)
+    assert.equal(findAckForMessage(sender.sent, update.messageId)?.durableSeq, 2)
+    assert.equal(syncMessages(peer.sent).length, 2)
+
+    sender.sent.length = 0
+    peer.sent.length = 0
+    await room.webSocketMessage(sender, JSON.stringify(update))
+    assert.equal(findAckForMessage(sender.sent, update.messageId)?.durableSeq, 2)
+    assert.equal(syncMessages(peer.sent).length, 0)
+    expected.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom withholds ack and broadcast when post-commit rehydration fails', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(new FakeR2Bucket(), TEST_DEVICE_TOKEN_SECRET),
+    )
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const sender = state.accepted[0]
+    const peer = state.accepted[1]
+    assert(sender instanceof FakeSocket)
+    assert(peer instanceof FakeSocket)
+    await room.webSocketMessage(sender, JSON.stringify(makeHello()))
+    await room.webSocketMessage(peer, JSON.stringify(makeHello()))
+
+    await room.webSocketMessage(
+      sender,
+      JSON.stringify(makeSyncUpdate(makeMessageId('rehydrate-base'))),
+    )
+    const staleDoc = room.docs.get('meta')
+    assert(staleDoc instanceof Y.Doc)
+    staleDoc.on('update', () => {
+      throw new Error('injected active YDoc observer failure')
+    })
+    const existingDoc = storage.sql.docs.get('meta')
+    assert(existingDoc)
+    storage.sql.docs.set('meta', {
+      ...existingDoc,
+      latestSnapshotSeq: 1,
+      latestSnapshotKey: 'snapshots/vault-1/meta/missing.yupdate',
+    })
+
+    const update = makeSyncUpdate(makeMessageId('rehydrate-failure'))
+    await room.webSocketMessage(sender, JSON.stringify(update))
+
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 2)
+    assert.equal(storage.sql.opLog.get(`meta:${update.messageId}`)?.seq, 2)
+    assert.equal(storage.sql.messageDedup.get(`meta:${update.messageId}`)?.durableSeq, 2)
+    assert.equal(findAckForMessage(sender.sent, update.messageId), undefined)
+    assert.equal(syncMessages(peer.sent).length, 1)
+    assert.equal(sender.closeCode, 1011)
+    assert.equal(sender.closeReason, 'hydrate-failed')
+    assert.equal(room.docs.has('meta'), false)
+    assert.equal(room.hydratedDocs.has('meta'), false)
+
+    peer.sent.length = 0
+    await room.webSocketMessage(peer, JSON.stringify(update))
+    assert.equal(peer.closeCode, 1011)
+    assert.equal(peer.closeReason, 'hydrate-failed')
+    assert.equal(findAckForMessage(peer.sent, update.messageId), undefined)
+    assert.deepEqual(syncMessages(peer.sent), [])
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom still acks and broadcasts when checkpoint scheduling fails after append', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    storage.setAlarm = async () => {
+      throw new Error('injected checkpoint alarm failure')
+    }
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(new FakeR2Bucket(), TEST_DEVICE_TOKEN_SECRET),
+    )
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const sender = state.accepted[0]
+    const peer = state.accepted[1]
+    assert(sender instanceof FakeSocket)
+    assert(peer instanceof FakeSocket)
+    await room.webSocketMessage(sender, JSON.stringify(makeHello()))
+    await room.webSocketMessage(peer, JSON.stringify(makeHello()))
+
+    const update = makeSyncUpdate(makeMessageId('checkpoint-alarm-failure'))
+    await room.webSocketMessage(sender, JSON.stringify(update))
+
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 1)
+    assert.equal(storage.sql.opLog.get(`meta:${update.messageId}`)?.seq, 1)
+    assert.equal(storage.sql.messageDedup.get(`meta:${update.messageId}`)?.durableSeq, 1)
+    assert.equal(findAckForMessage(sender.sent, update.messageId)?.durableSeq, 1)
+    assert.equal(syncMessages(peer.sent).length, 1)
+
+    sender.sent.length = 0
+    peer.sent.length = 0
+    await room.webSocketMessage(sender, JSON.stringify(update))
+    assert.equal(findAckForMessage(sender.sent, update.messageId)?.durableSeq, 1)
+    assert.equal(syncMessages(peer.sent).length, 0)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
 test('VaultRoom applies pending schema migrations once before serving SQL traffic', async () => {
   const previousPair = installFakeWebSocketPair()
   const previousResponse = installFakeUpgradeResponse()
@@ -747,7 +979,7 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
       query.includes('create table if not exists devices'),
     )
     assert.equal(created.length, 1)
-    assert.deepEqual([...storage.sql.migrationVersions], [1])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2])
 
     await room.webSocketMessage(
       server,
@@ -757,7 +989,69 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
     const insertedVersions = storage.sql.queries.filter((query) =>
       query.includes('insert into schema_migrations'),
     )
-    assert.equal(insertedVersions.length, 1)
+    assert.equal(insertedVersions.length, 2)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom upgrades an existing v1 schema before serving SQL traffic', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    storage.sql.migrationVersions.add(1)
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2])
+    assert.equal(
+      storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
+      1,
+    )
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom retries v2 schema migration after ALTER succeeds before recording the version', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    storage.sql.migrationVersions.add(1)
+    storage.sql.failOnQueryIncludes = 'insert into schema_migrations'
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    let firstFailure: unknown
+    try {
+      await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    } catch (error) {
+      firstFailure = error
+    }
+    assert(firstFailure instanceof Error)
+    assert.deepEqual([...storage.sql.migrationVersions], [1])
+    assert.deepEqual([...storage.sql.messageDedupColumns], ['update_sha256'])
+
+    storage.sql.failOnQueryIncludes = undefined
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2])
+    assert.equal(
+      storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
+      1,
+    )
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
@@ -813,7 +1107,7 @@ test('VaultRoom serializes concurrent sync update appends per document', async (
   }
 })
 
-test('VaultRoom acks snapshot-escape duplicates from message_dedup without reissuing boundaries', async () => {
+test('VaultRoom rejects large live updates without acknowledging or advancing durable state', async () => {
   const previousPair = installFakeWebSocketPair()
   const previousResponse = installFakeUpgradeResponse()
   try {
@@ -835,36 +1129,34 @@ test('VaultRoom acks snapshot-escape duplicates from message_dedup without reiss
       update: makeLargeFileYjsUpdateBase64(),
     } satisfies SyncUpdate
     const updateJson = JSON.stringify(update)
+    const emptyDocUpdate = Y.encodeStateAsUpdate(new Y.Doc())
 
     await room.webSocketMessage(server, updateJson)
 
     assert.equal(storage.sql.opLog.has('file:large-file-doc:message-large-update'), false)
-    assert.equal(storage.sql.docs.get('file:large-file-doc')?.latestSeq, 1)
-    assert.deepEqual(storage.sql.messageDedup.get('file:large-file-doc:message-large-update'), {
-      docId: 'file:large-file-doc',
-      messageId: 'message-large-update',
-      durableSeq: 1,
-      seenAt: storage.sql.messageDedup.get('file:large-file-doc:message-large-update')?.seenAt,
-    })
-    assert.equal(syncMessages(server.sent).length, 2)
-    assert.equal((JSON.parse(stringMessageAt(server.sent, 0)) as Ack).durableSeq, 1)
-    assert.equal(
-      (JSON.parse(stringMessageAt(server.sent, 1)) as NeedFullSnapshot).reason,
-      'large-update-snapshot',
-    )
+    assert.equal(storage.sql.docs.has('file:large-file-doc'), false)
+    assert.equal(storage.sql.messageDedup.has('file:large-file-doc:message-large-update'), false)
+    assert.equal(syncMessages(server.sent).length, 0)
+    assert.equal(server.closeCode, 1011)
+    assert.equal(server.closeReason, 'append-reject:large-update-requires-snapshot-import')
+    const hydratedDoc = room.docs.get('file:large-file-doc')
+    assert(hydratedDoc instanceof Y.Doc)
+    assert.deepEqual(Y.encodeStateAsUpdate(hydratedDoc), emptyDocUpdate)
 
-    await room.webSocketMessage(server, updateJson)
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const retryServer = state.accepted[1]
+    assert(retryServer instanceof FakeSocket)
+    await room.webSocketMessage(retryServer, JSON.stringify(makeHello()))
+    await room.webSocketMessage(retryServer, updateJson)
 
-    assert.equal(syncMessages(server.sent).length, 3)
-    assert.deepEqual(JSON.parse(stringMessageAt(server.sent, 2)) as Ack, {
-      type: 'ack',
-      protocolVersion: CURRENT_PROTOCOL_VERSION,
-      vaultId: makeVaultId('vault-1'),
-      deviceId: makeDeviceId('device-1'),
-      messageId: makeMessageId('message-large-update'),
-      docId,
-      durableSeq: 1,
-    })
+    assert.equal(storage.sql.opLog.has('file:large-file-doc:message-large-update'), false)
+    assert.equal(storage.sql.docs.has('file:large-file-doc'), false)
+    assert.equal(storage.sql.messageDedup.has('file:large-file-doc:message-large-update'), false)
+    assert.equal(syncMessages(retryServer.sent).length, 0)
+    assert.equal(retryServer.closeCode, 1011)
+    assert.equal(retryServer.closeReason, 'append-reject:large-update-requires-snapshot-import')
+    assert.equal(room.docs.get('file:large-file-doc'), hydratedDoc)
+    assert.deepEqual(Y.encodeStateAsUpdate(hydratedDoc), emptyDocUpdate)
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
@@ -1078,18 +1370,79 @@ test('VaultRoom checkpoints an active document to R2 and advances the SQL snapsh
   }
 })
 
-test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes admin events', async () => {
+test('VaultRoom acks a compacted duplicate using its durable update hash', async () => {
   const previousPair = installFakeWebSocketPair()
   const previousResponse = installFakeUpgradeResponse()
   try {
     const storage = new SqlOnlyStorage()
     const bucket = new FakeR2Bucket()
-    const oldSnapshotDoc = new Y.Doc()
-    const oldSnapshotBytes = Y.encodeStateAsUpdate(oldSnapshotDoc)
-    oldSnapshotDoc.destroy()
-    for (const seq of [1, 2, 3, 4]) {
-      bucket.set(`snapshots/vault-1/meta/${seq}.yupdate`, oldSnapshotBytes)
-    }
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const update = makeSyncUpdate(makeMessageId('message-compacted-duplicate'))
+    await room.webSocketMessage(server, JSON.stringify(update))
+    await room.checkpointDoc({ kind: 'meta' }, 99)
+
+    assert.equal(storage.sql.opLog.has(`meta:${update.messageId}`), false)
+    assert.equal(
+      typeof storage.sql.messageDedup.get(`meta:${update.messageId}`)?.updateSha256,
+      'string',
+    )
+
+    server.sent.length = 0
+    await room.webSocketMessage(server, JSON.stringify(update))
+
+    assert.equal(findAckForMessage(server.sent, update.messageId)?.durableSeq, 1)
+    assert.equal(server.closed, false)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom rejects a legacy dedup row without hash evidence', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const update = makeSyncUpdate(makeMessageId('message-legacy-dedup'))
+    await room.webSocketMessage(server, JSON.stringify(update))
+    const dedup = storage.sql.messageDedup.get(`meta:${update.messageId}`)
+    assert(dedup)
+    storage.sql.messageDedup.set(`meta:${update.messageId}`, { ...dedup, updateSha256: undefined })
+    server.sent.length = 0
+
+    await room.webSocketMessage(server, JSON.stringify(update))
+
+    assert.equal(server.closeCode, 1011)
+    assert.equal(server.closeReason, 'duplicate-unsafe')
+    assert.equal(findAckForMessage(server.sent, update.messageId), undefined)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom captures checkpoint bytes and state vector before later appends', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
     const state = new FakeState(storage)
     const room = new VaultRoom(
       state,
@@ -1100,24 +1453,546 @@ test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes adm
     assert(server instanceof FakeSocket)
 
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
-    for (let index = 1; index <= 5; index += 1) {
-      await room.webSocketMessage(
-        server,
-        JSON.stringify(makeSyncUpdate(makeMessageId(`message-retention-${index}`))),
+    const firstUpdate = makeSyncUpdate(makeMessageId('message-checkpoint-boundary-1'))
+    await room.webSocketMessage(server, JSON.stringify(firstUpdate))
+
+    let notifyPutStarted: () => void = () => {}
+    const putStarted = new Promise<void>((resolve) => {
+      notifyPutStarted = resolve
+    })
+    let releasePut: () => void = () => {}
+    const putGate = new Promise<void>((resolve) => {
+      releasePut = resolve
+    })
+    bucket.beforePut = async (key) => {
+      if (key === 'snapshots/vault-1/meta/1.yupdate') {
+        notifyPutStarted()
+        await putGate
+      }
+    }
+
+    const checkpoint = room.checkpointDoc({ kind: 'meta' }, 99)
+    await putStarted
+
+    const secondUpdate = makeSyncUpdate(makeMessageId('message-checkpoint-boundary-2'))
+    await room.webSocketMessage(server, JSON.stringify(secondUpdate))
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 2)
+    assert.equal(storage.sql.opLog.get(`meta:${secondUpdate.messageId}`)?.seq, 2)
+
+    releasePut()
+    assert.deepEqual(await checkpoint, {
+      action: 'checkpointed',
+      snapshotKey: 'snapshots/vault-1/meta/1.yupdate',
+      upperSeq: 1,
+      compactedSeq: 1,
+    })
+
+    const snapshotObject = await bucket.get('snapshots/vault-1/meta/1.yupdate')
+    assert(snapshotObject)
+    const snapshotDoc = new Y.Doc()
+    Y.applyUpdate(snapshotDoc, new Uint8Array(await snapshotObject.arrayBuffer()))
+    const firstDoc = new Y.Doc()
+    Y.applyUpdate(firstDoc, decodeTestBase64(firstUpdate.update))
+    assert.deepEqual(Y.encodeStateAsUpdate(snapshotDoc), Y.encodeStateAsUpdate(firstDoc))
+    assert.deepEqual(
+      storage.sql.checkpointRuns.get('checkpoint:snapshots/vault-1/meta/1.yupdate:99')?.stateVector,
+      Y.encodeStateVector(firstDoc),
+    )
+    assert.equal(storage.sql.opLog.has(`meta:${firstUpdate.messageId}`), false)
+    assert.equal(storage.sql.opLog.get(`meta:${secondUpdate.messageId}`)?.seq, 2)
+    snapshotDoc.destroy()
+    firstDoc.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom serializes snapshot import with a concurrent live append', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    const firstUpdate = makeSyncUpdate(makeMessageId('message-import-boundary-1'))
+    await room.webSocketMessage(server, JSON.stringify(firstUpdate))
+    const importUpdate = makeYjsUpdateBytes(makeMessageId('message-import-boundary-import'))
+    const expectedDoc = new Y.Doc()
+    Y.applyUpdate(expectedDoc, decodeTestBase64(firstUpdate.update))
+    Y.applyUpdate(expectedDoc, importUpdate)
+
+    let notifyPutStarted: () => void = () => {}
+    const putStarted = new Promise<void>((resolve) => {
+      notifyPutStarted = resolve
+    })
+    let releasePut: () => void = () => {}
+    const putGate = new Promise<void>((resolve) => {
+      releasePut = resolve
+    })
+    bucket.beforePut = async (key) => {
+      if (key === 'snapshots/vault-1/meta/2.yupdate') {
+        notifyPutStarted()
+        await putGate
+      }
+    }
+
+    const importRequest = room.fetch(
+      new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+            tokenVersion: 1,
+          })}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          updateBytesBase64: Buffer.from(importUpdate).toString('base64'),
+          latestSeq: 1,
+        }),
+      }),
+    )
+    await putStarted
+
+    let appendSettled = false
+    const secondUpdate = makeSyncUpdate(makeMessageId('message-import-boundary-2'))
+    const append = room.webSocketMessage(server, JSON.stringify(secondUpdate)).finally(() => {
+      appendSettled = true
+    })
+    await Promise.resolve()
+    assert.equal(appendSettled, false)
+
+    releasePut()
+    const importResponse = await importRequest
+    await append
+    assert.equal(importResponse.status, 200)
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 3)
+    assert.equal(storage.sql.docs.get('meta')?.latestSnapshotSeq, 2)
+    assert.equal(storage.sql.opLog.get(`meta:${secondUpdate.messageId}`)?.seq, 3)
+    const importRun = [...storage.sql.checkpointRuns.values()].find(
+      (run) => run.snapshotKey === 'snapshots/vault-1/meta/2.yupdate',
+    )
+    assert.equal(importRun?.status, 'pointer-updated')
+    assert.deepEqual(importRun?.stateVector, Y.encodeStateVector(expectedDoc))
+
+    const importedSnapshot = await bucket.get('snapshots/vault-1/meta/2.yupdate')
+    assert(importedSnapshot)
+    const importedBytes = new Uint8Array(await importedSnapshot.arrayBuffer())
+    const importedDoc = new Y.Doc()
+    Y.applyUpdate(importedDoc, importedBytes)
+    assert.deepEqual(Y.encodeStateAsUpdate(importedDoc), Y.encodeStateAsUpdate(expectedDoc))
+    importedDoc.destroy()
+    expectedDoc.destroy()
+
+    assert.deepEqual(await room.checkpointDoc({ kind: 'meta' }, 100), {
+      action: 'checkpointed',
+      snapshotKey: 'snapshots/vault-1/meta/3.yupdate',
+      upperSeq: 3,
+      compactedSeq: 2,
+    })
+    assert.equal(storage.sql.opLog.get(`meta:${secondUpdate.messageId}`)?.seq, 3)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom rejects stale snapshot import sequences without durable mutation', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-import-seq-1'))),
+    )
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-import-seq-2'))),
+    )
+
+    const staleDoc = room.docs.get('meta')
+    assert(staleDoc)
+    const omittedSeqResponse = await room.fetch(
+      new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+            tokenVersion: 1,
+          })}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          updateBytesBase64: Buffer.from(
+            makeYjsUpdateBytes(makeMessageId('message-import-seq-omitted')),
+          ).toString('base64'),
+        }),
+      }),
+    )
+    assert.equal(omittedSeqResponse.status, 409)
+    for (const latestSeq of [1, 3]) {
+      const response = await room.fetch(
+        new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+              tokenVersion: 1,
+            })}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            updateBytesBase64: Buffer.from(
+              makeYjsUpdateBytes(makeMessageId(`message-import-seq-stale-${latestSeq}`)),
+            ).toString('base64'),
+            latestSeq,
+          }),
+        }),
       )
+      assert.equal(response.status, 409)
+    }
+
+    assert.deepEqual(bucket.puts, [])
+    assert.equal(storage.sql.checkpointRuns.size, 0)
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 2)
+    assert.equal(storage.sql.docs.get('meta')?.latestSnapshotSeq, 0)
+    assert.equal(room.docs.get('meta'), staleDoc)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom rejects invalid meta snapshot imports without replacing the active document', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-import-meta-valid'))),
+    )
+    const activeDoc = room.docs.get('meta')
+    assert(activeDoc)
+
+    const response = await room.fetch(
+      new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+            tokenVersion: 1,
+          })}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          updateBytesBase64: makeInvalidMetaSchemaYjsUpdateBase64(),
+          latestSeq: 1,
+        }),
+      }),
+    )
+
+    assert.equal(response.status, 400)
+    assert.deepEqual(bucket.puts, [])
+    assert.equal(storage.sql.checkpointRuns.size, 0)
+    assert.equal(storage.sql.docs.get('meta')?.latestSnapshotSeq, 0)
+    assert.equal(room.docs.get('meta'), activeDoc)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom rehydrates an active document after recovering a failed snapshot import', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    const firstUpdate = makeSyncUpdate(makeMessageId('message-import-recovery-1'))
+    await room.webSocketMessage(server, JSON.stringify(firstUpdate))
+    const importUpdate = makeYjsUpdateBytes(makeMessageId('message-import-recovery-import'))
+    const expectedImportedDoc = new Y.Doc()
+    Y.applyUpdate(expectedImportedDoc, decodeTestBase64(firstUpdate.update))
+    Y.applyUpdate(expectedImportedDoc, importUpdate)
+
+    storage.sql.failOnQueryIncludes = 'insert into docs'
+    const importResponse = await room.fetch(
+      new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+            tokenVersion: 1,
+          })}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          updateBytesBase64: Buffer.from(importUpdate).toString('base64'),
+          latestSeq: 1,
+        }),
+      }),
+    )
+    assert.equal(importResponse.status, 500)
+    storage.sql.failOnQueryIncludes = undefined
+
+    const importRun = [...storage.sql.checkpointRuns.values()].find(
+      (run) => run.snapshotKey === 'snapshots/vault-1/meta/2.yupdate',
+    )
+    assert.equal(importRun?.status, 'r2-written')
+
+    await room.alarm()
+
+    assert(importRun)
+    assert.equal(storage.sql.checkpointRuns.get(importRun.runId)?.status, 'pointer-updated')
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 2)
+    const recoveredDoc = room.docs.get('meta')
+    assert(recoveredDoc)
+    assert.deepEqual(
+      Y.encodeStateAsUpdate(recoveredDoc),
+      Y.encodeStateAsUpdate(expectedImportedDoc),
+    )
+
+    const emptyStateVector = makeStateVectorBase64(new Y.Doc())
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(
+        makeSyncRequest(makeMessageId('message-import-recovery-sync'), emptyStateVector),
+      ),
+    )
+    const syncResponse = syncMessages(server.sent).at(-1)
+    assert(typeof syncResponse === 'string')
+    const syncUpdate = JSON.parse(syncResponse) as SyncUpdate
+    const syncDoc = new Y.Doc()
+    Y.applyUpdate(syncDoc, decodeTestBase64(syncUpdate.update))
+    assert.deepEqual(Y.encodeStateAsUpdate(syncDoc), Y.encodeStateAsUpdate(expectedImportedDoc))
+    syncDoc.destroy()
+
+    const append = makeSyncUpdate(makeMessageId('message-import-recovery-append'))
+    Y.applyUpdate(expectedImportedDoc, decodeTestBase64(append.update))
+    await room.webSocketMessage(server, JSON.stringify(append))
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 3)
+    const appendedDoc = room.docs.get('meta')
+    assert(appendedDoc)
+    assert.deepEqual(Y.encodeStateAsUpdate(appendedDoc), Y.encodeStateAsUpdate(expectedImportedDoc))
+
+    const checkpointResult = await room.checkpointDoc({ kind: 'meta' }, 100)
+    if (checkpointResult.action !== 'checkpointed') throw new Error('checkpoint did not complete')
+    assert.equal(checkpointResult.snapshotKey, 'snapshots/vault-1/meta/3.yupdate')
+    assert.equal(checkpointResult.upperSeq, 3)
+    const checkpointObject = await bucket.get('snapshots/vault-1/meta/3.yupdate')
+    assert(checkpointObject)
+    const checkpointDoc = new Y.Doc()
+    Y.applyUpdate(checkpointDoc, new Uint8Array(await checkpointObject.arrayBuffer()))
+    assert.deepEqual(
+      Y.encodeStateAsUpdate(checkpointDoc),
+      Y.encodeStateAsUpdate(expectedImportedDoc),
+    )
+    checkpointDoc.destroy()
+    expectedImportedDoc.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom preserves an imported document when pointer run status fails after SQL commit', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const firstUpdate = makeSyncUpdate(makeMessageId('message-import-status-failure-1'))
+    await room.webSocketMessage(server, JSON.stringify(firstUpdate))
+    const staleDoc = room.docs.get('meta')
+    assert(staleDoc)
+    const importUpdate = makeYjsUpdateBytes(makeMessageId('message-import-status-failure-import'))
+    const expectedDoc = new Y.Doc()
+    Y.applyUpdate(expectedDoc, decodeTestBase64(firstUpdate.update))
+    Y.applyUpdate(expectedDoc, importUpdate)
+    const importedSnapshotDoc = new Y.Doc()
+    Y.applyUpdate(importedSnapshotDoc, Y.encodeStateAsUpdate(expectedDoc))
+
+    storage.sql.failOnQueryIncludes = 'pointer_updated_at'
+    const importResponse = await room.fetch(
+      new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+            tokenVersion: 1,
+          })}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          updateBytesBase64: Buffer.from(importUpdate).toString('base64'),
+          latestSeq: 1,
+        }),
+      }),
+    )
+    assert.equal(importResponse.status, 500)
+    storage.sql.failOnQueryIncludes = undefined
+    assert.equal(storage.sql.docs.get('meta')?.latestSnapshotSeq, 2)
+    const importRun = [...storage.sql.checkpointRuns.values()].find(
+      (run) => run.snapshotKey === 'snapshots/vault-1/meta/2.yupdate',
+    )
+    assert.equal(importRun?.status, 'r2-written')
+
+    const activeAfterFailure = room.docs.get('meta')
+    assert(activeAfterFailure)
+    assert.notEqual(activeAfterFailure, staleDoc)
+    assert.deepEqual(Y.encodeStateAsUpdate(activeAfterFailure), Y.encodeStateAsUpdate(expectedDoc))
+
+    const append = makeSyncUpdate(makeMessageId('message-import-status-failure-append'))
+    Y.applyUpdate(expectedDoc, decodeTestBase64(append.update))
+    await room.webSocketMessage(server, JSON.stringify(append))
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 3)
+    const checkpointResult = await room.checkpointDoc({ kind: 'meta' }, 100)
+    if (checkpointResult.action !== 'checkpointed') throw new Error('checkpoint did not complete')
+    assert.equal(checkpointResult.upperSeq, 3)
+
+    const coldRoom = new VaultRoom(
+      new FakeState(storage),
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void coldRoom.fetch(await makeAuthenticatedWebSocketRequest())
+    const coldServer = (coldRoom.state.getWebSockets?.() ?? [])[0]
+    assert(coldServer instanceof FakeSocket)
+    await coldRoom.webSocketMessage(coldServer, JSON.stringify(makeHello()))
+    await coldRoom.webSocketMessage(
+      coldServer,
+      JSON.stringify(
+        makeSyncRequest(
+          makeMessageId('message-import-status-failure-cold'),
+          makeStateVectorBase64(importedSnapshotDoc),
+        ),
+      ),
+    )
+    const coldResponse = syncMessages(coldServer.sent).at(-1)
+    assert(typeof coldResponse === 'string')
+    const coldUpdate = JSON.parse(coldResponse) as SyncUpdate
+    const coldDoc = new Y.Doc()
+    Y.applyUpdate(coldDoc, Y.encodeStateAsUpdate(importedSnapshotDoc))
+    Y.applyUpdate(coldDoc, decodeTestBase64(coldUpdate.update))
+    assert.deepEqual(Y.encodeStateAsUpdate(coldDoc), Y.encodeStateAsUpdate(expectedDoc))
+    coldDoc.destroy()
+    importedSnapshotDoc.destroy()
+    expectedDoc.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes admin events', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    bucket.listPageSize = 1
+    const cumulativeDoc = new Y.Doc()
+    const updates = Array.from({ length: 5 }, (_, index) =>
+      makeSyncUpdate(makeMessageId(`message-retention-${index + 1}`)),
+    )
+    const snapshotStateVectors = new Map<number, Uint8Array>()
+    for (const [index, update] of updates.entries()) {
+      Y.applyUpdate(cumulativeDoc, decodeTestBase64(update.update))
+      const seq = index + 1
+      bucket.set(`snapshots/vault-1/meta/${seq}.yupdate`, Y.encodeStateAsUpdate(cumulativeDoc))
+      snapshotStateVectors.set(seq, Y.encodeStateVector(cumulativeDoc))
+      storage.sql.checkpointRuns.set(`seed-retention-${seq}`, {
+        runId: `seed-retention-${seq}`,
+        docId: 'meta',
+        upperSeq: seq,
+        snapshotKey: `snapshots/vault-1/meta/${seq}.yupdate`,
+        stateVector: snapshotStateVectors.get(seq) ?? new Uint8Array(),
+        status: 'compacted',
+        createdAt: seq,
+        r2WrittenAt: seq,
+        pointerUpdatedAt: seq,
+        compactedAt: seq,
+      })
+    }
+    const expectedFinalUpdate = Y.encodeStateAsUpdate(cumulativeDoc)
+    cumulativeDoc.destroy()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    for (const update of updates) {
+      await room.webSocketMessage(server, JSON.stringify(update))
     }
 
     assert.deepEqual(await room.checkpointDoc({ kind: 'meta' }, 99), {
       action: 'checkpointed',
       snapshotKey: 'snapshots/vault-1/meta/5.yupdate',
       upperSeq: 5,
-      compactedSeq: 5,
+      compactedSeq: 3,
     })
+
+    assert.deepEqual(
+      [...storage.sql.opLog.values()].map((row) => row.seq).sort((left, right) => left - right),
+      [4, 5],
+    )
 
     assert.deepEqual(bucket.deletes, [
       'snapshots/vault-1/meta/1.yupdate',
       'snapshots/vault-1/meta/2.yupdate',
     ])
+    assert.equal(bucket.lists.length, 10)
+    assert.deepEqual(storage.sql.docs.get('meta')?.horizonStateVector, snapshotStateVectors.get(3))
     assert.equal(await bucket.get('snapshots/vault-1/meta/1.yupdate'), null)
     assert.notEqual(await bucket.get('snapshots/vault-1/meta/3.yupdate'), null)
     assert.deepEqual(
@@ -1130,6 +2005,55 @@ test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes adm
         { snapshotKey: 'snapshots/vault-1/meta/2.yupdate', error: undefined },
       ],
     )
+
+    const restoredBucket = new FakeR2Bucket()
+    const snapshot3Bytes = await bucket.get('snapshots/vault-1/meta/3.yupdate')
+    assert(snapshot3Bytes)
+    restoredBucket.set(
+      'snapshots/vault-1/meta/3.yupdate',
+      new Uint8Array(await snapshot3Bytes.arrayBuffer()),
+    )
+    const restoredSnapshotDoc = new Y.Doc()
+    Y.applyUpdate(restoredSnapshotDoc, new Uint8Array(await snapshot3Bytes.arrayBuffer()))
+    const restoredSnapshotStateVector = Y.encodeStateVector(restoredSnapshotDoc)
+    const existingDoc = storage.sql.docs.get('meta')
+    assert(existingDoc)
+    storage.sql.docs.set('meta', {
+      ...existingDoc,
+      latestSnapshotSeq: 3,
+      latestSnapshotKey: 'snapshots/vault-1/meta/3.yupdate',
+      minRetainedSeq: 3,
+      horizonStateVector: restoredSnapshotStateVector,
+    })
+    const restoredRoom = new VaultRoom(
+      new FakeState(storage),
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(restoredBucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void restoredRoom.fetch(await makeAuthenticatedWebSocketRequest())
+    const restoredServer = (restoredRoom.state.getWebSockets?.() ?? [])[0]
+    assert(restoredServer instanceof FakeSocket)
+    await restoredRoom.webSocketMessage(restoredServer, JSON.stringify(makeHello()))
+    await restoredRoom.webSocketMessage(
+      restoredServer,
+      JSON.stringify(
+        makeSyncRequest(
+          makeMessageId('message-retention-residual'),
+          makeStateVectorBase64(restoredSnapshotDoc),
+        ),
+      ),
+    )
+    const residualMessage = syncMessages(restoredServer.sent).at(-1)
+    assert(typeof residualMessage === 'string')
+    const residualUpdate = JSON.parse(residualMessage) as SyncUpdate
+    restoredSnapshotDoc.destroy()
+    const residualDoc = new Y.Doc()
+    Y.applyUpdate(residualDoc, new Uint8Array(await snapshot3Bytes.arrayBuffer()))
+    Y.applyUpdate(residualDoc, decodeTestBase64(residualUpdate.update))
+    const expectedDoc = new Y.Doc()
+    Y.applyUpdate(expectedDoc, expectedFinalUpdate)
+    assert.deepEqual(Y.encodeStateAsUpdate(residualDoc), Y.encodeStateAsUpdate(expectedDoc))
+    residualDoc.destroy()
+    expectedDoc.destroy()
 
     restoreResponse(previousResponse)
     const response = await room.fetch(
@@ -1147,6 +2071,75 @@ test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes adm
       isRetentionAdminResponse(body) &&
         body.events.some((event) => event.snapshotKey === 'snapshots/vault-1/meta/1.yupdate'),
     )
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom blocks compaction when snapshot retention candidates are invalid', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    bucket.set('snapshots/vault-1/meta/not-a-snapshot.yupdate', new Uint8Array([1]))
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    const update = makeSyncUpdate(makeMessageId('message-retention-invalid'))
+    await room.webSocketMessage(server, JSON.stringify(update))
+
+    assert.deepEqual(await room.checkpointDoc({ kind: 'meta' }, 99), {
+      action: 'checkpointed',
+      snapshotKey: 'snapshots/vault-1/meta/1.yupdate',
+      upperSeq: 1,
+      compactedSeq: undefined,
+    })
+    assert.equal(storage.sql.opLog.get(`meta:${update.messageId}`)?.seq, 1)
+    assert.equal(storage.sql.docs.get('meta')?.minRetainedSeq, 0)
+    assert.deepEqual(bucket.deletes, [])
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom blocks compaction when R2 pagination is malformed', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    const update = makeSyncUpdate(makeMessageId('message-retention-pagination-invalid'))
+    await room.webSocketMessage(server, JSON.stringify(update))
+    bucket.listOverride = async () => ({ objects: [], truncated: true })
+
+    assert.deepEqual(await room.checkpointDoc({ kind: 'meta' }, 99), {
+      action: 'checkpointed',
+      snapshotKey: 'snapshots/vault-1/meta/1.yupdate',
+      upperSeq: 1,
+      compactedSeq: undefined,
+    })
+    assert.equal(storage.sql.opLog.get(`meta:${update.messageId}`)?.seq, 1)
+    assert.deepEqual(bucket.deletes, [])
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
@@ -1237,6 +2230,10 @@ test('VaultRoom alarm recovers orphaned checkpoint runs before new checkpoints',
   const storage = new SqlOnlyStorage()
   const bucket = new FakeR2Bucket()
   const snapshotBytes = makeYjsUpdateBytes(makeMessageId('message-recovered-snapshot'))
+  const snapshotDoc = new Y.Doc()
+  Y.applyUpdate(snapshotDoc, snapshotBytes)
+  const snapshotStateVector = Y.encodeStateVector(snapshotDoc)
+  snapshotDoc.destroy()
   bucket.set('snapshots/vault-1/meta/2.yupdate', snapshotBytes)
   storage.sql.docs.set('meta', {
     kind: 'meta',
@@ -1252,13 +2249,14 @@ test('VaultRoom alarm recovers orphaned checkpoint runs before new checkpoints',
     docId: 'meta',
     upperSeq: 2,
     snapshotKey: 'snapshots/vault-1/meta/2.yupdate',
-    stateVector: new Uint8Array(),
+    stateVector: snapshotStateVector,
     status: 'writing',
     createdAt: 1,
     r2WrittenAt: undefined,
     pointerUpdatedAt: undefined,
     compactedAt: undefined,
   })
+  await storage.put('vault:id', 'vault-1')
   const room = new VaultRoom(new FakeState(storage), makeEnvWithSnapshotBucket(bucket))
 
   await room.alarm()
@@ -1271,6 +2269,10 @@ test('VaultRoom alarm advances and compacts recovered checkpoint pointers', asyn
   const storage = new SqlOnlyStorage()
   const bucket = new FakeR2Bucket()
   const snapshotBytes = makeYjsUpdateBytes(makeMessageId('message-pointer-snapshot'))
+  const snapshotDoc = new Y.Doc()
+  Y.applyUpdate(snapshotDoc, snapshotBytes)
+  const snapshotStateVector = Y.encodeStateVector(snapshotDoc)
+  snapshotDoc.destroy()
   bucket.set('snapshots/vault-1/meta/2.yupdate', snapshotBytes)
   storage.sql.docs.set('meta', {
     kind: 'meta',
@@ -1296,13 +2298,14 @@ test('VaultRoom alarm advances and compacts recovered checkpoint pointers', asyn
     docId: 'meta',
     upperSeq: 2,
     snapshotKey: 'snapshots/vault-1/meta/2.yupdate',
-    stateVector: new Uint8Array(),
+    stateVector: snapshotStateVector,
     status: 'r2-written',
     createdAt: 1,
     r2WrittenAt: 2,
     pointerUpdatedAt: undefined,
     compactedAt: undefined,
   })
+  await storage.put('vault:id', 'vault-1')
   const room = new VaultRoom(new FakeState(storage), makeEnvWithSnapshotBucket(bucket))
 
   await room.alarm()
@@ -1317,6 +2320,315 @@ test('VaultRoom alarm advances and compacts recovered checkpoint pointers', asyn
   assert.equal(storage.sql.docs.get('meta')?.minRetainedSeq, 2)
   assert(storage.sql.docs.get('meta')?.horizonStateVector instanceof Uint8Array)
   assert.equal(storage.sql.opLog.has('meta:message-before-snapshot'), false)
+})
+
+test('VaultRoom waits for stale hydration before rehydrating an orphaned pointer', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const oldSnapshotKey = 'snapshots/vault-1/meta/1.yupdate'
+    const recoveredSnapshotKey = 'snapshots/vault-1/meta/2.yupdate'
+    const latestSnapshotKey = 'snapshots/vault-1/meta/3.yupdate'
+    const oldSnapshotUpdate = makeYjsUpdateBytes(makeMessageId('message-hydration-old'))
+    const oldSnapshotDoc = new Y.Doc()
+    Y.applyUpdate(oldSnapshotDoc, oldSnapshotUpdate)
+    const oldSnapshotBytes = Y.encodeStateAsUpdate(oldSnapshotDoc)
+    oldSnapshotDoc.destroy()
+
+    const recoveredDoc = new Y.Doc()
+    Y.applyUpdate(recoveredDoc, oldSnapshotUpdate)
+    Y.applyUpdate(recoveredDoc, makeYjsUpdateBytes(makeMessageId('message-hydration-recovered')))
+    const recoveredSnapshotBytes = Y.encodeStateAsUpdate(recoveredDoc)
+    const recoveredStateVector = Y.encodeStateVector(recoveredDoc)
+    bucket.set(oldSnapshotKey, oldSnapshotBytes)
+    bucket.set(recoveredSnapshotKey, recoveredSnapshotBytes)
+
+    storage.sql.docs.set('meta', {
+      kind: 'meta',
+      latestSeq: 2,
+      latestSnapshotSeq: 1,
+      latestSnapshotKey: oldSnapshotKey,
+      minRetainedSeq: 0,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+    storage.sql.checkpointRuns.set('run-hydration-recovery', {
+      runId: 'run-hydration-recovery',
+      docId: 'meta',
+      upperSeq: 2,
+      snapshotKey: recoveredSnapshotKey,
+      stateVector: recoveredStateVector,
+      status: 'r2-written',
+      createdAt: 1,
+      r2WrittenAt: 2,
+      pointerUpdatedAt: undefined,
+      compactedAt: undefined,
+    })
+    await storage.put('vault:id', 'vault-1')
+
+    let notifyListStarted: () => void = () => {}
+    const listStarted = new Promise<void>((resolve) => {
+      notifyListStarted = resolve
+    })
+    let releaseList: () => void = () => {}
+    const listGate = new Promise<void>((resolve) => {
+      releaseList = resolve
+    })
+    let listCalls = 0
+    bucket.listOverride = async () => {
+      listCalls += 1
+      if (listCalls === 1) {
+        notifyListStarted()
+        await listGate
+        return { objects: [{ key: oldSnapshotKey }], truncated: false }
+      }
+      return {
+        objects:
+          listCalls === 2
+            ? [{ key: oldSnapshotKey }, { key: recoveredSnapshotKey }]
+            : [{ key: oldSnapshotKey }, { key: recoveredSnapshotKey }, { key: latestSnapshotKey }],
+        truncated: false,
+      }
+    }
+
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const emptyDoc = new Y.Doc()
+    const hydrationRequest = room.webSocketMessage(
+      server,
+      JSON.stringify(
+        makeSyncRequest(
+          makeMessageId('message-hydration-request'),
+          makeStateVectorBase64(emptyDoc),
+        ),
+      ),
+    )
+    emptyDoc.destroy()
+    await listStarted
+
+    const alarm = room.alarm()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    assert.equal(room.docWriteQueues.has('meta'), true)
+    releaseList()
+    await Promise.all([hydrationRequest, alarm])
+
+    const activeDoc = room.docs.get('meta')
+    assert(activeDoc)
+    assert.deepEqual(Y.encodeStateAsUpdate(activeDoc), recoveredSnapshotBytes)
+
+    const append = makeSyncUpdate(makeMessageId('message-hydration-append'))
+    Y.applyUpdate(recoveredDoc, decodeTestBase64(append.update))
+    await room.webSocketMessage(server, JSON.stringify(append))
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 3)
+    const appendedDoc = room.docs.get('meta')
+    assert(appendedDoc)
+    assert.deepEqual(Y.encodeStateAsUpdate(appendedDoc), Y.encodeStateAsUpdate(recoveredDoc))
+
+    const checkpointResult = await room.checkpointDoc({ kind: 'meta' }, 100)
+    if (checkpointResult.action !== 'checkpointed') throw new Error('checkpoint did not complete')
+    assert.equal(checkpointResult.snapshotKey, latestSnapshotKey)
+    assert.equal(checkpointResult.upperSeq, 3)
+    recoveredDoc.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom blocks orphan recovery when snapshot key sequence mismatches the run', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const snapshot2 = makeYjsUpdateBytes(makeMessageId('message-orphan-key-2'))
+  const snapshot5 = makeYjsUpdateBytes(makeMessageId('message-orphan-key-5'))
+  bucket.set('snapshots/vault-1/meta/2.yupdate', snapshot2)
+  bucket.set('snapshots/vault-1/meta/5.yupdate', snapshot5)
+  const snapshot2Doc = new Y.Doc()
+  Y.applyUpdate(snapshot2Doc, snapshot2)
+  const snapshot2StateVector = Y.encodeStateVector(snapshot2Doc)
+  snapshot2Doc.destroy()
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 5,
+    latestSnapshotSeq: 5,
+    latestSnapshotKey: 'snapshots/vault-1/meta/5.yupdate',
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.opLog.set('meta:message-orphan-key-row', {
+    docId: 'meta',
+    seq: 1,
+    messageId: 'message-orphan-key-row',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: snapshot2,
+    updateSha256: 'sha',
+    createdAt: 1,
+  })
+  storage.sql.checkpointRuns.set('run-orphan-key-mismatch', {
+    runId: 'run-orphan-key-mismatch',
+    docId: 'meta',
+    upperSeq: 5,
+    snapshotKey: 'snapshots/vault-1/meta/2.yupdate',
+    stateVector: snapshot2StateVector,
+    status: 'pointer-updated',
+    createdAt: 1,
+    r2WrittenAt: 2,
+    pointerUpdatedAt: 3,
+    compactedAt: undefined,
+  })
+  await storage.put('vault:id', 'vault-1')
+  const room = new VaultRoom(new FakeState(storage), makeEnvWithSnapshotBucket(bucket))
+
+  await room.alarm()
+
+  assert.equal(storage.sql.checkpointRuns.get('run-orphan-key-mismatch')?.status, 'pointer-updated')
+  assert.equal(storage.sql.docs.get('meta')?.minRetainedSeq, 0)
+  assert.equal(storage.sql.opLog.has('meta:message-orphan-key-row'), true)
+  assert.deepEqual(bucket.deletes, [])
+})
+
+test('VaultRoom applies the retained snapshot floor while recovering orphaned checkpoints', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const cumulativeDoc = new Y.Doc()
+    const snapshotStateVectors = new Map<number, Uint8Array>()
+    const snapshotBytesBySeq = new Map<number, Uint8Array>()
+    for (const seq of [1, 2, 3, 4, 5]) {
+      const updateBytes = makeYjsUpdateBytes(makeMessageId(`message-orphan-retention-${seq}`))
+      Y.applyUpdate(cumulativeDoc, updateBytes)
+      const snapshotBytes = Y.encodeStateAsUpdate(cumulativeDoc)
+      const stateVector = Y.encodeStateVector(cumulativeDoc)
+      bucket.set(`snapshots/vault-1/meta/${seq}.yupdate`, snapshotBytes)
+      snapshotBytesBySeq.set(seq, snapshotBytes)
+      snapshotStateVectors.set(seq, stateVector)
+      storage.sql.opLog.set(`meta:message-orphan-retention-${seq}`, {
+        docId: 'meta',
+        seq,
+        messageId: `message-orphan-retention-${seq}`,
+        deviceId: 'device-1',
+        yClientId: 1,
+        updateBytes,
+        updateSha256: 'sha',
+        createdAt: seq,
+      })
+      storage.sql.checkpointRuns.set(`seed-orphan-retention-${seq}`, {
+        runId: `seed-orphan-retention-${seq}`,
+        docId: 'meta',
+        upperSeq: seq,
+        snapshotKey: `snapshots/vault-1/meta/${seq}.yupdate`,
+        stateVector,
+        status: 'compacted',
+        createdAt: seq,
+        r2WrittenAt: seq,
+        pointerUpdatedAt: seq,
+        compactedAt: seq,
+      })
+    }
+    const snapshotStateVector = snapshotStateVectors.get(5)
+    assert(snapshotStateVector)
+    const expectedFinalUpdate = Y.encodeStateAsUpdate(cumulativeDoc)
+    cumulativeDoc.destroy()
+    storage.sql.docs.set('meta', {
+      kind: 'meta',
+      latestSeq: 5,
+      latestSnapshotSeq: 5,
+      latestSnapshotKey: 'snapshots/vault-1/meta/5.yupdate',
+      minRetainedSeq: 0,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+    storage.sql.checkpointRuns.set('run-orphan-retention', {
+      runId: 'run-orphan-retention',
+      docId: 'meta',
+      upperSeq: 5,
+      snapshotKey: 'snapshots/vault-1/meta/5.yupdate',
+      stateVector: snapshotStateVector,
+      status: 'pointer-updated',
+      createdAt: 1,
+      r2WrittenAt: 2,
+      pointerUpdatedAt: 3,
+      compactedAt: undefined,
+    })
+    await storage.put('vault:id', 'vault-1')
+    const room = new VaultRoom(new FakeState(storage), makeEnvWithSnapshotBucket(bucket))
+
+    await room.alarm()
+
+    assert.equal(storage.sql.checkpointRuns.get('run-orphan-retention')?.status, 'compacted')
+    assert.deepEqual(
+      [...storage.sql.opLog.values()].map((row) => row.seq).sort((left, right) => left - right),
+      [4, 5],
+    )
+    assert.deepEqual(bucket.deletes, [
+      'snapshots/vault-1/meta/1.yupdate',
+      'snapshots/vault-1/meta/2.yupdate',
+    ])
+    assert.deepEqual(storage.sql.docs.get('meta')?.horizonStateVector, snapshotStateVectors.get(3))
+
+    const oldestRetainedSnapshot = snapshotBytesBySeq.get(3)
+    const oldestRetainedStateVector = snapshotStateVectors.get(3)
+    assert(oldestRetainedSnapshot)
+    assert(oldestRetainedStateVector)
+    const restoredBucket = new FakeR2Bucket()
+    restoredBucket.set('snapshots/vault-1/meta/3.yupdate', oldestRetainedSnapshot)
+    const existingDoc = storage.sql.docs.get('meta')
+    assert(existingDoc)
+    storage.sql.docs.set('meta', {
+      ...existingDoc,
+      latestSnapshotSeq: 3,
+      latestSnapshotKey: 'snapshots/vault-1/meta/3.yupdate',
+      minRetainedSeq: 3,
+      horizonStateVector: oldestRetainedStateVector,
+    })
+    const restoredRoom = new VaultRoom(
+      new FakeState(storage),
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(restoredBucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    await restoredRoom.fetch(await makeAuthenticatedWebSocketRequest())
+    const restoredServer = (restoredRoom.state.getWebSockets?.() ?? [])[0]
+    assert(restoredServer instanceof FakeSocket)
+    const oldestSnapshotDoc = new Y.Doc()
+    Y.applyUpdate(oldestSnapshotDoc, oldestRetainedSnapshot)
+    await restoredRoom.webSocketMessage(restoredServer, JSON.stringify(makeHello()))
+    await restoredRoom.webSocketMessage(
+      restoredServer,
+      JSON.stringify(
+        makeSyncRequest(
+          makeMessageId('message-orphan-retention-residual'),
+          makeStateVectorBase64(oldestSnapshotDoc),
+        ),
+      ),
+    )
+    const residualMessage = syncMessages(restoredServer.sent).at(-1)
+    assert(typeof residualMessage === 'string')
+    const residualUpdate = JSON.parse(residualMessage) as SyncUpdate
+    const restoredDoc = new Y.Doc()
+    Y.applyUpdate(restoredDoc, oldestRetainedSnapshot)
+    Y.applyUpdate(restoredDoc, decodeTestBase64(residualUpdate.update))
+    const expectedDoc = new Y.Doc()
+    Y.applyUpdate(expectedDoc, expectedFinalUpdate)
+    assert.deepEqual(Y.encodeStateAsUpdate(restoredDoc), Y.encodeStateAsUpdate(expectedDoc))
+    oldestSnapshotDoc.destroy()
+    restoredDoc.destroy()
+    expectedDoc.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
 })
 
 test('VaultRoom answers sync requests with Yjs diffs and no-ops empty diffs', async () => {

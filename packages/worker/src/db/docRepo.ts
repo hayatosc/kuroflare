@@ -111,6 +111,7 @@ export async function upsertMessageDedup(
   docKey: string,
   messageId: string,
   durableSeq: number,
+  updateSha256: string,
   now: number,
 ): Promise<void> {
   await db
@@ -119,6 +120,7 @@ export async function upsertMessageDedup(
       doc_id: docKey,
       message_id: messageId,
       durable_seq: durableSeq,
+      update_sha256: updateSha256,
       seen_at: now,
     })
     .onConflict((oc) =>
@@ -234,7 +236,10 @@ export async function getMessageDedupSeq(
 ): Promise<MessageDedupRow | undefined> {
   return db
     .selectFrom('message_dedup')
-    .select((eb) => eb.ref('durable_seq').as('durableSeq'))
+    .select((eb) => [
+      eb.ref('durable_seq').as('durableSeq'),
+      eb.ref('update_sha256').as('updateSha256'),
+    ])
     .where('doc_id', '=', docKey)
     .where('message_id', '=', messageId)
     .executeTakeFirst()
@@ -252,6 +257,7 @@ export async function updateDocSnapshotPointer(
   await db
     .updateTable('docs')
     .set({
+      latest_seq: sql`max(latest_seq, ${upperSeq})`,
       latest_snapshot_seq: upperSeq,
       latest_snapshot_key: snapshotKey,
       latest_state_vector: toArrayBuffer(stateVector),
