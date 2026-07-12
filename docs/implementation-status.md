@@ -5,11 +5,12 @@
 設計レビュー（2026-07-03）で見つかった項目は spec 本文へ反映済みで、記録は git 履歴にある。
 The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-review.md](spec/design-review.md).
 
-## 現状サマリ（2026-07-07）
+## 現状サマリ（2026-07-12）
 
-- ワークスペース全体の build / typecheck / lint / format は green。node 単体 647 件 + worker e2e 6 件。
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 190 件、worker 225 件、model-tests 17 件、Obsidian 345 件、worker e2e 7 件。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
 - **実 Linux Obsidian + miniflare の e2e（`test:e2e:obsidian:miniflare`）は not green**。2026-06-30 以降のリファクタと機能追加で退行し、10 件の実バグを修正した後も、アクティブファイル初回フルシンクの content-loss が 1 件未解決（後述）。
+- DR-008 (snapshot health and rollback) is closed. Immutable R2 bytes are now admitted only by append-only SQLite evidence, and the authenticated health API and Obsidian operator panel expose server-computed action authority.
 
 ### MVP チェックリスト（[operations.md](spec/operations.md) §8 対応）
 
@@ -34,6 +35,14 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 - Checkpoint capture and snapshot import now share the document write queue, while R2 I/O runs after checkpoint capture so later appends can continue.
 - Normal and orphan compaction use the oldest retained snapshot floor and its exact state vector. Invalid or incomplete retention evidence fails closed without deleting snapshots or operation-log rows. This closes DR-004.
+
+### Completed P0: DR-008 snapshot health and rollback
+
+- Snapshot health evidence is append-only and versioned. Each generation records expected and observed byte length, update hash, state-vector hash, physical verification, logical status, and authority. Inspection returns the latest row per generation with server-computed `allowedActions` and an optional block reason.
+- Hydration treats prefix listing as candidate discovery only. Without authoritative, physically verified, healthy evidence, R2-only recovery fails closed with `snapshot-health:no-verified-generation`; explicit authenticated verification creates the durable document pointer and rehydrates the in-memory document.
+- Verification uses a pending lease and final authority rechecks. Checkpoint pointer advancement, rollback, quarantine, compaction, and retention deletion are serialized by the document write queue. Retention and quarantine preserve the last healthy retained floor.
+- Rollback replays a contiguous retained op-log range into a new immutable generation and commits the pointer only after source and target evidence are revalidated. Repeated verification and quarantine requests are idempotent.
+- The worker health API, SQLite/e2e coverage, and Obsidian settings panel are implemented. Protocol-level self-healing guarantees remain gated by DR-009.
 
 ### P0: large-update snapshot escape
 

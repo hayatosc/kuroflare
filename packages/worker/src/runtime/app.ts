@@ -7,6 +7,9 @@ import {
   RevokeDeviceRequestSchema,
   SetupExchangeRequestSchema,
   SnapshotImportRequestSchema,
+  SnapshotHealthQuarantineRequestSchema,
+  SnapshotHealthVerifyRequestSchema,
+  SnapshotRollbackRequestSchema,
   VaultIdSchema,
   YDocIdSchema,
   verifyHs256DeviceToken,
@@ -133,6 +136,46 @@ workerApp.post('/devices/:deviceId/revoke', async (c) => {
 workerApp.get('/admin/quarantine', routeAuthorizedVaultRoom)
 workerApp.get('/admin/quarantine/:id', routeAuthorizedVaultRoom)
 workerApp.get('/admin/retention', routeAuthorizedVaultRoom)
+workerApp.get('/admin/snapshots', routeAuthorizedVaultRoom)
+
+for (const [path, schema] of [
+  ['/admin/snapshots/verify', SnapshotHealthVerifyRequestSchema],
+  ['/admin/snapshots/quarantine', SnapshotHealthQuarantineRequestSchema],
+  ['/admin/snapshots/rollback', SnapshotRollbackRequestSchema],
+] as const) {
+  workerApp.post(path, async (c) => {
+    const body: unknown = await c.req.raw
+      .clone()
+      .json()
+      .catch(() => undefined)
+    if (!v.is(schema, body)) return c.json({ error: 'invalid-snapshot-health-request' }, 400)
+    return routeAuthorizedVaultRoom(c)
+  })
+}
+
+for (const [action, schema] of [
+  ['verify', SnapshotHealthVerifyRequestSchema],
+  ['quarantine', SnapshotHealthQuarantineRequestSchema],
+  ['rollback', SnapshotRollbackRequestSchema],
+] as const) {
+  workerApp.post(`/admin/snapshots/:docId/${action}`, async (c) => {
+    const body: unknown = await c.req.raw
+      .clone()
+      .json()
+      .catch(() => undefined)
+    if (!v.is(schema, body) || !snapshotHealthRouteDocMatches(c.req.param('docId'), body.docId)) {
+      return c.json({ error: 'invalid-snapshot-health-request' }, 400)
+    }
+    return routeAuthorizedVaultRoom(c)
+  })
+}
+
+function snapshotHealthRouteDocMatches(
+  routeDocId: string,
+  docId: { readonly kind: 'meta' } | { readonly kind: 'file'; readonly ydocId: string },
+): boolean {
+  return docId.kind === 'meta' ? routeDocId === 'meta' : routeDocId === docId.ydocId
+}
 
 for (const operation of ['gc', 'force-local', 'force-remote', 'rebuild'] as const) {
   workerApp.post(`/admin/${operation}`, async (c) => {

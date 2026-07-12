@@ -59,6 +59,21 @@ test('retention keeps the newest healthy snapshot when newer snapshots are corru
   )
 })
 
+test('retention preserves every unhealthy generation for inspection', () => {
+  assert.deepEqual(
+    planSnapshotRetention({
+      snapshots: [snapshot('healthy', 4), snapshot('old-corrupt', 1, false)],
+      checkpointRuns: [],
+      currentPointerKey: 'healthy',
+      minGenerationCount: 1,
+    }),
+    {
+      retainKeys: ['healthy', 'old-corrupt'],
+      deleteKeys: [],
+    },
+  )
+})
+
 test('retention keeps snapshots referenced by unfinished checkpoint runs', () => {
   const checkpointRuns: SnapshotRetentionCheckpointRun[] = [
     { status: 'r2-written', snapshotKey: 'unfinished-r2' },

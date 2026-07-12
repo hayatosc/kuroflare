@@ -92,6 +92,7 @@ export class FakeR2Bucket implements R2BucketBinding {
   readonly lists: string[] = []
   readonly puts: string[] = []
   readonly deletes: string[] = []
+  beforeGet: ((key: string) => void | Promise<void>) | undefined
   beforePut: ((key: string, value: Uint8Array) => void | Promise<void>) | undefined
   listOverride:
     | ((options: R2ListOptionsBinding) => R2ObjectsBinding | Promise<R2ObjectsBinding>)
@@ -105,6 +106,7 @@ export class FakeR2Bucket implements R2BucketBinding {
 
   async get(key: string): Promise<R2ObjectBodyBinding | null> {
     this.gets.push(key)
+    await this.beforeGet?.(key)
     const bytes = this.values.get(key)
     return bytes === undefined ? null : new FakeR2Object(bytes)
   }
@@ -187,6 +189,7 @@ export class SqlOnlyStorage implements DurableObjectStorageBinding {
       messageDedup: new Map(this.sql.messageDedup),
       quarantines: new Map(this.sql.quarantines),
       checkpointRuns: new Map(this.sql.checkpointRuns),
+      snapshotHealthEvents: [...this.sql.snapshotHealthEvents],
       setupTokens: new Map(this.sql.setupTokens),
       refreshTokens: new Map(this.sql.refreshTokens),
       devices: new Map(this.sql.devices),
@@ -201,6 +204,11 @@ export class SqlOnlyStorage implements DurableObjectStorageBinding {
     replaceMap(this.sql.messageDedup, snapshot.messageDedup)
     replaceMap(this.sql.quarantines, snapshot.quarantines)
     replaceMap(this.sql.checkpointRuns, snapshot.checkpointRuns)
+    this.sql.snapshotHealthEvents.splice(
+      0,
+      this.sql.snapshotHealthEvents.length,
+      ...snapshot.snapshotHealthEvents,
+    )
     replaceMap(this.sql.setupTokens, snapshot.setupTokens)
     replaceMap(this.sql.refreshTokens, snapshot.refreshTokens)
     replaceMap(this.sql.devices, snapshot.devices)

@@ -15,7 +15,50 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     name: 'message-dedup-update-hash',
     migrate: buildMessageDedupUpdateHash,
   },
+  {
+    version: 3,
+    name: 'snapshot-health-evidence',
+    migrate: buildSnapshotHealthEvidence,
+  },
 ]
+
+async function buildSnapshotHealthEvidence(db: Kysely<Database>): Promise<void> {
+  await db.schema
+    .createTable('snapshot_health_events')
+    .ifNotExists()
+    .addColumn('id', 'integer', (col) => col.primaryKey().autoIncrement())
+    .addColumn('doc_id', 'text', (col) => col.notNull())
+    .addColumn('snapshot_key', 'text', (col) => col.notNull())
+    .addColumn('upper_seq', 'integer', (col) => col.notNull())
+    .addColumn('event', 'text', (col) => col.notNull())
+    .addColumn('actor', 'text', (col) => col.notNull())
+    .addColumn('authority_status', 'text', (col) => col.notNull())
+    .addColumn('expected_byte_length', 'integer')
+    .addColumn('expected_update_sha256', 'text')
+    .addColumn('expected_state_vector_sha256', 'text')
+    .addColumn('actual_byte_length', 'integer')
+    .addColumn('actual_update_sha256', 'text')
+    .addColumn('actual_state_vector_sha256', 'text')
+    .addColumn('physical_status', 'text')
+    .addColumn('logical_status', 'text')
+    .addColumn('reasons', 'text', (col) => col.notNull().defaultTo('[]'))
+    .addColumn('observed_at', 'integer', (col) => col.notNull())
+    .execute()
+
+  await db.schema
+    .createIndex('idx_snapshot_health_events_doc_key_id')
+    .ifNotExists()
+    .on('snapshot_health_events')
+    .columns(['doc_id', 'snapshot_key', 'id'])
+    .execute()
+
+  await db.schema
+    .createIndex('idx_snapshot_health_events_doc_seq_id')
+    .ifNotExists()
+    .on('snapshot_health_events')
+    .columns(['doc_id', 'upper_seq', 'id'])
+    .execute()
+}
 
 async function buildMessageDedupUpdateHash(db: Kysely<Database>): Promise<void> {
   const columns = await sql<{ readonly name: string }>`pragma table_info(message_dedup)`.execute(db)

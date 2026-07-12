@@ -1,4 +1,4 @@
-import { type DocId } from '@kuroflare/core'
+import { hashBytesSha256, makeSha256Hex, type DocId } from '@kuroflare/core'
 import * as v from 'valibot'
 import * as Y from 'yjs'
 
@@ -17,6 +17,9 @@ import {
   getCheckpointDocRecoveryState,
   getSnapshotRetentionCheckpointRuns,
   insertSnapshotRetentionEvent,
+  insertSnapshotExpectedEvidence,
+  insertSnapshotHealthEvent,
+  getLatestSnapshotHealthEvent,
 } from '../db/checkpointRepo'
 import {
   getDocsNeedingCheckpoint,
@@ -26,6 +29,11 @@ import {
 } from '../db/docRepo'
 import { readSqlUpdateBytes } from '../db/helpers'
 import { planSnapshotRetention, type SnapshotRetentionPlan } from '../db/retention'
+import {
+  verifySnapshotObject,
+  SNAPSHOT_HEALTH_SYSTEM_ACTORS,
+  type SnapshotVerificationExpectedEvidence,
+} from '../sync/snapshot-health'
 import { makeSnapshotObjectKey, type SnapshotCandidate } from '../sync/snapshots'
 import { makeSnapshotListPrefix } from '../sync/snapshots'
 import { SNAPSHOT_RETENTION_MIN_GENERATIONS } from './constants'
@@ -36,8 +44,15 @@ import {
   readSnapshotPointer,
   resolveVaultId,
   ensureSchema,
+  withSqlTransaction,
 } from './storage'
-import { ensureDocHydrated, listR2Objects, withDocWriteQueue } from './sync'
+import {
+  appendSnapshotVerificationEventPreservingLogical,
+  ensureDocHydrated,
+  listR2Objects,
+  rehydrateAfterDocPointer,
+  withDocWriteQueue,
+} from './sync'
 import { PosIntSchema, NonNegIntSchema, type WorkerEnv } from './types'
 import type {
   RuntimeCheckpointResult,
@@ -62,8 +77,12 @@ export async function readCheckpointableDocIds(
   const db = getDb(room)
   if (db === undefined || limit <= 0) return []
 
+  const activeCheckpointDocs = new Set(
+    (await getRecoverableCheckpointRuns(db, Math.max(limit * 4, limit))).map((run) => run.docId),
+  )
   const docIds: DocId[] = []
   for (const row of await getDocsNeedingCheckpoint(db, limit)) {
+    if (activeCheckpointDocs.has(row.docId)) continue
     const docId = docIdFromKey(row.docId)
     if (docId !== undefined) docIds.push(docId)
   }
@@ -115,9 +134,45 @@ export async function checkpointDoc(
   })
   if (capture.action === 'skipped') return capture
   const { decision, snapshotBytes, stateVector } = capture
+  const expectedUpdateSha256 = makeSha256Hex(await hashBytesSha256(snapshotBytes))
+  const expectedStateVectorSha256 = makeSha256Hex(await hashBytesSha256(stateVector))
 
   logEvent('checkpoint-start', { vaultId, docId, upperSeq: decision.upperSeq })
   try {
+    let existingVerification: Awaited<ReturnType<typeof verifySnapshotObject>> | undefined
+    if ((await bucket.head(decision.snapshotKey)) !== null) {
+      const existing = await getLatestSnapshotHealthEvent(db, docKey(docId), decision.snapshotKey)
+      const existingExpected = snapshotExpectedEvidenceFromEvent(existing)
+      if (existing?.authorityStatus !== 'authoritative' || existingExpected === undefined) {
+        throw new Error('snapshot-checkpoint-target-exists')
+      }
+      existingVerification = await verifySnapshotObject(
+        bucket,
+        decision.snapshotKey,
+        docId,
+        existingExpected,
+      )
+      const existingLogicalStatus = await appendSnapshotVerificationEventPreservingLogical(
+        room,
+        db,
+        docId,
+        { key: decision.snapshotKey, upperSeq: decision.upperSeq, healthy: true },
+        existingVerification,
+        existingExpected,
+        'authoritative',
+      )
+      if (
+        existingVerification.status !== 'verified' ||
+        existingLogicalStatus === 'quarantined' ||
+        existingVerification.stateVector === undefined ||
+        existingVerification.actualByteLength !== snapshotBytes.byteLength ||
+        existingVerification.actualUpdateSha256 !== expectedUpdateSha256 ||
+        existingVerification.actualStateVectorSha256 !== expectedStateVectorSha256 ||
+        !sameBytes(existingVerification.stateVector, stateVector)
+      ) {
+        throw new Error('snapshot-checkpoint-target-exists')
+      }
+    }
     await insertCheckpointRun(
       db,
       decision.runId,
@@ -128,44 +183,130 @@ export async function checkpointDoc(
       'writing',
       decision.createdAt,
     )
-    await bucket.put(decision.snapshotKey, snapshotBytes)
-    await updateCheckpointR2Written(db, decision.runId, now)
-    await updateDocSnapshotPointer(
-      db,
-      decision.upperSeq,
-      decision.snapshotKey,
-      stateVector,
-      now,
-      docKey(docId),
-      decision.upperSeq,
-    )
-    await updateCheckpointPointerUpdated(db, decision.runId, now)
-    const retention = await readSnapshotRetentionPlan(room, docId)
-    const compact = decideCheckpointCompact({
-      status: 'pointer-updated',
-      upperSeq: decision.upperSeq,
-      latestSnapshotSeq: decision.upperSeq,
-      // A missing or invalid retention plan must block compaction.
-      retainedSnapshotFloorSeq: retention?.retainedSnapshotFloorSeq ?? 0,
-      now,
-    })
-    if (compact.action === 'compact' && retention !== undefined) {
-      const horizonStateVector =
-        compact.compactedSeq === retention.retainedSnapshotFloorSeq
-          ? retention.retainedSnapshotStateVector
-          : stateVector
-      await deleteOpLogBelowSeq(db, docKey(docId), compact.compactedSeq)
-      await updateDocCompact(
+    let verification = existingVerification
+    if (verification === undefined) {
+      await insertSnapshotExpectedEvidence(
         db,
-        compact.compactedSeq,
-        horizonStateVector,
-        compact.compactedAt,
-        docKey(docId),
-        compact.compactedSeq,
+        {
+          docId,
+          snapshotKey: decision.snapshotKey,
+          upperSeq: decision.upperSeq,
+          actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.checkpoint,
+          expectedByteLength: snapshotBytes.byteLength,
+          expectedUpdateSha256,
+          expectedStateVectorSha256,
+        },
+        now,
       )
-      await updateCheckpointCompacted(db, decision.runId, compact.compactedAt)
-      await applySnapshotRetentionPlan(room, docId, retention.plan, now)
+      await bucket.put(decision.snapshotKey, snapshotBytes)
+      verification = await verifySnapshotObject(bucket, decision.snapshotKey, docId, {
+        byteLength: snapshotBytes.byteLength,
+        updateSha256: expectedUpdateSha256,
+        stateVectorSha256: expectedStateVectorSha256,
+      })
     }
+    const logicalStatus = await appendSnapshotVerificationEventPreservingLogical(
+      room,
+      db,
+      docId,
+      { key: decision.snapshotKey, upperSeq: decision.upperSeq, healthy: true },
+      verification,
+      {
+        byteLength: snapshotBytes.byteLength,
+        updateSha256: expectedUpdateSha256,
+        stateVectorSha256: expectedStateVectorSha256,
+      },
+    )
+    if (verification.status !== 'verified' || logicalStatus === 'quarantined') {
+      await updateCheckpointFailed(db, decision.runId)
+      throw new Error(`snapshot-verification-failed:${verification.reasons.join(',')}`)
+    }
+    await updateCheckpointR2Written(db, decision.runId, now)
+    let pointerInvalidated = false
+    await withDocWriteQueue(room, docId, async () => {
+      const finalVerification = await verifySnapshotObject(bucket, decision.snapshotKey, docId, {
+        byteLength: snapshotBytes.byteLength,
+        updateSha256: expectedUpdateSha256,
+        stateVectorSha256: expectedStateVectorSha256,
+      })
+      await withSqlTransaction(room, async () => {
+        const latest = await getLatestSnapshotHealthEvent(db, docKey(docId), decision.snapshotKey)
+        if (
+          finalVerification.status !== 'verified' ||
+          latest?.logicalStatus !== 'healthy' ||
+          latest?.physicalStatus !== 'verified' ||
+          latest.expectedByteLength !== snapshotBytes.byteLength ||
+          latest.expectedUpdateSha256 !== expectedUpdateSha256 ||
+          latest.expectedStateVectorSha256 !== expectedStateVectorSha256 ||
+          finalVerification.actualByteLength !== snapshotBytes.byteLength ||
+          finalVerification.actualUpdateSha256 !== expectedUpdateSha256 ||
+          finalVerification.actualStateVectorSha256 !== expectedStateVectorSha256
+        ) {
+          pointerInvalidated = true
+          await updateCheckpointFailed(db, decision.runId)
+          return
+        }
+        await updateDocSnapshotPointer(
+          db,
+          decision.upperSeq,
+          decision.snapshotKey,
+          stateVector,
+          now,
+          docKey(docId),
+          decision.upperSeq,
+        )
+        await updateCheckpointPointerUpdated(db, decision.runId, now)
+        await insertSnapshotHealthEvent(db, {
+          docId: docKey(docId),
+          snapshotKey: decision.snapshotKey,
+          upperSeq: decision.upperSeq,
+          event: 'verification',
+          actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.verifier,
+          authorityStatus: 'authoritative',
+          expectedByteLength: snapshotBytes.byteLength,
+          expectedUpdateSha256,
+          expectedStateVectorSha256,
+          actualByteLength: finalVerification.actualByteLength,
+          actualUpdateSha256: finalVerification.actualUpdateSha256,
+          actualStateVectorSha256: finalVerification.actualStateVectorSha256,
+          physicalStatus: 'verified',
+          logicalStatus: 'healthy',
+          reasons: [],
+          observedAt: Date.now(),
+        })
+      })
+    })
+    if (pointerInvalidated) throw new Error('snapshot-checkpoint-target-changed')
+    const compaction = await withDocWriteQueue(room, docId, async () => {
+      const retention = await readSnapshotRetentionPlan(room, docId)
+      const compact = decideCheckpointCompact({
+        status: 'pointer-updated',
+        upperSeq: decision.upperSeq,
+        latestSnapshotSeq: decision.upperSeq,
+        // A missing or invalid retention plan must block compaction.
+        retainedSnapshotFloorSeq: retention?.retainedSnapshotFloorSeq ?? 0,
+        now,
+      })
+      if (compact.action === 'compact' && retention !== undefined) {
+        const horizonStateVector =
+          compact.compactedSeq === retention.retainedSnapshotFloorSeq
+            ? retention.retainedSnapshotStateVector
+            : stateVector
+        await deleteOpLogBelowSeq(db, docKey(docId), compact.compactedSeq)
+        await updateDocCompact(
+          db,
+          compact.compactedSeq,
+          horizonStateVector,
+          compact.compactedAt,
+          docKey(docId),
+          compact.compactedSeq,
+        )
+        await updateCheckpointCompacted(db, decision.runId, compact.compactedAt)
+        await applySnapshotRetentionPlanSerialized(room, docId, retention.plan, now)
+      }
+      return { compact, retention }
+    })
+    const { compact, retention } = compaction
 
     logEvent('checkpoint-complete', { vaultId, docId, upperSeq: decision.upperSeq })
     return {
@@ -215,20 +356,31 @@ async function readSnapshotRetentionPlan(
       // Unknown objects in the snapshot prefix make the cleanup boundary
       // untrustworthy; leave both compaction and deletion for a later retry.
       if (snapshot === undefined) return undefined
-      const objectBody = await bucket.get(snapshot.key)
-      if (objectBody === null) return undefined
-      let healthy = false
-      let stateVector: Uint8Array | undefined
-      const candidateDoc = new Y.Doc()
-      try {
-        Y.applyUpdate(candidateDoc, new Uint8Array(await objectBody.arrayBuffer()))
-        stateVector = Y.encodeStateVector(candidateDoc)
-        healthy = true
-      } catch {
-        healthy = false
-      } finally {
-        candidateDoc.destroy()
+      const latestHealth = await getLatestSnapshotHealthEvent(db, docKey(docId), snapshot.key)
+      if (
+        latestHealth?.physicalStatus !== 'verified' &&
+        parseSnapshotHealthReasons(latestHealth?.reasons ?? '').includes('verification-pending')
+      ) {
+        snapshots.push({ ...snapshot, healthy: false })
+        continue
       }
+      const expected = snapshotExpectedEvidenceFromEvent(latestHealth)
+      const verification = await verifySnapshotObject(bucket, snapshot.key, docId, expected)
+      const logicalStatus = await appendSnapshotVerificationEventPreservingLogical(
+        room,
+        db,
+        docId,
+        snapshot,
+        verification,
+        expected,
+      )
+      const recorded = await getLatestSnapshotHealthEvent(db, docKey(docId), snapshot.key)
+      const healthy =
+        verification.status === 'verified' &&
+        logicalStatus !== 'quarantined' &&
+        recorded?.authorityStatus === 'authoritative' &&
+        recorded.physicalStatus === 'verified'
+      const stateVector = verification.stateVector
       snapshots.push({ ...snapshot, healthy })
       if (stateVector !== undefined) snapshotStateVectors.set(snapshot.key, stateVector)
     }
@@ -302,6 +454,17 @@ async function applySnapshotRetentionPlan(
   plan: SnapshotRetentionPlan,
   now: number,
 ): Promise<void> {
+  await withDocWriteQueue(room, docId, async () => {
+    await applySnapshotRetentionPlanSerialized(room, docId, plan, now)
+  })
+}
+
+async function applySnapshotRetentionPlanSerialized(
+  room: VaultRoom,
+  docId: DocId,
+  plan: SnapshotRetentionPlan,
+  now: number,
+): Promise<void> {
   const db = getDb(room)
   const bucket = room.env.SNAPSHOT_BUCKET
   const vaultId = await resolveVaultId(room)
@@ -309,13 +472,52 @@ async function applySnapshotRetentionPlan(
 
   for (const snapshotKey of plan.deleteKeys) {
     try {
+      const latest = await getLatestSnapshotHealthEvent(db, docKey(docId), snapshotKey)
+      if (
+        latest?.logicalStatus !== 'healthy' ||
+        latest?.physicalStatus !== 'verified' ||
+        latest?.authorityStatus !== 'authoritative'
+      ) {
+        const reason = 'snapshot-health-not-eligible'
+        await insertSnapshotRetentionEvent(db, docKey(docId), snapshotKey, 'skip', reason, now)
+        logEvent('snapshot-retention-delete-skipped', {
+          vaultId,
+          docId,
+          snapshotKey,
+          reason,
+        })
+        continue
+      }
       await bucket.delete(snapshotKey)
+      await insertSnapshotHealthEvent(db, {
+        docId: docKey(docId),
+        snapshotKey,
+        upperSeq: latest.upperSeq,
+        event: 'verification',
+        actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.verifier,
+        authorityStatus: latest.authorityStatus === 'authoritative' ? 'authoritative' : 'candidate',
+        expectedByteLength: latest.expectedByteLength,
+        expectedUpdateSha256: latest.expectedUpdateSha256,
+        expectedStateVectorSha256: latest.expectedStateVectorSha256,
+        actualByteLength: 0,
+        actualUpdateSha256: null,
+        actualStateVectorSha256: null,
+        physicalStatus: 'mismatch',
+        logicalStatus: 'healthy',
+        reasons: [...new Set([...parseSnapshotHealthReasons(latest.reasons), 'missing-object'])],
+        observedAt: now,
+      })
       await insertSnapshotRetentionEvent(db, docKey(docId), snapshotKey, 'delete', null, now)
       logEvent('snapshot-retention-delete', { vaultId, docId, snapshotKey })
     } catch (error) {
       const message = retentionErrorMessage(error)
       await insertSnapshotRetentionEvent(db, docKey(docId), snapshotKey, 'delete', message, now)
-      logEvent('snapshot-retention-delete-failed', { vaultId, docId, snapshotKey, error: message })
+      logEvent('snapshot-retention-delete-failed', {
+        vaultId,
+        docId,
+        snapshotKey,
+        error: message,
+      })
     }
   }
 }
@@ -349,8 +551,15 @@ async function recoverOrphanedCheckpointRun(
     return
   }
   const doc = await readCheckpointDocRecoveryState(room, db, run.docId)
-  const snapshot = await readCheckpointSnapshotEvidence(room, bucket, run.snapshotKey)
-  const pointerVerified = await checkpointPointerVerified(room, bucket, doc)
+  const snapshot = await readCheckpointSnapshotEvidence(
+    room,
+    db,
+    bucket,
+    run.docId,
+    run.snapshotKey,
+    run.upperSeq,
+  )
+  const pointerVerified = await checkpointPointerVerified(room, db, bucket, run.docId, doc)
   const snapshotStateVectorMatchesRun =
     snapshot?.stateVector !== undefined &&
     run.stateVector !== undefined &&
@@ -392,7 +601,7 @@ async function recoverOrphanedCheckpointRun(
         await markCheckpointRunFailed(room, db, run.runId)
         return
       }
-      await advanceRecoveredCheckpointPointer(room, db, run, snapshot.stateVector, now)
+      await advanceRecoveredCheckpointPointer(room, db, bucket, run, snapshot.stateVector, now)
       return
     case 'compact-op-log':
       if (snapshot === undefined || !snapshot.verified || snapshot.stateVector === undefined) return
@@ -405,6 +614,7 @@ async function recoverOrphanedCheckpointRun(
       await compactRecoveredCheckpointRun(
         room,
         db,
+        bucket,
         run,
         decision.compactedSeq,
         horizonStateVector,
@@ -471,32 +681,56 @@ async function readCheckpointDocRecoveryState(
 
 async function readCheckpointSnapshotEvidence(
   room: VaultRoom,
+  db: NonNullable<ReturnType<typeof getDb>>,
   bucket: NonNullable<WorkerEnv['SNAPSHOT_BUCKET']>,
+  docId: DocId,
   snapshotKey: string | undefined,
+  expectedUpperSeq?: number,
 ): Promise<RuntimeCheckpointSnapshotEvidence | undefined> {
   if (snapshotKey === undefined) return undefined
-
-  const object = await bucket.get(snapshotKey)
-  if (object === null) return { exists: false, verified: false, stateVector: undefined }
-
-  try {
-    const doc = new Y.Doc()
-    Y.applyUpdate(doc, new Uint8Array(await object.arrayBuffer()))
-    const stateVector = Y.encodeStateVector(doc)
-    doc.destroy()
-    return { exists: true, verified: true, stateVector }
-  } catch {
-    return { exists: true, verified: false, stateVector: undefined }
+  const upperSeq = snapshotUpperSeqFromKey(snapshotKey)
+  if (upperSeq === undefined || (expectedUpperSeq !== undefined && upperSeq !== expectedUpperSeq)) {
+    return undefined
+  }
+  const latest = await getLatestSnapshotHealthEvent(db, docKey(docId), snapshotKey)
+  const expected = snapshotExpectedEvidenceFromEvent(latest)
+  const verification = await verifySnapshotObject(bucket, snapshotKey, docId, expected)
+  const logicalStatus = await appendSnapshotVerificationEventPreservingLogical(
+    room,
+    db,
+    docId,
+    { key: snapshotKey, upperSeq, healthy: true },
+    verification,
+    expected,
+  )
+  const recorded = await getLatestSnapshotHealthEvent(db, docKey(docId), snapshotKey)
+  return {
+    exists: verification.exists,
+    verified:
+      verification.status === 'verified' &&
+      logicalStatus === 'healthy' &&
+      recorded?.logicalStatus === 'healthy' &&
+      recorded?.physicalStatus === 'verified',
+    stateVector: verification.stateVector,
   }
 }
 
 async function checkpointPointerVerified(
   room: VaultRoom,
+  db: NonNullable<ReturnType<typeof getDb>>,
   bucket: NonNullable<WorkerEnv['SNAPSHOT_BUCKET']>,
+  docId: DocId,
   doc: RuntimeCheckpointDocRecoveryRecord,
 ): Promise<boolean> {
   if (doc.latestSnapshotKey === undefined || doc.latestSnapshotSeq <= 0) return false
-  const evidence = await readCheckpointSnapshotEvidence(room, bucket, doc.latestSnapshotKey)
+  const evidence = await readCheckpointSnapshotEvidence(
+    room,
+    db,
+    bucket,
+    docId,
+    doc.latestSnapshotKey,
+    doc.latestSnapshotSeq,
+  )
   return evidence?.verified === true
 }
 
@@ -520,6 +754,7 @@ async function markCheckpointRunR2Written(
 async function advanceRecoveredCheckpointPointer(
   room: VaultRoom,
   db: NonNullable<ReturnType<typeof getDb>>,
+  bucket: NonNullable<WorkerEnv['SNAPSHOT_BUCKET']>,
   run: RuntimeCheckpointRunRecord,
   stateVector: Uint8Array | undefined,
   now: number,
@@ -529,29 +764,81 @@ async function advanceRecoveredCheckpointPointer(
   const capturedStateVector = stateVector
 
   await withDocWriteQueue(room, run.docId, async () => {
-    await updateDocSnapshotPointer(
-      db,
-      run.upperSeq,
-      snapshotKey,
-      capturedStateVector,
-      now,
-      docKey(run.docId),
-      run.upperSeq,
-    )
-    await updateCheckpointPointerUpdated(db, run.runId, now)
-    await rehydrateAfterCheckpointPointer(room, run.docId)
+    const initialLatest = await getLatestSnapshotHealthEvent(db, docKey(run.docId), snapshotKey)
+    const initialExpected = snapshotExpectedEvidenceFromEvent(initialLatest)
+    const verification = await verifySnapshotObject(bucket, snapshotKey, run.docId, initialExpected)
+    if (
+      verification.status !== 'verified' ||
+      verification.stateVector === undefined ||
+      !sameBytes(verification.stateVector, capturedStateVector) ||
+      initialLatest?.logicalStatus === 'quarantined'
+    ) {
+      await updateCheckpointFailed(db, run.runId)
+      return
+    }
+    let invalidated = false
+    await withSqlTransaction(room, async () => {
+      const latest = await getLatestSnapshotHealthEvent(db, docKey(run.docId), snapshotKey)
+      const expected = snapshotExpectedEvidenceFromEvent(latest)
+      if (
+        latest?.logicalStatus === 'quarantined' ||
+        expected?.byteLength !== initialExpected?.byteLength ||
+        expected?.updateSha256 !== initialExpected?.updateSha256 ||
+        expected?.stateVectorSha256 !== initialExpected?.stateVectorSha256
+      ) {
+        invalidated = true
+        await updateCheckpointFailed(db, run.runId)
+        return
+      }
+      await updateDocSnapshotPointer(
+        db,
+        run.upperSeq,
+        snapshotKey,
+        capturedStateVector,
+        now,
+        docKey(run.docId),
+        run.upperSeq,
+      )
+      await updateCheckpointPointerUpdated(db, run.runId, now)
+      await insertSnapshotHealthEvent(db, {
+        docId: docKey(run.docId),
+        snapshotKey,
+        upperSeq: run.upperSeq,
+        event: 'verification',
+        actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.verifier,
+        authorityStatus: 'authoritative',
+        expectedByteLength: expected?.byteLength ?? latest?.expectedByteLength ?? null,
+        expectedUpdateSha256: expected?.updateSha256 ?? latest?.expectedUpdateSha256 ?? null,
+        expectedStateVectorSha256:
+          expected?.stateVectorSha256 ?? latest?.expectedStateVectorSha256 ?? null,
+        actualByteLength: verification.actualByteLength,
+        actualUpdateSha256: verification.actualUpdateSha256 || null,
+        actualStateVectorSha256: verification.actualStateVectorSha256 ?? null,
+        physicalStatus: verification.status,
+        logicalStatus: 'healthy',
+        reasons: [...parseSnapshotHealthReasons(latest?.reasons), ...verification.reasons],
+        observedAt: now,
+      })
+    })
+    if (!invalidated) await rehydrateAfterDocPointer(room, run.docId)
   })
 }
 
 async function compactRecoveredCheckpointRun(
   room: VaultRoom,
   db: NonNullable<ReturnType<typeof getDb>>,
+  bucket: NonNullable<WorkerEnv['SNAPSHOT_BUCKET']>,
   run: RuntimeCheckpointRunRecord,
   compactedSeq: number,
   horizonStateVector: Uint8Array,
   now: number,
 ): Promise<void> {
   await withDocWriteQueue(room, run.docId, async () => {
+    const authorityAppended = await appendRecoveredCheckpointAuthority(room, db, bucket, run, now)
+    if (!authorityAppended) {
+      await updateCheckpointFailed(db, run.runId)
+      return
+    }
     await deleteOpLogBelowSeq(db, docKey(run.docId), compactedSeq)
     await updateDocCompact(
       db,
@@ -562,35 +849,105 @@ async function compactRecoveredCheckpointRun(
       compactedSeq,
     )
     await updateCheckpointCompacted(db, run.runId, now)
-    await rehydrateAfterCheckpointPointer(room, run.docId)
+    await rehydrateAfterDocPointer(room, run.docId)
   })
 }
 
-async function rehydrateAfterCheckpointPointer(room: VaultRoom, docId: DocId): Promise<void> {
-  const key = docKey(docId)
-  const inFlight = room.hydrationInFlight.get(key)
-  if (inFlight !== undefined) {
-    try {
-      await inFlight
-    } catch (error) {
-      // The stale hydration may have failed; retry against the recovered pointer below.
-      logEvent('checkpoint-rehydrate-stale-hydration-failed', {
-        docId,
-        error: retentionErrorMessage(error),
-      })
+async function appendRecoveredCheckpointAuthority(
+  room: VaultRoom,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  bucket: NonNullable<WorkerEnv['SNAPSHOT_BUCKET']>,
+  run: RuntimeCheckpointRunRecord,
+  now: number,
+): Promise<boolean> {
+  if (run.snapshotKey === undefined || run.stateVector === undefined) return false
+  const snapshotKey = run.snapshotKey
+  const capturedStateVector = run.stateVector
+  const initialLatest = await getLatestSnapshotHealthEvent(db, docKey(run.docId), snapshotKey)
+  const initialExpected = snapshotExpectedEvidenceFromEvent(initialLatest)
+  const verification = await verifySnapshotObject(bucket, snapshotKey, run.docId, initialExpected)
+  if (
+    verification.status !== 'verified' ||
+    verification.stateVector === undefined ||
+    !sameBytes(verification.stateVector, capturedStateVector) ||
+    initialLatest?.logicalStatus === 'quarantined'
+  ) {
+    return false
+  }
+  let committed = false
+  await withSqlTransaction(room, async () => {
+    const latest = await getLatestSnapshotHealthEvent(db, docKey(run.docId), snapshotKey)
+    const expected = snapshotExpectedEvidenceFromEvent(latest)
+    if (
+      latest?.logicalStatus === 'quarantined' ||
+      expected?.byteLength !== initialExpected?.byteLength ||
+      expected?.updateSha256 !== initialExpected?.updateSha256 ||
+      expected?.stateVectorSha256 !== initialExpected?.stateVectorSha256
+    ) {
+      return
     }
-  }
-  const current = room.docs.get(key)
-  room.docs.delete(key)
-  room.hydratedDocs.delete(key)
-  if (inFlight !== undefined && room.hydrationInFlight.get(key) === inFlight) {
-    room.hydrationInFlight.delete(key)
-  }
-  current?.destroy()
-  await ensureDocHydrated(room, docId)
+    await insertSnapshotHealthEvent(db, {
+      docId: docKey(run.docId),
+      snapshotKey,
+      upperSeq: run.upperSeq,
+      event: 'verification',
+      actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.verifier,
+      authorityStatus: 'authoritative',
+      expectedByteLength: expected?.byteLength ?? latest?.expectedByteLength ?? null,
+      expectedUpdateSha256: expected?.updateSha256 ?? latest?.expectedUpdateSha256 ?? null,
+      expectedStateVectorSha256:
+        expected?.stateVectorSha256 ?? latest?.expectedStateVectorSha256 ?? null,
+      actualByteLength: verification.actualByteLength,
+      actualUpdateSha256: verification.actualUpdateSha256 || null,
+      actualStateVectorSha256: verification.actualStateVectorSha256 ?? null,
+      physicalStatus: verification.status,
+      logicalStatus: 'healthy',
+      reasons: [...parseSnapshotHealthReasons(latest?.reasons), ...verification.reasons],
+      observedAt: now,
+    })
+    committed = true
+  })
+  return committed
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false
   return left.every((byte, index) => byte === right[index])
+}
+
+function snapshotExpectedEvidenceFromEvent(
+  event: import('../db/checkpointRepo').SnapshotHealthEventRow | undefined,
+): SnapshotVerificationExpectedEvidence | undefined {
+  if (
+    event === undefined ||
+    event.expectedByteLength === null ||
+    event.expectedUpdateSha256 === null ||
+    event.expectedStateVectorSha256 === null
+  ) {
+    return undefined
+  }
+  return {
+    byteLength: event.expectedByteLength,
+    updateSha256: event.expectedUpdateSha256,
+    stateVectorSha256: event.expectedStateVectorSha256,
+  }
+}
+
+function snapshotUpperSeqFromKey(snapshotKey: string): number | undefined {
+  const match = /\/([1-9][0-9]*)\.yupdate$/.exec(snapshotKey)
+  if (match === null) return undefined
+  const upperSeq = Number(match[1])
+  return Number.isSafeInteger(upperSeq) && upperSeq > 0 ? upperSeq : undefined
+}
+
+function parseSnapshotHealthReasons(value: string | undefined): readonly string[] {
+  if (value === undefined) return []
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed)
+      ? parsed.filter((reason): reason is string => typeof reason === 'string')
+      : []
+  } catch {
+    return []
+  }
 }

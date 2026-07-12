@@ -473,3 +473,70 @@ test('a cold-started Durable Object rebuilds document state from its durable op 
 
   rejoin.close()
 })
+
+test('real SQLite snapshot health queries select latest events per generation', async () => {
+  await seedDevices([DEVICE_A])
+  const ydocId = makeYDocId('ydoc-health-sql-latest')
+  const docKey = `file:${ydocId}`
+  const key1 = `snapshots/${VAULT_ID}/files/${ydocId}/1.yupdate`
+  const key2 = `snapshots/${VAULT_ID}/files/${ydocId}/2.yupdate`
+  const snapshot1 = new Y.Doc()
+  snapshot1.getText('content').insert(0, 'one')
+  const snapshot2 = new Y.Doc()
+  snapshot2.getText('content').insert(0, 'two')
+  await env.SNAPSHOT_BUCKET.put(key1, Y.encodeStateAsUpdate(snapshot1))
+  await env.SNAPSHOT_BUCKET.put(key2, Y.encodeStateAsUpdate(snapshot2))
+  snapshot1.destroy()
+  snapshot2.destroy()
+
+  await runInDurableObject(roomStub(), async (_instance, state) => {
+    const sql = state.storage.sql
+    const db = createDb(sql)
+    for (const migration of SCHEMA_MIGRATIONS) {
+      await migration.migrate(db)
+    }
+    const now = Date.now()
+    sql.exec(
+      'insert into docs (doc_id, kind, latest_seq, latest_snapshot_seq, latest_snapshot_key, min_retained_seq, updated_at) values (?, ?, ?, ?, ?, ?, ?)',
+      docKey,
+      'file',
+      2,
+      2,
+      key2,
+      0,
+      now,
+    )
+    const insertHealth = (snapshotKey: string, upperSeq: number, observedAt: number): void => {
+      sql.exec(
+        'insert into snapshot_health_events (doc_id, snapshot_key, upper_seq, event, actor, authority_status, physical_status, logical_status, reasons, observed_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        docKey,
+        snapshotKey,
+        upperSeq,
+        'verification',
+        'system:verifier',
+        'authoritative',
+        'verified',
+        'healthy',
+        '[]',
+        observedAt,
+      )
+    }
+    insertHealth(key1, 1, now)
+    insertHealth(key2, 2, now)
+    for (let index = 0; index < 9_000; index += 1) insertHealth(key2, 2, now + index + 1)
+  })
+
+  const token = await mintAccessToken(DEVICE_A.deviceId)
+  const response = await roomStub().fetch(
+    new Request(`https://kuroflare.test/admin/snapshots?docId=${docKey}&limit=2`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  )
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({
+    entries: [
+      { snapshotKey: key2, upperSeq: 2 },
+      { snapshotKey: key1, upperSeq: 1 },
+    ],
+  })
+})

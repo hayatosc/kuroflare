@@ -47,16 +47,17 @@ test('sync update model does not allocate new seqs for duplicate retries', () =>
   assertSyncUpdateModelInvariants(state)
 })
 
-test('sync update model routes large updates to snapshots without op_log rows', () => {
+test('sync update model rejects large live updates without durable mutation', () => {
   const state = createSyncUpdateModelState(100)
   const message = createSyncUpdateModelMessage(state, 101)
 
   const decision = applySyncUpdateModelMessage(state, message)
-  assert.equal(decision.action, 'snapshot-escape')
-  assert.equal(state.latestSeq, 1)
-  assert.equal(state.latestSnapshotSeq, 1)
+  assert.equal(decision.action, 'reject')
+  assert.equal(state.latestSeq, 0)
+  assert.equal(state.latestSnapshotSeq, 0)
   assert.equal(state.opLogSeqs.size, 0)
-  assert.equal(state.snapshotSeqs.has(1), true)
+  assert.equal(state.processedMessages.size, 0)
+  assert.equal(state.ackedMessages.size, 0)
   assertSyncUpdateModelInvariants(state)
 })
 
@@ -98,6 +99,9 @@ test('random sync update append sequences preserve clock and duplicate invariant
           const beforeSeq = state.latestSeq
           const decision = applySyncUpdateModelMessage(state, message)
           if (decision.action === 'ack-duplicate') {
+            assert.equal(state.latestSeq, beforeSeq)
+          } else if (decision.action === 'reject') {
+            assert.equal(decision.reason, 'large-update-requires-snapshot-import')
             assert.equal(state.latestSeq, beforeSeq)
           } else {
             assert.equal(decision.action, 'append-op')

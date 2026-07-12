@@ -4,6 +4,7 @@ export type CheckpointRunStatus =
   | 'r2-written'
   | 'pointer-updated'
   | 'compacted'
+  | 'completed'
   | 'failed'
 
 /** Input for planning a new checkpoint write. */
@@ -163,6 +164,7 @@ export function decideOrphanedCheckpointRecovery(
 ): OrphanedCheckpointRecoveryDecision {
   switch (input.run.status) {
     case 'compacted':
+    case 'completed':
     case 'failed':
       return { action: 'ignore-terminal' }
     case 'writing':

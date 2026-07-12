@@ -12,6 +12,7 @@ export interface Database {
   snapshot_retention_events: SnapshotRetentionEventTable
   connected_devices: ConnectedDeviceTable
   quarantined_updates: QuarantinedUpdateTable
+  snapshot_health_events: SnapshotHealthEventTable
 }
 
 export interface SchemaMigrationTable {
@@ -115,4 +116,24 @@ export interface QuarantinedUpdateTable {
   update_sha256: string
   update_bytes: ArrayBuffer
   created_at: number
+}
+
+export interface SnapshotHealthEventTable {
+  id: Generated<number>
+  doc_id: string
+  snapshot_key: string
+  upper_seq: number
+  event: string
+  actor: string
+  authority_status: string
+  expected_byte_length: number | null
+  expected_update_sha256: string | null
+  expected_state_vector_sha256: string | null
+  actual_byte_length: number | null
+  actual_update_sha256: string | null
+  actual_state_vector_sha256: string | null
+  physical_status: string | null
+  logical_status: string | null
+  reasons: string
+  observed_at: number
 }

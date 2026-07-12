@@ -2,11 +2,20 @@ import {
   CURRENT_PROTOCOL_VERSION,
   DeviceTokenRefreshRequestSchema,
   DeviceIdSchema,
+  hashBytesSha256,
+  makeSha256Hex,
   RevokeDeviceRequestSchema,
   SetupExchangeRequestSchema,
   SnapshotImportRequestSchema,
+  SnapshotHealthQuarantineRequestSchema,
+  SnapshotHealthListResponseSchema,
+  SnapshotHealthMutationResponseSchema,
+  SnapshotHealthVerifyRequestSchema,
+  SnapshotRollbackRequestSchema,
+  SnapshotRollbackResponseSchema,
+  Sha256HexSchema,
+  type SnapshotHealthEntry,
   YDocIdSchema,
-  makeSha256Hex,
   signHs256DeviceToken,
   type DeviceTokenClaims,
   type DocId,
@@ -17,11 +26,19 @@ import * as Y from 'yjs'
 
 import {
   getSnapshotRetentionEvents,
+  getSnapshotRetentionCheckpointRuns,
   insertCheckpointRun,
   updateCheckpointR2Written,
   updateCheckpointPointerUpdated,
+  updateCheckpointFailed,
+  insertSnapshotExpectedEvidence,
+  insertSnapshotHealthEvent,
+  getAllLatestSnapshotHealthEvents,
+  getLatestSnapshotHealthEvent,
 } from '../db/checkpointRepo'
-import { insertDoc } from '../db/docRepo'
+import { insertDoc, updateDocSnapshotPointer } from '../db/docRepo'
+import { getOpLogUpdatesBetween } from '../db/docRepo'
+import { readSqlUpdateBytes } from '../db/helpers'
 import { upsertSetupToken } from '../db/setupRepo'
 import { decideSetupExchange, decideRevokeDevice, planSetupExchangeCredentials } from '../devices'
 import { decideDeviceTokenRefresh, planDeviceRefreshTokenRotation } from '../devices'
@@ -33,8 +50,17 @@ import {
   buildQuarantinedUpdateDetailResponse,
 } from '../http/quarantine'
 import { planSetupExchangeHttpResponse } from '../http/setup'
-import { makeSnapshotObjectKey } from '../sync/snapshots'
-import { authorizeHttpRequest, rememberSocketToken } from './auth'
+import {
+  verifySnapshotObject,
+  SNAPSHOT_HEALTH_SYSTEM_ACTORS,
+  type SnapshotVerificationExpectedEvidence,
+} from '../sync/snapshot-health'
+import {
+  makeSnapshotListPrefix,
+  makeSnapshotObjectKey,
+  type SnapshotCandidate,
+} from '../sync/snapshots'
+import { authorizeHttpRequest, authorizeHttpRequestWithClaims, rememberSocketToken } from './auth'
 import {
   REFRESH_ACCESS_TOKEN_TTL_MS,
   REFRESH_TOKEN_TTL_MS,
@@ -62,9 +88,16 @@ import {
   persistDeviceRevocation,
   withSqlTransaction,
   readDocClock,
+  readSyncRequestDocState,
   readSnapshotPointer,
 } from './storage'
-import { ensureDocHydrated, withDocWriteQueue } from './sync'
+import {
+  appendSnapshotVerificationEventPreservingLogical,
+  ensureDocHydrated,
+  listR2Objects,
+  rehydrateAfterDocPointer,
+  withDocWriteQueue,
+} from './sync'
 import type { RuntimeWebSocketPairConstructor, WebSocketResponseInit } from './types'
 import { E2eSetupTokenSeedRequestSchema, E2eSnapshotSeedRequestSchema } from './types'
 import {
@@ -138,7 +171,39 @@ export async function handleE2eSnapshotSeed(room: VaultRoom, c: Context): Promis
   const now = Date.now()
   const latestSeq = body.latestSeq ?? 1
   const snapshotKey = makeSnapshotObjectKey(body.vaultId, body.docId, latestSeq)
+  const expectedUpdateSha256 = makeSha256Hex(await hashBytesSha256(update))
+  const expectedStateVectorSha256 = makeSha256Hex(await hashBytesSha256(stateVector))
+  await insertSnapshotExpectedEvidence(
+    db,
+    {
+      docId: body.docId,
+      snapshotKey,
+      upperSeq: latestSeq,
+      actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.import,
+      expectedByteLength: update.byteLength,
+      expectedUpdateSha256,
+      expectedStateVectorSha256,
+    },
+    now,
+  )
   await bucket.put(snapshotKey, update)
+  await insertSnapshotHealthEvent(db, {
+    docId: docKey(body.docId),
+    snapshotKey,
+    upperSeq: latestSeq,
+    event: 'verification',
+    actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.verifier,
+    authorityStatus: 'authoritative',
+    expectedByteLength: update.byteLength,
+    expectedUpdateSha256,
+    expectedStateVectorSha256,
+    actualByteLength: update.byteLength,
+    actualUpdateSha256: expectedUpdateSha256,
+    actualStateVectorSha256: expectedStateVectorSha256,
+    physicalStatus: 'verified',
+    logicalStatus: 'healthy',
+    observedAt: now,
+  })
   await insertDoc(
     db,
     docKey(body.docId),
@@ -538,6 +603,10 @@ async function handleSnapshotImportRequest(
     if (body.latestSeq !== undefined && body.latestSeq !== existingLatestSeq) {
       return c.json({ error: 'snapshot-import-stale-seq', latestSeq: existingLatestSeq }, 409)
     }
+    const initialSnapshotKey = makeSnapshotObjectKey(vaultId, docId, existingLatestSeq + 1)
+    if ((await bucket.head(initialSnapshotKey)) !== null) {
+      return c.json({ error: 'snapshot-import-target-exists' }, 409)
+    }
     try {
       await ensureDocHydrated(room, docId)
     } catch {
@@ -559,6 +628,10 @@ async function handleSnapshotImportRequest(
     const now = Date.now()
     const snapshotSeq = existingLatestSeq + 1
     const snapshotKey = makeSnapshotObjectKey(vaultId, docId, snapshotSeq)
+    if ((await bucket.head(snapshotKey)) !== null) {
+      importedDoc.destroy()
+      return c.json({ error: 'snapshot-import-target-exists' }, 409)
+    }
     const runId = `checkpoint:import:${snapshotKey}:${now}`
     let pointerPersisted = false
     try {
@@ -572,21 +645,89 @@ async function handleSnapshotImportRequest(
         'writing',
         now,
       )
-      await bucket.put(snapshotKey, mergedBytes)
-      await updateCheckpointR2Written(db, runId, now)
-      await insertDoc(
+      const expectedUpdateSha256 = makeSha256Hex(await hashBytesSha256(mergedBytes))
+      const expectedStateVectorSha256 = makeSha256Hex(await hashBytesSha256(stateVector))
+      await insertSnapshotExpectedEvidence(
         db,
-        key,
-        docId.kind,
-        snapshotSeq,
-        snapshotSeq,
-        snapshotKey,
-        stateVector,
-        0,
+        {
+          docId,
+          snapshotKey,
+          upperSeq: snapshotSeq,
+          actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.import,
+          expectedByteLength: mergedBytes.byteLength,
+          expectedUpdateSha256,
+          expectedStateVectorSha256,
+        },
         now,
       )
-      pointerPersisted = true
+      await bucket.put(snapshotKey, mergedBytes)
+      const verification = await verifySnapshotObject(bucket, snapshotKey, docId, {
+        byteLength: mergedBytes.byteLength,
+        updateSha256: expectedUpdateSha256,
+        stateVectorSha256: expectedStateVectorSha256,
+      })
+      const logicalStatus = await appendSnapshotVerificationEventPreservingLogical(
+        room,
+        db,
+        docId,
+        { key: snapshotKey, upperSeq: snapshotSeq, healthy: true },
+        verification,
+        {
+          byteLength: mergedBytes.byteLength,
+          updateSha256: expectedUpdateSha256,
+          stateVectorSha256: expectedStateVectorSha256,
+        },
+      )
+      if (verification.status !== 'verified' || logicalStatus === 'quarantined') {
+        await updateCheckpointFailed(db, runId)
+        throw new Error(`snapshot-verification-failed:${verification.reasons.join(',')}`)
+      }
+      await updateCheckpointR2Written(db, runId, now)
+      let pointerInvalidated = false
+      await withSqlTransaction(room, async () => {
+        const latest = await getLatestSnapshotHealthEvent(db, key, snapshotKey)
+        if (
+          latest?.logicalStatus !== 'healthy' ||
+          latest?.physicalStatus !== 'verified' ||
+          latest.expectedByteLength !== mergedBytes.byteLength ||
+          latest.expectedUpdateSha256 !== expectedUpdateSha256 ||
+          latest.expectedStateVectorSha256 !== expectedStateVectorSha256
+        ) {
+          pointerInvalidated = true
+          await updateCheckpointFailed(db, runId)
+          return
+        }
+        await insertDoc(
+          db,
+          key,
+          docId.kind,
+          snapshotSeq,
+          snapshotSeq,
+          snapshotKey,
+          stateVector,
+          0,
+          now,
+        )
+        pointerPersisted = true
+      })
+      if (pointerInvalidated) {
+        importedDoc.destroy()
+        return c.json({ error: 'snapshot-import-target-changed' }, 409)
+      }
       await updateCheckpointPointerUpdated(db, runId, now)
+      await appendSnapshotVerificationEventPreservingLogical(
+        room,
+        db,
+        docId,
+        { key: snapshotKey, upperSeq: snapshotSeq, healthy: true },
+        verification,
+        {
+          byteLength: mergedBytes.byteLength,
+          updateSha256: expectedUpdateSha256,
+          stateVectorSha256: expectedStateVectorSha256,
+        },
+        'authoritative',
+      )
     } catch (error) {
       const pointerAdvanced =
         pointerPersisted ||
@@ -647,6 +788,1215 @@ async function activateImportedDoc(
   current?.destroy()
   room.docs.set(key, importedDoc)
   room.hydratedDocs.add(key)
+}
+
+/** Lists paginated snapshot health generations for an authenticated operator. */
+export async function handleSnapshotHealthList(room: VaultRoom, c: Context): Promise<Response> {
+  const db = getDb(room)
+  const secret = room.env.DEVICE_TOKEN_SECRET
+  if (db === undefined || secret === undefined)
+    return c.text('Snapshot health inspect unavailable', 503)
+  await ensureSchema(room)
+
+  const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
+  if (rejection !== undefined) return rejection
+
+  const docId = parseSnapshotHealthDocId(c.req.query('docId'))
+  if (docId === undefined) return c.json({ error: 'invalid-snapshot-health-doc-id' }, 400)
+  const limit = parseSnapshotHealthLimit(c.req.query('limit'))
+  const cursor = parseSnapshotHealthCursor(c.req.query('cursor'))
+  if (limit === undefined || (c.req.query('cursor') !== undefined && cursor === undefined)) {
+    return c.json({ error: 'invalid-snapshot-health-pagination' }, 400)
+  }
+
+  const latestRows = await collectSnapshotHealthRows(room, db, docId)
+  const actionContext = await readSnapshotHealthActionContext(room, db, docId, latestRows)
+  const candidates = latestRows
+    .filter((row) => cursor === undefined || row.upperSeq < cursor)
+    .sort(
+      (left, right) =>
+        right.upperSeq - left.upperSeq || (left.snapshotKey < right.snapshotKey ? -1 : 1),
+    )
+  const page = candidates.slice(0, limit)
+  const lastPageRow = page.at(-1)
+  const response = {
+    entries: page.map((row) => snapshotHealthEntryFromRow(row, actionContext)),
+    ...(lastPageRow !== undefined && candidates.length > page.length
+      ? { nextCursor: String(lastPageRow.upperSeq) }
+      : {}),
+  }
+  if (!v.is(SnapshotHealthListResponseSchema, response)) {
+    return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+  }
+  return c.json(response, 200)
+}
+
+/** Explicitly verifies and approves one legacy or unverified snapshot. */
+export async function handleSnapshotHealthVerify(room: VaultRoom, c: Context): Promise<Response> {
+  const body: unknown = await c.req.json().catch(() => undefined)
+  if (!v.is(SnapshotHealthVerifyRequestSchema, body)) {
+    return c.json({ error: 'invalid-snapshot-health-verify-request' }, 400)
+  }
+  if (!snapshotHealthRouteDocMatches(c.req.param('docId'), body.docId)) {
+    return c.json({ error: 'snapshot-health-doc-mismatch' }, 400)
+  }
+  const admission = await admitSnapshotHealthMutation(
+    room,
+    c,
+    body.docId,
+    body.snapshotKey,
+    body.upperSeq,
+  )
+  if (admission.response !== undefined) return admission.response
+  const { db, bucket, candidate, actor } = admission
+  const persisted = await readSyncRequestDocState(room, body.docId)
+  const recoverMissingDoc = persisted === undefined
+  if (
+    !recoverMissingDoc &&
+    (candidate.upperSeq < persisted.minRetainedSeq || candidate.upperSeq > persisted.latestSeq)
+  ) {
+    return c.json({ error: 'snapshot-health-approval-out-of-range' }, 409)
+  }
+  const pointer = await readSnapshotPointer(room, body.docId)
+  const pointerMatches =
+    pointer?.latestSnapshotSeq === candidate.upperSeq && pointer.latestSnapshotKey === candidate.key
+  const matchingRuns = (await getSnapshotRetentionCheckpointRuns(db, docKey(body.docId))).filter(
+    (run) => run.snapshotKey === candidate.key && run.upperSeq === candidate.upperSeq,
+  )
+  const initialRunState = snapshotHealthRunState(matchingRuns)
+  const hasCompletedRun = matchingRuns.some(
+    (run) =>
+      run.status === 'pointer-updated' || run.status === 'compacted' || run.status === 'completed',
+  )
+  if (!recoverMissingDoc && !pointerMatches && !hasCompletedRun) {
+    return c.json({ error: 'snapshot-health-approval-not-authoritative' }, 409)
+  }
+  const existingLatest = await getLatestSnapshotHealthEvent(db, docKey(body.docId), candidate.key)
+  if (
+    existingLatest?.authorityStatus === 'authoritative' &&
+    existingLatest.physicalStatus === 'verified' &&
+    existingLatest.logicalStatus === 'healthy'
+  ) {
+    const hasRunEvidence = matchingRuns.some(
+      (run) => run.status !== 'failed' && run.stateVector !== null,
+    )
+    if (!recoverMissingDoc && !hasRunEvidence) {
+      const runBackfilled = await backfillSnapshotHealthCheckpointRun(
+        room,
+        db,
+        body.docId,
+        candidate,
+        existingLatest,
+        pointerMatches ? pointer?.stateVector : undefined,
+      )
+      if (!runBackfilled) {
+        // Do not manufacture checkpoint evidence from an authority row alone;
+        // continue through the full R2 verification path below.
+      } else {
+        const actionContext = await readSnapshotHealthActionContext(room, db, body.docId)
+        const response = {
+          ok: true as const,
+          entry: snapshotHealthEntryFromRow(existingLatest, actionContext),
+        }
+        if (!v.is(SnapshotHealthMutationResponseSchema, response)) {
+          return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+        }
+        return c.json(response, 200)
+      }
+    } else if (!recoverMissingDoc) {
+      const actionContext = await readSnapshotHealthActionContext(room, db, body.docId)
+      const response = {
+        ok: true as const,
+        entry: snapshotHealthEntryFromRow(existingLatest, actionContext),
+      }
+      if (!v.is(SnapshotHealthMutationResponseSchema, response)) {
+        return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+      }
+      return c.json(response, 200)
+    }
+  }
+  let pendingEventId: number | undefined
+  let pendingExpected: SnapshotVerificationExpectedEvidence | undefined
+  let pendingRejectedByQuarantine = false
+  let pendingRejectedByAuthority = false
+  await withDocWriteQueue(room, body.docId, async () => {
+    await withSqlTransaction(room, async () => {
+      const commitPersisted = await readSyncRequestDocState(room, body.docId)
+      const commitRecovery = commitPersisted === undefined
+      if (recoverMissingDoc !== commitRecovery) {
+        pendingRejectedByAuthority = true
+        return
+      }
+      if (
+        !commitRecovery &&
+        (candidate.upperSeq < commitPersisted.minRetainedSeq ||
+          candidate.upperSeq > commitPersisted.latestSeq ||
+          commitPersisted.latestSeq !== persisted?.latestSeq ||
+          commitPersisted.minRetainedSeq !== persisted?.minRetainedSeq)
+      ) {
+        pendingRejectedByAuthority = true
+        return
+      }
+      const commitPointer = await readSnapshotPointer(room, body.docId)
+      if (
+        pointer?.latestSnapshotSeq !== commitPointer?.latestSnapshotSeq ||
+        pointer?.latestSnapshotKey !== commitPointer?.latestSnapshotKey
+      ) {
+        pendingRejectedByAuthority = true
+        return
+      }
+      const commitRuns = (await getSnapshotRetentionCheckpointRuns(db, docKey(body.docId))).filter(
+        (run) => run.snapshotKey === candidate.key && run.upperSeq === candidate.upperSeq,
+      )
+      if (snapshotHealthRunState(commitRuns) !== initialRunState) {
+        pendingRejectedByAuthority = true
+        return
+      }
+      const commitPointerMatches =
+        commitPointer?.latestSnapshotSeq === candidate.upperSeq &&
+        commitPointer.latestSnapshotKey === candidate.key
+      const commitHasCompletedRun = commitRuns.some(
+        (run) =>
+          run.status === 'pointer-updated' ||
+          run.status === 'compacted' ||
+          run.status === 'completed',
+      )
+      if (commitRuns.length > 0 && !commitHasCompletedRun && !commitPointerMatches) {
+        pendingRejectedByAuthority = true
+        return
+      }
+      const latest = await getLatestSnapshotHealthEvent(db, docKey(body.docId), candidate.key)
+      if (latest?.logicalStatus === 'quarantined') {
+        pendingRejectedByQuarantine = true
+        return
+      }
+      pendingExpected = snapshotExpectedEvidenceFromEvent(latest)
+      await insertSnapshotHealthEvent(db, {
+        docId: docKey(body.docId),
+        snapshotKey: candidate.key,
+        upperSeq: candidate.upperSeq,
+        event: 'verification',
+        actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.verifier,
+        authorityStatus: 'candidate',
+        expectedByteLength: latest?.expectedByteLength ?? null,
+        expectedUpdateSha256: latest?.expectedUpdateSha256 ?? null,
+        expectedStateVectorSha256: latest?.expectedStateVectorSha256 ?? null,
+        physicalStatus: 'unverified',
+        logicalStatus: 'healthy',
+        reasons: ['verification-pending'],
+        observedAt: Date.now(),
+      })
+      const pending = await getLatestSnapshotHealthEvent(db, docKey(body.docId), candidate.key)
+      if (pending === undefined) throw new Error('snapshot-health-pending-event-missing')
+      pendingEventId = pending.id
+    })
+  })
+  if (pendingRejectedByQuarantine) {
+    return c.json({ error: 'snapshot-health-quarantined' }, 409)
+  }
+  if (pendingRejectedByAuthority || pendingEventId === undefined) {
+    return c.json({ error: 'snapshot-health-approval-not-authoritative' }, 409)
+  }
+  const verificationRunId = `checkpoint:verify:${pendingEventId}`
+
+  const verification = await verifySnapshotObject(
+    bucket,
+    candidate.key,
+    body.docId,
+    pendingExpected,
+  )
+  const verifiedStateVector = verification.stateVector
+  const expected: SnapshotVerificationExpectedEvidence | undefined =
+    verification.stateVector === undefined || verification.actualStateVectorSha256 === undefined
+      ? undefined
+      : {
+          byteLength: verification.actualByteLength,
+          updateSha256: verification.actualUpdateSha256,
+          stateVectorSha256: verification.actualStateVectorSha256,
+        }
+  let approvalRejectedByQuarantine = false
+  let approvalRejectedByAuthority = false
+  let approvalRecorded = false
+  await withDocWriteQueue(room, body.docId, async () => {
+    await withSqlTransaction(room, async () => {
+      const commitPersisted = await readSyncRequestDocState(room, body.docId)
+      const commitRecovery = commitPersisted === undefined
+      if (recoverMissingDoc !== commitRecovery) {
+        approvalRejectedByAuthority = true
+        return
+      }
+      if (
+        !commitRecovery &&
+        (candidate.upperSeq < commitPersisted.minRetainedSeq ||
+          candidate.upperSeq > commitPersisted.latestSeq ||
+          commitPersisted.latestSeq !== persisted?.latestSeq ||
+          commitPersisted.minRetainedSeq !== persisted?.minRetainedSeq)
+      ) {
+        approvalRejectedByAuthority = true
+        return
+      }
+      const commitPointer = await readSnapshotPointer(room, body.docId)
+      const commitPointerMatches =
+        commitPointer?.latestSnapshotSeq === candidate.upperSeq &&
+        commitPointer.latestSnapshotKey === candidate.key
+      if (
+        pointer?.latestSnapshotSeq !== commitPointer?.latestSnapshotSeq ||
+        pointer?.latestSnapshotKey !== commitPointer?.latestSnapshotKey
+      ) {
+        approvalRejectedByAuthority = true
+        return
+      }
+      const commitRuns = (await getSnapshotRetentionCheckpointRuns(db, docKey(body.docId))).filter(
+        (run) => run.snapshotKey === candidate.key && run.upperSeq === candidate.upperSeq,
+      )
+      if (snapshotHealthRunState(commitRuns) !== initialRunState) {
+        approvalRejectedByAuthority = true
+        return
+      }
+      const commitHasCompletedRun = commitRuns.some(
+        (run) =>
+          run.status === 'pointer-updated' ||
+          run.status === 'compacted' ||
+          run.status === 'completed',
+      )
+      if (commitRuns.length > 0 && !commitHasCompletedRun && !commitPointerMatches) {
+        approvalRejectedByAuthority = true
+        return
+      }
+      const latest = await getLatestSnapshotHealthEvent(db, docKey(body.docId), candidate.key)
+      if (latest === undefined) {
+        approvalRejectedByAuthority = true
+        return
+      }
+      if (latest.logicalStatus === 'quarantined') {
+        approvalRejectedByQuarantine = true
+        return
+      }
+      if (latest.id !== pendingEventId) {
+        approvalRejectedByAuthority = true
+        return
+      }
+      if (verification.status !== 'unverified' && verification.status !== 'verified') {
+        await insertSnapshotHealthEvent(db, {
+          docId: docKey(body.docId),
+          snapshotKey: candidate.key,
+          upperSeq: candidate.upperSeq,
+          event: 'verification',
+          actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.verifier,
+          authorityStatus: 'candidate',
+          expectedByteLength: latest.expectedByteLength,
+          expectedUpdateSha256: latest.expectedUpdateSha256,
+          expectedStateVectorSha256: latest.expectedStateVectorSha256,
+          actualByteLength: verification.actualByteLength,
+          actualUpdateSha256: verification.actualUpdateSha256 || null,
+          actualStateVectorSha256: verification.actualStateVectorSha256 ?? null,
+          physicalStatus: verification.status,
+          logicalStatus: 'healthy',
+          reasons: verification.reasons,
+          observedAt: Date.now(),
+        })
+        return
+      }
+      if (expected === undefined || verifiedStateVector === undefined) {
+        await insertSnapshotHealthEvent(db, {
+          docId: docKey(body.docId),
+          snapshotKey: candidate.key,
+          upperSeq: candidate.upperSeq,
+          event: 'verification',
+          actor: SNAPSHOT_HEALTH_SYSTEM_ACTORS.verifier,
+          authorityStatus: 'candidate',
+          expectedByteLength: latest.expectedByteLength,
+          expectedUpdateSha256: latest.expectedUpdateSha256,
+          expectedStateVectorSha256: latest.expectedStateVectorSha256,
+          actualByteLength: verification.actualByteLength,
+          actualUpdateSha256: verification.actualUpdateSha256 || null,
+          actualStateVectorSha256: verification.actualStateVectorSha256 ?? null,
+          physicalStatus: verification.status,
+          logicalStatus: 'healthy',
+          reasons: verification.reasons,
+          observedAt: Date.now(),
+        })
+        return
+      }
+      await insertSnapshotExpectedEvidence(
+        db,
+        {
+          docId: body.docId,
+          snapshotKey: candidate.key,
+          upperSeq: candidate.upperSeq,
+          actor,
+          expectedByteLength: expected.byteLength,
+          expectedUpdateSha256: makeSha256Hex(expected.updateSha256),
+          expectedStateVectorSha256: makeSha256Hex(expected.stateVectorSha256),
+        },
+        Date.now(),
+      )
+      await insertSnapshotHealthEvent(db, {
+        docId: docKey(body.docId),
+        snapshotKey: candidate.key,
+        upperSeq: candidate.upperSeq,
+        event: 'approval',
+        actor,
+        authorityStatus: 'authoritative',
+        expectedByteLength: expected.byteLength,
+        expectedUpdateSha256: expected.updateSha256,
+        expectedStateVectorSha256: expected.stateVectorSha256,
+        actualByteLength: expected.byteLength,
+        actualUpdateSha256: expected.updateSha256,
+        actualStateVectorSha256: expected.stateVectorSha256,
+        physicalStatus: 'verified',
+        logicalStatus: 'healthy',
+        reasons: [body.reason],
+        observedAt: Date.now(),
+      })
+      if (
+        !commitRuns.some(
+          (run) =>
+            run.snapshotKey === candidate.key &&
+            run.upperSeq === candidate.upperSeq &&
+            run.status !== 'failed',
+        )
+      ) {
+        await insertCheckpointRun(
+          db,
+          verificationRunId,
+          docKey(body.docId),
+          candidate.upperSeq,
+          candidate.key,
+          verifiedStateVector,
+          'completed',
+          Date.now(),
+        )
+      }
+      if (commitRecovery) {
+        await insertDoc(
+          db,
+          docKey(body.docId),
+          body.docId.kind,
+          candidate.upperSeq,
+          candidate.upperSeq,
+          candidate.key,
+          verifiedStateVector,
+          0,
+          Date.now(),
+        )
+      }
+      approvalRecorded = true
+    })
+  })
+  if (approvalRejectedByQuarantine) {
+    return c.json({ error: 'snapshot-health-quarantined' }, 409)
+  }
+  if (approvalRejectedByAuthority) {
+    return c.json({ error: 'snapshot-health-approval-not-authoritative' }, 409)
+  }
+  if (!approvalRecorded) {
+    return c.json(
+      { error: 'snapshot-health-verification-failed', reasons: verification.reasons },
+      409,
+    )
+  }
+  if (recoverMissingDoc) {
+    try {
+      await rehydrateAfterDocPointer(room, body.docId)
+    } catch {
+      return c.json({ error: 'snapshot-health-recovery-failed' }, 500)
+    }
+  }
+  const row = await getLatestSnapshotHealthEventForEntry(db, body.docId, candidate.key)
+  const actionContext = await readSnapshotHealthActionContext(room, db, body.docId)
+  const response = { ok: true as const, entry: snapshotHealthEntryFromRow(row, actionContext) }
+  if (!v.is(SnapshotHealthMutationResponseSchema, response)) {
+    return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+  }
+  return c.json(response, 200)
+}
+
+/** Logically quarantines one generation while preserving it for inspection. */
+export async function handleSnapshotHealthQuarantine(
+  room: VaultRoom,
+  c: Context,
+): Promise<Response> {
+  const body: unknown = await c.req.json().catch(() => undefined)
+  if (!v.is(SnapshotHealthQuarantineRequestSchema, body)) {
+    return c.json({ error: 'invalid-snapshot-health-quarantine-request' }, 400)
+  }
+  if (!snapshotHealthRouteDocMatches(c.req.param('docId'), body.docId)) {
+    return c.json({ error: 'snapshot-health-doc-mismatch' }, 400)
+  }
+  const admission = await admitSnapshotHealthMutation(
+    room,
+    c,
+    body.docId,
+    body.snapshotKey,
+    body.upperSeq,
+  )
+  if (admission.response !== undefined) return admission.response
+  const { db, candidate, actor } = admission
+  let quarantineBlocked = false
+  await withDocWriteQueue(room, body.docId, async () => {
+    await withSqlTransaction(room, async () => {
+      const latest = await getLatestSnapshotHealthEventForEntry(db, body.docId, candidate.key)
+      if (latest.logicalStatus === 'quarantined') {
+        return
+      }
+      const actionContext = await readSnapshotHealthActionContext(room, db, body.docId)
+      if (
+        !snapshotHealthAllowedActions(latest, actionContext).allowedActions.includes('quarantine')
+      ) {
+        quarantineBlocked = true
+        return
+      }
+      await insertSnapshotHealthEvent(db, {
+        docId: docKey(body.docId),
+        snapshotKey: candidate.key,
+        upperSeq: candidate.upperSeq,
+        event: 'quarantine',
+        actor,
+        authorityStatus: latest.authorityStatus === 'authoritative' ? 'authoritative' : 'candidate',
+        expectedByteLength: latest.expectedByteLength ?? null,
+        expectedUpdateSha256: latest.expectedUpdateSha256 ?? null,
+        expectedStateVectorSha256: latest.expectedStateVectorSha256 ?? null,
+        actualByteLength: latest.actualByteLength ?? null,
+        actualUpdateSha256: latest.actualUpdateSha256 ?? null,
+        actualStateVectorSha256: latest.actualStateVectorSha256 ?? null,
+        physicalStatus: latest.physicalStatus,
+        logicalStatus: 'quarantined',
+        reasons: [body.reason],
+        observedAt: Date.now(),
+      })
+    })
+  })
+  if (quarantineBlocked) {
+    return c.json({ error: 'snapshot-health-quarantine-would-break-floor' }, 409)
+  }
+  const row = await getLatestSnapshotHealthEventForEntry(db, body.docId, candidate.key)
+  const actionContext = await readSnapshotHealthActionContext(room, db, body.docId)
+  const response = { ok: true as const, entry: snapshotHealthEntryFromRow(row, actionContext) }
+  if (!v.is(SnapshotHealthMutationResponseSchema, response)) {
+    return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+  }
+  return c.json(response, 200)
+}
+
+/** Creates a new authoritative generation from a verified older snapshot. */
+export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promise<Response> {
+  const body: unknown = await c.req.json().catch(() => undefined)
+  if (!v.is(SnapshotRollbackRequestSchema, body)) {
+    return c.json({ error: 'invalid-snapshot-rollback-request' }, 400)
+  }
+  if (!snapshotHealthRouteDocMatches(c.req.param('docId'), body.docId)) {
+    return c.json({ error: 'snapshot-health-doc-mismatch' }, 400)
+  }
+  const admission = await admitSnapshotHealthMutation(
+    room,
+    c,
+    body.docId,
+    body.snapshotKey,
+    body.upperSeq,
+  )
+  if (admission.response !== undefined) return admission.response
+  const { db, bucket, candidate, actor } = admission
+  return await withDocWriteQueue(room, body.docId, async () => {
+    let runId: string | undefined
+    let rollbackDoc: Y.Doc | undefined
+    let snapshotKey: string | undefined
+    try {
+      const clock = await readDocClock(room, body.docId)
+      const persisted = await readSyncRequestDocState(room, body.docId)
+      const currentLatestSeq = clock?.latestSeq
+      if (
+        currentLatestSeq === undefined ||
+        !Number.isSafeInteger(currentLatestSeq) ||
+        currentLatestSeq < candidate.upperSeq ||
+        (persisted !== undefined && candidate.upperSeq < persisted.minRetainedSeq)
+      ) {
+        return c.json({ error: 'snapshot-rollback-stale-source' }, 409)
+      }
+
+      const latest = await getLatestSnapshotHealthEvent(db, docKey(body.docId), candidate.key)
+      const expected = snapshotExpectedEvidenceFromEvent(latest)
+      if (
+        latest?.authorityStatus !== 'authoritative' ||
+        latest?.logicalStatus !== 'healthy' ||
+        expected === undefined
+      ) {
+        return c.json({ error: 'snapshot-rollback-unhealthy-source' }, 409)
+      }
+      const pointer = await readSnapshotPointer(room, body.docId)
+      const pointerMatches =
+        pointer?.latestSnapshotSeq === candidate.upperSeq &&
+        pointer.latestSnapshotKey === candidate.key
+      const matchingRuns = (
+        await getSnapshotRetentionCheckpointRuns(db, docKey(body.docId))
+      ).filter((run) => run.snapshotKey === candidate.key && run.upperSeq === candidate.upperSeq)
+      const hasCompletedRun = matchingRuns.some(
+        (run) =>
+          run.status === 'pointer-updated' ||
+          run.status === 'compacted' ||
+          run.status === 'completed',
+      )
+      if (matchingRuns.length > 0 && !hasCompletedRun && !pointerMatches) {
+        return c.json({ error: 'snapshot-rollback-unhealthy-source' }, 409)
+      }
+      const verification = await verifySnapshotObject(bucket, candidate.key, body.docId, expected)
+      const logicalStatus = await appendSnapshotVerificationEventPreservingLogical(
+        room,
+        db,
+        body.docId,
+        candidate,
+        verification,
+        expected,
+      )
+      const latestAfterVerification = await getLatestSnapshotHealthEvent(
+        db,
+        docKey(body.docId),
+        candidate.key,
+      )
+      if (
+        verification.status !== 'verified' ||
+        verification.stateVector === undefined ||
+        logicalStatus === 'quarantined' ||
+        latestAfterVerification?.logicalStatus === 'quarantined'
+      ) {
+        return c.json(
+          { error: 'snapshot-rollback-unhealthy-source', reasons: verification.reasons },
+          409,
+        )
+      }
+
+      const source = await bucket.get(candidate.key)
+      if (source === null) return c.json({ error: 'snapshot-rollback-source-missing' }, 404)
+      const sourceBytes = new Uint8Array(await source.arrayBuffer())
+      rollbackDoc = new Y.Doc()
+      Y.applyUpdate(rollbackDoc, sourceBytes)
+      let expectedSeq = candidate.upperSeq + 1
+      for (const row of await getOpLogUpdatesBetween(
+        db,
+        docKey(body.docId),
+        candidate.upperSeq,
+        currentLatestSeq,
+      )) {
+        if (row.seq !== expectedSeq) throw new Error('snapshot-rollback-op-log-gap')
+        const updateBytes = readSqlUpdateBytes(row.updateBytes)
+        if (updateBytes === undefined) throw new Error('snapshot-rollback-op-log-bytes-invalid')
+        Y.applyUpdate(rollbackDoc, updateBytes)
+        expectedSeq += 1
+      }
+      if (expectedSeq !== currentLatestSeq + 1) {
+        throw new Error('snapshot-rollback-op-log-gap')
+      }
+      if (body.docId.kind === 'meta' && !metaYDocSchemaValid(rollbackDoc)) {
+        rollbackDoc.destroy()
+        rollbackDoc = undefined
+        return c.json({ error: 'snapshot-rollback-meta-schema-invalid' }, 409)
+      }
+
+      const mergedBytes = Y.encodeStateAsUpdate(rollbackDoc)
+      const rollbackStateVector = Y.encodeStateVector(rollbackDoc)
+      const snapshotSeq = currentLatestSeq + 1
+      const vaultId = room.vaultId
+      if (vaultId === undefined) {
+        rollbackDoc.destroy()
+        rollbackDoc = undefined
+        return c.json({ error: 'vault-unavailable' }, 500)
+      }
+      snapshotKey = makeSnapshotObjectKey(vaultId, body.docId, snapshotSeq)
+      if ((await bucket.head(snapshotKey)) !== null) {
+        rollbackDoc.destroy()
+        rollbackDoc = undefined
+        return c.json({ error: 'snapshot-rollback-target-exists' }, 409)
+      }
+      const expectedUpdateSha256 = makeSha256Hex(await hashBytesSha256(mergedBytes))
+      const expectedStateVectorSha256 = makeSha256Hex(await hashBytesSha256(rollbackStateVector))
+      const now = Date.now()
+      runId = `checkpoint:rollback:${snapshotKey}:${now}`
+      const auditId = `rollback:${await sha256Text(`${snapshotKey}:${now}:${actor}`)}`
+      const response = {
+        ok: true,
+        docId: body.docId,
+        actor,
+        snapshotKey,
+        snapshotSeq,
+        sourceSnapshotKey: candidate.key,
+        sourceSnapshotSeq: candidate.upperSeq,
+        auditId,
+      } as const
+      if (!v.is(SnapshotRollbackResponseSchema, response)) {
+        rollbackDoc.destroy()
+        rollbackDoc = undefined
+        return c.json({ error: 'invalid-snapshot-rollback-response' }, 500)
+      }
+      await insertCheckpointRun(
+        db,
+        runId,
+        docKey(body.docId),
+        snapshotSeq,
+        snapshotKey,
+        rollbackStateVector,
+        'writing',
+        now,
+      )
+      await insertSnapshotExpectedEvidence(
+        db,
+        {
+          docId: body.docId,
+          snapshotKey,
+          upperSeq: snapshotSeq,
+          actor,
+          expectedByteLength: mergedBytes.byteLength,
+          expectedUpdateSha256,
+          expectedStateVectorSha256,
+        },
+        now,
+      )
+      await bucket.put(snapshotKey, mergedBytes)
+      const written = await verifySnapshotObject(bucket, snapshotKey, body.docId, {
+        byteLength: mergedBytes.byteLength,
+        updateSha256: expectedUpdateSha256,
+        stateVectorSha256: expectedStateVectorSha256,
+      })
+      const writtenLogicalStatus = await appendSnapshotVerificationEventPreservingLogical(
+        room,
+        db,
+        body.docId,
+        { key: snapshotKey, upperSeq: snapshotSeq, healthy: true },
+        written,
+        {
+          byteLength: mergedBytes.byteLength,
+          updateSha256: expectedUpdateSha256,
+          stateVectorSha256: expectedStateVectorSha256,
+        },
+      )
+      if (written.status !== 'verified' || writtenLogicalStatus === 'quarantined') {
+        await updateCheckpointFailed(db, runId)
+        rollbackDoc.destroy()
+        rollbackDoc = undefined
+        return c.json({ error: 'snapshot-rollback-verification-failed' }, 409)
+      }
+      await updateCheckpointR2Written(db, runId, now)
+      let sourceInvalidated = false
+      let targetInvalidated = false
+      await withSqlTransaction(room, async () => {
+        const latestSource = await getLatestSnapshotHealthEvent(
+          db,
+          docKey(body.docId),
+          candidate.key,
+        )
+        const latestTarget = await getLatestSnapshotHealthEvent(
+          db,
+          docKey(body.docId),
+          snapshotKey as string,
+        )
+        sourceInvalidated =
+          latestSource?.authorityStatus !== 'authoritative' ||
+          latestSource.physicalStatus !== 'verified' ||
+          latestSource.logicalStatus !== 'healthy'
+        targetInvalidated =
+          latestTarget?.logicalStatus !== 'healthy' ||
+          latestTarget?.physicalStatus !== 'verified' ||
+          (latestTarget?.authorityStatus !== 'candidate' &&
+            latestTarget?.authorityStatus !== 'authoritative')
+        if (sourceInvalidated || targetInvalidated) return
+        await updateDocSnapshotPointer(
+          db,
+          snapshotSeq,
+          snapshotKey as string,
+          rollbackStateVector,
+          now,
+          docKey(body.docId),
+          snapshotSeq,
+        )
+        await updateCheckpointPointerUpdated(db, runId as string, now)
+        await insertSnapshotHealthEvent(db, {
+          docId: docKey(body.docId),
+          snapshotKey: snapshotKey as string,
+          upperSeq: snapshotSeq,
+          event: 'rollback',
+          actor,
+          authorityStatus: 'authoritative',
+          expectedByteLength: mergedBytes.byteLength,
+          expectedUpdateSha256,
+          expectedStateVectorSha256,
+          actualByteLength: written.actualByteLength,
+          actualUpdateSha256: written.actualUpdateSha256 || null,
+          actualStateVectorSha256: written.actualStateVectorSha256 ?? null,
+          physicalStatus: written.status,
+          logicalStatus: 'healthy',
+          reasons: [body.reason, `source:${candidate.key}`],
+          observedAt: now,
+        })
+      })
+      if (sourceInvalidated || targetInvalidated) {
+        await updateCheckpointFailed(db, runId)
+        rollbackDoc.destroy()
+        rollbackDoc = undefined
+        return c.json({ error: 'snapshot-rollback-source-changed' }, 409)
+      }
+      rollbackDoc.destroy()
+      rollbackDoc = undefined
+      await rehydrateAfterDocPointer(room, body.docId)
+      return c.json(response, 200)
+    } catch (error) {
+      rollbackDoc?.destroy()
+      if (runId !== undefined) await updateCheckpointFailed(db, runId).catch(() => undefined)
+      logEvent('snapshot-rollback-failed', {
+        vaultId: room.vaultId,
+        docId: body.docId,
+        snapshotKey,
+        error: retentionErrorMessage(error),
+      })
+      return c.json({ error: 'snapshot-rollback-failed' }, 500)
+    }
+  })
+}
+
+async function admitSnapshotHealthMutation(
+  room: VaultRoom,
+  c: Context,
+  docId: DocId,
+  snapshotKey: string,
+  upperSeq: number,
+): Promise<
+  | {
+      readonly response: Response
+      readonly db?: undefined
+      readonly bucket?: undefined
+      readonly candidate?: undefined
+    }
+  | {
+      readonly response?: undefined
+      readonly db: NonNullable<ReturnType<typeof getDb>>
+      readonly bucket: NonNullable<VaultRoom['env']['SNAPSHOT_BUCKET']>
+      readonly candidate: SnapshotCandidate
+      readonly actor: string
+    }
+> {
+  const db = getDb(room)
+  const bucket = room.env.SNAPSHOT_BUCKET
+  const secret = room.env.DEVICE_TOKEN_SECRET
+  if (db === undefined || bucket === undefined || secret === undefined) {
+    return { response: c.text('Snapshot health mutation unavailable', 503) }
+  }
+  await ensureSchema(room)
+  const authorization = await authorizeHttpRequestWithClaims(room, c, ['sync:write'])
+  if (authorization.action === 'reject') return { response: authorization.response }
+  const actor = authorization.claims.sub
+  if (!v.is(DeviceIdSchema, actor)) {
+    return { response: c.json({ error: 'auth-reject:missing-actor' }, 403) }
+  }
+  const vaultId = room.vaultId
+  if (vaultId === undefined) return { response: c.json({ error: 'vault-unavailable' }, 500) }
+  const prefix = makeSnapshotListPrefix(vaultId, docId)
+  const candidate = snapshotCandidateFromKeyForHealth(prefix, snapshotKey)
+  if (candidate === undefined || candidate.upperSeq !== upperSeq) {
+    return { response: c.json({ error: 'snapshot-health-target-mismatch' }, 400) }
+  }
+  return { db, bucket, candidate, actor }
+}
+
+async function collectSnapshotHealthRows(
+  room: VaultRoom,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  docId: DocId,
+): Promise<readonly import('../db/checkpointRepo').SnapshotHealthEventRow[]> {
+  const rows = new Map<string, import('../db/checkpointRepo').SnapshotHealthEventRow>()
+  const legacyCandidates = new Map<string, SnapshotCandidate>()
+  const runSequences = new Map<string, number>()
+  for (const run of await getSnapshotRetentionCheckpointRuns(db, docKey(docId))) {
+    if (run.snapshotKey !== null && Number.isSafeInteger(run.upperSeq) && run.upperSeq > 0) {
+      runSequences.set(run.snapshotKey, run.upperSeq)
+    }
+  }
+  for (const row of await getAllLatestSnapshotHealthEvents(db, docKey(docId))) {
+    rows.set(row.snapshotKey, row)
+    const prefix =
+      room.vaultId === undefined ? undefined : makeSnapshotListPrefix(room.vaultId, docId)
+    const parsedCandidate =
+      prefix === undefined ? undefined : snapshotCandidateFromKeyForHealth(prefix, row.snapshotKey)
+    const candidate =
+      parsedCandidate ??
+      (row.upperSeq <= 0 && runSequences.has(row.snapshotKey)
+        ? {
+            key: row.snapshotKey,
+            upperSeq: runSequences.get(row.snapshotKey) as number,
+            healthy: true,
+          }
+        : undefined)
+    if (row.upperSeq <= 0 && candidate !== undefined) legacyCandidates.set(candidate.key, candidate)
+  }
+  const bucket = room.env.SNAPSHOT_BUCKET
+  const vaultId = room.vaultId
+  if (bucket === undefined || vaultId === undefined) {
+    return [...rows.values()].filter((row) => row.upperSeq > 0)
+  }
+  const prefix = makeSnapshotListPrefix(vaultId, docId)
+  const listedKeys = new Set<string>()
+  for (const object of await listR2Objects(bucket, prefix)) {
+    const candidate = snapshotCandidateFromKeyForHealth(prefix, object.key)
+    if (candidate !== undefined) listedKeys.add(candidate.key)
+    if (
+      candidate === undefined ||
+      (rows.has(candidate.key) && !legacyCandidates.has(candidate.key))
+    )
+      continue
+    const verification = await verifySnapshotObject(bucket, candidate.key, docId, undefined)
+    const existing = rows.get(candidate.key)
+    await appendSnapshotVerificationEventPreservingLogical(
+      room,
+      db,
+      docId,
+      candidate,
+      verification,
+      snapshotExpectedEvidenceFromEvent(existing),
+    )
+    const latest = await getLatestSnapshotHealthEventForEntry(db, docId, candidate.key)
+    rows.set(candidate.key, latest)
+    legacyCandidates.delete(candidate.key)
+  }
+  for (const candidate of legacyCandidates.values()) {
+    const existing = rows.get(candidate.key)
+    if (existing === undefined) continue
+    const verification = await verifySnapshotObject(
+      bucket,
+      candidate.key,
+      docId,
+      snapshotExpectedEvidenceFromEvent(existing),
+    )
+    await appendSnapshotVerificationEventPreservingLogical(
+      room,
+      db,
+      docId,
+      candidate,
+      verification,
+      snapshotExpectedEvidenceFromEvent(existing),
+      existing.authorityStatus === 'authoritative' ? 'authoritative' : 'candidate',
+    )
+    rows.set(candidate.key, await getLatestSnapshotHealthEventForEntry(db, docId, candidate.key))
+  }
+  for (const existing of Array.from(rows.values())) {
+    if (existing.upperSeq <= 0 || listedKeys.has(existing.snapshotKey)) continue
+    const candidate = snapshotCandidateFromKeyForHealth(prefix, existing.snapshotKey)
+    if (candidate === undefined || candidate.upperSeq !== existing.upperSeq) continue
+    const expected = snapshotExpectedEvidenceFromEvent(existing)
+    const verification = await verifySnapshotObject(bucket, candidate.key, docId, expected)
+    await appendSnapshotVerificationEventPreservingLogical(
+      room,
+      db,
+      docId,
+      candidate,
+      verification,
+      expected,
+      existing.authorityStatus === 'authoritative' ? 'authoritative' : 'candidate',
+    )
+    rows.set(candidate.key, await getLatestSnapshotHealthEventForEntry(db, docId, candidate.key))
+  }
+  return [...rows.values()].filter((row) => row.upperSeq > 0)
+}
+
+async function getLatestSnapshotHealthEventForEntry(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  docId: DocId,
+  snapshotKey: string,
+): Promise<import('../db/checkpointRepo').SnapshotHealthEventRow> {
+  const row = await getLatestSnapshotHealthEvent(db, docKey(docId), snapshotKey)
+  if (row === undefined) throw new Error('snapshot-health-event-missing')
+  return row
+}
+
+type SnapshotHealthEventRow = import('../db/checkpointRepo').SnapshotHealthEventRow
+
+interface SnapshotHealthActionContext {
+  readonly persisted: Awaited<ReturnType<typeof readSyncRequestDocState>>
+  readonly pointer: Awaited<ReturnType<typeof readSnapshotPointer>>
+  readonly runs: Awaited<ReturnType<typeof getSnapshotRetentionCheckpointRuns>>
+  readonly latestRows: readonly SnapshotHealthEventRow[]
+}
+
+async function backfillSnapshotHealthCheckpointRun(
+  room: VaultRoom,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  docId: DocId,
+  candidate: SnapshotCandidate,
+  existing: SnapshotHealthEventRow,
+  pointerStateVector: Uint8Array | undefined,
+): Promise<boolean> {
+  const bucket = room.env.SNAPSHOT_BUCKET
+  if (bucket === undefined) return false
+  const verification = await verifySnapshotObject(
+    bucket,
+    candidate.key,
+    docId,
+    snapshotExpectedEvidenceFromEvent(existing),
+  )
+  if (
+    verification.status !== 'verified' ||
+    verification.stateVector === undefined ||
+    (pointerStateVector !== undefined && !sameBytes(pointerStateVector, verification.stateVector))
+  ) {
+    return false
+  }
+  const verifiedStateVector = verification.stateVector
+
+  let committed = false
+  await withDocWriteQueue(room, docId, async () => {
+    await withSqlTransaction(room, async () => {
+      const latest = await getLatestSnapshotHealthEvent(db, docKey(docId), candidate.key)
+      if (
+        latest?.id !== existing.id ||
+        latest.authorityStatus !== 'authoritative' ||
+        latest.physicalStatus !== 'verified' ||
+        latest.logicalStatus !== 'healthy'
+      ) {
+        return
+      }
+      const runs = (await getSnapshotRetentionCheckpointRuns(db, docKey(docId))).filter(
+        (run) => run.snapshotKey === candidate.key && run.upperSeq === candidate.upperSeq,
+      )
+      if (runs.some((run) => run.status !== 'failed' && run.stateVector !== null)) {
+        committed = true
+        return
+      }
+      await insertCheckpointRun(
+        db,
+        `checkpoint:verify:${existing.id}`,
+        docKey(docId),
+        candidate.upperSeq,
+        candidate.key,
+        verifiedStateVector,
+        'completed',
+        Date.now(),
+      )
+      committed = true
+    })
+  })
+  return committed
+}
+
+async function readSnapshotHealthActionContext(
+  room: VaultRoom,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  docId: DocId,
+  latestRows?: readonly SnapshotHealthEventRow[],
+): Promise<SnapshotHealthActionContext> {
+  return {
+    persisted: await readSyncRequestDocState(room, docId),
+    pointer: await readSnapshotPointer(room, docId),
+    runs: await getSnapshotRetentionCheckpointRuns(db, docKey(docId)),
+    latestRows: latestRows ?? (await getAllLatestSnapshotHealthEvents(db, docKey(docId))),
+  }
+}
+
+function snapshotHealthEntryFromRow(
+  row: SnapshotHealthEventRow,
+  context: SnapshotHealthActionContext,
+): SnapshotHealthEntry {
+  const docId = docIdFromSnapshotHealthKey(row.docId)
+  if (docId === undefined) throw new Error('invalid-snapshot-health-doc-id')
+  const actions = snapshotHealthAllowedActions(row, context)
+  const authorityStatus = row.authorityStatus === 'authoritative' ? 'authoritative' : 'candidate'
+  return {
+    docId,
+    snapshotKey: row.snapshotKey,
+    upperSeq: row.upperSeq,
+    actor: row.actor,
+    authorityStatus,
+    allowedActions: actions.allowedActions,
+    ...(actions.actionBlockReason === undefined
+      ? {}
+      : { actionBlockReason: actions.actionBlockReason }),
+    ...(row.expectedByteLength === null ? {} : { expectedByteLength: row.expectedByteLength }),
+    ...(safeSha256(row.expectedUpdateSha256) === undefined
+      ? {}
+      : { expectedUpdateSha256: safeSha256(row.expectedUpdateSha256) }),
+    ...(safeSha256(row.expectedStateVectorSha256) === undefined
+      ? {}
+      : { expectedStateVectorSha256: safeSha256(row.expectedStateVectorSha256) }),
+    ...(row.actualByteLength === null ? {} : { actualByteLength: row.actualByteLength }),
+    ...(safeSha256(row.actualUpdateSha256) === undefined
+      ? {}
+      : { actualUpdateSha256: safeSha256(row.actualUpdateSha256) }),
+    ...(safeSha256(row.actualStateVectorSha256) === undefined
+      ? {}
+      : { actualStateVectorSha256: safeSha256(row.actualStateVectorSha256) }),
+    physicalStatus: isSnapshotPhysicalStatus(row.physicalStatus)
+      ? row.physicalStatus
+      : 'unverified',
+    logicalStatus: row.logicalStatus === 'quarantined' ? 'quarantined' : 'healthy',
+    reasons: parseSnapshotHealthReasons(row.reasons),
+    observedAt: row.observedAt,
+  }
+}
+
+function snapshotHealthAllowedActions(
+  row: SnapshotHealthEventRow,
+  context: SnapshotHealthActionContext,
+): {
+  readonly allowedActions: SnapshotHealthEntry['allowedActions']
+  readonly actionBlockReason: string | undefined
+} {
+  const pointerMatches =
+    context.pointer?.latestSnapshotSeq === row.upperSeq &&
+    context.pointer.latestSnapshotKey === row.snapshotKey
+  const matchingRuns = context.runs.filter(
+    (run) => run.snapshotKey === row.snapshotKey && run.upperSeq === row.upperSeq,
+  )
+  if (
+    row.physicalStatus === 'mismatch' &&
+    parseSnapshotHealthReasons(row.reasons).includes('missing-object')
+  ) {
+    return { allowedActions: [], actionBlockReason: 'snapshot-health-deleted' }
+  }
+  const hasCompletedRun = matchingRuns.some(
+    (run) =>
+      run.status === 'pointer-updated' || run.status === 'compacted' || run.status === 'completed',
+  )
+  const verifyAllowed =
+    row.physicalStatus === 'unverified' &&
+    row.logicalStatus !== 'quarantined' &&
+    row.logicalStatus === 'healthy' &&
+    (context.persisted === undefined || pointerMatches || hasCompletedRun)
+  const rollbackAllowed =
+    row.authorityStatus === 'authoritative' &&
+    row.physicalStatus === 'verified' &&
+    row.logicalStatus === 'healthy' &&
+    context.persisted !== undefined &&
+    row.upperSeq >= context.persisted.minRetainedSeq &&
+    row.upperSeq <= context.persisted.latestSeq &&
+    (matchingRuns.length === 0 || hasCompletedRun || pointerMatches)
+  const floor = context.persisted?.minRetainedSeq ?? 0
+  const hasAlternativeFloor = context.latestRows.some(
+    (other) =>
+      other.snapshotKey !== row.snapshotKey &&
+      other.authorityStatus === 'authoritative' &&
+      other.physicalStatus === 'verified' &&
+      other.logicalStatus === 'healthy' &&
+      other.upperSeq >= floor &&
+      (context.persisted === undefined || other.upperSeq <= context.persisted.latestSeq),
+  )
+  const quarantineBlocked =
+    row.logicalStatus === 'quarantined' ||
+    (row.authorityStatus === 'authoritative' &&
+      row.physicalStatus === 'verified' &&
+      row.logicalStatus === 'healthy' &&
+      context.persisted !== undefined &&
+      row.upperSeq >= context.persisted.minRetainedSeq &&
+      !hasAlternativeFloor)
+  const actions: SnapshotHealthEntry['allowedActions'] = [
+    ...(verifyAllowed ? (['verify'] as const) : []),
+    ...(!quarantineBlocked ? (['quarantine'] as const) : []),
+    ...(rollbackAllowed ? (['rollback'] as const) : []),
+  ]
+  if (actions.length > 0) return { allowedActions: actions, actionBlockReason: undefined }
+  const actionBlockReason =
+    row.logicalStatus === 'quarantined'
+      ? 'snapshot-health-already-quarantined'
+      : !verifyAllowed
+        ? 'snapshot-health-approval-not-authoritative'
+        : !rollbackAllowed
+          ? 'snapshot-rollback-unhealthy-source'
+          : 'snapshot-health-quarantine-would-break-floor'
+  return { allowedActions: actions, actionBlockReason }
+}
+
+function snapshotExpectedEvidenceFromEvent(
+  row: import('../db/checkpointRepo').SnapshotHealthEventRow | undefined,
+): SnapshotVerificationExpectedEvidence | undefined {
+  if (
+    row === undefined ||
+    row.expectedByteLength === null ||
+    row.expectedUpdateSha256 === null ||
+    row.expectedStateVectorSha256 === null
+  ) {
+    return undefined
+  }
+  return {
+    byteLength: row.expectedByteLength,
+    updateSha256: row.expectedUpdateSha256,
+    stateVectorSha256: row.expectedStateVectorSha256,
+  }
+}
+
+function parseSnapshotHealthDocId(value: string | undefined): DocId | undefined {
+  if (value === 'meta') return { kind: 'meta' }
+  if (typeof value !== 'string' || !value.startsWith('file:')) return undefined
+  const ydocId = value.slice('file:'.length)
+  return v.is(YDocIdSchema, ydocId) ? { kind: 'file', ydocId } : undefined
+}
+
+function snapshotHealthRouteDocMatches(routeDocId: string | undefined, docId: DocId): boolean {
+  if (routeDocId === undefined) return true
+  return docId.kind === 'meta' ? routeDocId === 'meta' : routeDocId === docId.ydocId
+}
+
+function docIdFromSnapshotHealthKey(value: string): DocId | undefined {
+  return parseSnapshotHealthDocId(value)
+}
+
+function parseSnapshotHealthLimit(value: string | undefined): number | undefined {
+  if (value === undefined) return 64
+  if (!/^[1-9][0-9]*$/.test(value)) return undefined
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed <= 256 ? parsed : undefined
+}
+
+function parseSnapshotHealthCursor(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  if (!/^[1-9][0-9]*$/.test(value)) return undefined
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) ? parsed : undefined
+}
+
+function snapshotCandidateFromKeyForHealth(
+  prefix: string,
+  key: string,
+): SnapshotCandidate | undefined {
+  if (!key.startsWith(prefix) || !key.endsWith('.yupdate')) return undefined
+  const seqText = key.slice(prefix.length, -'.yupdate'.length)
+  if (!/^[1-9][0-9]*$/.test(seqText)) return undefined
+  const upperSeq = Number(seqText)
+  return Number.isSafeInteger(upperSeq) && upperSeq > 0
+    ? { key, upperSeq, healthy: true }
+    : undefined
+}
+
+function parseSnapshotHealthReasons(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed)
+      ? parsed.filter((reason): reason is string => typeof reason === 'string')
+      : []
+  } catch {
+    return []
+  }
+}
+
+function snapshotHealthRunState(
+  runs: readonly {
+    readonly status: string
+    readonly upperSeq: number
+    readonly snapshotKey: string | null
+  }[],
+): string {
+  return runs
+    .map((run) => `${run.status}:${run.upperSeq}:${run.snapshotKey ?? ''}`)
+    .sort()
+    .join('|')
+}
+
+function isSnapshotPhysicalStatus(
+  value: string | null,
+): value is SnapshotHealthEntry['physicalStatus'] {
+  return value === 'verified' || value === 'unverified' || value === 'mismatch'
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false
+  return left.every((byte, index) => byte === right[index])
+}
+
+function safeSha256(value: string | null): string | undefined {
+  return value !== null && v.is(Sha256HexSchema, value) ? value : undefined
 }
 
 export async function handleWebSocketUpgrade(room: VaultRoom, c: Context): Promise<Response> {

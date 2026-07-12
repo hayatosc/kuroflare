@@ -13,7 +13,7 @@ test('bundled schema migrations are accepted by the migration decision', () => {
     {
       action: 'apply-migrations',
       fromVersion: 0,
-      toVersion: 2,
+      toVersion: 3,
       migrations: SCHEMA_MIGRATIONS,
     },
   )
@@ -27,14 +27,14 @@ test('bundled schema migrations are accepted by the migration decision', () => {
     {
       action: 'apply-migrations',
       fromVersion: 1,
-      toVersion: 2,
+      toVersion: 3,
       migrations: SCHEMA_MIGRATIONS.slice(1),
     },
   )
 })
 
 test('initial schema migration has correct metadata', () => {
-  assert.equal(SCHEMA_MIGRATIONS.length, 2)
+  assert.equal(SCHEMA_MIGRATIONS.length, 3)
 
   const [initialMigration] = SCHEMA_MIGRATIONS
   assert.ok(initialMigration)
@@ -47,4 +47,10 @@ test('initial schema migration has correct metadata', () => {
   assert.equal(updateHashMigration.version, 2)
   assert.equal(updateHashMigration.name, 'message-dedup-update-hash')
   assert.equal(typeof updateHashMigration.migrate, 'function')
+
+  const snapshotHealthMigration = SCHEMA_MIGRATIONS[2]
+  if (snapshotHealthMigration === undefined) throw new Error('missing snapshot health migration')
+  assert.equal(snapshotHealthMigration.version, 3)
+  assert.equal(snapshotHealthMigration.name, 'snapshot-health-evidence')
+  assert.equal(typeof snapshotHealthMigration.migrate, 'function')
 })

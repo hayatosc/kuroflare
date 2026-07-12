@@ -32,6 +32,10 @@ import {
   handleQuarantineList,
   handleQuarantineDetail,
   handleRetentionInspect,
+  handleSnapshotHealthList,
+  handleSnapshotHealthVerify,
+  handleSnapshotHealthQuarantine,
+  handleSnapshotRollback,
   handleMetaLatest,
   handleFileLatest,
   handleMetaSnapshotImport,
@@ -75,6 +79,13 @@ export class VaultRoom {
       .get('/admin/quarantine', (c) => handleQuarantineList(this, c))
       .get('/admin/quarantine/:id', (c) => handleQuarantineDetail(this, c))
       .get('/admin/retention', (c) => handleRetentionInspect(this, c))
+      .get('/admin/snapshots', (c) => handleSnapshotHealthList(this, c))
+      .post('/admin/snapshots/verify', (c) => handleSnapshotHealthVerify(this, c))
+      .post('/admin/snapshots/quarantine', (c) => handleSnapshotHealthQuarantine(this, c))
+      .post('/admin/snapshots/rollback', (c) => handleSnapshotRollback(this, c))
+      .post('/admin/snapshots/:docId/verify', (c) => handleSnapshotHealthVerify(this, c))
+      .post('/admin/snapshots/:docId/quarantine', (c) => handleSnapshotHealthQuarantine(this, c))
+      .post('/admin/snapshots/:docId/rollback', (c) => handleSnapshotRollback(this, c))
       .get('/vaults/:vaultId/meta/latest', (c) => handleMetaLatest(this, c))
       .get('/vaults/:vaultId/files/:ydocId/latest', (c) => handleFileLatest(this, c))
       .put('/vaults/:vaultId/meta/snapshot', (c) => handleMetaSnapshotImport(this, c))

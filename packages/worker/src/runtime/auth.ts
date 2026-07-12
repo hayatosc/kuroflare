@@ -125,13 +125,25 @@ export async function authorizeHttpRequest(
   c: Context,
   requiredScopes: readonly DeviceTokenScope[],
 ): Promise<Response | undefined> {
+  const result = await authorizeHttpRequestWithClaims(room, c, requiredScopes)
+  return result.action === 'reject' ? result.response : undefined
+}
+
+export async function authorizeHttpRequestWithClaims(
+  room: VaultRoom,
+  c: Context,
+  requiredScopes: readonly DeviceTokenScope[],
+): Promise<
+  | { readonly action: 'accept'; readonly claims: DeviceTokenClaims }
+  | { readonly action: 'reject'; readonly response: Response }
+> {
   const claims = await verifyRequestClaims(room, c)
   if (claims === undefined) {
     logEvent('auth-reject', { vaultId: room.vaultId, reason: 'invalid-token' })
-    return c.json({ error: 'auth-reject:invalid-token' }, 401)
+    return { action: 'reject', response: c.json({ error: 'auth-reject:invalid-token' }, 401) }
   }
   if (room.vaultId !== undefined && claims.aud !== room.vaultId) {
-    return c.json({ error: 'vault-mismatch' }, 400)
+    return { action: 'reject', response: c.json({ error: 'vault-mismatch' }, 400) }
   }
   room.vaultId = claims.aud
 
@@ -145,9 +157,12 @@ export async function authorizeHttpRequest(
   })
   if (admission.action === 'reject') {
     logEvent('auth-reject', { vaultId: claims.aud, reason: admission.reason })
-    return c.json({ error: `auth-reject:${admission.reason}` }, 403)
+    return {
+      action: 'reject',
+      response: c.json({ error: `auth-reject:${admission.reason}` }, 403),
+    }
   }
-  return undefined
+  return { action: 'accept', claims }
 }
 
 export function messageMatchesSession(

@@ -5,6 +5,7 @@ export interface DocClockRow {
 export interface DocSnapshotPointerRow {
   readonly latestSnapshotSeq: number
   readonly latestSnapshotKey: string | null
+  readonly latestStateVector: ArrayBuffer | null
 }
 
 export interface DocRetentionRow {
@@ -18,6 +19,12 @@ export interface DocIdRow {
 }
 
 export interface OpLogUpdateRow {
+  readonly seq: number
+  readonly updateBytes: ArrayBuffer
+}
+
+export interface OpLogUpdateWithSeqRow {
+  readonly seq: number
   readonly updateBytes: ArrayBuffer
 }
 

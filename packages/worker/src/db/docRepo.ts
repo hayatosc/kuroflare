@@ -6,6 +6,7 @@ import type {
   DocRetentionRow,
   DocIdRow,
   OpLogUpdateRow,
+  OpLogUpdateWithSeqRow,
   MessageDedupRow,
 } from './docRepo-types'
 import { readSqlUpdateBytes, toArrayBuffer } from './helpers'
@@ -17,6 +18,7 @@ export type {
   DocRetentionRow,
   DocIdRow,
   OpLogUpdateRow,
+  OpLogUpdateWithSeqRow,
   MessageDedupRow,
 }
 
@@ -151,6 +153,7 @@ export async function getDocSnapshotPointer(
     .select((eb) => [
       eb.ref('latest_snapshot_seq').as('latestSnapshotSeq'),
       eb.ref('latest_snapshot_key').as('latestSnapshotKey'),
+      eb.ref('latest_state_vector').as('latestStateVector'),
     ])
     .where('doc_id', '=', docKey)
     .executeTakeFirst()
@@ -222,9 +225,26 @@ export async function getOpLogUpdatesSince(
 ): Promise<OpLogUpdateRow[]> {
   return db
     .selectFrom('op_log')
-    .select((eb) => eb.ref('update_bytes').as('updateBytes'))
+    .select((eb) => ['seq', eb.ref('update_bytes').as('updateBytes')])
     .where('doc_id', '=', docKey)
     .where('seq', '>', minSeq)
+    .orderBy('seq', 'asc')
+    .execute()
+}
+
+/** Returns durable updates after a snapshot through a captured document clock. */
+export async function getOpLogUpdatesBetween(
+  db: Kysely<Database>,
+  docKey: string,
+  afterSeq: number,
+  throughSeq: number,
+): Promise<OpLogUpdateWithSeqRow[]> {
+  return db
+    .selectFrom('op_log')
+    .select((eb) => ['seq', eb.ref('update_bytes').as('updateBytes')])
+    .where('doc_id', '=', docKey)
+    .where('seq', '>', afterSeq)
+    .where('seq', '<=', throughSeq)
     .orderBy('seq', 'asc')
     .execute()
 }

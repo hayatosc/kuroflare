@@ -4,16 +4,21 @@
 
 ## 1. 三層ストレージと復元不変条件
 
-DO は「ホットキャッシュ + 合流点」であり、真実は R2 にある。
+DO は「ホットキャッシュ + 合流点」である。R2 は immutable bytes の保管場所、
+SQLite は pointer・op-log・checkpoint run・snapshot health evidence の権威であり、
+どちらか一方だけを無条件に真実とは扱わない。
 
 ```
 メモリ(YDoc)  … 揮発OK。アクティブな間だけ存在
-DO Storage    … ホットな差分ログ + 直近スナップショット（再構成可能なキャッシュ）
-R2            … 真実。ここから常に全再構成できる
+DO Storage    … durable pointer、差分ログ、checkpoint run、health audit
+R2            … immutable snapshot bytes（SQLite evidence が承認したものだけ利用）
 ```
 
-**不変条件**：「R2 のスナップショット + それ以降の op」だけで、いつでも YDoc を完全復元できる。
-これさえ守れば DO はいつ蒸発しても安全である。
+**不変条件**：`authoritative + verified + healthy` の snapshot と、それ以降の
+連続した op-log だけで YDoc を完全復元できる。DO が蒸発した後に prefix list
+だけで見つかった未承認 object は復元に使わず、`snapshot-health:no-verified-generation`
+で fail closed する。復旧は認証済み operator の snapshot-health verify によって
+evidence と pointer を作成してから行う。
 
 稼働中は `client op → メモリ YDoc に適用 → 全 client へブロードキャスト → DO Storage に op 追記`。
 op ごとに R2 へ書くと write 課金とレイテンシで破綻するので、DO Storage が書き込みバッファになる。
@@ -215,8 +220,12 @@ seq 境界の規則:
 - R2 成功で `checkpoint_runs.status = 'r2-written'`。pointer は現在値より大きい場合だけ進め、古い run が遅れて完了しても巻き戻さない。
 - op_log を消せるのは `pointer-updated` 後だけ。R2 書き込み前に削らない。
 
-checkpoint（と quarantine force-apply）以外の書き込みは doc 単位 write queue で直列化されるが、checkpoint は queue 外に置く。
-snapshot 取得が await を挟まない同期ブロックだからこそ許される判断で、将来 await が入るなら checkpoint も queue に乗せ直す。
+checkpoint、rollback、snapshot-health verify/quarantine、retention delete は doc
+単位 write queue で直列化する。checkpoint は capture 中に queue を一度解放して
+後続の live append を許すが、R2 の最終検証・pointer 更新・compaction・retention
+cleanup は再取得した queue turn の中で行う。R2 read/delete と quarantine が
+同時に進む場合も、どちらか一方が先に線形化され、health evidence を越えて削除
+または承認することはない。
 
 **compact の retention clamp**。
 compact は checkpoint 自身の `upperSeq` まで無条件に消すのではなく、retention 対象 snapshot の最古 `upperSeq`（retention floor）で `compactedSeq` を clamp する。
@@ -260,13 +269,20 @@ admin-exports/<vaultId>/<timestamp>.tar.zst
 ```
 
 **MVP スコープ**：R2 上の manifest / pointer object はまだ書かない。
-per-doc pointer は DO SQLite の `docs.latest_snapshot_key` を正とし、DO storage が完全消滅した場合の復元入口は `SNAPSHOT_BUCKET.list(prefix)` の prefix list fallback とする。
+per-doc pointer は DO SQLite の `docs.latest_snapshot_key` と health evidence を
+組み合わせて権威化する。DO storage が完全消滅した場合も
+`SNAPSHOT_BUCKET.list(prefix)` は候補発見にしか使わず、未承認候補から空の YDoc
+を作らない。operator が health verify で immutable bytes と replay 境界を承認し、
+pointer/docs row を作成した後にだけ復元する。
 
 復元候補の選択:
 
-- pointer が健全かつ prefix list の最大健全 seq 以上の場合だけ pointer を採用する。
-- pointer が missing / stale / corrupt なら、list で見える最大 seq の検証済み snapshot へ fallback する。
-- 選んだ object が読めない / apply できない場合は hydrate failure（§4）。
+- pointer は authority evidence、physical verification、logical health、retained
+  floor、checkpoint run の整合性を満たす場合だけ採用する。
+- pointer が missing / stale / corrupt なら、list で見える候補を降順に検証するが、
+  authoritative evidence がない候補は restore source にならない。
+- 選んだ object が読めない / apply できない、または op-log の seq が欠ける場合は
+  hydrate failure（§4）。
 
 将来の目標設計では、更新順を `snapshot PUT → per-doc pointer PUT → latest.json PUT` とし、manifest に世代を持たせて「latest が壊れたら参照先が揃う最大 manifestSeq へ戻る」fallback を用意する。
 R2 を source of truth と呼ぶ以上、復元入口を必ず複数残す。
@@ -286,6 +302,12 @@ R2 を source of truth と呼ぶ以上、復元入口を必ず複数残す。
 - 「object としては読めるが論理的におかしい」場合も古い世代へ戻せるようにする。
 - retention window 内の rollback に必要な op_log は物理削除しない（§5 の retention floor）。corrupt snapshot から健全 snapshot へ戻るには `healthy.upperSeq < seq <= corrupt.upperSeq` の replay が必要。
 - admin repair は任意の世代へ rollback できる。
+- retention の floor/compaction/delete eligibility は、最新 health event が
+  `authoritative + verified + healthy` である世代に限定する。candidate や
+  `verification-pending` は inspect 用に保持し、自動削除・floor 選択から除外する。
+- quarantine は doc write queue 内で pointer/compaction と直列化する。現在の
+  retained floor を支える最後の authoritative healthy generation は、代替の
+  authoritative healthy rollback candidate がない限り quarantine を拒否する。
 
 実装: `worker/src/db/retention.ts` の `planSnapshotRetention`。R2 delete の成否は `snapshot_retention_events` に記録し、失敗は次回 cleanup で再試行する。
 
@@ -303,6 +325,21 @@ confirmation token は `quarantine:<action>:<id>` という subject に bind し
 admin endpoint は actor の Bearer JWT と `sync:write` scope を要求する。
 
 これで「通常は最新へ進む」「壊れたら古い健全な世代へ戻る」「怪しい update は証拠として残る」を満たす。
+
+### 9.1 Snapshot health administration
+
+`GET /admin/snapshots?docId=...` returns the latest event for every generation,
+not an arbitrary page of audit history. Each entry includes physical/logical
+status, authority, and server-computed `allowedActions` (`verify`, `quarantine`,
+`rollback`); an optional `actionBlockReason` explains why no action is safe.
+
+`POST /admin/snapshots/verify` first records a candidate
+`verification-pending` event, reads R2, and commits an authoritative approval only
+if the pending event and document authority are unchanged. It is an explicit
+recovery path for R2-only data and is idempotent after an authoritative healthy
+event exists. `POST /admin/snapshots/quarantine` is append-only and idempotent;
+it preserves the object and refuses to remove the last retained healthy floor.
+Rollback creates a new immutable key and never overwrites an existing target.
 
 ## 10. schema migration と health
 

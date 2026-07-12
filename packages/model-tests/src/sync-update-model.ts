@@ -23,7 +23,6 @@ export interface SyncUpdateModelMessage {
 export interface SyncUpdateModelProcessedMessage {
   readonly durableSeq: number
   readonly updateBytesLength: number
-  readonly storage: 'op-log' | 'snapshot'
 }
 
 /** Durable op_log record visible to the model. */
@@ -41,7 +40,6 @@ export interface SyncUpdateModelState {
   readonly opLogSeqs: Set<number>
   readonly snapshotSeqs: Set<number>
   readonly ackedMessages: Map<MessageId, number>
-  readonly boundaryMessages: Map<MessageId, SyncUpdateAppendDecision['action']>
   readonly restoredUpdateHashes: Set<Sha256Hex>
   latestSeq: number
   latestSnapshotSeq: number
@@ -60,7 +58,6 @@ export function createSyncUpdateModelState(
     opLogSeqs: new Set<number>(),
     snapshotSeqs: new Set<number>(),
     ackedMessages: new Map<MessageId, number>(),
-    boundaryMessages: new Map<MessageId, SyncUpdateAppendDecision['action']>(),
     restoredUpdateHashes: new Set<Sha256Hex>(),
     latestSeq: 0,
     latestSnapshotSeq: 0,
@@ -129,24 +126,8 @@ export function applySyncUpdateModelMessage(
       state.processedMessages.set(message.update.messageId, {
         durableSeq: decision.ack.durableSeq,
         updateBytesLength: message.updateBytesLength,
-        storage: 'op-log',
       })
       state.ackedMessages.set(message.update.messageId, decision.ack.durableSeq)
-      state.restoredUpdateHashes.add(message.updateSha256)
-      break
-    }
-    case 'snapshot-escape': {
-      assert.equal(decision.seq, beforeLatestSeq + 1)
-      state.latestSeq = decision.docPatch.latestSeq
-      state.latestSnapshotSeq = decision.seq
-      state.snapshotSeqs.add(decision.seq)
-      state.processedMessages.set(message.update.messageId, {
-        durableSeq: decision.ack.durableSeq,
-        updateBytesLength: message.updateBytesLength,
-        storage: 'snapshot',
-      })
-      state.ackedMessages.set(message.update.messageId, decision.ack.durableSeq)
-      state.boundaryMessages.set(message.update.messageId, decision.action)
       state.restoredUpdateHashes.add(message.updateSha256)
       break
     }
@@ -159,6 +140,11 @@ export function applySyncUpdateModelMessage(
       break
     }
     case 'reject': {
+      if (decision.reason === 'large-update-requires-snapshot-import') {
+        assert.equal(state.latestSeq, beforeLatestSeq)
+        assert.equal(state.latestSnapshotSeq, beforeSnapshotSeq)
+        break
+      }
       throw new Error(`model generated rejected update: ${decision.reason}`)
     }
     default: {
@@ -196,7 +182,7 @@ export function expireSyncUpdateDedupForMessage(
   message: SyncUpdateModelMessage,
 ): boolean {
   const processed = state.processedMessages.get(message.update.messageId)
-  if (!processed || processed.storage !== 'op-log') {
+  if (!processed) {
     return false
   }
 
@@ -233,30 +219,15 @@ export function assertSyncUpdateModelInvariants(state: SyncUpdateModelState): vo
     assert(!durableSeqs.has(processed.durableSeq), `duplicate durable seq ${processed.durableSeq}`)
     durableSeqs.add(processed.durableSeq)
 
-    if (processed.storage === 'op-log') {
-      assert(
-        state.opLogSeqs.has(processed.durableSeq),
-        `missing op_log seq ${processed.durableSeq}`,
-      )
-      assert(
-        state.opLogRecords.has(processed.durableSeq),
-        `missing op_log record ${processed.durableSeq}`,
-      )
-      assert(
-        processed.updateBytesLength <= state.largeUpdateThresholdBytes,
-        `large update stored in op_log at seq ${processed.durableSeq}`,
-      )
-    } else {
-      assert(
-        state.snapshotSeqs.has(processed.durableSeq),
-        `missing snapshot seq ${processed.durableSeq}`,
-      )
-      assert(
-        processed.updateBytesLength > state.largeUpdateThresholdBytes,
-        `small update escaped to snapshot at seq ${processed.durableSeq}`,
-      )
-      assert.equal(state.boundaryMessages.get(messageId), 'snapshot-escape')
-    }
+    assert(state.opLogSeqs.has(processed.durableSeq), `missing op_log seq ${processed.durableSeq}`)
+    assert(
+      state.opLogRecords.has(processed.durableSeq),
+      `missing op_log record ${processed.durableSeq}`,
+    )
+    assert(
+      processed.updateBytesLength <= state.largeUpdateThresholdBytes,
+      `large update stored in op_log at seq ${processed.durableSeq}`,
+    )
   }
 
   for (const [seq, record] of state.opLogRecords) {

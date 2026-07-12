@@ -6,6 +6,7 @@ export interface RecordedDocRow {
   readonly latestSeq: number
   readonly latestSnapshotSeq: number
   readonly latestSnapshotKey: string | undefined
+  readonly latestStateVector?: Uint8Array | undefined
   readonly minRetainedSeq: number
   readonly horizonStateVector: Uint8Array | undefined
   readonly updatedAt: number
@@ -85,6 +86,26 @@ export interface RecordedSnapshotRetentionEventRow {
   readonly attemptedAt: number
 }
 
+export interface RecordedSnapshotHealthEventRow {
+  readonly id: number
+  readonly docId: string
+  readonly snapshotKey: string
+  readonly upperSeq: number
+  readonly event: string
+  readonly actor: string
+  readonly authorityStatus: string
+  readonly expectedByteLength: number | undefined
+  readonly expectedUpdateSha256: string | undefined
+  readonly expectedStateVectorSha256: string | undefined
+  readonly actualByteLength: number | undefined
+  readonly actualUpdateSha256: string | undefined
+  readonly actualStateVectorSha256: string | undefined
+  readonly physicalStatus: string | undefined
+  readonly logicalStatus: string | undefined
+  readonly reasons: string
+  readonly observedAt: number
+}
+
 export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
   readonly docs = new Map<string, RecordedDocRow>()
   readonly opLog = new Map<string, RecordedOpLogRow>()
@@ -92,6 +113,7 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
   readonly quarantines = new Map<string, RecordedQuarantineRow>()
   readonly checkpointRuns = new Map<string, RecordedCheckpointRunRow>()
   readonly snapshotRetentionEvents: RecordedSnapshotRetentionEventRow[] = []
+  readonly snapshotHealthEvents: RecordedSnapshotHealthEventRow[] = []
   readonly setupTokens = new Map<string, RecordedSetupTokenRow>()
   readonly refreshTokens = new Map<string, RecordedRefreshTokenRow>()
   readonly devices = new Map<string, RecordedDeviceRow>([
@@ -307,8 +329,21 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
               {
                 latestSnapshotSeq: doc.latestSnapshotSeq,
                 latestSnapshotKey: doc.latestSnapshotKey,
+                latestStateVector: doc.latestStateVector ?? null,
               },
             ]
+      return rows as Iterable<T>
+    }
+    if (normalized.includes('select seq, update_bytes')) {
+      const docId = expectString(bindings[0])
+      const afterSeq = expectNumber(bindings[1])
+      const throughSeq = normalized.includes('seq <= ?') ? expectNumber(bindings[2]) : undefined
+      const rows = [...this.opLog.values()]
+        .filter((row) => row.docId === docId)
+        .filter((row) => row.seq > afterSeq)
+        .filter((row) => throughSeq === undefined || row.seq <= throughSeq)
+        .sort((left, right) => left.seq - right.seq)
+        .map((row) => ({ seq: row.seq, updateBytes: row.updateBytes }))
       return rows as Iterable<T>
     }
     if (
@@ -391,6 +426,90 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         }))
       return rows as Iterable<T>
     }
+    if (normalized.includes('insert into snapshot_health_events')) {
+      this.snapshotHealthEvents.push({
+        id: this.snapshotHealthEvents.length + 1,
+        docId: expectString(bindings[0]),
+        snapshotKey: expectString(bindings[1]),
+        upperSeq: expectNumber(bindings[2]),
+        event: expectString(bindings[3]),
+        actor: expectString(bindings[4]),
+        authorityStatus: expectString(bindings[5]),
+        expectedByteLength: bindings[6] === null ? undefined : expectNumber(bindings[6]),
+        expectedUpdateSha256: bindings[7] === null ? undefined : expectString(bindings[7]),
+        expectedStateVectorSha256: bindings[8] === null ? undefined : expectString(bindings[8]),
+        actualByteLength: bindings[9] === null ? undefined : expectNumber(bindings[9]),
+        actualUpdateSha256: bindings[10] === null ? undefined : expectString(bindings[10]),
+        actualStateVectorSha256: bindings[11] === null ? undefined : expectString(bindings[11]),
+        physicalStatus: bindings[12] === null ? undefined : expectString(bindings[12]),
+        logicalStatus: bindings[13] === null ? undefined : expectString(bindings[13]),
+        reasons: expectString(bindings[14]),
+        observedAt: expectNumber(bindings[15]),
+      })
+      return []
+    }
+    if (normalized.includes('from snapshot_health_events')) {
+      const docId = expectString(bindings[0])
+      const hasKey = normalized.includes('snapshot_key = ?')
+      const snapshotKey = hasKey ? expectString(bindings[1]) : undefined
+      const isLatestPerKeyQuery = normalized.includes('from snapshot_health_events as event')
+      const sourceRows = this.snapshotHealthEvents
+        .filter((row) => row.docId === docId)
+        .filter((row) => snapshotKey === undefined || row.snapshotKey === snapshotKey)
+      const latestRows = isLatestPerKeyQuery
+        ? [
+            ...sourceRows
+              .reduce((latest, row) => {
+                const previous = latest.get(row.snapshotKey)
+                if (previous === undefined || previous.id < row.id) latest.set(row.snapshotKey, row)
+                return latest
+              }, new Map<string, RecordedSnapshotHealthEventRow>())
+              .values(),
+          ]
+        : sourceRows
+      const rows = latestRows
+        .sort((left, right) => {
+          if (
+            normalized.includes('order by upper_seq desc') ||
+            normalized.includes('order by event.upper_seq desc')
+          )
+            return right.upperSeq - left.upperSeq || right.id - left.id
+          if (
+            normalized.includes('order by id desc') ||
+            normalized.includes('order by event.id desc')
+          )
+            return right.id - left.id
+          return left.id - right.id
+        })
+        .slice(
+          0,
+          isLatestPerKeyQuery && normalized.includes('limit ?')
+            ? expectNumber(bindings[1])
+            : isLatestPerKeyQuery
+              ? latestRows.length
+              : 2048,
+        )
+        .map((row) => ({
+          id: row.id,
+          docId: row.docId,
+          snapshotKey: row.snapshotKey,
+          upperSeq: row.upperSeq,
+          event: row.event,
+          actor: row.actor,
+          authorityStatus: row.authorityStatus,
+          expectedByteLength: row.expectedByteLength ?? null,
+          expectedUpdateSha256: row.expectedUpdateSha256 ?? null,
+          expectedStateVectorSha256: row.expectedStateVectorSha256 ?? null,
+          actualByteLength: row.actualByteLength ?? null,
+          actualUpdateSha256: row.actualUpdateSha256 ?? null,
+          actualStateVectorSha256: row.actualStateVectorSha256 ?? null,
+          physicalStatus: row.physicalStatus ?? null,
+          logicalStatus: row.logicalStatus ?? null,
+          reasons: row.reasons,
+          observedAt: row.observedAt,
+        }))
+      return rows as Iterable<T>
+    }
     if (normalized.includes('insert into op_log')) {
       const docId = expectString(bindings[0])
       const seq = expectNumber(bindings[1])
@@ -415,6 +534,7 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         latestSeq: expectNumber(bindings[2]),
         latestSnapshotSeq: expectNumber(bindings[3]),
         latestSnapshotKey: expectString(bindings[4]),
+        latestStateVector: expectUint8Array(bindings[5]),
         minRetainedSeq: expectNumber(bindings[6]),
         horizonStateVector: undefined,
         updatedAt: expectNumber(bindings[7]),
@@ -429,6 +549,7 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         latestSeq: expectNumber(bindings[2]),
         latestSnapshotSeq: this.docs.get(docId)?.latestSnapshotSeq ?? 0,
         latestSnapshotKey: this.docs.get(docId)?.latestSnapshotKey,
+        latestStateVector: this.docs.get(docId)?.latestStateVector,
         minRetainedSeq: this.docs.get(docId)?.minRetainedSeq ?? 0,
         horizonStateVector: this.docs.get(docId)?.horizonStateVector,
         updatedAt: expectNumber(bindings[3]),
@@ -543,6 +664,7 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         latestSeq: Math.max(existing.latestSeq, expectNumber(bindings[0])),
         latestSnapshotSeq,
         latestSnapshotKey,
+        latestStateVector: expectUint8Array(bindings[3]),
         updatedAt: expectNumber(bindings[4]),
       })
       return []
@@ -609,4 +731,5 @@ export interface RecordingSqlSnapshot {
   readonly devices: Map<string, RecordedDeviceRow>
   readonly migrationVersions: Set<number>
   readonly messageDedupColumns: Set<string>
+  readonly snapshotHealthEvents: RecordedSnapshotHealthEventRow[]
 }

@@ -23,6 +23,7 @@ import { assert, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { VaultRoom } from '../runtime'
+import { ensureDocHydrated } from '../runtime/sync'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -86,6 +87,42 @@ function isRetentionAdminResponse(value: unknown): value is RetentionAdminRespon
         typeof Reflect.get(event, 'attemptedAt') === 'number',
     )
   )
+}
+
+async function seedVerifiedSnapshotEvidence(
+  storage: SqlOnlyStorage,
+  snapshotKey: string,
+  docId: 'meta' | `file:${string}`,
+  bytes: Uint8Array,
+  authorityStatus: 'candidate' | 'authoritative' = 'authoritative',
+): Promise<void> {
+  const snapshotDoc = new Y.Doc()
+  Y.applyUpdate(snapshotDoc, bytes)
+  const stateVector = Y.encodeStateVector(snapshotDoc)
+  snapshotDoc.destroy()
+  const seqText = snapshotKey.slice(snapshotKey.lastIndexOf('/') + 1, -'.yupdate'.length)
+  const upperSeq = Number(seqText)
+  const expectedUpdateSha256 = await hashTestBytes(bytes)
+  const expectedStateVectorSha256 = await hashTestBytes(stateVector)
+  const base = {
+    id: storage.sql.snapshotHealthEvents.length + 1,
+    docId,
+    snapshotKey,
+    upperSeq,
+    actor: 'system:verifier',
+    authorityStatus,
+    expectedByteLength: bytes.byteLength,
+    expectedUpdateSha256,
+    expectedStateVectorSha256,
+    actualByteLength: bytes.byteLength,
+    actualUpdateSha256: expectedUpdateSha256,
+    actualStateVectorSha256: expectedStateVectorSha256,
+    physicalStatus: 'verified',
+    logicalStatus: 'healthy',
+    reasons: '[]',
+    observedAt: 1,
+  } as const
+  storage.sql.snapshotHealthEvents.push({ ...base, event: 'verification' })
 }
 
 test('VaultRoom accepts websocket upgrades and rejects malformed binary frames', async () => {
@@ -891,6 +928,7 @@ test('VaultRoom withholds ack and broadcast when post-commit rehydration fails',
       ...existingDoc,
       latestSnapshotSeq: 1,
       latestSnapshotKey: 'snapshots/vault-1/meta/missing.yupdate',
+      minRetainedSeq: 1,
     })
 
     const update = makeSyncUpdate(makeMessageId('rehydrate-failure'))
@@ -901,7 +939,6 @@ test('VaultRoom withholds ack and broadcast when post-commit rehydration fails',
     assert.equal(storage.sql.messageDedup.get(`meta:${update.messageId}`)?.durableSeq, 2)
     assert.equal(findAckForMessage(sender.sent, update.messageId), undefined)
     assert.equal(syncMessages(peer.sent).length, 1)
-    assert.equal(sender.closeCode, 1011)
     assert.equal(sender.closeReason, 'hydrate-failed')
     assert.equal(room.docs.has('meta'), false)
     assert.equal(room.hydratedDocs.has('meta'), false)
@@ -979,7 +1016,7 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
       query.includes('create table if not exists devices'),
     )
     assert.equal(created.length, 1)
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3])
 
     await room.webSocketMessage(
       server,
@@ -989,7 +1026,7 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
     const insertedVersions = storage.sql.queries.filter((query) =>
       query.includes('insert into schema_migrations'),
     )
-    assert.equal(insertedVersions.length, 2)
+    assert.equal(insertedVersions.length, 3)
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
@@ -1010,7 +1047,7 @@ test('VaultRoom upgrades an existing v1 schema before serving SQL traffic', asyn
     assert(server instanceof FakeSocket)
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
 
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3])
     assert.equal(
       storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
       1,
@@ -1047,7 +1084,7 @@ test('VaultRoom retries v2 schema migration after ALTER succeeds before recordin
     storage.sql.failOnQueryIncludes = undefined
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
 
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3])
     assert.equal(
       storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
       1,
@@ -1359,6 +1396,14 @@ test('VaultRoom checkpoints an active document to R2 and advances the SQL snapsh
     assert.equal(run.r2WrittenAt, 99)
     assert.equal(run.pointerUpdatedAt, 99)
     assert.equal(run.compactedAt, 99)
+    assert.equal(
+      storage.sql.snapshotHealthEvents.find((event) => event.event === 'expected')?.actor,
+      'system:checkpoint',
+    )
+    assert.equal(
+      storage.sql.snapshotHealthEvents.find((event) => event.event === 'verification')?.actor,
+      'system:verifier',
+    )
 
     assert.deepEqual(await room.checkpointDoc({ kind: 'meta' }, 100), {
       action: 'skipped',
@@ -1508,6 +1553,53 @@ test('VaultRoom captures checkpoint bytes and state vector before later appends'
   }
 })
 
+test('VaultRoom fails closed when a checkpoint target key already exists', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const updateBytes = makeYjsUpdateBytes(makeMessageId('message-checkpoint-target-conflict'))
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 1,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.opLog.set('meta:checkpoint-target-conflict', {
+    docId: 'meta',
+    seq: 1,
+    messageId: 'checkpoint-target-conflict',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes,
+    updateSha256: await hashTestBytes(updateBytes),
+    createdAt: 1,
+  })
+  const targetKey = 'snapshots/vault-1/meta/1.yupdate'
+  const existingBytes = makeYjsUpdateBytes(makeMessageId('checkpoint-target-existing'))
+  bucket.set(targetKey, existingBytes)
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+
+  let failure: unknown
+  try {
+    await room.checkpointDoc({ kind: 'meta' }, 99)
+  } catch (error) {
+    failure = error
+  }
+  assert(failure instanceof Error)
+  assert.match(failure.message, /snapshot-checkpoint-target-exists/)
+  const persisted = await bucket.get(targetKey)
+  assert(persisted)
+  assert.deepEqual(new Uint8Array(await persisted.arrayBuffer()), existingBytes)
+  assert.deepEqual(bucket.puts, [])
+  assert.equal(storage.sql.checkpointRuns.size, 0)
+})
+
 test('VaultRoom serializes snapshot import with a concurrent live append', async () => {
   const previousPair = installFakeWebSocketPair()
   const previousResponse = installFakeUpgradeResponse()
@@ -1604,6 +1696,39 @@ test('VaultRoom serializes snapshot import with a concurrent live append', async
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
   }
+})
+
+test('VaultRoom fails closed when an import target key already exists', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const targetKey = 'snapshots/vault-1/meta/1.yupdate'
+  const existingBytes = makeYjsUpdateBytes(makeMessageId('import-target-existing'))
+  bucket.set(targetKey, existingBytes)
+  const importBytes = makeYjsUpdateBytes(makeMessageId('import-target-conflict'))
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const response = await room.fetch(
+    new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ updateBytesBase64: Buffer.from(importBytes).toString('base64') }),
+    }),
+  )
+
+  assert.equal(response.status, 409)
+  assert.deepEqual(bucket.puts, [])
+  const persisted = await bucket.get(targetKey)
+  assert(persisted)
+  assert.deepEqual(new Uint8Array(await persisted.arrayBuffer()), existingBytes)
+  assert.equal(storage.sql.checkpointRuns.size, 0)
 })
 
 test('VaultRoom rejects stale snapshot import sequences without durable mutation', async () => {
@@ -1915,12 +2040,14 @@ test('VaultRoom preserves an imported document when pointer run status fails aft
     )
     const coldResponse = syncMessages(coldServer.sent).at(-1)
     assert(typeof coldResponse === 'string')
-    const coldUpdate = JSON.parse(coldResponse) as SyncUpdate
-    const coldDoc = new Y.Doc()
-    Y.applyUpdate(coldDoc, Y.encodeStateAsUpdate(importedSnapshotDoc))
-    Y.applyUpdate(coldDoc, decodeTestBase64(coldUpdate.update))
-    assert.deepEqual(Y.encodeStateAsUpdate(coldDoc), Y.encodeStateAsUpdate(expectedDoc))
-    coldDoc.destroy()
+    assert.deepEqual(JSON.parse(coldResponse) as NeedFullSnapshot, {
+      type: 'need-full-snapshot',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId: makeVaultId('vault-1'),
+      deviceId: makeDeviceId('device-1'),
+      docId: { kind: 'meta' },
+      reason: 'state-vector-too-old',
+    })
     importedSnapshotDoc.destroy()
     expectedDoc.destroy()
   } finally {
@@ -1944,7 +2071,14 @@ test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes adm
     for (const [index, update] of updates.entries()) {
       Y.applyUpdate(cumulativeDoc, decodeTestBase64(update.update))
       const seq = index + 1
-      bucket.set(`snapshots/vault-1/meta/${seq}.yupdate`, Y.encodeStateAsUpdate(cumulativeDoc))
+      const snapshotBytes = Y.encodeStateAsUpdate(cumulativeDoc)
+      bucket.set(`snapshots/vault-1/meta/${seq}.yupdate`, snapshotBytes)
+      await seedVerifiedSnapshotEvidence(
+        storage,
+        `snapshots/vault-1/meta/${seq}.yupdate`,
+        'meta',
+        snapshotBytes,
+      )
       snapshotStateVectors.set(seq, Y.encodeStateVector(cumulativeDoc))
       storage.sql.checkpointRuns.set(`seed-retention-${seq}`, {
         runId: `seed-retention-${seq}`,
@@ -1961,6 +2095,15 @@ test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes adm
     }
     const expectedFinalUpdate = Y.encodeStateAsUpdate(cumulativeDoc)
     cumulativeDoc.destroy()
+    storage.sql.docs.set('meta', {
+      kind: 'meta',
+      latestSeq: 0,
+      latestSnapshotSeq: 0,
+      latestSnapshotKey: undefined,
+      minRetainedSeq: 0,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
     const state = new FakeState(storage)
     const room = new VaultRoom(
       state,
@@ -2005,6 +2148,46 @@ test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes adm
         { snapshotKey: 'snapshots/vault-1/meta/2.yupdate', error: undefined },
       ],
     )
+    for (const snapshotKey of [
+      'snapshots/vault-1/meta/1.yupdate',
+      'snapshots/vault-1/meta/2.yupdate',
+    ]) {
+      const deleted = storage.sql.snapshotHealthEvents
+        .filter((event) => event.snapshotKey === snapshotKey)
+        .at(-1)
+      assert.equal(deleted?.physicalStatus, 'mismatch')
+      assert.equal(JSON.parse(deleted?.reasons ?? '[]').includes('missing-object'), true)
+    }
+
+    restoreResponse(previousResponse)
+    const healthResponse = await room.fetch(
+      new Request('https://worker.example/admin/snapshots?docId=meta&limit=64', {
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+            tokenVersion: 1,
+          })}`,
+        },
+      }),
+    )
+    assert.equal(healthResponse.status, 200)
+    const healthBody = (await healthResponse.json()) as {
+      readonly entries: readonly {
+        snapshotKey: string
+        physicalStatus: string
+        allowedActions: readonly string[]
+        actionBlockReason?: string
+      }[]
+    }
+    const deletedEntry = healthBody.entries.find(
+      (entry) => entry.snapshotKey === 'snapshots/vault-1/meta/1.yupdate',
+    )
+    assert(deletedEntry)
+    assert.equal(deletedEntry.physicalStatus, 'mismatch')
+    assert.deepEqual(deletedEntry.allowedActions, [])
+    assert.equal(deletedEntry.actionBlockReason, 'snapshot-health-deleted')
+    const deleteCount = bucket.deletes.length
+    await room.alarm()
+    assert.equal(bucket.deletes.length, deleteCount)
 
     const restoredBucket = new FakeR2Bucket()
     const snapshot3Bytes = await bucket.get('snapshots/vault-1/meta/3.yupdate')
@@ -2205,6 +2388,18 @@ test('VaultRoom schedules an immediate checkpoint alarm after the op threshold',
       horizonStateVector: undefined,
       updatedAt: 1,
     })
+    for (let seq = 1; seq <= 127; seq += 1) {
+      storage.sql.opLog.set(`meta:threshold-seq-${seq}`, {
+        docId: 'meta',
+        seq,
+        messageId: `threshold-seq-${seq}`,
+        deviceId: 'device-1',
+        yClientId: 1,
+        updateBytes: makeYjsUpdateBytes(makeMessageId(`threshold-seq-${seq}`)),
+        updateSha256: 'a'.repeat(64),
+        createdAt: seq,
+      })
+    }
     void room.fetch(await makeAuthenticatedWebSocketRequest())
     const server = state.accepted[0]
     assert(server instanceof FakeSocket)
@@ -2235,9 +2430,15 @@ test('VaultRoom alarm recovers orphaned checkpoint runs before new checkpoints',
   const snapshotStateVector = Y.encodeStateVector(snapshotDoc)
   snapshotDoc.destroy()
   bucket.set('snapshots/vault-1/meta/2.yupdate', snapshotBytes)
+  await seedVerifiedSnapshotEvidence(
+    storage,
+    'snapshots/vault-1/meta/2.yupdate',
+    'meta',
+    snapshotBytes,
+  )
   storage.sql.docs.set('meta', {
     kind: 'meta',
-    latestSeq: 2,
+    latestSeq: 3,
     latestSnapshotSeq: 0,
     latestSnapshotKey: undefined,
     minRetainedSeq: 0,
@@ -2274,6 +2475,12 @@ test('VaultRoom alarm advances and compacts recovered checkpoint pointers', asyn
   const snapshotStateVector = Y.encodeStateVector(snapshotDoc)
   snapshotDoc.destroy()
   bucket.set('snapshots/vault-1/meta/2.yupdate', snapshotBytes)
+  await seedVerifiedSnapshotEvidence(
+    storage,
+    'snapshots/vault-1/meta/2.yupdate',
+    'meta',
+    snapshotBytes,
+  )
   storage.sql.docs.set('meta', {
     kind: 'meta',
     latestSeq: 2,
@@ -2313,6 +2520,7 @@ test('VaultRoom alarm advances and compacts recovered checkpoint pointers', asyn
   assert.equal(storage.sql.checkpointRuns.get('run-r2')?.status, 'pointer-updated')
   assert.equal(storage.sql.docs.get('meta')?.latestSnapshotSeq, 2)
   assert.equal(storage.sql.docs.get('meta')?.latestSnapshotKey, 'snapshots/vault-1/meta/2.yupdate')
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.authorityStatus, 'authoritative')
 
   await room.alarm()
 
@@ -2344,6 +2552,13 @@ test('VaultRoom waits for stale hydration before rehydrating an orphaned pointer
     const recoveredStateVector = Y.encodeStateVector(recoveredDoc)
     bucket.set(oldSnapshotKey, oldSnapshotBytes)
     bucket.set(recoveredSnapshotKey, recoveredSnapshotBytes)
+    await seedVerifiedSnapshotEvidence(storage, oldSnapshotKey, 'meta', oldSnapshotBytes)
+    await seedVerifiedSnapshotEvidence(
+      storage,
+      recoveredSnapshotKey,
+      'meta',
+      recoveredSnapshotBytes,
+    )
 
     storage.sql.docs.set('meta', {
       kind: 'meta',
@@ -2418,7 +2633,7 @@ test('VaultRoom waits for stale hydration before rehydrating an orphaned pointer
 
     const alarm = room.alarm()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    assert.equal(room.docWriteQueues.has('meta'), true)
+    assert.equal(room.docWriteQueues.has('meta'), false)
     releaseList()
     await Promise.all([hydrationRequest, alarm])
 
@@ -2513,6 +2728,12 @@ test('VaultRoom applies the retained snapshot floor while recovering orphaned ch
       const snapshotBytes = Y.encodeStateAsUpdate(cumulativeDoc)
       const stateVector = Y.encodeStateVector(cumulativeDoc)
       bucket.set(`snapshots/vault-1/meta/${seq}.yupdate`, snapshotBytes)
+      await seedVerifiedSnapshotEvidence(
+        storage,
+        `snapshots/vault-1/meta/${seq}.yupdate`,
+        'meta',
+        snapshotBytes,
+      )
       snapshotBytesBySeq.set(seq, snapshotBytes)
       snapshotStateVectors.set(seq, stateVector)
       storage.sql.opLog.set(`meta:message-orphan-retention-${seq}`, {
@@ -2762,7 +2983,7 @@ test('VaultRoom hydrates active Y.Doc from SQL op_log after Durable Object resta
 
     const restartQueries = storage.sql.queries.slice(queryCountBeforeRestart)
     assert(
-      restartQueries.some((query) => query.includes('select update_bytes')),
+      restartQueries.some((query) => query.includes('update_bytes')),
       'expected restarted room to replay op_log before appending',
     )
     assert.equal(storage.sql.docs.get('meta')?.latestSeq, 2)
@@ -2780,14 +3001,16 @@ test('VaultRoom hydrates active Y.Doc from R2 snapshot plus residual SQL op_log'
   try {
     const storage = new SqlOnlyStorage()
     const bucket = new FakeR2Bucket()
-    const snapshotKey = 'snapshots/vault-1/pointers/meta.json'
-    bucket.set(snapshotKey, makeYjsUpdateBytes(makeMessageId('message-snapshot')))
+    const snapshotKey = 'snapshots/vault-1/meta/1.yupdate'
+    const snapshotBytes = makeYjsUpdateBytes(makeMessageId('message-snapshot'))
+    bucket.set(snapshotKey, snapshotBytes)
+    await seedVerifiedSnapshotEvidence(storage, snapshotKey, 'meta', snapshotBytes)
     storage.sql.docs.set('meta', {
       kind: 'meta',
       latestSeq: 2,
       latestSnapshotSeq: 1,
       latestSnapshotKey: snapshotKey,
-      minRetainedSeq: 0,
+      minRetainedSeq: 1,
       horizonStateVector: undefined,
       updatedAt: 1,
     })
@@ -2817,13 +3040,105 @@ test('VaultRoom hydrates active Y.Doc from R2 snapshot plus residual SQL op_log'
       JSON.stringify(makeSyncUpdate(makeMessageId('message-after-snapshot'))),
     )
 
-    assert.deepEqual(bucket.gets, [snapshotKey])
+    assert.deepEqual(bucket.gets, [snapshotKey, snapshotKey])
     assert.equal(storage.sql.docs.get('meta')?.latestSeq, 3)
     assert.equal(storage.sql.opLog.get('meta:message-after-snapshot')?.seq, 3)
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
   }
+})
+
+test('VaultRoom fails closed when residual op_log sequences contain a gap', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-oplog-gap')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('oplog-gap-snapshot'))
+  bucket.set(snapshotKey, snapshotBytes)
+  await seedVerifiedSnapshotEvidence(storage, snapshotKey, `file:${ydocId}`, snapshotBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 3,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: snapshotKey,
+    minRetainedSeq: 1,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const seq3 = makeYjsUpdateBytes(makeMessageId('oplog-gap-seq3'))
+  storage.sql.opLog.set(`file:${ydocId}:oplog-gap-seq3`, {
+    docId: `file:${ydocId}`,
+    seq: 3,
+    messageId: 'oplog-gap-seq3',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: seq3,
+    updateSha256: await hashTestBytes(seq3),
+    createdAt: 3,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+
+  let failed = false
+  try {
+    await ensureDocHydrated(room, docId)
+  } catch (error) {
+    failed = error instanceof Error && error.message === 'op_log sequence gap'
+  }
+  assert.equal(failed, true)
+  assert.equal(room.docs.has(`file:${ydocId}`), false)
+  assert.equal(room.hydratedDocs.has(`file:${ydocId}`), false)
+})
+
+test('VaultRoom fails closed when residual op_log rows stop before the durable tail', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-oplog-tail-gap')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('oplog-tail-snapshot'))
+  bucket.set(snapshotKey, snapshotBytes)
+  await seedVerifiedSnapshotEvidence(storage, snapshotKey, `file:${ydocId}`, snapshotBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 3,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: snapshotKey,
+    minRetainedSeq: 1,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const seq2 = makeYjsUpdateBytes(makeMessageId('oplog-tail-seq2'))
+  storage.sql.opLog.set(`file:${ydocId}:oplog-tail-seq2`, {
+    docId: `file:${ydocId}`,
+    seq: 2,
+    messageId: 'oplog-tail-seq2',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: seq2,
+    updateSha256: await hashTestBytes(seq2),
+    createdAt: 2,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+
+  let failed = false
+  try {
+    await ensureDocHydrated(room, docId)
+  } catch (error) {
+    failed = error instanceof Error && error.message === 'op_log sequence gap'
+  }
+  assert.equal(failed, true)
+  assert.equal(room.docs.has(`file:${ydocId}`), false)
+  assert.equal(room.hydratedDocs.has(`file:${ydocId}`), false)
 })
 
 test('VaultRoom stops sync updates when the recorded R2 snapshot is missing', async () => {
@@ -2838,7 +3153,7 @@ test('VaultRoom stops sync updates when the recorded R2 snapshot is missing', as
       latestSeq: 1,
       latestSnapshotSeq: 1,
       latestSnapshotKey: snapshotKey,
-      minRetainedSeq: 0,
+      minRetainedSeq: 1,
       horizonStateVector: undefined,
       updatedAt: 1,
     })
@@ -2880,7 +3195,9 @@ test('VaultRoom falls back from a missing snapshot pointer to the newest listed 
     const bucket = new FakeR2Bucket()
     const stalePointerKey = 'snapshots/vault-1/meta/1.yupdate'
     const fallbackKey = 'snapshots/vault-1/meta/2.yupdate'
-    bucket.set(fallbackKey, makeYjsUpdateBytes(makeMessageId('message-fallback-snapshot')))
+    const fallbackBytes = makeYjsUpdateBytes(makeMessageId('message-fallback-snapshot'))
+    bucket.set(fallbackKey, fallbackBytes)
+    await seedVerifiedSnapshotEvidence(storage, fallbackKey, 'meta', fallbackBytes)
     storage.sql.docs.set('meta', {
       kind: 'meta',
       latestSeq: 2,
@@ -2907,7 +3224,7 @@ test('VaultRoom falls back from a missing snapshot pointer to the newest listed 
     )
 
     assert.deepEqual(bucket.lists, ['snapshots/vault-1/meta/'])
-    assert.deepEqual(bucket.gets, [fallbackKey])
+    assert.deepEqual(bucket.gets, [fallbackKey, fallbackKey])
     assert.equal(server.closed, false)
     assert.equal(storage.sql.docs.get('meta')?.latestSeq, 3)
     assert.equal(storage.sql.opLog.get('meta:message-after-fallback')?.seq, 3)
@@ -2915,6 +3232,1536 @@ test('VaultRoom falls back from a missing snapshot pointer to the newest listed 
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
   }
+})
+
+test('VaultRoom skips a corrupt newest generation and replays residual op_log from an older verified snapshot', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-health-fallback')
+  const docId = { kind: 'file' as const, ydocId }
+  const olderKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const newestKey = `snapshots/vault-1/files/${ydocId}/3.yupdate`
+  const olderDoc = new Y.Doc()
+  olderDoc.getText('content').insert(0, 'older')
+  const olderBytes = Y.encodeStateAsUpdate(olderDoc)
+  const newestDoc = new Y.Doc()
+  newestDoc.getText('content').insert(0, 'newest')
+  const newestBytes = Y.encodeStateAsUpdate(newestDoc)
+  olderDoc.destroy()
+  newestDoc.destroy()
+  bucket.set(olderKey, olderBytes)
+  bucket.set(newestKey, newestBytes)
+  await seedVerifiedSnapshotEvidence(storage, olderKey, `file:${ydocId}`, olderBytes)
+  await seedVerifiedSnapshotEvidence(storage, newestKey, `file:${ydocId}`, newestBytes)
+  const corruptNewest = newestBytes.slice()
+  corruptNewest[corruptNewest.length - 1] = (corruptNewest.at(-1) ?? 0) ^ 0xff
+  bucket.set(newestKey, corruptNewest)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 3,
+    latestSnapshotSeq: 3,
+    latestSnapshotKey: newestKey,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const residual = makeYjsUpdateBytes(makeMessageId('health-fallback-residual'))
+  storage.sql.opLog.set(`file:${ydocId}:health-fallback-residual`, {
+    docId: `file:${ydocId}`,
+    seq: 2,
+    messageId: 'health-fallback-residual',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: residual,
+    updateSha256: await hashTestBytes(residual),
+    createdAt: 2,
+  })
+  const tail = makeYjsUpdateBytes(makeMessageId('health-fallback-tail'))
+  storage.sql.opLog.set(`file:${ydocId}:health-fallback-tail`, {
+    docId: `file:${ydocId}`,
+    seq: 3,
+    messageId: 'health-fallback-tail',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: tail,
+    updateSha256: await hashTestBytes(tail),
+    createdAt: 3,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+
+  await ensureDocHydrated(room, docId)
+
+  assert(room.docs.get(`file:${ydocId}`))
+  const newestEvents = storage.sql.snapshotHealthEvents.filter(
+    (row) => row.snapshotKey === newestKey,
+  )
+  assert.equal(newestEvents.at(-1)?.physicalStatus, 'mismatch')
+  assert.equal(newestEvents.at(-1)?.event, 'verification')
+  assert.equal(storage.sql.opLog.has(`file:${ydocId}:health-fallback-residual`), true)
+})
+
+test('legacy snapshot verification is explicit and the last healthy generation cannot be quarantined', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-legacy-health')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('legacy-health-snapshot'))
+  bucket.set(snapshotKey, snapshotBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: snapshotKey,
+    minRetainedSeq: 1,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  let hydrateFailed = false
+  try {
+    await ensureDocHydrated(room, docId)
+  } catch (error) {
+    hydrateFailed =
+      error instanceof Error && error.message === 'snapshot-health:no-verified-generation'
+  }
+  assert.equal(hydrateFailed, true)
+
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const mismatchedRoute = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/wrong-doc/verify', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 1,
+        reason: 'route mismatch must be rejected',
+        confirmation: 'verify',
+      }),
+    }),
+  )
+  assert.equal(mismatchedRoute.status, 400)
+  const verifyResponse = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/verify', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 1,
+        actor: 'spoofed-request-actor',
+        reason: 'Approve current legacy bytes after operator inspection',
+        confirmation: 'verify',
+      }),
+    }),
+  )
+  assert.equal(verifyResponse.status, 200)
+  const verifyBody = (await verifyResponse.json()) as {
+    readonly entry: { readonly actor: string }
+  }
+  assert.equal(verifyBody.entry.actor, 'device-1')
+  await ensureDocHydrated(room, docId)
+  assert(room.docs.get(`file:${ydocId}`))
+
+  const quarantineResponse = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/quarantine', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 1,
+        actor: 'spoofed-request-actor',
+        reason: 'Operator quarantined generation for inspection',
+        confirmation: 'quarantine',
+      }),
+    }),
+  )
+  assert.equal(quarantineResponse.status, 409)
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.logicalStatus, 'healthy')
+  room.docs.get(`file:${ydocId}`)?.destroy()
+  room.docs.delete(`file:${ydocId}`)
+  room.hydratedDocs.delete(`file:${ydocId}`)
+  hydrateFailed = false
+  try {
+    await ensureDocHydrated(room, docId)
+  } catch (error) {
+    hydrateFailed =
+      error instanceof Error && error.message === 'snapshot-health:no-verified-generation'
+  }
+  assert.equal(hydrateFailed, false)
+})
+
+test('rollback writes a new audited generation and preserves the source object', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-rollback-health')
+  const docId = { kind: 'file' as const, ydocId }
+  const sourceKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const currentKey = `snapshots/vault-1/files/${ydocId}/2.yupdate`
+  const sourceBytes = makeYjsUpdateBytes(makeMessageId('rollback-source'))
+  const currentBytes = makeYjsUpdateBytes(makeMessageId('rollback-current'))
+  bucket.set(sourceKey, sourceBytes)
+  bucket.set(currentKey, currentBytes)
+  await seedVerifiedSnapshotEvidence(storage, sourceKey, `file:${ydocId}`, sourceBytes)
+  await seedVerifiedSnapshotEvidence(storage, currentKey, `file:${ydocId}`, currentBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 2,
+    latestSnapshotSeq: 2,
+    latestSnapshotKey: currentKey,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.opLog.set(`file:${ydocId}:rollback-current`, {
+    docId: `file:${ydocId}`,
+    seq: 2,
+    messageId: 'rollback-current',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: currentBytes,
+    updateSha256: await hashTestBytes(currentBytes),
+    createdAt: 2,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/rollback', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey: sourceKey,
+        upperSeq: 1,
+        actor: 'spoofed-request-actor',
+        reason: 'Rollback to the last verified operator-approved generation',
+        confirmation: 'rollback',
+      }),
+    }),
+  )
+  assert.equal(response.status, 200)
+  const body = (await response.json()) as {
+    readonly actor: string
+    readonly snapshotKey: string
+    readonly snapshotSeq: number
+  }
+  assert.equal(body.actor, 'device-1')
+  assert.equal(body.snapshotSeq, 3)
+  assert.equal(body.snapshotKey, `snapshots/vault-1/files/${ydocId}/3.yupdate`)
+  assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSnapshotSeq, 3)
+  assert.equal((await bucket.get(sourceKey)) !== null, true)
+  assert.equal(
+    storage.sql.snapshotHealthEvents.some(
+      (event) => event.snapshotKey === body.snapshotKey && event.event === 'rollback',
+    ),
+    true,
+  )
+  const coldRoom = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  coldRoom.vaultId = makeVaultId('vault-1')
+  await ensureDocHydrated(coldRoom, docId)
+  const coldHydrated = coldRoom.docs.get(`file:${ydocId}`)
+  assert(coldHydrated)
+  const expectedColdDoc = new Y.Doc()
+  Y.applyUpdate(expectedColdDoc, sourceBytes)
+  Y.applyUpdate(expectedColdDoc, currentBytes)
+  assert.deepEqual(Y.encodeStateAsUpdate(coldHydrated), Y.encodeStateAsUpdate(expectedColdDoc))
+  expectedColdDoc.destroy()
+})
+
+test('rollback refuses to overwrite an existing target key', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-rollback-target-conflict')
+  const docId = { kind: 'file' as const, ydocId }
+  const sourceKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const targetKey = `snapshots/vault-1/files/${ydocId}/2.yupdate`
+  const sourceBytes = makeYjsUpdateBytes(makeMessageId('rollback-target-source'))
+  const existingBytes = makeYjsUpdateBytes(makeMessageId('rollback-target-existing'))
+  bucket.set(sourceKey, sourceBytes)
+  bucket.set(targetKey, existingBytes)
+  await seedVerifiedSnapshotEvidence(storage, sourceKey, `file:${ydocId}`, sourceBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: sourceKey,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/rollback', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        docId,
+        snapshotKey: sourceKey,
+        upperSeq: 1,
+        reason: 'Do not overwrite an immutable target generation',
+        confirmation: 'rollback',
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 409)
+  const persisted = await bucket.get(targetKey)
+  assert(persisted)
+  assert.deepEqual(new Uint8Array(await persisted.arrayBuffer()), existingBytes)
+  assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSnapshotKey, sourceKey)
+  assert.equal(storage.sql.checkpointRuns.size, 0)
+})
+
+test('rollback pointer failure leaves the orphan target out of cold hydration', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-rollback-pointer-failure')
+  const docId = { kind: 'file' as const, ydocId }
+  const sourceKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const sourceBytes = makeYjsUpdateBytes(makeMessageId('rollback-pointer-source'))
+  bucket.set(sourceKey, sourceBytes)
+  await seedVerifiedSnapshotEvidence(storage, sourceKey, `file:${ydocId}`, sourceBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: sourceKey,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  storage.sql.failOnQueryIncludes = 'update docs'
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/rollback', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        docId,
+        snapshotKey: sourceKey,
+        upperSeq: 1,
+        reason: 'Pointer failure must not authorize an orphan object',
+        confirmation: 'rollback',
+      }),
+    }),
+  )
+  storage.sql.failOnQueryIncludes = undefined
+
+  assert.equal(response.status, 500)
+  assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSnapshotKey, sourceKey)
+  const run = [...storage.sql.checkpointRuns.values()].at(-1)
+  assert.equal(run?.status, 'failed')
+  const coldRoom = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  coldRoom.vaultId = makeVaultId('vault-1')
+  await ensureDocHydrated(coldRoom, docId)
+  const cold = coldRoom.docs.get(`file:${ydocId}`)
+  assert(cold)
+  const expected = new Y.Doc()
+  Y.applyUpdate(expected, sourceBytes)
+  assert.deepEqual(Y.encodeStateAsUpdate(cold), Y.encodeStateAsUpdate(expected))
+  expected.destroy()
+})
+
+test('rollback rejects candidate and failed-run source generations at the API boundary', async () => {
+  for (const sourceState of ['candidate', 'failed'] as const) {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const ydocId = makeYDocId(`ydoc-rollback-${sourceState}`)
+    const docId = { kind: 'file' as const, ydocId }
+    const sourceKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+    const sourceBytes = makeYjsUpdateBytes(makeMessageId(`rollback-${sourceState}-source`))
+    bucket.set(sourceKey, sourceBytes)
+    await seedVerifiedSnapshotEvidence(
+      storage,
+      sourceKey,
+      `file:${ydocId}`,
+      sourceBytes,
+      sourceState === 'candidate' ? 'candidate' : 'authoritative',
+    )
+    storage.sql.docs.set(`file:${ydocId}`, {
+      kind: 'file',
+      latestSeq: 1,
+      latestSnapshotSeq: 0,
+      latestSnapshotKey: undefined,
+      minRetainedSeq: 0,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+    if (sourceState === 'failed') {
+      storage.sql.checkpointRuns.set('rollback-failed-source', {
+        runId: 'rollback-failed-source',
+        docId: `file:${ydocId}`,
+        upperSeq: 1,
+        snapshotKey: sourceKey,
+        stateVector: new Uint8Array(),
+        status: 'failed',
+        createdAt: 1,
+        r2WrittenAt: undefined,
+        pointerUpdatedAt: undefined,
+        compactedAt: undefined,
+      })
+    }
+    const room = new VaultRoom(
+      new FakeState(storage),
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    room.vaultId = makeVaultId('vault-1')
+    const response = await room.fetch(
+      new Request('https://worker.example/admin/snapshots/rollback', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          docId,
+          snapshotKey: sourceKey,
+          upperSeq: 1,
+          reason: 'Reject uncommitted rollback sources',
+          confirmation: 'rollback',
+        }),
+      }),
+    )
+    assert.equal(response.status, 409, sourceState)
+    assert.equal(storage.sql.checkpointRuns.size, sourceState === 'failed' ? 1 : 0)
+  }
+})
+
+test('rollback serializes a concurrent append at the document write queue', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const ydocId = makeYDocId('ydoc-rollback-append-queue')
+    const docId = { kind: 'file' as const, ydocId }
+    const sourceKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+    const sourceBytes = makeYjsUpdateBytes(makeMessageId('rollback-append-source'))
+    bucket.set(sourceKey, sourceBytes)
+    await seedVerifiedSnapshotEvidence(storage, sourceKey, `file:${ydocId}`, sourceBytes)
+    storage.sql.docs.set(`file:${ydocId}`, {
+      kind: 'file',
+      latestSeq: 1,
+      latestSnapshotSeq: 1,
+      latestSnapshotKey: sourceKey,
+      minRetainedSeq: 0,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    room.vaultId = makeVaultId('vault-1')
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    let releaseSourceRead: () => void = () => {}
+    const sourceReadGate = new Promise<void>((resolve) => {
+      releaseSourceRead = resolve
+    })
+    let sourceReads = 0
+    let notifySourceRead: () => void = () => {}
+    const sourceReadStarted = new Promise<void>((resolve) => {
+      notifySourceRead = resolve
+    })
+    bucket.beforeGet = async (key) => {
+      if (key !== sourceKey || sourceReads > 0) return
+      sourceReads += 1
+      notifySourceRead()
+      await sourceReadGate
+    }
+    const rollbackRequest = room.fetch(
+      new Request('https://worker.example/admin/snapshots/rollback', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          docId,
+          snapshotKey: sourceKey,
+          upperSeq: 1,
+          reason: 'Serialize rollback with a concurrent append',
+          confirmation: 'rollback',
+        }),
+      }),
+    )
+    await sourceReadStarted
+
+    let appendSettled = false
+    const appendUpdate = {
+      ...makeSyncUpdate(makeMessageId('rollback-append-after')),
+      docId,
+    }
+    const append = room.webSocketMessage(server, JSON.stringify(appendUpdate)).finally(() => {
+      appendSettled = true
+    })
+    await Promise.resolve()
+    assert.equal(appendSettled, false)
+
+    releaseSourceRead()
+    const rollbackResponse = await rollbackRequest
+    await append
+    assert.equal(rollbackResponse.status, 200)
+    assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSeq, 3)
+    assert.equal(storage.sql.opLog.get(`file:${ydocId}:${appendUpdate.messageId}`)?.seq, 3)
+
+    const targetKey = `snapshots/vault-1/files/${ydocId}/2.yupdate`
+    const target = await bucket.get(targetKey)
+    assert(target)
+    const rollbackDoc = new Y.Doc()
+    Y.applyUpdate(rollbackDoc, new Uint8Array(await target.arrayBuffer()))
+    const expected = new Y.Doc()
+    Y.applyUpdate(expected, sourceBytes)
+    assert.deepEqual(Y.encodeStateAsUpdate(rollbackDoc), Y.encodeStateAsUpdate(expected))
+    rollbackDoc.destroy()
+    expected.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('rollback linearizes before a queued source quarantine', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-rollback-quarantine-race')
+  const docId = { kind: 'file' as const, ydocId }
+  const sourceKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const sourceBytes = makeYjsUpdateBytes(makeMessageId('rollback-quarantine-source'))
+  bucket.set(sourceKey, sourceBytes)
+  await seedVerifiedSnapshotEvidence(storage, sourceKey, `file:${ydocId}`, sourceBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: sourceKey,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  let sourceReads = 0
+  let quarantineRequest: Promise<Response> | undefined
+  bucket.beforeGet = async (key) => {
+    if (key !== sourceKey) return
+    sourceReads += 1
+    if (sourceReads !== 2) return
+    quarantineRequest = Promise.resolve(
+      room.fetch(
+        new Request('https://worker.example/admin/snapshots/quarantine', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            docId,
+            snapshotKey: sourceKey,
+            upperSeq: 1,
+            reason: 'Source quarantined during rollback construction',
+            confirmation: 'quarantine',
+          }),
+        }),
+      ),
+    )
+  }
+
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/rollback', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey: sourceKey,
+        upperSeq: 1,
+        reason: 'Do not commit a rollback from a quarantined source',
+        confirmation: 'rollback',
+      }),
+    }),
+  )
+  assert.equal(response.status, 200)
+  assert.equal(
+    storage.sql.docs.get(`file:${ydocId}`)?.latestSnapshotKey,
+    `snapshots/vault-1/files/${ydocId}/2.yupdate`,
+  )
+  assert(quarantineRequest)
+  const quarantine = await quarantineRequest
+  assert.equal(quarantine.status, 200)
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.logicalStatus, 'quarantined')
+  assert.equal(
+    storage.sql.snapshotHealthEvents.some(
+      (event) => event.snapshotKey !== sourceKey && event.event === 'rollback',
+    ),
+    true,
+  )
+})
+
+test('rollback keeps the last healthy source when quarantine is rejected first', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-rollback-quarantine-first')
+  const docId = { kind: 'file' as const, ydocId }
+  const sourceKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const sourceBytes = makeYjsUpdateBytes(makeMessageId('rollback-quarantine-first-source'))
+  bucket.set(sourceKey, sourceBytes)
+  await seedVerifiedSnapshotEvidence(storage, sourceKey, `file:${ydocId}`, sourceBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: sourceKey,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const quarantine = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/quarantine', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey: sourceKey,
+        upperSeq: 1,
+        reason: 'Quarantine source before rollback admission',
+        confirmation: 'quarantine',
+      }),
+    }),
+  )
+  assert.equal(quarantine.status, 409)
+
+  const rollback = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/rollback', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey: sourceKey,
+        upperSeq: 1,
+        reason: 'Do not roll back from quarantined source',
+        confirmation: 'rollback',
+      }),
+    }),
+  )
+  assert.equal(rollback.status, 200)
+  assert.equal(
+    storage.sql.docs.get(`file:${ydocId}`)?.latestSnapshotKey,
+    `snapshots/vault-1/files/${ydocId}/2.yupdate`,
+  )
+})
+
+test('rollback refreshes state after an in-flight stale hydration settles', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const ydocId = makeYDocId('ydoc-rollback-hydration-race')
+    const docId = { kind: 'file' as const, ydocId }
+    const sourceKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+    const sourceBytes = makeYjsUpdateBytes(makeMessageId('rollback-hydration-source'))
+    bucket.set(sourceKey, sourceBytes)
+    await seedVerifiedSnapshotEvidence(storage, sourceKey, `file:${ydocId}`, sourceBytes)
+    storage.sql.docs.set(`file:${ydocId}`, {
+      kind: 'file',
+      latestSeq: 1,
+      latestSnapshotSeq: 1,
+      latestSnapshotKey: sourceKey,
+      minRetainedSeq: 0,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    room.vaultId = makeVaultId('vault-1')
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    let releaseHydration: () => void = () => {}
+    const hydrationGate = new Promise<void>((resolve) => {
+      releaseHydration = resolve
+    })
+    let hydrationReadStarted: () => void = () => {}
+    const hydrationStarted = new Promise<void>((resolve) => {
+      hydrationReadStarted = resolve
+    })
+    let firstSourceRead = true
+    bucket.beforeGet = async (key) => {
+      if (key !== sourceKey || !firstSourceRead) return
+      firstSourceRead = false
+      hydrationReadStarted()
+      await hydrationGate
+    }
+    const staleHydration = ensureDocHydrated(room, docId)
+    await hydrationStarted
+
+    const rollbackPromise = room.fetch(
+      new Request('https://worker.example/admin/snapshots/rollback', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          docId,
+          snapshotKey: sourceKey,
+          upperSeq: 1,
+          reason: 'Refresh after stale hydration settles',
+          confirmation: 'rollback',
+        }),
+      }),
+    )
+    await Promise.resolve()
+    releaseHydration()
+    await staleHydration
+    const rollbackResponse = await rollbackPromise
+    assert.equal(rollbackResponse.status, 200)
+
+    const targetKey = `snapshots/vault-1/files/${ydocId}/2.yupdate`
+    const active = room.docs.get(`file:${ydocId}`)
+    assert(active)
+    const expected = new Y.Doc()
+    Y.applyUpdate(expected, sourceBytes)
+    assert.deepEqual(Y.encodeStateAsUpdate(active), Y.encodeStateAsUpdate(expected))
+
+    const appendUpdate = { ...makeSyncUpdate(makeMessageId('rollback-hydration-append')), docId }
+    await room.webSocketMessage(server, JSON.stringify(appendUpdate))
+    assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSeq, 3)
+    assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSnapshotKey, targetKey)
+    expected.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('snapshot health inspection paginates newest generations in descending order', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-health-pagination')
+  for (const seq of [1, 2, 3]) {
+    const key = `snapshots/vault-1/files/${ydocId}/${seq}.yupdate`
+    const bytes = makeYjsUpdateBytes(makeMessageId(`health-pagination-${seq}`))
+    bucket.set(key, bytes)
+    await seedVerifiedSnapshotEvidence(storage, key, `file:${ydocId}`, bytes)
+  }
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const unauthenticated = await room.fetch(
+    new Request(`https://worker.example/admin/snapshots?docId=file:${ydocId}&limit=1`),
+  )
+  assert.equal(unauthenticated.status, 401)
+  const first = await room.fetch(
+    new Request(`https://worker.example/admin/snapshots?docId=file:${ydocId}&limit=1`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  )
+  assert.equal(first.status, 200)
+  const firstBody = (await first.json()) as {
+    entries: readonly [{ actor: string; upperSeq: number }]
+    nextCursor: string
+  }
+  assert.equal(firstBody.entries[0]?.upperSeq, 3)
+  assert.equal(firstBody.entries[0]?.actor, 'system:verifier')
+  const second = await room.fetch(
+    new Request(
+      `https://worker.example/admin/snapshots?docId=file:${ydocId}&limit=1&cursor=${firstBody.nextCursor}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    ),
+  )
+  assert.equal(second.status, 200)
+  const secondBody = (await second.json()) as { entries: readonly [{ upperSeq: number }] }
+  assert.equal(secondBody.entries[0]?.upperSeq, 2)
+})
+
+test('snapshot health verify rejects out-of-range and incomplete-run generations', async () => {
+  const cases = [
+    { name: 'future', latestSeq: 1, minRetainedSeq: 0, upperSeq: 2, status: undefined },
+    { name: 'below-floor', latestSeq: 3, minRetainedSeq: 2, upperSeq: 1, status: undefined },
+    { name: 'r2-written', latestSeq: 2, minRetainedSeq: 0, upperSeq: 2, status: 'r2-written' },
+    { name: 'failed-run', latestSeq: 2, minRetainedSeq: 0, upperSeq: 2, status: 'failed' },
+  ] as const
+  for (const testCase of cases) {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const ydocId = makeYDocId(`ydoc-verify-${testCase.name}`)
+    const docId = { kind: 'file' as const, ydocId }
+    const snapshotKey = `snapshots/vault-1/files/${ydocId}/${testCase.upperSeq}.yupdate`
+    const snapshotBytes = makeYjsUpdateBytes(makeMessageId(`verify-${testCase.name}`))
+    bucket.set(snapshotKey, snapshotBytes)
+    storage.sql.docs.set(`file:${ydocId}`, {
+      kind: 'file',
+      latestSeq: testCase.latestSeq,
+      latestSnapshotSeq: 0,
+      latestSnapshotKey: undefined,
+      minRetainedSeq: testCase.minRetainedSeq,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+    if (testCase.status !== undefined) {
+      storage.sql.checkpointRuns.set(`verify-${testCase.name}`, {
+        runId: `verify-${testCase.name}`,
+        docId: `file:${ydocId}`,
+        upperSeq: testCase.upperSeq,
+        snapshotKey,
+        stateVector: new Uint8Array(),
+        status: testCase.status,
+        createdAt: 1,
+        r2WrittenAt: undefined,
+        pointerUpdatedAt: undefined,
+        compactedAt: undefined,
+      })
+    }
+    const room = new VaultRoom(
+      new FakeState(storage),
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    room.vaultId = makeVaultId('vault-1')
+    const response = await room.fetch(
+      new Request('https://worker.example/admin/snapshots/verify', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          docId,
+          snapshotKey,
+          upperSeq: testCase.upperSeq,
+          reason: 'Reject unverifiable authority transitions',
+          confirmation: 'verify',
+        }),
+      }),
+    )
+    assert.equal(response.status, 409, testCase.name)
+    assert.equal(storage.sql.snapshotHealthEvents.length, 0, testCase.name)
+  }
+})
+
+test('snapshot health list keeps latest rows after high-volume audit history', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-health-high-volume')
+  const key1 = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const key2 = `snapshots/vault-1/files/${ydocId}/2.yupdate`
+  const bytes1 = makeYjsUpdateBytes(makeMessageId('health-high-volume-1'))
+  const bytes2 = makeYjsUpdateBytes(makeMessageId('health-high-volume-2'))
+  bucket.set(key1, bytes1)
+  bucket.set(key2, bytes2)
+  await seedVerifiedSnapshotEvidence(storage, key1, `file:${ydocId}`, bytes1)
+  await seedVerifiedSnapshotEvidence(storage, key2, `file:${ydocId}`, bytes2)
+  const latest = storage.sql.snapshotHealthEvents.at(-1)
+  assert(latest)
+  for (let index = 0; index < 8_300; index += 1) {
+    storage.sql.snapshotHealthEvents.push({
+      ...latest,
+      id: storage.sql.snapshotHealthEvents.length + 1,
+      snapshotKey: key2,
+      upperSeq: 2,
+      event: 'verification',
+      observedAt: index + 2,
+    })
+  }
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 2,
+    latestSnapshotSeq: 2,
+    latestSnapshotKey: key2,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const response = await room.fetch(
+    new Request(`https://worker.example/admin/snapshots?docId=file:${ydocId}&limit=2`, {
+      headers: { Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}` },
+    }),
+  )
+  assert.equal(response.status, 200)
+  const body = (await response.json()) as {
+    readonly entries: readonly { snapshotKey: string; upperSeq: number }[]
+  }
+  assert.deepEqual(
+    body.entries.map((entry) => entry.snapshotKey),
+    [key2, key1],
+  )
+  assert.equal(body.entries[0]?.upperSeq, 2)
+})
+
+test('snapshot health list normalizes legacy zero-seq orphan rows from key and run evidence', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-health-legacy-orphan')
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/4.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('health-legacy-orphan'))
+  await seedVerifiedSnapshotEvidence(storage, snapshotKey, `file:${ydocId}`, snapshotBytes)
+  const legacy = storage.sql.snapshotHealthEvents.at(-1)
+  assert(legacy)
+  storage.sql.snapshotHealthEvents[storage.sql.snapshotHealthEvents.length - 1] = {
+    ...legacy,
+    upperSeq: 0,
+  }
+  storage.sql.checkpointRuns.set('legacy-orphan-run', {
+    runId: 'legacy-orphan-run',
+    docId: `file:${ydocId}`,
+    upperSeq: 4,
+    snapshotKey,
+    stateVector: new Uint8Array(),
+    status: 'completed',
+    createdAt: 1,
+    r2WrittenAt: 1,
+    pointerUpdatedAt: 1,
+    compactedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const response = await room.fetch(
+    new Request(`https://worker.example/admin/snapshots?docId=file:${ydocId}`, {
+      headers: { Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}` },
+    }),
+  )
+  assert.equal(response.status, 200)
+  const body = (await response.json()) as {
+    readonly entries: readonly { upperSeq: number }[]
+  }
+  assert.equal(body.entries[0]?.upperSeq, 4)
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.upperSeq, 4)
+})
+
+test('snapshot health verify rejects an untracked legacy generation without a checkpoint run', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-verify-legacy-no-run')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('verify-legacy-no-run'))
+  bucket.set(snapshotKey, snapshotBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 2,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    minRetainedSeq: 1,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/verify', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 1,
+        reason: 'Approve a legacy generation within the replay horizon',
+        confirmation: 'verify',
+      }),
+    }),
+  )
+  assert.equal(response.status, 409)
+  assert.equal(storage.sql.snapshotHealthEvents.length, 0)
+})
+
+test('snapshot health verify preserves live op-log state for an untracked legacy object', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-verify-legacy-oplog')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('verify-legacy-oplog-object'))
+  const liveUpdate = makeYjsUpdateBytes(makeMessageId('verify-legacy-oplog-live'))
+  bucket.set(snapshotKey, snapshotBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.opLog.set(`file:${ydocId}:verify-legacy-oplog-live`, {
+    docId: `file:${ydocId}`,
+    seq: 1,
+    messageId: 'verify-legacy-oplog-live',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: liveUpdate,
+    updateSha256: await hashTestBytes(liveUpdate),
+    createdAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/verify', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 1,
+        reason: 'Untracked bytes cannot replace the live op-log boundary',
+        confirmation: 'verify',
+      }),
+    }),
+  )
+  assert.equal(response.status, 409)
+  assert.equal(storage.sql.snapshotHealthEvents.length, 0)
+
+  const coldRoom = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  coldRoom.vaultId = makeVaultId('vault-1')
+  await ensureDocHydrated(coldRoom, docId)
+  const hydrated = coldRoom.docs.get(`file:${ydocId}`)
+  assert(hydrated)
+  const expected = new Y.Doc()
+  Y.applyUpdate(expected, liveUpdate)
+  assert.deepEqual(Y.encodeStateAsUpdate(hydrated), Y.encodeStateAsUpdate(expected))
+  expected.destroy()
+})
+
+test('snapshot health verify recovers an R2-only generation into a cold room', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-verify-r2-only')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/7.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('verify-r2-only'))
+  bucket.set(snapshotKey, snapshotBytes)
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const coldBeforeVerify = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  coldBeforeVerify.vaultId = makeVaultId('vault-1')
+  let coldHydrationFailed = false
+  try {
+    await ensureDocHydrated(coldBeforeVerify, docId)
+  } catch (error) {
+    coldHydrationFailed =
+      error instanceof Error && error.message === 'snapshot-health:no-verified-generation'
+  }
+  assert.equal(coldHydrationFailed, true)
+  assert.equal(coldBeforeVerify.hydratedDocs.has(`file:${ydocId}`), false)
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const list = await room.fetch(
+    new Request(`https://worker.example/admin/snapshots?docId=file:${ydocId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  )
+  assert.equal(list.status, 200)
+  room.docs.set(`file:${ydocId}`, new Y.Doc())
+  room.hydratedDocs.add(`file:${ydocId}`)
+  const verify = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/verify', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 7,
+        reason: 'Recover a verified R2-only generation',
+        confirmation: 'verify',
+      }),
+    }),
+  )
+  assert.equal(verify.status, 200)
+  assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSnapshotKey, snapshotKey)
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.actor, 'device-1')
+  const recoveredInRoom = room.docs.get(`file:${ydocId}`)
+  assert(recoveredInRoom)
+  const recoveredExpected = new Y.Doc()
+  Y.applyUpdate(recoveredExpected, snapshotBytes)
+  assert.deepEqual(Y.encodeStateAsUpdate(recoveredInRoom), Y.encodeStateAsUpdate(recoveredExpected))
+  recoveredExpected.destroy()
+  const eventCountAfterVerify = storage.sql.snapshotHealthEvents.length
+  const repeatedVerify = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/verify', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 7,
+        reason: 'Repeated approval is idempotent',
+        confirmation: 'verify',
+      }),
+    }),
+  )
+  assert.equal(repeatedVerify.status, 200)
+  assert.equal(storage.sql.snapshotHealthEvents.length, eventCountAfterVerify)
+
+  const coldRoom = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  coldRoom.vaultId = makeVaultId('vault-1')
+  await ensureDocHydrated(coldRoom, docId)
+  const hydrated = coldRoom.docs.get(`file:${ydocId}`)
+  assert(hydrated)
+  const expected = new Y.Doc()
+  Y.applyUpdate(expected, snapshotBytes)
+  assert.deepEqual(Y.encodeStateAsUpdate(hydrated), Y.encodeStateAsUpdate(expected))
+  expected.destroy()
+})
+
+test('snapshot health verify fails closed for a concurrent first append during pending recovery', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const ydocId = makeYDocId('ydoc-verify-concurrent-append')
+    const docId = { kind: 'file' as const, ydocId }
+    const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+    const snapshotBytes = makeYjsUpdateBytes(makeMessageId('verify-concurrent-snapshot'))
+    bucket.set(snapshotKey, snapshotBytes)
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    room.vaultId = makeVaultId('vault-1')
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    let releaseVerification: () => void = () => {}
+    const verificationGate = new Promise<void>((resolve) => {
+      releaseVerification = resolve
+    })
+    let verificationStarted: () => void = () => {}
+    const verificationStartedPromise = new Promise<void>((resolve) => {
+      verificationStarted = resolve
+    })
+    bucket.beforeGet = async (key) => {
+      if (key !== snapshotKey) return
+      verificationStarted()
+      await verificationGate
+      bucket.beforeGet = undefined
+    }
+    const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+    const verifyRequest = room.fetch(
+      new Request('https://worker.example/admin/snapshots/verify', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          docId,
+          snapshotKey,
+          upperSeq: 1,
+          reason: 'Concurrent append must remain durable',
+          confirmation: 'verify',
+        }),
+      }),
+    )
+    await verificationStartedPromise
+    const appendUpdate = { ...makeSyncUpdate(makeMessageId('verify-concurrent-append')), docId }
+    await room.webSocketMessage(server, JSON.stringify(appendUpdate))
+    assert.equal(server.closed, true)
+    assert.equal(storage.sql.docs.has(`file:${ydocId}`), false)
+    releaseVerification()
+    const verifyResponse = await verifyRequest
+    assert.equal(verifyResponse.status, 200)
+    assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSeq, 1)
+    assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSnapshotSeq, 1)
+    assert.equal(storage.sql.docs.get(`file:${ydocId}`)?.latestSnapshotKey, snapshotKey)
+    assert.equal(storage.sql.opLog.get(`file:${ydocId}:${appendUpdate.messageId}`), undefined)
+    assert.equal(
+      storage.sql.snapshotHealthEvents.some((event) => event.event === 'approval'),
+      true,
+    )
+    const coldRoom = new VaultRoom(
+      new FakeState(storage),
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    coldRoom.vaultId = makeVaultId('vault-1')
+    await ensureDocHydrated(coldRoom, docId)
+    const cold = coldRoom.docs.get(`file:${ydocId}`)
+    assert(cold)
+    const expected = new Y.Doc()
+    Y.applyUpdate(expected, snapshotBytes)
+    assert.deepEqual(Y.encodeStateAsUpdate(cold), Y.encodeStateAsUpdate(expected))
+    expected.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('snapshot health verify rejects when quarantine commits during the pending read', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-verify-quarantine-pending')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  bucket.set(snapshotKey, makeYjsUpdateBytes(makeMessageId('verify-quarantine-pending')))
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  let releaseVerification: () => void = () => {}
+  const verificationGate = new Promise<void>((resolve) => {
+    releaseVerification = resolve
+  })
+  let verificationStarted: () => void = () => {}
+  const verificationStartedPromise = new Promise<void>((resolve) => {
+    verificationStarted = resolve
+  })
+  bucket.beforeGet = async (key) => {
+    if (key !== snapshotKey) return
+    verificationStarted()
+    await verificationGate
+    bucket.beforeGet = undefined
+  }
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const verifyRequest = room.fetch(
+    new Request('https://worker.example/admin/snapshots/verify', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 1,
+        reason: 'Quarantine must win while verification is reading R2',
+        confirmation: 'verify',
+      }),
+    }),
+  )
+  await verificationStartedPromise
+  const quarantineRequest = room.fetch(
+    new Request('https://worker.example/admin/snapshots/quarantine', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 1,
+        reason: 'Operator quarantine during pending verification',
+        confirmation: 'quarantine',
+      }),
+    }),
+  )
+  releaseVerification()
+  const [verifyResponse, quarantineResponse] = await Promise.all([
+    Promise.resolve(verifyRequest),
+    Promise.resolve(quarantineRequest),
+  ])
+  assert.equal(quarantineResponse.status, 200)
+  assert.equal(verifyResponse.status, 409)
+  assert.deepEqual(await verifyResponse.json(), { error: 'snapshot-health-quarantined' })
+  assert.equal(storage.sql.docs.has(`file:${ydocId}`), false)
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.logicalStatus, 'quarantined')
+  assert.equal(
+    storage.sql.snapshotHealthEvents.some((event) => event.event === 'approval'),
+    false,
+  )
+})
+
+test('hydration ignores R2-only candidate evidence without durable authority', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-uncommitted-candidate')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('uncommitted-snapshot'))
+  const durableUpdate = makeYjsUpdateBytes(makeMessageId('durable-op'))
+  bucket.set(snapshotKey, snapshotBytes)
+  await seedVerifiedSnapshotEvidence(
+    storage,
+    snapshotKey,
+    `file:${ydocId}`,
+    snapshotBytes,
+    'candidate',
+  )
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.opLog.set(`file:${ydocId}:durable-op`, {
+    docId: `file:${ydocId}`,
+    seq: 1,
+    messageId: 'durable-op',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: durableUpdate,
+    updateSha256: await hashTestBytes(durableUpdate),
+    createdAt: 1,
+  })
+  const room = new VaultRoom(new FakeState(storage), makeEnvWithSnapshotBucket(bucket))
+  room.vaultId = makeVaultId('vault-1')
+
+  await ensureDocHydrated(room, docId)
+  const hydrated = room.docs.get(`file:${ydocId}`)
+  assert(hydrated)
+  const expected = new Y.Doc()
+  Y.applyUpdate(expected, durableUpdate)
+  assert.deepEqual(Y.encodeStateAsUpdate(hydrated), Y.encodeStateAsUpdate(expected))
+  expected.destroy()
+})
+
+test('hydration rejects an authoritative candidate below the retained floor', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-below-retained-floor')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('below-retained-floor'))
+  bucket.set(snapshotKey, snapshotBytes)
+  await seedVerifiedSnapshotEvidence(storage, snapshotKey, `file:${ydocId}`, snapshotBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 2,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: snapshotKey,
+    minRetainedSeq: 2,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+
+  let failed = false
+  try {
+    await ensureDocHydrated(room, docId)
+  } catch (error) {
+    failed = error instanceof Error && error.message === 'snapshot-health:no-verified-generation'
+  }
+  assert.equal(failed, true)
+})
+
+test('health quarantine is idempotently blocked for the last healthy generation', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-health-history-latest')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const bytes = makeYjsUpdateBytes(makeMessageId('health-history-latest'))
+  bucket.set(snapshotKey, bytes)
+  await seedVerifiedSnapshotEvidence(storage, snapshotKey, `file:${ydocId}`, bytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: snapshotKey,
+    minRetainedSeq: 1,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const seed = storage.sql.snapshotHealthEvents.at(-1)
+  assert(seed)
+  for (let index = 0; index < 260; index += 1) {
+    storage.sql.snapshotHealthEvents.push({
+      ...seed,
+      id: storage.sql.snapshotHealthEvents.length + 1,
+      event: 'verification',
+      observedAt: index + 2,
+    })
+  }
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const quarantineResponse = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/quarantine', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 1,
+        reason: 'latest audit verdict must win',
+        confirmation: 'quarantine',
+      }),
+    }),
+  )
+  assert.equal(quarantineResponse.status, 409)
+  await ensureDocHydrated(room, docId)
+  assert(room.docs.get(`file:${ydocId}`))
+})
+
+test('hydration preserves the last healthy generation when quarantine races R2 verification', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-health-quarantine-race')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const bytes = makeYjsUpdateBytes(makeMessageId('health-quarantine-race'))
+  bucket.set(snapshotKey, bytes)
+  await seedVerifiedSnapshotEvidence(storage, snapshotKey, `file:${ydocId}`, bytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: snapshotKey,
+    minRetainedSeq: 1,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  let quarantined = false
+  bucket.beforeGet = async (key) => {
+    if (key !== snapshotKey || quarantined) return
+    quarantined = true
+    const response = await room.fetch(
+      new Request('https://worker.example/admin/snapshots/quarantine', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          docId,
+          snapshotKey,
+          upperSeq: 1,
+          reason: 'quarantine raced physical verification',
+          confirmation: 'quarantine',
+        }),
+      }),
+    )
+    assert.equal(response.status, 409)
+  }
+  await ensureDocHydrated(room, docId)
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.logicalStatus, 'healthy')
+})
+
+test('snapshot health verify is idempotent for an already authoritative generation', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const ydocId = makeYDocId('ydoc-verify-quarantine-race')
+  const docId = { kind: 'file' as const, ydocId }
+  const snapshotKey = `snapshots/vault-1/files/${ydocId}/1.yupdate`
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('verify-quarantine-race'))
+  bucket.set(snapshotKey, snapshotBytes)
+  await seedVerifiedSnapshotEvidence(storage, snapshotKey, `file:${ydocId}`, snapshotBytes)
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: snapshotKey,
+    minRetainedSeq: 1,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const eventCount = storage.sql.snapshotHealthEvents.length
+
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/verify', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        snapshotKey,
+        upperSeq: 1,
+        reason: 'Do not approve after quarantine wins',
+        confirmation: 'verify',
+      }),
+    }),
+  )
+  assert.equal(response.status, 200)
+  assert.equal(storage.sql.snapshotHealthEvents.length, eventCount)
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.logicalStatus, 'healthy')
 })
 
 test('VaultRoom validates client hello against the SQL device registry', async () => {
@@ -3620,4 +5467,212 @@ test('VaultRoom rejects non-upgrade requests', async () => {
   const response = await room.fetch(new Request('https://worker.example/ws/vault-1'))
 
   assert.equal(response.status, 426)
+})
+
+test('hydration replays only the op-log through its captured document clock', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 3,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  for (const seq of [1, 2, 3]) {
+    const updateBytes = makeYjsUpdateBytes(makeMessageId(`captured-clock-${seq}`))
+    storage.sql.opLog.set(`meta:captured-clock-${seq}`, {
+      docId: 'meta',
+      seq,
+      messageId: `captured-clock-${seq}`,
+      deviceId: 'device-1',
+      yClientId: 1,
+      updateBytes,
+      updateSha256: await hashTestBytes(updateBytes),
+      createdAt: seq,
+    })
+  }
+  let appended = false
+  bucket.listOverride = async () => {
+    if (!appended) {
+      appended = true
+      const updateBytes = makeYjsUpdateBytes(makeMessageId('captured-clock-4'))
+      storage.sql.opLog.set('meta:captured-clock-4', {
+        docId: 'meta',
+        seq: 4,
+        messageId: 'captured-clock-4',
+        deviceId: 'device-1',
+        yClientId: 1,
+        updateBytes,
+        updateSha256: await hashTestBytes(updateBytes),
+        createdAt: 4,
+      })
+    }
+    return { objects: [], truncated: false }
+  }
+  const room = new VaultRoom(new FakeState(storage), makeEnvWithSnapshotBucket(bucket))
+  room.vaultId = makeVaultId('vault-1')
+
+  await ensureDocHydrated(room, { kind: 'meta' })
+
+  assert(room.docs.has('meta'))
+})
+
+test('legacy snapshot approval records state-vector run evidence for compaction', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const snapshotKey = 'snapshots/vault-1/meta/1.yupdate'
+    const snapshotBytes = makeYjsUpdateBytes(makeMessageId('legacy-run-evidence'))
+    const snapshotDoc = new Y.Doc()
+    Y.applyUpdate(snapshotDoc, snapshotBytes)
+    const snapshotStateVector = Y.encodeStateVector(snapshotDoc)
+    snapshotDoc.destroy()
+    bucket.set(snapshotKey, snapshotBytes)
+    storage.sql.docs.set('meta', {
+      kind: 'meta',
+      latestSeq: 1,
+      latestSnapshotSeq: 1,
+      latestSnapshotKey: snapshotKey,
+      minRetainedSeq: 0,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+    const room = new VaultRoom(
+      new FakeState(storage),
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    room.vaultId = makeVaultId('vault-1')
+    const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+    const response = await room.fetch(
+      new Request('https://worker.example/admin/snapshots/verify', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          docId: { kind: 'meta' },
+          snapshotKey,
+          upperSeq: 1,
+          reason: 'Record durable state-vector evidence',
+          confirmation: 'verify',
+        }),
+      }),
+    )
+    assert.equal(response.status, 200)
+    const run = [...storage.sql.checkpointRuns.values()].find(
+      (candidate) => candidate.snapshotKey === snapshotKey,
+    )
+    assert(run)
+    assert.equal(run.status, 'completed')
+    assert.deepEqual(run.stateVector, snapshotStateVector)
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = (room.state.getWebSockets?.() ?? [])[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('legacy-run-evidence-tail'))),
+    )
+    const checkpoint = await room.checkpointDoc({ kind: 'meta' }, 100)
+    assert.equal(checkpoint.action, 'checkpointed')
+    if (checkpoint.action !== 'checkpointed') throw new Error('checkpoint did not complete')
+    assert.equal(checkpoint.compactedSeq, 1)
+    assert.equal(storage.sql.docs.get('meta')?.minRetainedSeq, 1)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('authoritative snapshot verification backfills one missing run idempotently', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const snapshotKey = 'snapshots/vault-1/meta/1.yupdate'
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('legacy-backfill-run'))
+  const snapshotDoc = new Y.Doc()
+  Y.applyUpdate(snapshotDoc, snapshotBytes)
+  const snapshotStateVector = Y.encodeStateVector(snapshotDoc)
+  snapshotDoc.destroy()
+  bucket.set(snapshotKey, snapshotBytes)
+  await seedVerifiedSnapshotEvidence(storage, snapshotKey, 'meta', snapshotBytes)
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: snapshotKey,
+    latestStateVector: snapshotStateVector,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const request = async (): Promise<Response> =>
+    await room.fetch(
+      new Request('https://worker.example/admin/snapshots/verify', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          docId: { kind: 'meta' },
+          snapshotKey,
+          upperSeq: 1,
+          reason: 'Backfill the missing checkpoint evidence',
+          confirmation: 'verify',
+        }),
+      }),
+    )
+
+  assert.equal((await request()).status, 200)
+  const eventCount = storage.sql.checkpointRuns.size
+  assert.equal(eventCount, 1)
+  assert.equal((await request()).status, 200)
+  assert.equal(storage.sql.checkpointRuns.size, eventCount)
+  assert.deepEqual([...storage.sql.checkpointRuns.values()][0]?.stateVector, snapshotStateVector)
+})
+
+test('authoritative health evidence without a document uses the full recovery path', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const snapshotKey = 'snapshots/vault-1/meta/1.yupdate'
+  const snapshotBytes = makeYjsUpdateBytes(makeMessageId('legacy-orphan-recovery'))
+  bucket.set(snapshotKey, snapshotBytes)
+  await seedVerifiedSnapshotEvidence(storage, snapshotKey, 'meta', snapshotBytes)
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/verify', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        docId: { kind: 'meta' },
+        snapshotKey,
+        upperSeq: 1,
+        reason: 'Recover the durable document pointer',
+        confirmation: 'verify',
+      }),
+    }),
+  )
+  assert.equal(response.status, 200)
+  assert.equal(storage.sql.docs.get('meta')?.latestSnapshotKey, snapshotKey)
+  assert.equal(room.hydratedDocs.has('meta'), true)
+  assert.equal(
+    [...storage.sql.checkpointRuns.values()].some(
+      (run) => run.snapshotKey === snapshotKey && run.status === 'completed',
+    ),
+    true,
+  )
 })

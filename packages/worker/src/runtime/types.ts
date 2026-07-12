@@ -132,6 +132,7 @@ export interface RuntimeDocClockRecord {
 export interface RuntimeSnapshotPointerRecord {
   readonly latestSnapshotSeq: number
   readonly latestSnapshotKey: string
+  readonly stateVector: Uint8Array | undefined
 }
 
 export interface RuntimeCheckpointRunRecord {

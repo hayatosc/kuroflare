@@ -79,6 +79,9 @@ export async function ensureSchema(room: VaultRoom): Promise<void> {
     availableMigrations: SCHEMA_MIGRATIONS,
     failedMigration: undefined,
   })
+  if (decision.action === 'degraded') {
+    throw new Error(`schema-degraded:${decision.reason}`)
+  }
   if (decision.action === 'apply-migrations') {
     const now = Date.now()
     for (const migration of decision.migrations) {
@@ -149,7 +152,11 @@ export async function readSnapshotPointer(
     latestSnapshotKey.length === 0
   )
     return undefined
-  return { latestSnapshotSeq, latestSnapshotKey }
+  return {
+    latestSnapshotSeq,
+    latestSnapshotKey,
+    stateVector: readSqlUpdateBytes(row?.latestStateVector),
+  }
 }
 
 export async function readSnapshotSeq(room: VaultRoom, docId: DocId): Promise<number> {

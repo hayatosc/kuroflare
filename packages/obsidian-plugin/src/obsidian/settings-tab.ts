@@ -13,6 +13,7 @@ import {
 import { readAccessToken, requireSetupMetadata } from '../main/auth'
 import { accessTokenSecretKeyForSetup, deviceRevokeUrl } from '../main/helpers'
 import { planLocalStoreRepairSettingsPresentation } from '../sync/obsidian/local-store-repair-presentation'
+import { renderSnapshotHealthAdmin } from '../sync/obsidian/snapshot-health-ui'
 
 export class KuroflareSettingTab extends PluginSettingTab {
   constructor(
@@ -250,6 +251,7 @@ export class KuroflareSettingTab extends PluginSettingTab {
           } updateBytesBase64=${detail.updateBytesBase64?.length ?? 0} chars`,
         )
     }
+    renderSnapshotHealthAdmin(containerEl, this.plugin)
     containerEl.createEl('h3', { text: 'Repair log' })
     const invalidMetaIsolation = this.plugin.invalidMetaIsolationDetail
     if (invalidMetaIsolation !== null) {

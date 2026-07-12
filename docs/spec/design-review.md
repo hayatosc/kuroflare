@@ -17,7 +17,7 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 | DR-005 | P1       | Meta entry merge granularity               | Schema decision required                           |
 | DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                           |
 | DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship  |
-| DR-008 | P1       | Snapshot health and rollback               | Health evidence is underspecified                  |
+| DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                    |
 | DR-009 | P1       | Quarantine and public error evidence       | Wire contract and runtime differ                   |
 | DR-010 | P2       | Empty binary files                         | Schema contradiction                               |
 | DR-011 | P2       | Portable path materialization              | Deterministic policy missing                       |
@@ -225,25 +225,45 @@ Acceptance evidence:
 - Restart and IndexedDB-loss tests prove that an actor ID is never reused with a reset clock.
 - Spoofing the envelope `yClientId` cannot misattribute update authorship.
 
-### DR-008: Define snapshot health as evidence, not a key shape
+### DR-008: Define snapshot health as evidence, not a key shape — closed
 
-Prefix listing currently turns every correctly named snapshot object into a candidate marked healthy before reading its bytes.
-Hydration later detects an unreadable Yjs update, but candidate selection does not iterate to the next generation.
-The specification also promises rollback from logical corruption without defining how logical health is recorded.
+The decision is to treat an immutable R2 object as usable only when its append-only
+SQLite evidence proves both physical integrity and durable authority. A correctly
+named object discovered by prefix listing is never sufficient authority by itself.
 
-Recommended contract:
+Implemented contract:
 
-- Physical health requires object readability, expected hash match, Yjs decode, and state-vector match.
-- Logical health requires an operator or validator verdict stored outside the immutable snapshot object.
-- Restore tries candidates in descending sequence order until one passes physical validation and is not marked logically corrupt.
-- The pointer is a hint and never overrides stronger validation evidence.
-- Retention always preserves at least one verified healthy generation and its replay range.
+- Physical verification checks object readability, expected byte length and hashes,
+  Yjs decoding, state-vector equality, and the meta schema where applicable.
+- Logical health is an append-only, auditable SQLite event. Quarantine preserves the
+  object but removes it from restore and retention eligibility.
+- Hydration selects only authoritative, physically verified, healthy generations and
+  validates every retained op-log sequence and the durable tail. A DO with no durable
+  document clock and unapproved R2 candidates fails closed with
+  `snapshot-health:no-verified-generation`; an operator must explicitly approve the
+  generation through the authenticated health endpoint before recovery creates a
+  pointer.
+- Verification uses a pending event lease before the R2 read. The final approval
+  rechecks the lease, document clock, pointer, and checkpoint-run authority in the
+  document queue, so quarantine, retention, and concurrent first writes cannot be
+  overwritten.
+- Checkpoint pointer advancement, compaction, and retention deletion are serialized
+  with quarantine. Retention may delete only the latest authoritative, verified,
+  healthy evidence and never deletes the last healthy retained floor.
+- Rollback replays the exact op-log range, writes a new immutable generation, and
+  commits the pointer only after source and target health are revalidated.
+- The admin API returns server-computed `allowedActions` and an optional
+  `actionBlockReason`; clients do not infer authority from status fields alone.
 
 Acceptance evidence:
 
-- A corrupt newest object falls back to the next healthy generation automatically.
-- A logically quarantined generation remains available for inspection but is not selected.
-- Health evidence itself is versioned and auditable.
+- Worker integration suite: 225 tests passed, including corrupt-newest fallback,
+  op-log gap/tail rejection, pending verification races, queue-linearized
+  quarantine/retention, immutable target conflicts, and rollback replay.
+- Worker SQLite e2e suite: 7 tests passed, including latest-per-generation reads
+  over 9,000 audit events.
+- Snapshot health evidence is versioned, latest-per-key selected without an audit
+  history cap, and repeated verification/quarantine requests are idempotent.
 
 ## 4. Protocol and compatibility
 
@@ -325,5 +345,6 @@ Before the first distributed release:
 
 1. Close DR-001 through DR-004 and rerun crash-injection models.
 2. Decide DR-005 through DR-007 before freezing metadata schema version 1 and setup credentials.
-3. Close DR-008 and DR-009 before advertising rollback or self-healing guarantees.
+3. DR-008 is closed with the evidence above. Close DR-009 before advertising
+   protocol-level self-healing guarantees.
 4. Close DR-010 through DR-012 before cross-platform compatibility testing.

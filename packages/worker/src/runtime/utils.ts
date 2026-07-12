@@ -372,6 +372,7 @@ export function isCheckpointRunStatus(value: unknown): value is CheckpointRunSta
     value === 'r2-written' ||
     value === 'pointer-updated' ||
     value === 'compacted' ||
+    value === 'completed' ||
     value === 'failed'
   )
 }

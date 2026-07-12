@@ -41,6 +41,12 @@ export function planSnapshotRetention(input: SnapshotRetentionPlanInput): Snapsh
   const sortedSnapshots = [...input.snapshots].sort(compareSnapshotsNewestFirst)
   const retainKeys = new Set<string>()
 
+  // Keep physically corrupt or logically quarantined generations inspectable;
+  // only verified healthy generations are eligible for deletion.
+  for (const snapshot of sortedSnapshots) {
+    if (!snapshot.healthy) retainKeys.add(snapshot.key)
+  }
+
   for (const snapshot of sortedSnapshots.slice(0, input.minGenerationCount)) {
     retainKeys.add(snapshot.key)
   }
@@ -55,7 +61,12 @@ export function planSnapshotRetention(input: SnapshotRetentionPlanInput): Snapsh
   }
 
   for (const run of input.checkpointRuns) {
-    if (run.status !== 'compacted' && run.status !== 'failed' && run.snapshotKey) {
+    if (
+      run.status !== 'compacted' &&
+      run.status !== 'completed' &&
+      run.status !== 'failed' &&
+      run.snapshotKey
+    ) {
       retainKeys.add(run.snapshotKey)
     }
   }

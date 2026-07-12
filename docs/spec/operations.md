@@ -49,6 +49,88 @@ Worker / DO 側は構造化ログを出す。
 その後 connection count、op append latency、checkpoint duration、cold start restore source、duplicate message ignored を足す。
 個人用途でも「どの層で詰まっているか」を判別できることが重要である。
 
+### 5.1 Snapshot health operator runbook
+
+Snapshot health administration is an authenticated, explicit recovery workflow. The
+operator token must carry the `sync:write` scope. R2 objects are immutable: do not
+delete or overwrite a snapshot object directly.
+
+1. Inspect the latest evidence row for each generation:
+
+   ```text
+   GET /admin/snapshots?docId=meta&limit=64
+   GET /admin/snapshots?docId=file:<ydocId>&limit=64
+   ```
+
+   The response is latest-per-generation evidence, not an audit-history page. Use
+   `nextCursor` to continue pagination. Treat `allowedActions` as the server's
+   authority; an empty list and `actionBlockReason` mean that no safe mutation is
+   currently admitted.
+
+2. If hydration fails with `snapshot-health:no-verified-generation`, compare the
+   candidate's `snapshotKey` and `upperSeq` with the document clock and checkpoint
+   evidence shown by the inspection response. Only an unquarantined, physically
+   `unverified` candidate with `verify` in `allowedActions` may be approved:
+
+   ```text
+   POST /admin/snapshots/verify
+   {
+     "docId": { "kind": "file", "ydocId": "..." },
+     "snapshotKey": "snapshots/<vault>/<doc>/<upperSeq>.yupdate",
+     "upperSeq": 123,
+     "reason": "Operator approved the immutable bytes after inspection",
+     "confirmation": "verify"
+   }
+   ```
+
+   Verification records a pending lease before reading R2 and rechecks document
+   authority before committing. A mismatch, concurrent write, or quarantine returns
+   a conflict; retry only after re-inspecting the latest row. A successful recovery
+   creates the durable document pointer before the in-memory document is rehydrated.
+
+3. To remove a generation from automatic restore, submit quarantine only when the
+   response advertises `quarantine`:
+
+   ```text
+   POST /admin/snapshots/quarantine
+   {
+     "docId": { "kind": "file", "ydocId": "..." },
+     "snapshotKey": "snapshots/<vault>/<doc>/<upperSeq>.yupdate",
+     "upperSeq": 123,
+     "reason": "Logical corruption confirmed",
+     "confirmation": "quarantine"
+   }
+   ```
+
+   Quarantine is append-only and idempotent. The server refuses
+   `snapshot-health-quarantine-would-break-floor` when this would remove the last
+   authoritative healthy retained floor; retain or repair an alternative generation
+   first.
+
+4. To restore from an older healthy generation, submit rollback only when
+   `rollback` is listed. Rollback replays the exact retained op-log range and writes a
+   new immutable generation; it never rewrites the source object:
+
+   ```text
+   POST /admin/snapshots/rollback
+   {
+     "docId": { "kind": "file", "ydocId": "..." },
+     "snapshotKey": "snapshots/<vault>/<doc>/<upperSeq>.yupdate",
+     "upperSeq": 123,
+     "reason": "Restore from the verified rollback floor",
+     "confirmation": "rollback"
+   }
+   ```
+
+   On success, record the returned `auditId` and new `snapshotKey`. A stale source,
+   op-log gap, changed health evidence, or existing target returns a conflict and
+   leaves the source and pointer unchanged.
+
+5. Re-fetch the inspection endpoint after every mutation and preserve the returned
+   audit identifiers with the incident record. Never treat a successful HTTP response
+   as proof that a candidate is safe unless the response schema and the subsequent
+   latest evidence row both validate.
+
 ## 6. プロジェクト構成
 
 最初から monorepo にする。
