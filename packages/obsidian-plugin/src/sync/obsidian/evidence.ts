@@ -153,10 +153,8 @@ export function createSyncRuntimeObsidianStartupEvidenceReader(
 ): SyncRuntimeObsidianStartupEvidenceReaderPort {
   return {
     async readEvidence(): Promise<SyncRuntimeObsidianStartupEvidenceInput> {
-      const [settings, local] = await Promise.all([
-        input.settings.readSettings(),
-        input.local.readLocalEvidence(),
-      ])
+      const local = await input.local.readLocalEvidence()
+      const settings = await input.settings.readSettings()
       const settingsPlan = planSyncRuntimeObsidianStartupSettings(settings)
       return composeRawStartupEvidence(settingsPlan, local)
     },

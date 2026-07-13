@@ -9,9 +9,13 @@ import {
   planOutboxWorkerCompletionIndexedDbWriteTransaction,
 } from '../../sync/engine/worker'
 import { type LocalStoreOutboxRecord } from '../../sync/store/store'
-import { findActiveFileId } from '../auth'
+import { currentSetupMetadata, findActiveFileId } from '../auth'
 import type KuroflareSpikePlugin from '../plugin'
-import { readOutboxWorkerSnapshot, commitOutboxWorkerIndexedDbWriteTransaction } from '../store'
+import {
+  commitOutboxWorkerIndexedDbWriteTransaction,
+  openLocalStoreDatabase,
+  readOutboxWorkerSnapshot,
+} from '../store'
 import { scheduleOutboxWorkerTick } from './tick'
 
 export function isRepairConflictPathAvailable(plugin: KuroflareSpikePlugin, path: string): boolean {
@@ -116,5 +120,24 @@ export async function completeLeasedOutboxFailure(
   )
   if (plan.action === 'retry-after-failure') {
     scheduleOutboxWorkerTick(plugin, 1_000, 'side-effect-retry')
+  }
+}
+
+/** Requeues this worker's leased WebSocket items after a connection failure. */
+export async function recoverLeasedOutboxAfterWebSocketFailure(
+  plugin: KuroflareSpikePlugin,
+): Promise<void> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
+  const setup = currentSetupMetadata(plugin)
+  if (setup === undefined) return
+  const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+  const snapshot = await readOutboxWorkerSnapshot(db)
+  const ownedLeases = snapshot.leaseRows.filter(
+    (lease) => lease.ownerId === plugin.outboxWorkerOwnerId,
+  )
+  for (const lease of ownedLeases) {
+    const record = snapshot.outboxRecords.find((candidate) => candidate.id === lease.itemId)
+    if (record === undefined) continue
+    await completeLeasedOutboxFailure(plugin, db, record, { kind: 'network' })
   }
 }

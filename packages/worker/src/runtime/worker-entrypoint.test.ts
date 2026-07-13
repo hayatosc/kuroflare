@@ -99,6 +99,27 @@ test('worker entrypoint routes auth refresh requests by body vaultId', async () 
   assert.equal(routedRequest?.url, 'https://worker.example/auth/refresh')
 })
 
+test('worker entrypoint verifies setup access tokens and rejects forged JWTs', async () => {
+  const secret = 'test-device-token-secret'
+  const env = makeEnvWithDeviceTokenSecret(secret)
+  const validResponse = await workerEntrypoint.fetch(
+    new Request('https://worker.example/auth/verify', {
+      headers: { Authorization: `Bearer ${await makeDeviceToken(secret)}` },
+    }),
+    env,
+  )
+  assert.equal(validResponse.status, 200)
+  assert.equal((await validResponse.json()).aud, 'vault-1')
+
+  const forgedResponse = await workerEntrypoint.fetch(
+    new Request('https://worker.example/auth/verify', {
+      headers: { Authorization: `Bearer ${await makeDeviceToken(`${secret}-wrong`)}` },
+    }),
+    env,
+  )
+  assert.equal(forgedResponse.status, 401)
+})
+
 test('worker entrypoint routes device revoke requests by token vault', async () => {
   let routedName = ''
   let routedRequest: Request | undefined

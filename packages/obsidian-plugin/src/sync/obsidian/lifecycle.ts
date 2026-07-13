@@ -9,6 +9,7 @@ import {
   type SyncRuntimeObsidianShellDriverState,
   type SyncRuntimeObsidianShellDriverTickResult,
   type SyncRuntimeObsidianShellEvidencePort,
+  type SyncRuntimeSideEffectPermission,
 } from '../obsidian/shell'
 import {
   applySyncRuntimeObsidianShellPresentation,
@@ -48,6 +49,10 @@ export interface SyncRuntimeObsidianResumePortInput {
 export interface SyncRuntimeObsidianShellLifecycleOptions {
   readonly maxLocalEffects?: number | undefined
   readonly maxStartupSteps?: number | undefined
+  /** Called before effects are pumped with the current startup side-effect permission. */
+  readonly onSideEffectPermission?:
+    | ((permission: SyncRuntimeSideEffectPermission) => void)
+    | undefined
 }
 
 /** Input for creating the stateful Obsidian shell lifecycle adapter. */
@@ -89,6 +94,9 @@ export interface SyncRuntimeObsidianShellLifecycle {
    */
   runStartupTick(): Promise<SyncRuntimeObsidianShellLifecycleTickResult>
 
+  /** Requests a fresh evidence read and startup plan on the next lifecycle tick. */
+  requestReplan(): void
+
   /**
    * Runs the production resume sequence: startup tick, foreground sync, then outbox tick scheduling.
    *
@@ -114,6 +122,12 @@ export function createSyncRuntimeObsidianShellLifecycle(
   let driverState = input.initialState ?? INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE
   let lastUiApply: SyncRuntimeObsidianShellUiApplyResult | undefined
   let tickInFlight: Promise<SyncRuntimeObsidianShellLifecycleTickResult> | undefined
+  let replanRequested = false
+
+  function resetForReplan(): void {
+    driverState = input.initialState ?? INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE
+    lastUiApply = undefined
+  }
 
   async function runTick(): Promise<SyncRuntimeObsidianShellLifecycleTickResult> {
     const driver = await runSyncRuntimeObsidianShellDriverTransportTick({
@@ -124,6 +138,7 @@ export function createSyncRuntimeObsidianShellLifecycle(
       startupStep: input.ports.startupStep,
       maxLocalEffects: input.options?.maxLocalEffects,
       maxStartupSteps: input.options?.maxStartupSteps,
+      onSideEffectPermission: input.options?.onSideEffectPermission,
     })
     driverState = driver.state
     const ui = applySyncRuntimeObsidianShellPresentation({
@@ -134,18 +149,40 @@ export function createSyncRuntimeObsidianShellLifecycle(
     return { driver, ui }
   }
 
+  function runStartupTick(): Promise<SyncRuntimeObsidianShellLifecycleTickResult> {
+    if (tickInFlight === undefined && replanRequested) {
+      replanRequested = false
+      resetForReplan()
+    }
+    tickInFlight ??= runTick().finally(() => {
+      tickInFlight = undefined
+      if (replanRequested) {
+        replanRequested = false
+        resetForReplan()
+        void runStartupTick()
+      }
+    })
+    return tickInFlight
+  }
+
+  function requestReplan(): void {
+    replanRequested = true
+    if (tickInFlight === undefined) {
+      void runStartupTick()
+    }
+  }
+
   return {
-    runStartupTick(): Promise<SyncRuntimeObsidianShellLifecycleTickResult> {
-      tickInFlight ??= runTick().finally(() => {
-        tickInFlight = undefined
-      })
-      return tickInFlight
-    },
+    runStartupTick,
+    requestReplan,
     async runResumeTick(reason): Promise<SyncRuntimeObsidianShellLifecycleResumeResult> {
       if (!input.ports.resume.canResume()) {
         return { action: 'skipped' }
       }
-      const startup = await this.runStartupTick()
+      const startup = await runStartupTick()
+      if (startupSyncIsBlocked(startup)) {
+        return { action: 'skipped' }
+      }
       await input.ports.resume.runForegroundResume(reason)
       input.ports.resume.scheduleOutboxTick(`lifecycle:${reason}`)
       return { action: 'ran', startup }
@@ -158,6 +195,17 @@ export function createSyncRuntimeObsidianShellLifecycle(
       }
     },
   }
+}
+
+function startupSyncIsBlocked(startup: SyncRuntimeObsidianShellLifecycleTickResult): boolean {
+  const shell = startup.driver.state.shell
+  return (
+    shell.lastFailedEffect !== undefined ||
+    shell.status === 'auth-blocked' ||
+    shell.status === 'degraded' ||
+    shell.status === 'local-store-blocked' ||
+    shell.status === 'rejected'
+  )
 }
 
 /**

@@ -9,6 +9,7 @@ import {
 } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
+import { createRemoteSetupAccessTokenVerifier } from '../../main/setup-verifier'
 import {
   createAuthRefreshIndexedDbMetadataPort,
   persistAuthRefreshStart,
@@ -131,6 +132,60 @@ test('auth refresh runtime writes refreshed tokens before auth metadata and emit
   if (result.ok) {
     assert.equal(result.emitResumeEvent, 'auth-refresh')
   }
+})
+
+test('auth refresh rejects a forged response through remote verification before overwriting SecretStorage', async () => {
+  const secretStorage = new FakeAuthSecretStorage([
+    [activeMetadata.accessTokenSecretKey, 'access-token-3'],
+    [activeMetadata.refreshTokenSecretKey, 'refresh-token-3'],
+  ])
+  const metadataStore = new FakeAuthMetadataStore()
+  let verifyRequest: { readonly url: string; readonly authorization: string | null } | undefined
+  const verifier = createRemoteSetupAccessTokenVerifier({
+    endpoint: 'https://sync.example.test',
+    fetch: async (input, init) => {
+      verifyRequest = {
+        url:
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
+        authorization: new Headers(init?.headers).get('Authorization'),
+      }
+      return new Response(JSON.stringify({ error: 'auth-reject:invalid-token' }), { status: 401 })
+    },
+  })
+
+  const result = await runAuthRefreshAttempt({
+    endpoint: 'https://sync.example.test',
+    vaultId,
+    metadata: activeMetadata,
+    requiredScopes,
+    now: 2_000,
+    secretStorage,
+    http: new FakeAuthRefreshHttp({
+      ok: true,
+      response: {
+        accessToken: 'forged-access-token',
+        refreshToken: 'forged-refresh-token',
+        tokenVersion: 4,
+        expiresAt: 10_000,
+        protocolVersion: 1,
+      },
+    }),
+    verifier,
+    metadataStore,
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal('phase' in result && result.phase, 'claims')
+  assert.deepEqual(verifyRequest, {
+    url: 'https://sync.example.test/auth/verify',
+    authorization: 'Bearer forged-access-token',
+  })
+  assert.deepEqual(
+    secretStorage.operations.filter((operation) => operation.kind === 'set'),
+    [],
+  )
+  assert.equal(secretStorage.value(activeMetadata.accessTokenSecretKey), 'access-token-3')
+  assert.equal(secretStorage.value(activeMetadata.refreshTokenSecretKey), 'refresh-token-3')
 })
 
 test('auth refresh runtime can commit auth metadata through the IndexedDB adapter', async () => {

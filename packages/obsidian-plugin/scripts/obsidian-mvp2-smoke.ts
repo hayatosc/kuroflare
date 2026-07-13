@@ -117,7 +117,7 @@ async function waitForPluginReady(): Promise<void> {
 function clearMetaIndexedDb() {
   obsidian([
     'eval',
-    "code=new Promise((resolve) => { const r = indexedDB.deleteDatabase('kuroflare-meta'); r.onsuccess = () => resolve('deleted'); r.onerror = () => resolve('error'); r.onblocked = () => resolve('blocked'); })",
+    "code=(async () => { const databases = typeof indexedDB.databases === 'function' ? await indexedDB.databases() : []; const names = databases.map((database) => database.name).filter((name) => name === 'kuroflare-meta' || name?.startsWith('kuroflare-meta:')); await Promise.all(names.map((name) => new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase(name); request.onsuccess = () => resolve('deleted'); request.onerror = () => reject(request.error); request.onblocked = () => resolve('blocked'); }))); return 'deleted'; })()",
   ])
 }
 

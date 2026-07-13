@@ -5,6 +5,7 @@ import {
   decideMaterializeWrite,
   decideWatcherHashGate,
   decideWatcherStatPrefilter,
+  type LastMaterializedRecord,
 } from '@kuroflare/core'
 import { MarkdownView, Notice, TFile } from 'obsidian'
 import * as Y from 'yjs'
@@ -20,12 +21,58 @@ import { fileDocIdForPath } from './auth'
 import { DISK_ORIGIN, MARKDOWN_EXTENSION } from './constants'
 import { loadTextDoc, setActiveTextDoc } from './meta'
 import type KuroflareSpikePlugin from './plugin'
+import { activeMarkdownBindingMatches } from './runtime-guards'
 import { handleLifecycleResume, runSyncStartupTick } from './sync-runtime'
 import {
   requestActiveFileFromWorker,
   sendCurrentYDocToWorker,
   sendDocUpdateToWorker,
 } from './sync-websocket'
+
+const flushYTextLocks = new WeakMap<YTextMaterializePlugin, Promise<void>>()
+
+/** Minimal plugin surface required to wait for startup before binding a local editor. */
+export interface ActiveMarkdownBindingReadinessPlugin {
+  readonly startupSideEffectGate: {
+    readonly canRun: () => boolean
+  }
+  readonly syncRuntime: {
+    readonly lifecycle: {
+      readonly snapshot: () => { readonly tickInFlight: boolean }
+      readonly runStartupTick: () => Promise<unknown>
+    }
+  } | null
+}
+
+/** Minimal vault file shape required by disk materialization and conflict-copy guards. */
+export interface MaterializeVaultFile {
+  readonly path: string
+  readonly basename: string
+  readonly extension: string
+  readonly parent: { readonly path: string } | null
+}
+
+/** Minimal plugin surface required to materialize the active Y.Text safely to disk. */
+export interface YTextMaterializePlugin {
+  readonly startupSideEffectGate: {
+    readonly canRun: () => boolean
+  }
+  readonly activeFile: MaterializeVaultFile | null
+  readonly ydoc: Y.Doc
+  readonly ytext: Y.Text
+  readonly lastMaterialized: Map<string, LastMaterializedRecord>
+  readonly app: {
+    readonly vault: {
+      read(file: MaterializeVaultFile): Promise<string>
+      modify(file: MaterializeVaultFile, data: string): Promise<void>
+      create(path: string, data: string): Promise<unknown>
+      getAbstractFileByPath(path: string): unknown
+      readonly adapter: {
+        exists(path: string): Promise<boolean>
+      }
+    }
+  }
+}
 
 export function registerCommands(plugin: KuroflareSpikePlugin): void {
   plugin.addCommand({
@@ -127,6 +174,7 @@ export function registerWorkspaceEvents(plugin: KuroflareSpikePlugin): void {
 
 export function registerVaultWatcher(plugin: KuroflareSpikePlugin): void {
   plugin.fileModifyRef = plugin.app.vault.on('modify', (file) => {
+    if (!plugin.startupSideEffectGate.canRun()) return
     if (!(file instanceof TFile) || file.extension !== MARKDOWN_EXTENSION) {
       return
     }
@@ -155,6 +203,7 @@ export async function bindActiveMarkdownView(
   plugin: KuroflareSpikePlugin,
   reason: string,
 ): Promise<void> {
+  if (!(await waitForActiveMarkdownBindingReadiness(plugin))) return
   const markdownView = plugin.app.workspace.getActiveViewOfType(MarkdownView)
   const file = markdownView?.file
 
@@ -170,17 +219,26 @@ export async function bindActiveMarkdownView(
     return
   }
 
-  if (plugin.activeFile?.path === file.path && plugin.activeView === editorView) {
-    return
-  }
-
   const generation = ++plugin.bindGeneration
   const docId = await fileDocIdForPath(plugin, file.path)
 
   if (generation !== plugin.bindGeneration) return
+  if (!plugin.startupSideEffectGate.canRun()) return
+  if (
+    activeMarkdownBindingMatches({
+      activePath: plugin.activeFile?.path,
+      expectedPath: file.path,
+      activeDocId: plugin.activeTextDoc?.docId.ydocId,
+      expectedDocId: docId.ydocId,
+      sameView: plugin.activeView === editorView,
+    })
+  ) {
+    return
+  }
 
   const loaded = await loadTextDoc(plugin, docId)
   if (generation !== plugin.bindGeneration) return
+  if (!plugin.startupSideEffectGate.canRun()) return
 
   setActiveTextDoc(plugin, loaded)
   plugin.targetPath = file.path
@@ -203,6 +261,26 @@ export async function bindActiveMarkdownView(
 
   plugin.setStatus(`bound: ${file.basename}`)
   console.info('[kuroflare] bound active editor', { path: file.path, docId, reason })
+}
+
+/** Waits for startup evidence before allowing local editor binding to begin. */
+export async function waitForActiveMarkdownBindingReadiness(
+  plugin: ActiveMarkdownBindingReadinessPlugin,
+): Promise<boolean> {
+  const runtime = plugin.syncRuntime
+  const tickInFlight = runtime?.lifecycle.snapshot().tickInFlight === true
+  if (plugin.startupSideEffectGate.canRun() && !tickInFlight) {
+    return true
+  }
+  if (runtime === null) return false
+
+  try {
+    await runtime.lifecycle.runStartupTick()
+  } catch (error: unknown) {
+    console.warn('[kuroflare] active editor binding deferred after startup failure', error)
+    return false
+  }
+  return plugin.startupSideEffectGate.canRun()
 }
 
 async function seedYTextFromDiskIfNeeded(
@@ -238,6 +316,7 @@ async function seedYTextFromDiskIfNeeded(
 }
 
 async function handleDiskModify(plugin: KuroflareSpikePlugin, file: TFile): Promise<void> {
+  if (!plugin.startupSideEffectGate.canRun()) return
   const diskText = await plugin.app.vault.read(file)
   const diskHash = await hashCanonicalText(diskText)
   const yText = plugin.ytext.toJSON()
@@ -273,6 +352,7 @@ async function handleBackgroundDiskModify(
   plugin: KuroflareSpikePlugin,
   file: TFile,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canRun()) return
   const docId = await fileDocIdForPath(plugin, file.path)
   const loaded = await loadTextDoc(plugin, docId)
   const diskText = await plugin.app.vault.read(file)
@@ -307,6 +387,7 @@ async function importActiveFileFromDiskAndSend(
   plugin: KuroflareSpikePlugin,
   reason: string,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canRun()) return
   const file = plugin.activeFile
   if (file === null) {
     new Notice('Kuroflare sync: no active file')
@@ -321,6 +402,7 @@ export async function importFileTextAndSend(
   text: string,
   reason: string,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canRun()) return
   replaceYText(plugin.ydoc, plugin.ytext, canonicalizeTextForYText(text), DISK_ORIGIN)
   const textHash = await hashCanonicalText(plugin.ytext.toJSON())
   plugin.lastMaterialized.set(file.path, {
@@ -338,6 +420,7 @@ export async function importFileTextIntoDocAndSend(
   docId: FileDocId,
   reason: string,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canRun()) return
   await importFileTextIntoDoc(plugin, file, docId, await plugin.app.vault.read(file))
   const loaded = await loadTextDoc(plugin, docId)
   await sendDocUpdateToWorker(plugin, docId, Y.encodeStateAsUpdate(loaded.doc), reason)
@@ -349,6 +432,7 @@ export async function importFileTextIntoDoc(
   docId: FileDocId,
   textContent: string,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canRun()) return
   const loaded = await loadTextDoc(plugin, docId)
   const text = canonicalizeTextForYText(textContent)
   replaceYText(loaded.doc, loaded.text, text, DISK_ORIGIN)
@@ -364,7 +448,26 @@ export async function importFileTextIntoDoc(
 }
 
 export async function flushYTextToDisk(
-  plugin: KuroflareSpikePlugin,
+  plugin: YTextMaterializePlugin,
+  reason: string,
+): Promise<void> {
+  if (!plugin.startupSideEffectGate.canRun()) return
+  const previous = flushYTextLocks.get(plugin)
+  const current = (previous ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => flushYTextToDiskUnlocked(plugin, reason))
+  flushYTextLocks.set(plugin, current)
+  try {
+    await current
+  } finally {
+    if (flushYTextLocks.get(plugin) === current) {
+      flushYTextLocks.delete(plugin)
+    }
+  }
+}
+
+async function flushYTextToDiskUnlocked(
+  plugin: YTextMaterializePlugin,
   reason: string,
 ): Promise<void> {
   const file = plugin.activeFile
@@ -394,6 +497,12 @@ export async function flushYTextToDisk(
       reason,
     })
     replaceYText(plugin.ydoc, plugin.ytext, canonicalizeTextForYText(diskText), DISK_ORIGIN)
+    plugin.lastMaterialized.set(file.path, {
+      diskHash,
+      ydocHash: diskHash,
+      path: file.path,
+      writtenAt: Date.now(),
+    })
     new Notice('Kuroflare spike: disk changed, conflict copy created')
     return
   }
@@ -412,8 +521,8 @@ export async function flushYTextToDisk(
 }
 
 async function createConflictCopy(
-  plugin: KuroflareSpikePlugin,
-  file: TFile,
+  plugin: YTextMaterializePlugin,
+  file: MaterializeVaultFile,
   content: string,
 ): Promise<string> {
   const path = await allocateConflictPath(plugin, file)
@@ -424,7 +533,10 @@ async function createConflictCopy(
   return path
 }
 
-async function allocateConflictPath(plugin: KuroflareSpikePlugin, file: TFile): Promise<string> {
+async function allocateConflictPath(
+  plugin: YTextMaterializePlugin,
+  file: MaterializeVaultFile,
+): Promise<string> {
   const ext = file.extension ? `.${file.extension}` : ''
   const parentPath = file.parent?.path
   const basePath = parentPath && parentPath !== '/' ? `${parentPath}/` : ''

@@ -16,6 +16,7 @@ import {
   type SyncRuntimeObsidianResumePort,
   type SyncRuntimeObsidianShellLifecycle,
 } from '../obsidian/lifecycle'
+import { type SyncRuntimeSideEffectPermission } from '../obsidian/shell'
 import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
 
 /** Input ports for composing the Obsidian sync runtime lifecycle. */
@@ -28,6 +29,9 @@ export interface SyncRuntimeObsidianCompositionInput {
   readonly localStore: SyncRuntimeLocalStoreEffectPort
   readonly localStoreRebuild: SyncRuntimeLocalStoreRebuildEffectPort
   readonly resume: SyncRuntimeObsidianResumePort
+  readonly onSideEffectPermission?:
+    | ((permission: SyncRuntimeSideEffectPermission) => void)
+    | undefined
 }
 
 /** Runtime lifecycle plus the concrete ports used by the production composition root. */
@@ -70,6 +74,9 @@ export function createSyncRuntimeObsidianComposition(
         startupStep: input.startupStep,
         resume: input.resume,
         ui: input.ui,
+      },
+      options: {
+        onSideEffectPermission: input.onSideEffectPermission,
       },
     }),
     setupExchange: input.setupExchange,

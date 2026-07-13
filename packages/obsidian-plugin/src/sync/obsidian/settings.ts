@@ -1,5 +1,6 @@
 import { type ClientStartupIntent, type SetupBootstrapMode } from '@kuroflare/core'
 
+import type { LocalSetupMetadata } from '../engine/setup'
 import {
   buildSetupExchangeRequest,
   type SetupExchangeRequestBuildPlan,
@@ -15,6 +16,8 @@ export interface SyncRuntimeObsidianStartupSettingsInput {
   readonly requestedDeviceName?: string | undefined
   readonly existingDeviceId?: string | undefined
   readonly setupBootstrapMode?: string | undefined
+  /** Trusted metadata persisted in the local store, used after a setup crash window. */
+  readonly persistedSetupMetadata?: LocalSetupMetadata | undefined
 }
 
 /** Startup intent evidence derived from Obsidian settings. */
@@ -80,11 +83,23 @@ export interface SyncRuntimeObsidianSetupExchangeEvidenceReader {
 export function planSyncRuntimeObsidianStartupSettings(
   input: SyncRuntimeObsidianStartupSettingsInput,
 ): SyncRuntimeObsidianStartupSettingsPlan {
+  if (input.persistedSetupMetadata !== undefined) {
+    return {
+      startup: { intent: 'reconnect' },
+      setupExchange: { ok: false, reason: 'setup-settings-not-present' },
+    }
+  }
   const setupMode = setupBootstrapMode(input.setupBootstrapMode)
   if (setupMode === 'invalid') {
     return {
       startup: { intent: 'reconnect' },
       setupExchange: { ok: false, reason: 'invalid-setup-bootstrap-mode' },
+    }
+  }
+  if (setupMode === undefined && hasValue(input.existingDeviceId) && !hasValue(input.setupToken)) {
+    return {
+      startup: { intent: 'reconnect' },
+      setupExchange: { ok: false, reason: 'setup-settings-not-present' },
     }
   }
   if (setupMode === undefined && !hasSetupExchangeEvidence(input)) {

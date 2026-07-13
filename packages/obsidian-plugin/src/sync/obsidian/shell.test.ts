@@ -27,7 +27,10 @@ import {
   type SyncRuntimeObsidianShellEvidencePort,
   type SyncRuntimeObsidianShellEvidenceReadResult,
 } from '../obsidian/shell'
-import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
+import {
+  LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION,
+  LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+} from '../store/schema'
 
 const vaultId = makeVaultId('driver-vault-1')
 const deviceId = makeDeviceId('driver-device-1')
@@ -447,6 +450,94 @@ test('Obsidian shell driver transport tick runs setup exchange, local-store gate
   assert.equal(result.state.shell.backgroundQueues, 'stopped')
   assert.equal(result.state.shell.backgroundQueueStopReason, 'startup-not-ready')
   assert.equal(result.deferredEffect, undefined)
+})
+
+test('setup response persistence remains after a planned local-store rebuild', async () => {
+  const evidence = new StaticStartupEvidencePort({
+    intent: 'reconnect',
+    local: { ...baseLocalState, hasDeviceCredentials: false, vaultId: undefined },
+    localStoreEvidence: {
+      ok: true,
+      evidence: {
+        dbExists: true,
+        currentVersion: LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION - 1,
+        presentStores: DEFAULT_LOCAL_STORE_OBJECT_STORES,
+        pendingOutboxCount: 0,
+      },
+    },
+  })
+  const executor = new RecordingShellEffectExecutor()
+  const startupStep = new RecordingStartupStepPort()
+  const setupExchange = createSyncRuntimeSetupExchangePort({
+    async exchange() {
+      return setupResponse
+    },
+    async scheduleReplan() {},
+  })
+
+  const result = await runSyncRuntimeObsidianShellDriverTransportTick({
+    evidence,
+    executor,
+    setupExchange,
+    startupStep,
+  })
+
+  assert.equal(result.startupPlan?.action, 'rebuild-local-store')
+  assert.deepEqual(
+    executor.effects.map((effect) => effect.kind),
+    [
+      'run-local-store-open-effect',
+      'run-local-store-open-effect',
+      'rerun-startup-after-local-store-rebuild',
+    ],
+  )
+  assert.deepEqual(startupStep.effects, [])
+})
+
+test('setup response persistence is withheld when the existing outbox store is unsafe', async () => {
+  const evidence = new StaticStartupEvidencePort({
+    intent: 'reconnect',
+    local: { ...baseLocalState, hasDeviceCredentials: false, vaultId: undefined },
+    localStoreEvidence: {
+      ok: true,
+      evidence: {
+        dbExists: true,
+        currentVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+        presentStores: DEFAULT_LOCAL_STORE_OBJECT_STORES.filter((store) => store !== 'outbox'),
+        pendingOutboxCount: 1,
+      },
+    },
+  })
+  const executor = new RecordingShellEffectExecutor()
+  const startupStep = new RecordingStartupStepPort()
+  const setupExchange = createSyncRuntimeSetupExchangePort({
+    async exchange() {
+      return setupResponse
+    },
+    async scheduleReplan() {},
+  })
+
+  const result = await runSyncRuntimeObsidianShellDriverTransportTick({
+    evidence,
+    executor,
+    setupExchange,
+    startupStep,
+  })
+
+  assert.equal(result.startupPlan?.action, 'hold-local-store-degraded')
+  assert.deepEqual(startupStep.effects, [])
+  assert.deepEqual(
+    executor.effects.map((effect) => effect.kind),
+    ['run-local-store-open-effect'],
+  )
+  assert.deepEqual(executor.effects[0], {
+    kind: 'run-local-store-open-effect',
+    effect: {
+      kind: 'hold-degraded',
+      dbName: `kuroflare:${vaultId}`,
+      reason: 'missing-required-store-with-pending-outbox',
+    },
+  })
 })
 
 class StaticStartupEvidencePort implements SyncRuntimeObsidianShellEvidencePort {

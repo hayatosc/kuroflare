@@ -32,7 +32,7 @@ export interface SyncRuntimeWebSocketFactoryPort {
 /** Browser WebSocket constructor accepted by the concrete runtime factory. */
 export interface SyncRuntimeBrowserWebSocketConstructor {
   /** Creates a browser WebSocket for the given URL. */
-  new (url: string, protocols?: string | string[]): WebSocket
+  new (url: string, protocols?: string | string[]): SyncRuntimeWebSocketConnection
 }
 
 /** SecretStorage reader used to obtain the current access token without exposing refresh tokens. */
@@ -65,6 +65,14 @@ export interface SyncRuntimeWebSocketStepPortInput {
   readonly webSocket: SyncRuntimeWebSocketFactoryPort
   readonly capabilities?: readonly ClientCapability[] | undefined
   readonly onInboundMessage?: SyncRuntimeWebSocketInboundMessageHandler | undefined
+  /** Notifies the host when an authenticated connection closes or errors. */
+  readonly onConnectionIssue?:
+    | ((issue: {
+        readonly kind: 'close' | 'error'
+        readonly code?: number | undefined
+        readonly reason?: string | undefined
+      }) => void)
+    | undefined
   readonly session?: SyncRuntimeWebSocketSessionPort | undefined
 }
 

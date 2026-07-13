@@ -96,7 +96,7 @@ class BrowserSyncRuntimeWebSocketConnection implements SyncRuntimeWebSocketConne
   private closeHandler: ((event: CloseEvent) => void) | null = null
   private messageHandler: ((event: MessageEvent) => void) | null = null
 
-  constructor(private readonly socket: WebSocket) {
+  constructor(private readonly socket: SyncRuntimeWebSocketConnection) {
     socket.onopen = (event) => {
       this.openHandler?.(event)
     }

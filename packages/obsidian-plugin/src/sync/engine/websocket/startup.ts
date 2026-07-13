@@ -67,7 +67,7 @@ export function createSyncRuntimeWebSocketStartupStepPort(
         }
         input.onInboundMessage?.(message)
       })
-      await waitForWebSocketOpen(socket)
+      await waitForWebSocketOpen(socket, (issue) => input.onConnectionIssue?.(issue))
     },
     async sendClientHello(effect) {
       if (socket === undefined || socket.readyState !== OPEN_READY_STATE) {
@@ -86,9 +86,11 @@ export function createSyncRuntimeWebSocketStartupStepPort(
         () => {
           pendingHelloAdmission = undefined
         },
+        (issue) => input.onConnectionIssue?.(issue),
       )
       socket.send(JSON.stringify(hello))
       await admission
+      installConnectionIssueHandlers(socket, (issue) => input.onConnectionIssue?.(issue))
     },
     snapshot() {
       return {
@@ -107,6 +109,11 @@ async function waitForHelloAccepted(
     readonly reject: (error: Error) => void
   }) => void,
   clear: () => void,
+  notify: (issue: {
+    readonly kind: 'close' | 'error'
+    readonly code?: number | undefined
+    readonly reason?: string | undefined
+  }) => void,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     install({
@@ -120,10 +127,12 @@ async function waitForHelloAccepted(
       },
     })
     socket.onerror = () => {
+      notify({ kind: 'error' })
       clear()
       reject(new Error('websocket-hello-admission-failed'))
     }
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      notify({ kind: 'close', code: event.code, reason: event.reason })
       clear()
       reject(new Error('websocket-closed-before-hello-accepted'))
     }
@@ -156,7 +165,14 @@ function clientHelloFromStartupEffect(input: {
   }
 }
 
-async function waitForWebSocketOpen(socket: SyncRuntimeWebSocketConnection): Promise<void> {
+async function waitForWebSocketOpen(
+  socket: SyncRuntimeWebSocketConnection,
+  notify: (issue: {
+    readonly kind: 'close' | 'error'
+    readonly code?: number | undefined
+    readonly reason?: string | undefined
+  }) => void,
+): Promise<void> {
   if (socket.readyState === OPEN_READY_STATE) {
     return
   }
@@ -166,12 +182,26 @@ async function waitForWebSocketOpen(socket: SyncRuntimeWebSocketConnection): Pro
       resolve()
     }
     socket.onerror = () => {
+      notify({ kind: 'error' })
       reject(new Error('websocket-open-failed'))
     }
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      notify({ kind: 'close', code: event.code, reason: event.reason })
       reject(new Error('websocket-closed-before-open'))
     }
   })
+}
+
+function installConnectionIssueHandlers(
+  socket: SyncRuntimeWebSocketConnection,
+  notify: (issue: {
+    readonly kind: 'close' | 'error'
+    readonly code?: number | undefined
+    readonly reason?: string | undefined
+  }) => void,
+): void {
+  socket.onerror = () => notify({ kind: 'error' })
+  socket.onclose = (event) => notify({ kind: 'close', code: event.code, reason: event.reason })
 }
 
 const OPEN_READY_STATE = 1

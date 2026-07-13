@@ -7,6 +7,7 @@ export type {
   SyncRuntimeObsidianShellDriverTransportTickInput,
   SyncRuntimeObsidianShellEvidencePort,
   SyncRuntimeObsidianShellEvidenceReadResult,
+  SyncRuntimeSideEffectPermission,
 } from '../obsidian/shell.types'
 
 export { INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE } from '../obsidian/shell/state'

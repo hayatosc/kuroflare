@@ -846,19 +846,19 @@ async function runRemoteMaterializeBlockedActions(): Promise<RemoteMaterializeBl
  * mappings left behind by earlier runs.
  *
  * This must delete both the per-file text databases (`kuroflare-file:*`) AND
- * the single, vault-id-agnostic meta database (`kuroflare-meta`, see
- * `META_DOC_NAME` in `src/main.ts`). The meta database is not namespaced by
- * vaultId, so leaving it in place lets a stale local fileId survive across
- * runs for any path reused between them (e.g. the fixed `notePath` used for
- * the active-file join scenario) — the join code then takes the
- * hash-mismatch "adopt-with-local-edit" branch instead of the "no remote
- * entry yet, allocate-new" branch a real fresh join would hit, which made
- * the freshly seeded remote content look like a local edit to be kept.
+ * the current vault's namespaced meta database (`kuroflare-meta:<vaultId>`),
+ * while retaining the legacy `kuroflare-meta` name for old installs. Leaving
+ * the current database in place lets a stale local fileId survive across runs
+ * for any path reused between them (e.g. the fixed `notePath` used for the
+ * active-file join scenario) — the join code then takes the hash-mismatch
+ * "adopt-with-local-edit" branch instead of the "no remote entry yet,
+ * allocate-new" branch a real fresh join would hit, which made the freshly
+ * seeded remote content look like a local edit to be kept.
  */
 function clearTextIndexedDb() {
   obsidian([
     'eval',
-    "code=(async () => { const databases = typeof indexedDB.databases === 'function' ? await indexedDB.databases() : []; const names = databases.map((database) => database.name).filter((name) => name?.startsWith('kuroflare-file:') || name === 'kuroflare-meta'); await Promise.all(names.map((name) => new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase(name); request.onsuccess = () => resolve('deleted'); request.onerror = () => reject(request.error); request.onblocked = () => resolve('blocked'); }))); return 'deleted'; })()",
+    `code=(async () => { const databases = typeof indexedDB.databases === 'function' ? await indexedDB.databases() : []; const names = databases.map((database) => database.name).filter((name) => name?.startsWith('kuroflare-file:') || name === 'kuroflare-meta' || name === 'kuroflare-meta:${vaultId}'); await Promise.all(names.map((name) => new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase(name); request.onsuccess = () => resolve('deleted'); request.onerror = () => reject(request.error); request.onblocked = () => resolve('blocked'); }))); return 'deleted'; })()`,
   ])
 }
 

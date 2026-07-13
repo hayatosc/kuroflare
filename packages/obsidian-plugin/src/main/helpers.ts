@@ -1,4 +1,4 @@
-import type { DocId, DeviceTokenClaims, OutboxSchedulerAuthGateInput } from '@kuroflare/core'
+import type { DocId, OutboxSchedulerAuthGateInput } from '@kuroflare/core'
 import type { OutboxAuthRefreshState } from '@kuroflare/core'
 import type {
   ClientAuthMetadata,
@@ -6,9 +6,7 @@ import type {
   SetupExchangeResponse,
 } from '@kuroflare/core'
 import { makeOutboxPlanItemId, hashBytesSha256 } from '@kuroflare/core'
-import { DeviceTokenClaimsSchema } from '@kuroflare/core'
 import type { SecretStorage } from 'obsidian'
-import * as v from 'valibot'
 
 import type { KuroflareRepairLogEntry } from '../main-types'
 import type { AuthRefreshHttpResult } from '../sync/auth/refresh'
@@ -367,24 +365,6 @@ export async function authRefreshHttpFailure(response: Response): Promise<AuthRe
   return { ok: false, reason: 'refresh-token-rejected' }
 }
 
-export function parseAccessTokenClaimsFromJwt(accessToken: string): DeviceTokenClaims | undefined {
-  const payload = accessToken.split('.')[1]
-  if (payload === undefined) {
-    return undefined
-  }
-  const bytes = decodeBase64Url(payload)
-  if (bytes === null) {
-    return undefined
-  }
-  let value: unknown
-  try {
-    value = JSON.parse(new TextDecoder().decode(bytes)) as unknown
-  } catch {
-    return undefined
-  }
-  return v.is(DeviceTokenClaimsSchema, value) ? value : undefined
-}
-
 export function nextAllowedRefreshAtFromFailedAuthRefresh(
   plan: Exclude<Awaited<ReturnType<typeof runAuthRefreshAttempt>>, { readonly ok: true }>,
 ): number | undefined {
@@ -409,25 +389,6 @@ export function createObsidianSecretStoragePort(
 
 export async function obsidianSecretIdForKey(key: string): Promise<string> {
   return await hashBytesSha256(new TextEncoder().encode(key))
-}
-
-export function accessTokenExpiresAtFromJwt(token: string): number | undefined {
-  return parseAccessTokenClaimsFromJwt(token)?.exp
-}
-
-export function decodeBase64Url(value: string): Uint8Array | null {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
-  const padding = (4 - (normalized.length % 4)) % 4
-  return decodeBase64(`${normalized}${'='.repeat(padding)}`)
-}
-
-export function decodeBase64(value: string): Uint8Array | null {
-  try {
-    const decoded = atob(value)
-    return Uint8Array.from(decoded, (character) => character.charCodeAt(0))
-  } catch {
-    return null
-  }
 }
 
 export function sameDocId(left: DocId, right: DocId): boolean {

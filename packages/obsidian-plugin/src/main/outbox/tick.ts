@@ -44,6 +44,7 @@ export function scheduleOutboxWorkerTick(
   delayMs: number,
   reason: string,
 ): void {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
   if (plugin.outboxWorkerRetryTimeout !== null) {
     return
   }
@@ -65,6 +66,7 @@ export async function runOutboxWorkerTick(
   plugin: KuroflareSpikePlugin,
   reason: string,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
   if (plugin.syncStoppedByAuth !== null) {
     return
   }
@@ -157,17 +159,25 @@ export async function runOutboxWorkerTick(
         continue
       }
       if (record.kind === 'y-update') {
-        const send = await sender.sendSyncUpdate({
-          record,
-          vaultId: setup.vaultId,
-          deviceId: setup.deviceId,
-        })
-        if (!send.ok) {
-          console.warn('[kuroflare] outbox websocket send rejected', {
-            reason: send.reason,
-            itemId: effect.start.id,
+        try {
+          const send = await sender.sendSyncUpdate({
+            record,
+            vaultId: setup.vaultId,
+            deviceId: setup.deviceId,
           })
-          await completeLeasedOutboxFailure(plugin, db, record, { kind: 'invalid-payload' })
+          if (!send.ok) {
+            console.warn('[kuroflare] outbox websocket send rejected', {
+              reason: send.reason,
+              itemId: effect.start.id,
+            })
+            await completeLeasedOutboxFailure(plugin, db, record, { kind: 'invalid-payload' })
+          }
+        } catch (error: unknown) {
+          console.warn('[kuroflare] outbox websocket send failed', {
+            itemId: effect.start.id,
+            error: safeLogError(error),
+          })
+          await completeLeasedOutboxFailure(plugin, db, record, { kind: 'network' })
         }
         continue
       }
@@ -215,17 +225,25 @@ export async function runOutboxWorkerTick(
       if (sideEffect.action !== 'meta-ref-update') {
         continue
       }
-      const send = await sender.sendSyncUpdate({
-        record,
-        vaultId: setup.vaultId,
-        deviceId: setup.deviceId,
-      })
-      if (!send.ok) {
-        console.warn('[kuroflare] outbox websocket send rejected', {
-          reason: send.reason,
-          itemId: effect.start.id,
+      try {
+        const send = await sender.sendSyncUpdate({
+          record,
+          vaultId: setup.vaultId,
+          deviceId: setup.deviceId,
         })
-        await completeLeasedOutboxFailure(plugin, db, record, { kind: 'invalid-payload' })
+        if (!send.ok) {
+          console.warn('[kuroflare] outbox websocket send rejected', {
+            reason: send.reason,
+            itemId: effect.start.id,
+          })
+          await completeLeasedOutboxFailure(plugin, db, record, { kind: 'invalid-payload' })
+        }
+      } catch (error: unknown) {
+        console.warn('[kuroflare] outbox websocket send failed', {
+          itemId: effect.start.id,
+          error: safeLogError(error),
+        })
+        await completeLeasedOutboxFailure(plugin, db, record, { kind: 'network' })
       }
     }
     if (workerTick.starts.length > 0) {

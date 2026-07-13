@@ -7,6 +7,7 @@ import {
   type ClientAuthMetadata,
   type DocId,
   type FileId,
+  type SetupExchangeResponse,
   VaultIdSchema,
   RevokeDeviceResponseSchema,
 } from '@kuroflare/core'
@@ -14,7 +15,7 @@ import type { OutboxAuthRefreshRequestDecision } from '@kuroflare/core'
 import { Notice } from 'obsidian'
 import * as v from 'valibot'
 
-import type { FileDocId } from '../main-types'
+import type { FileDocId, KuroflareSettings } from '../main-types'
 import {
   recoverStaleAuthRefreshStart as recoverStaleAuthRefreshStartFn,
   runAuthRefreshAttempt,
@@ -33,21 +34,28 @@ import {
   createObsidianAuthRevokeSecretStoragePort,
   createObsidianAuthRefreshSecretStoragePort,
   createAuthRefreshHttpPort,
-  parseAccessTokenClaimsFromJwt,
   nextAllowedRefreshAtFromFailedAuthRefresh,
   obsidianSecretIdForKey,
 } from './helpers'
 import { metaMap } from './meta'
 import { scheduleOutboxWorkerTick, runOutboxWorkerTick } from './outbox'
 import type KuroflareSpikePlugin from './plugin'
+import { createRemoteSetupAccessTokenVerifier } from './setup-verifier'
+
+/** Minimal setup fields required to resolve the current local vault identity. */
+export interface SetupMetadataSource {
+  readonly pendingSetupResponse: SetupExchangeResponse | null
+  readonly trustedSetupMetadata: LocalSetupMetadata | null
+  readonly kuroflareSettings: Pick<KuroflareSettings, 'setupMetadata' | 'setupVaultId'>
+}
 import { openLocalStoreDatabase } from './store'
 
-export function currentSetupDeviceId(plugin: KuroflareSpikePlugin): DeviceId | undefined {
+export function currentSetupDeviceId(plugin: SetupMetadataSource): DeviceId | undefined {
   return currentSetupMetadata(plugin)?.deviceId
 }
 
 export function currentSetupVaultIdHint(
-  plugin: KuroflareSpikePlugin,
+  plugin: SetupMetadataSource,
 ): LocalSetupMetadata['vaultId'] | undefined {
   if (plugin.pendingSetupResponse !== null) {
     return plugin.pendingSetupResponse.vaultId
@@ -63,14 +71,14 @@ export function currentSetupVaultIdHint(
     : undefined
 }
 
-export function currentSetupMetadata(plugin: KuroflareSpikePlugin): LocalSetupMetadata | undefined {
+export function currentSetupMetadata(plugin: SetupMetadataSource): LocalSetupMetadata | undefined {
   if (plugin.pendingSetupResponse !== null) {
     return localSetupMetadataFromSetupResponse(plugin.pendingSetupResponse)
   }
   return plugin.trustedSetupMetadata ?? plugin.kuroflareSettings.setupMetadata
 }
 
-export function requireSetupMetadata(plugin: KuroflareSpikePlugin): LocalSetupMetadata {
+export function requireSetupMetadata(plugin: SetupMetadataSource): LocalSetupMetadata {
   const setup = currentSetupMetadata(plugin)
   if (setup === undefined) {
     throw new Error('setup-metadata-missing')
@@ -92,7 +100,7 @@ export async function activeDocId(plugin: KuroflareSpikePlugin): Promise<DocId> 
 }
 
 export async function fileDocIdForPath(
-  plugin: KuroflareSpikePlugin,
+  plugin: Pick<KuroflareSpikePlugin, 'metaDoc'>,
   path: string,
 ): Promise<FileDocId> {
   const fileId = findActiveFileId(plugin, path)
@@ -111,11 +119,14 @@ export function nextWorkerMessageId(plugin: KuroflareSpikePlugin): string {
   return `msg-${Date.now().toString(36)}-${plugin.workerMessageCounter.toString(36)}`
 }
 
-export async function sha256Hex(plugin: KuroflareSpikePlugin, bytes: Uint8Array): Promise<string> {
+export async function sha256Hex(_plugin: unknown, bytes: Uint8Array): Promise<string> {
   return await hashBytesSha256(bytes)
 }
 
-export function findActiveFileId(plugin: KuroflareSpikePlugin, path: string): FileId | undefined {
+export function findActiveFileId(
+  plugin: Pick<KuroflareSpikePlugin, 'metaDoc'>,
+  path: string,
+): FileId | undefined {
   const canonical = canonicalizeVaultPath(path)
   for (const [fileId, value] of metaMap(plugin).entries()) {
     if (isMetaFile(value, fileId) && !value.deleted && value.canonicalPath === canonical) {
@@ -301,11 +312,10 @@ export async function runAuthRefreshRequest(
       now: Date.now(),
       secretStorage: createObsidianAuthRefreshSecretStoragePort(plugin.app.secretStorage),
       http: createAuthRefreshHttpPort(setup),
-      verifier: {
-        async verify(accessToken) {
-          return parseAccessTokenClaimsFromJwt(accessToken)
-        },
-      },
+      verifier: createRemoteSetupAccessTokenVerifier({
+        endpoint: setup.endpoint,
+        fetch: (input, init) => fetch(input, init),
+      }),
       metadataStore,
     })
     if (attempt.ok) {

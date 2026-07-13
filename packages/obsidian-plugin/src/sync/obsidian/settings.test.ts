@@ -14,6 +14,46 @@ test('Obsidian startup settings default to reconnect when no setup evidence exis
   })
 })
 
+test('Obsidian startup settings reconnect from persisted device metadata without a setup token', () => {
+  assert.deepEqual(
+    planSyncRuntimeObsidianStartupSettings({
+      endpoint: 'https://sync.example.test',
+      setupVaultId: 'settings-vault-1',
+      setupToken: '',
+      requestedDeviceName: 'phone',
+      existingDeviceId: 'settings-device-1',
+    }),
+    {
+      startup: { intent: 'reconnect' },
+      setupExchange: { ok: false, reason: 'setup-settings-not-present' },
+    },
+  )
+})
+
+test('Obsidian startup settings trust durable setup metadata after a setup crash window', () => {
+  const plan = planSyncRuntimeObsidianStartupSettings({
+    endpoint: 'https://sync.example.test',
+    setupVaultId: 'settings-vault-1',
+    setupToken: 'setup-token-that-must-not-be-replayed',
+    requestedDeviceName: 'phone',
+    setupBootstrapMode: 'join-existing',
+    persistedSetupMetadata: {
+      endpoint: 'https://sync.example.test',
+      vaultId: 'settings-vault-1',
+      deviceId: 'settings-device-1',
+      yClientId: 1,
+      protocolVersion: 1,
+      bootstrapMode: 'join-existing',
+      tokenVersion: 1,
+    },
+  })
+
+  assert.deepEqual(plan, {
+    startup: { intent: 'reconnect' },
+    setupExchange: { ok: false, reason: 'setup-settings-not-present' },
+  })
+})
+
 test('Obsidian startup settings derive new-vault setup intent and evidence', () => {
   assert.deepEqual(
     planSyncRuntimeObsidianStartupSettings({

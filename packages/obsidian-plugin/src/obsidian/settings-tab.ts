@@ -88,7 +88,7 @@ export class KuroflareSettingTab extends PluginSettingTab {
       dropdown
         .addOption('new-vault', 'New vault')
         .addOption('join-existing', 'Join existing')
-        .setValue(settings.setupBootstrapMode)
+        .setValue(settings.setupBootstrapMode ?? 'new-vault')
         .onChange((value) => {
           if (value === 'new-vault' || value === 'join-existing') {
             void this.plugin.updateSettings({ setupBootstrapMode: value })

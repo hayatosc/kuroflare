@@ -259,6 +259,52 @@ test('websocket runtime waits for server hello admission before completing hello
   await admitted
 })
 
+test('websocket runtime reports a post-admission close to the host for outbox recovery', async () => {
+  const webSocket = new FakeWebSocketFactory()
+  const issues: {
+    kind: 'close' | 'error'
+    code?: number | undefined
+    reason?: string | undefined
+  }[] = []
+  const port = createSyncRuntimeWebSocketStartupStepPort({
+    metadata: { setup, accessTokenSecretKey: 'access-token-key' },
+    tokenReader: new FakeAccessTokenReader([['access-token-key', 'token']]),
+    webSocket,
+    onConnectionIssue: (issue) => issues.push(issue),
+  })
+  const open = port.openWebSocket({
+    kind: 'run-startup-step',
+    vaultId,
+    step: 'open-websocket',
+    phase: 'websocket',
+  })
+  await Promise.resolve()
+  const connection = webSocket.connections[0]
+  connection?.open()
+  await open
+
+  const admitted = port.sendClientHello({
+    kind: 'run-startup-step',
+    vaultId,
+    step: 'send-client-hello',
+    phase: 'websocket',
+  })
+  await Promise.resolve()
+  connection?.message(
+    JSON.stringify({
+      type: 'hello-accepted',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId,
+      deviceId,
+      yClientId: 12,
+    }),
+  )
+  await admitted
+
+  connection?.close()
+  assert.deepEqual(issues, [{ kind: 'close', code: 0, reason: '' }])
+})
+
 test('websocket runtime rejects hello admission close and identity mismatch', async () => {
   const wrongDeviceAdmission = {
     ok: true,

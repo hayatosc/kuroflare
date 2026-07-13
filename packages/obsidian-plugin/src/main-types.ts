@@ -9,7 +9,7 @@ export interface KuroflareSettings {
   readonly setupVaultId: string
   readonly setupToken: string
   readonly requestedDeviceName: string
-  readonly setupBootstrapMode: 'new-vault' | 'join-existing'
+  readonly setupBootstrapMode?: 'new-vault' | 'join-existing' | undefined
   readonly setupMetadata?: LocalSetupMetadata | undefined
   readonly repairLog?: readonly KuroflareRepairLogEntry[] | undefined
   readonly localRepairExport?: KuroflareLocalRepairExportMetadata | undefined

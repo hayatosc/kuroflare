@@ -1990,6 +1990,59 @@ test('outbox worker retries failed attempts and releases the lease atomically', 
   }
 })
 
+test('outbox websocket close requeues a claimed update and a reconnect ack completes it', () => {
+  const lease = runningLease(yUpdateId, 'y-update', 'worker-1', 30_000)
+  const record = { ...outboxRecord(yUpdateId, 'y-update', 'retrying'), retryCount: 0 }
+  const reconnect = planOutboxWorkerFailureCompletion({
+    itemId: yUpdateId,
+    kind: 'y-update',
+    retryCount: 0,
+    error: { kind: 'network' },
+    ownerId: 'worker-1',
+    now: 1_000,
+    currentOutboxRecords: [record],
+    currentLeaseRows: [lease],
+  })
+
+  assert.equal(reconnect.ok, true)
+  if (!reconnect.ok) return
+  assert.equal(reconnect.action, 'retry-after-failure')
+  assert.deepEqual(reconnect.nextLeaseRows, [])
+
+  const retryRecord = reconnect.nextOutboxRecords[0]
+  assert.notEqual(retryRecord, undefined)
+  if (retryRecord === undefined) return
+  const ack = planOutboxWorkerAckCompletion({
+    itemId: yUpdateId,
+    kind: 'y-update',
+    status: 'retrying',
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    messageId,
+    message: {
+      type: 'ack',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId,
+      deviceId,
+      docId: fileDocId,
+      messageId,
+      durableSeq: 13,
+    },
+    ownerId: 'worker-1',
+    now: 2_000,
+    currentOutboxRecords: [retryRecord],
+    currentLeaseRows: [runningLease(yUpdateId, 'y-update', 'worker-1', 32_000)],
+  })
+
+  assert.equal(ack.ok, true)
+  if (ack.ok) {
+    assert.equal(ack.action, 'ack-completion')
+    assert.equal(ack.nextOutboxRecords[0]?.status, 'done')
+    assert.deepEqual(ack.nextLeaseRows, [])
+  }
+})
+
 test('outbox worker pauses or dead-letters failed attempts and releases the lease', () => {
   const materializeLease = runningLease(pausedId, 'materialize', 'worker-1', 30_000)
   const materializeRecord = { ...outboxRecord(pausedId, 'materialize', 'retrying'), retryCount: 3 }

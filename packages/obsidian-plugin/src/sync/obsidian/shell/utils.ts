@@ -1,8 +1,44 @@
+import type { SyncRuntimeShellState } from '../../engine/actuation'
 import type {
   SyncRuntimeLocalStateEvidencePlan,
   SyncRuntimeStartupFromSchemaEvidenceInput,
   SyncRuntimeStartupInput,
+  SyncRuntimeStartupPlan,
 } from '../../engine/startup'
+import type { SyncRuntimeSideEffectPermission } from '../shell.types'
+
+/** Decides whether the current startup plan may execute plugin side effects. */
+export function startupPlanSideEffectPermission(
+  plan: SyncRuntimeStartupPlan | undefined,
+  shell: SyncRuntimeShellState,
+  evidenceFailure: boolean,
+): SyncRuntimeSideEffectPermission {
+  if (
+    evidenceFailure ||
+    plan === undefined ||
+    shell.lastFailedEffect !== undefined ||
+    shell.status === 'local-store-blocked' ||
+    plan.action === 'rebuild-local-store' ||
+    plan.action === 'hold-local-store-degraded' ||
+    plan.action === 'reject-local-store-open' ||
+    plan.action === 'reject-local-store-schema-evidence'
+  ) {
+    return 'blocked'
+  }
+
+  switch (plan.sync.clientPlan.action) {
+    case 'run-setup-exchange':
+    case 'bootstrap-new-vault':
+    case 'join-existing-vault':
+    case 'reconnect':
+    case 'restore-local-meta-snapshot':
+      return 'allowed'
+    case 'auth-blocked':
+    case 'degraded':
+    case 'reject':
+      return 'local-only'
+  }
+}
 
 export function startupReplanCurrentFromEvidenceInput(
   input: SyncRuntimeStartupFromSchemaEvidenceInput,

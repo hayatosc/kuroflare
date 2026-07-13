@@ -107,6 +107,12 @@ workerApp.post('/setup/exchange', async (c) => {
   return routeVaultRoom(c.req.raw, c.env, body.vaultId)
 })
 
+workerApp.get('/auth/verify', async (c) => {
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  return c.json(claims)
+})
+
 workerApp.post('/auth/refresh', async (c) => {
   const body: unknown = await c.req.raw
     .clone()

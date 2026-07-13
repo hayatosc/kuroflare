@@ -149,7 +149,7 @@ function importBootstrapSnapshotsWithCli(input: {
     'node',
     [
       '--experimental-strip-types',
-      join(pluginDir, 'kuroflare-snapshot-import.ts'),
+      join(pluginDir, '..', 'kuroflare-snapshot-import.ts'),
       '--endpoint',
       endpoint,
       '--vault-id',

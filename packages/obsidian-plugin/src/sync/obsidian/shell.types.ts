@@ -16,6 +16,9 @@ import type {
   SyncRuntimeObsidianPresentationSnapshot,
 } from '../obsidian/presentation'
 
+/** Permission for production side effects after startup evidence is planned. */
+export type SyncRuntimeSideEffectPermission = 'allowed' | 'local-only' | 'blocked'
+
 /** Result of reading startup evidence for the Obsidian shell driver. */
 export type SyncRuntimeObsidianShellEvidenceReadResult =
   | {
@@ -51,6 +54,10 @@ export interface SyncRuntimeObsidianShellDriverTickInput {
   readonly evidence: SyncRuntimeObsidianShellEvidencePort
   readonly executor: SyncRuntimeShellEffectExecutor
   readonly maxLocalEffects?: number | undefined
+  /** Called after evidence is planned and before any executable effect is pumped. */
+  readonly onSideEffectPermission?:
+    | ((permission: SyncRuntimeSideEffectPermission) => void)
+    | undefined
 }
 
 /** Input for running one Obsidian startup driver tick that may execute setup exchange. */

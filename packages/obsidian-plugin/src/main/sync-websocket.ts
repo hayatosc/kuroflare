@@ -2,6 +2,7 @@ import { makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/core'
 import * as Y from 'yjs'
 
 import type { FileDocId } from '../main-types'
+import type { LocalSetupMetadata } from '../sync/engine/setup'
 import {
   createSyncRuntimeWebSocketStartupStepPort,
   createBrowserSyncRuntimeWebSocketFactory,
@@ -14,6 +15,7 @@ import {
   createSyncRuntimeWebSocketSyncRequestAnswerPort,
   dispatchSyncRuntimeWebSocketInboundMessage,
   type SyncRuntimeWebSocketStartupStepPort,
+  type SyncRuntimeWebSocketSessionPort,
   type SyncRuntimeWebSocketInboundMessage,
 } from '../sync/engine/websocket'
 import { planOutboxWorkerCompletionIndexedDbWriteTransaction } from '../sync/engine/worker'
@@ -28,7 +30,11 @@ import {
 import { META_SYNC_DOC_ID, WORKER_ORIGIN } from './constants'
 import { safeLogError, encodeBase64, accessTokenSecretKeyForSetup } from './helpers'
 import { loadTextDoc } from './meta'
-import { runOutboxWorkerTick } from './outbox'
+import {
+  recoverLeasedOutboxAfterWebSocketFailure,
+  runOutboxWorkerTick,
+  scheduleOutboxWorkerTick,
+} from './outbox'
 import type KuroflareSpikePlugin from './plugin'
 import {
   openLocalStoreDatabase,
@@ -43,6 +49,7 @@ export async function sendDocUpdateToWorker(
   update: Uint8Array,
   reason: string,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
   const setup = currentSetupMetadata(plugin)
   if (setup === undefined) {
     return
@@ -75,7 +82,19 @@ export async function sendDocUpdateToWorker(
     })
     return
   }
+  const socketState = plugin.workerWebSocketSession.snapshot().readyState
+  if (socketState !== WebSocket.OPEN && socketState !== WebSocket.CONNECTING) {
+    try {
+      await openWorkerWebSocket(plugin)
+    } catch (error: unknown) {
+      console.warn('[kuroflare] failed to reconnect worker websocket for queued update', {
+        reason,
+        error: safeLogError(error),
+      })
+    }
+  }
   void runOutboxWorkerTick(plugin, reason)
+  scheduleOutboxWorkerTick(plugin, 250, `queued:${reason}`)
   console.info('[kuroflare] enqueued worker sync update', {
     reason,
     messageId,
@@ -111,6 +130,7 @@ export async function requestDocFromWorker(
   stateVector: Uint8Array,
   reason: string,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
   if (
     !plugin.workerHelloAccepted ||
     plugin.workerWebSocketSession.snapshot().readyState !== WebSocket.OPEN
@@ -163,26 +183,99 @@ export async function requestPendingRemoteTextFilesFromWorker(
   }
 }
 
-export async function openWorkerWebSocket(plugin: KuroflareSpikePlugin): Promise<void> {
-  if (plugin.syncStoppedByAuth !== null) return
-  const snapshot = plugin.workerWebSocketSession.snapshot()
-  if (snapshot.readyState === WebSocket.OPEN) {
-    if (!plugin.workerHelloAccepted) await sendWorkerHello(plugin)
+/** Runtime state needed to serialize one worker WebSocket open and hello sequence. */
+export interface WorkerWebSocketOpenRuntime {
+  readonly startupSideEffectGate: {
+    readonly canSendNetwork: () => boolean
+  }
+  readonly syncStoppedByAuth: string | null
+  workerWebSocketOpenPromise: Promise<void> | null
+  readonly workerWebSocketSession: SyncRuntimeWebSocketSessionPort
+  workerWebSocketStartupPort: SyncRuntimeWebSocketStartupStepPort | null
+  workerHelloAccepted: boolean
+  readonly setup: LocalSetupMetadata
+  readonly createStartupPort: () => SyncRuntimeWebSocketStartupStepPort
+}
+
+/** Serializes a worker WebSocket open and hello sequence for a mutable runtime state. */
+export async function openWorkerWebSocketRuntime(
+  runtime: WorkerWebSocketOpenRuntime,
+  sendHello: () => Promise<void>,
+): Promise<void> {
+  const inFlight = runtime.workerWebSocketOpenPromise
+  if (inFlight !== null) {
+    await inFlight
     return
   }
-  plugin.workerHelloAccepted = false
-  plugin.workerWebSocketSession.close(1000, 'reconnect')
-  plugin.workerWebSocketStartupPort = createWorkerWebSocketStartupPort(plugin)
-  await plugin.workerWebSocketStartupPort.openWebSocket({
+  const opening = openWorkerWebSocketOnce(runtime, sendHello)
+  runtime.workerWebSocketOpenPromise = opening
+  try {
+    await opening
+  } finally {
+    if (runtime.workerWebSocketOpenPromise === opening) {
+      runtime.workerWebSocketOpenPromise = null
+    }
+  }
+}
+
+export async function openWorkerWebSocket(
+  plugin: KuroflareSpikePlugin,
+  sendHello: (plugin: KuroflareSpikePlugin) => Promise<void> = sendWorkerHello,
+): Promise<void> {
+  const setup = requireSetupMetadata(plugin)
+  const runtime: WorkerWebSocketOpenRuntime = {
+    startupSideEffectGate: plugin.startupSideEffectGate,
+    syncStoppedByAuth: plugin.syncStoppedByAuth,
+    get workerWebSocketOpenPromise() {
+      return plugin.workerWebSocketOpenPromise
+    },
+    set workerWebSocketOpenPromise(value) {
+      plugin.workerWebSocketOpenPromise = value
+    },
+    workerWebSocketSession: plugin.workerWebSocketSession,
+    get workerWebSocketStartupPort() {
+      return plugin.workerWebSocketStartupPort
+    },
+    set workerWebSocketStartupPort(value) {
+      plugin.workerWebSocketStartupPort = value
+    },
+    get workerHelloAccepted() {
+      return plugin.workerHelloAccepted
+    },
+    set workerHelloAccepted(value) {
+      plugin.workerHelloAccepted = value
+    },
+    setup,
+    createStartupPort: () => createWorkerWebSocketStartupPort(plugin),
+  }
+  await openWorkerWebSocketRuntime(runtime, async () => await sendHello(plugin))
+}
+
+async function openWorkerWebSocketOnce(
+  runtime: WorkerWebSocketOpenRuntime,
+  sendHello: () => Promise<void>,
+): Promise<void> {
+  if (!runtime.startupSideEffectGate.canSendNetwork()) return
+  if (runtime.syncStoppedByAuth !== null) return
+  const snapshot = runtime.workerWebSocketSession.snapshot()
+  if (snapshot.readyState === WebSocket.OPEN) {
+    if (!runtime.workerHelloAccepted) await sendHello()
+    return
+  }
+  runtime.workerHelloAccepted = false
+  runtime.workerWebSocketSession.close(1000, 'reconnect')
+  runtime.workerWebSocketStartupPort = runtime.createStartupPort()
+  await runtime.workerWebSocketStartupPort.openWebSocket({
     kind: 'run-startup-step',
-    vaultId: requireSetupMetadata(plugin).vaultId,
+    vaultId: runtime.setup.vaultId,
     step: 'open-websocket',
     phase: 'websocket',
   })
-  await sendWorkerHello(plugin)
+  await sendHello()
 }
 
 export async function sendWorkerHello(plugin: KuroflareSpikePlugin): Promise<void> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
   if (plugin.workerHelloAccepted) return
   const setup = requireSetupMetadata(plugin)
   const port = plugin.workerWebSocketStartupPort ?? createWorkerWebSocketStartupPort(plugin)
@@ -198,13 +291,39 @@ export async function sendWorkerHello(plugin: KuroflareSpikePlugin): Promise<voi
   await requestMetaDocFromWorker(plugin, 'hello-accepted')
   await requestActiveFileFromWorker(plugin, 'hello-accepted')
   await requestPendingRemoteTextFilesFromWorker(plugin, 'hello-accepted')
-  void runOutboxWorkerTick(plugin, 'hello-accepted')
+  await runOutboxWorkerTick(plugin, 'hello-accepted')
+  await waitForOutboundUpdates(plugin)
+  scheduleOutboxWorkerTick(plugin, 250, 'hello-accepted-follow-up')
+}
+
+export async function waitForOutboundUpdates(
+  plugin: KuroflareSpikePlugin,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const setup = currentSetupMetadata(plugin)
+  if (setup === undefined) return
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const snapshot = await readOutboxWorkerSnapshot(
+      await openLocalStoreDatabase(plugin, setup.vaultId),
+    )
+    const pending = snapshot.outboxRecords.some(
+      (record) =>
+        (record.kind === 'y-update' || record.kind === 'meta-ref-update') &&
+        (record.status === 'pending' || record.status === 'retrying'),
+    )
+    if (!pending) return
+    await runOutboxWorkerTick(plugin, 'hello-accepted-drain')
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 50))
+  }
+  console.warn('[kuroflare] outbound update drain timed out')
 }
 
 export async function handleWorkerInboundMessage(
   plugin: KuroflareSpikePlugin,
   message: SyncRuntimeWebSocketInboundMessage,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
   const setup = requireSetupMetadata(plugin)
   const vaultId = setup.vaultId
   const db = await openLocalStoreDatabase(plugin, vaultId)
@@ -216,7 +335,7 @@ export async function handleWorkerInboundMessage(
       return plugin.loadedTextDocs.get(docId.ydocId)?.doc
     },
   }
-  await dispatchSyncRuntimeWebSocketInboundMessage({
+  const dispatched = await dispatchSyncRuntimeWebSocketInboundMessage({
     inbound: message,
     vaultId,
     deviceId: setup.deviceId,
@@ -255,6 +374,9 @@ export async function handleWorkerInboundMessage(
       },
     },
   })
+  if (dispatched.route.action === 'apply-remote-update') {
+    await plugin.handleWorkerSyncUpdate(dispatched.route.message)
+  }
 }
 
 function createWorkerWebSocketStartupPort(
@@ -269,8 +391,57 @@ function createWorkerWebSocketStartupPort(
     webSocket: createBrowserSyncRuntimeWebSocketFactory(WebSocket),
     capabilities: [],
     session: plugin.workerWebSocketSession,
+    onConnectionIssue: (issue) => {
+      void handleWorkerWebSocketIssue(plugin, issue)
+    },
     onInboundMessage: (message) => {
       void handleWorkerInboundMessage(plugin, message)
     },
   })
+}
+
+async function handleWorkerWebSocketIssue(
+  plugin: KuroflareSpikePlugin,
+  issue: {
+    readonly kind: 'close' | 'error'
+    readonly code?: number | undefined
+    readonly reason?: string | undefined
+  },
+): Promise<void> {
+  if (
+    issue.reason === 'reconnect' ||
+    issue.reason === 'plugin-unload' ||
+    !plugin.startupSideEffectGate.canSendNetwork() ||
+    plugin.syncStoppedByAuth !== null
+  ) {
+    return
+  }
+
+  const opening = plugin.workerWebSocketOpenPromise
+  if (opening !== null) {
+    void opening
+      .catch(() => undefined)
+      .finally(() => {
+        void handleWorkerWebSocketIssue(plugin, issue)
+      })
+    return
+  }
+  if (plugin.workerWebSocketRecoveryPromise !== null) return
+
+  const recovery = (async () => {
+    await recoverLeasedOutboxAfterWebSocketFailure(plugin)
+    await openWorkerWebSocket(plugin)
+    await runOutboxWorkerTick(plugin, `websocket-${issue.kind}-reconnect`)
+  })()
+  plugin.workerWebSocketRecoveryPromise = recovery
+  try {
+    await recovery
+  } catch (error: unknown) {
+    console.warn('[kuroflare] worker websocket recovery failed', { issue, error })
+    scheduleOutboxWorkerTick(plugin, 1_000, `websocket-${issue.kind}-retry`)
+  } finally {
+    if (plugin.workerWebSocketRecoveryPromise === recovery) {
+      plugin.workerWebSocketRecoveryPromise = null
+    }
+  }
 }

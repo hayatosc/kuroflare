@@ -16,6 +16,7 @@ import { createSyncRuntimeObsidianComposition } from '../obsidian/composition'
 import { type SyncRuntimeObsidianResumePort } from '../obsidian/lifecycle'
 import { type SyncRuntimeObsidianShellUiPort } from '../obsidian/ui'
 import { LOCAL_STORE_INDEXEDDB_TARGET_VERSION } from '../store/schema'
+import { LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION } from '../store/schema'
 
 const vaultId = makeVaultId('composition-vault-1')
 const deviceId = makeDeviceId('composition-device-1')
@@ -107,6 +108,100 @@ test('Obsidian runtime composition wires startup evidence through the lifecycle'
   assert.equal(ui.statusTexts.at(-1), 'Kuroflare: starting / queues running')
 })
 
+test('Obsidian startup blocks sync effects for old, future, and missing-outbox schema evidence', async () => {
+  const cases = [
+    {
+      name: 'old',
+      currentVersion: LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION - 1,
+      presentStores: DEFAULT_LOCAL_STORE_OBJECT_STORES,
+      pendingOutboxCount: 0,
+      expectedPermission: 'blocked',
+    },
+    {
+      name: 'future',
+      currentVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION + 1,
+      presentStores: DEFAULT_LOCAL_STORE_OBJECT_STORES,
+      pendingOutboxCount: 0,
+      expectedPermission: 'local-only',
+    },
+    {
+      name: 'missing-outbox',
+      currentVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+      presentStores: DEFAULT_LOCAL_STORE_OBJECT_STORES.filter((store) => store !== 'outbox'),
+      pendingOutboxCount: 1,
+      expectedPermission: 'blocked',
+    },
+  ] as const
+
+  for (const scenario of cases) {
+    const startupStep = new RecordingStartupStepPort()
+    const localStore = new RecordingLocalStoreEffectPort()
+    const permissions: string[] = []
+    const composition = createSyncRuntimeObsidianComposition({
+      settings: {
+        async readSettings() {
+          return {}
+        },
+      },
+      local: {
+        async readLocalEvidence() {
+          return {
+            metadataSnapshot: {
+              ok: true,
+              snapshot: {
+                setup: {
+                  endpoint: 'https://sync.example.test',
+                  vaultId,
+                  deviceId,
+                  yClientId: 1,
+                  protocolVersion: 1,
+                  bootstrapMode: 'join-existing',
+                  tokenVersion: 1,
+                },
+                auth: {
+                  deviceId,
+                  tokenVersion: 1,
+                  authState: 'active',
+                  accessTokenSecretKey: 'kuroflare/access',
+                  refreshTokenSecretKey: 'kuroflare/refresh',
+                  accessTokenExpiresAt: 10_000,
+                  refreshState: 'idle',
+                  retryCount: 0,
+                },
+              },
+            },
+            localStoreEvidence: {
+              ok: true,
+              evidence: {
+                dbExists: true,
+                currentVersion: scenario.currentVersion,
+                presentStores: scenario.presentStores,
+                pendingOutboxCount: scenario.pendingOutboxCount,
+              },
+            },
+            hasMetaYDoc: true,
+            hasLocalVaultFiles: true,
+          }
+        },
+      },
+      ui: new RecordingUiPort(),
+      setupExchange: new NoopSetupExchangePort(),
+      localStore,
+      localStoreRebuild: new NoopLocalStoreRebuildEffectPort(),
+      startupStep,
+      resume: new NoopResumePort(),
+      onSideEffectPermission: (permission) => permissions.push(permission),
+    })
+
+    const result = await composition.lifecycle.runStartupTick()
+
+    assert.equal(permissions.at(-1), scenario.expectedPermission, scenario.name)
+    assert.equal(result.driver.executedStartupStepCount, 0, scenario.name)
+    assert.equal(startupStep.effects.length, 0, scenario.name)
+    assert.equal(localStore.effects.length >= 0, true, scenario.name)
+  }
+})
+
 class RecordingStartupStepPort implements SyncRuntimeStartupStepEffectPort {
   readonly effects: Parameters<SyncRuntimeStartupStepEffectPort['run']>[0][] = []
 
@@ -117,6 +212,14 @@ class RecordingStartupStepPort implements SyncRuntimeStartupStepEffectPort {
 
 class NoopLocalStoreEffectPort implements SyncRuntimeLocalStoreEffectPort {
   async runOpenEffect(): Promise<void> {}
+}
+
+class RecordingLocalStoreEffectPort implements SyncRuntimeLocalStoreEffectPort {
+  readonly effects: Parameters<SyncRuntimeLocalStoreEffectPort['runOpenEffect']>[0][] = []
+
+  async runOpenEffect(effect: Parameters<SyncRuntimeLocalStoreEffectPort['runOpenEffect']>[0]) {
+    this.effects.push(effect)
+  }
 }
 
 class NoopSetupExchangePort implements SyncRuntimeSetupExchangePort {

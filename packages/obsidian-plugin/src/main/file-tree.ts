@@ -21,7 +21,13 @@ import * as Y from 'yjs'
 import type { FileDocId } from '../main-types'
 import { applyFileCreate, applyFileDelete, applyFileRename } from '../sync/meta/tree'
 import { type LocalStoreOutboxRecord } from '../sync/store/store'
-import { nextWorkerMessageId, findActiveFileId, currentSetupMetadata } from './auth'
+import {
+  nextWorkerMessageId,
+  findActiveFileId,
+  currentSetupMetadata,
+  fileDocIdForPath,
+  type SetupMetadataSource,
+} from './auth'
 import {
   FILE_TREE_ORIGIN,
   BINARY_UPLOAD_ORIGIN,
@@ -36,16 +42,33 @@ import { loadTextDoc, metaMap } from './meta'
 import { runOutboxWorkerTick } from './outbox'
 import { writeBlobCacheBytes } from './outbox'
 import type KuroflareSpikePlugin from './plugin'
+import { consumePendingFsRename } from './runtime-guards'
 import { openLocalStoreDatabase, putOutboxRecords } from './store'
 import { sendMetaDocToWorker, requestDocFromWorker } from './sync-websocket'
 
-export function fileTreeDeviceId(plugin: KuroflareSpikePlugin): DeviceId {
+export function fileTreeDeviceId(plugin: SetupMetadataSource): DeviceId {
   return makeDeviceId(currentSetupMetadata(plugin)?.deviceId ?? 'local-device')
+}
+
+/** Minimal plugin surface needed to register a newly created text file. */
+export interface VaultCreatePlugin extends SetupMetadataSource {
+  readonly startupSideEffectGate: {
+    readonly canRun: () => boolean
+  }
+  readonly metaDoc: Y.Doc
+  readonly materializedPaths: Map<FileId, string>
+  readonly activeFile: { readonly path: string } | null
+  readonly app: {
+    readonly workspace: {
+      readonly getActiveFile: () => { readonly path: string } | null
+    }
+  }
 }
 
 export function registerFileTreeWatcher(plugin: KuroflareSpikePlugin): void {
   plugin.registerEvent(
     plugin.app.vault.on('create', (file) => {
+      if (!plugin.startupSideEffectGate.canRun()) return
       if (file instanceof TFile && file.extension === MARKDOWN_EXTENSION) {
         void handleVaultCreate(plugin, file)
         return
@@ -57,6 +80,7 @@ export function registerFileTreeWatcher(plugin: KuroflareSpikePlugin): void {
   )
   plugin.registerEvent(
     plugin.app.vault.on('modify', (file) => {
+      if (!plugin.startupSideEffectGate.canRun()) return
       if (file instanceof TFile && file.extension !== MARKDOWN_EXTENSION) {
         void enqueueBinaryUploadFromVaultFile(plugin, file, 'binary-modify')
       }
@@ -64,6 +88,7 @@ export function registerFileTreeWatcher(plugin: KuroflareSpikePlugin): void {
   )
   plugin.registerEvent(
     plugin.app.vault.on('rename', (file, oldPath) => {
+      if (!plugin.startupSideEffectGate.canRun()) return
       if (file instanceof TFile && file.extension === MARKDOWN_EXTENSION) {
         handleVaultRename(plugin, file, oldPath)
         return
@@ -75,6 +100,7 @@ export function registerFileTreeWatcher(plugin: KuroflareSpikePlugin): void {
   )
   plugin.registerEvent(
     plugin.app.vault.on('delete', (file) => {
+      if (!plugin.startupSideEffectGate.canRun()) return
       if (file instanceof TFile) {
         handleVaultDelete(plugin, file)
       }
@@ -82,15 +108,20 @@ export function registerFileTreeWatcher(plugin: KuroflareSpikePlugin): void {
   )
 }
 
-async function handleVaultCreate(plugin: KuroflareSpikePlugin, file: TFile): Promise<void> {
+export async function handleVaultCreate(
+  plugin: VaultCreatePlugin,
+  file: Pick<TFile, 'path'>,
+): Promise<void> {
+  if (!plugin.startupSideEffectGate.canRun()) return
   if (findActiveFileId(plugin, file.path) !== undefined) return
   const fileId = makeFileId(crypto.randomUUID())
-  const activeYDocId =
-    plugin.activeFile?.path === file.path ? plugin.activeTextDoc?.docId.ydocId : undefined
+  const activeYDocId = await startupYDocId(plugin, file, fileId)
+  if (!plugin.startupSideEffectGate.canRun()) return
+  if (findActiveFileId(plugin, file.path) !== undefined) return
   applyFileCreate(metaMap(plugin), {
     fileId,
     path: file.path,
-    ydocId: activeYDocId ?? makeYDocId(`file-${fileId}`),
+    ydocId: activeYDocId,
     deviceId: fileTreeDeviceId(plugin),
     now: Date.now(),
     origin: FILE_TREE_ORIGIN,
@@ -99,7 +130,8 @@ async function handleVaultCreate(plugin: KuroflareSpikePlugin, file: TFile): Pro
 }
 
 function handleVaultRename(plugin: KuroflareSpikePlugin, file: TFile, oldPath: string): void {
-  if (plugin.pendingFsRenames.delete(canonicalizeVaultPath(file.path))) return
+  if (!plugin.startupSideEffectGate.canRun()) return
+  if (consumePendingFsRename(plugin.pendingFsRenames, file.path)) return
   const result = applyFileRename(metaMap(plugin), {
     fromPath: oldPath,
     toPath: file.path,
@@ -113,6 +145,7 @@ function handleVaultRename(plugin: KuroflareSpikePlugin, file: TFile, oldPath: s
 }
 
 function handleVaultDelete(plugin: KuroflareSpikePlugin, file: TFile): void {
+  if (!plugin.startupSideEffectGate.canRun()) return
   const result = applyFileDelete(metaMap(plugin), {
     path: file.path,
     deviceId: fileTreeDeviceId(plugin),
@@ -129,6 +162,7 @@ async function handleBinaryVaultRename(
   file: TFile,
   oldPath: string,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
   const oldFileId = findActiveFileId(plugin, oldPath)
   if (oldFileId === undefined) {
     await enqueueBinaryUploadFromVaultFile(plugin, file, 'binary-rename')
@@ -136,7 +170,7 @@ async function handleBinaryVaultRename(
   }
   const oldEntry = metaMap(plugin).get(oldFileId)
   if (!isMetaFile(oldEntry, oldFileId) || oldEntry.type !== 'binary') return
-  if (plugin.pendingFsRenames.delete(canonicalizeVaultPath(file.path))) return
+  if (consumePendingFsRename(plugin.pendingFsRenames, file.path)) return
   const result = applyFileRename(metaMap(plugin), {
     fromPath: oldPath,
     toPath: file.path,
@@ -213,10 +247,7 @@ export async function createLocalMetaYDocFromStartupScan(
 
     const text = await plugin.app.vault.read(file)
     const fileId = makeFileId(crypto.randomUUID())
-    const ydocId =
-      plugin.activeFile?.path === file.path && plugin.activeTextDoc !== null
-        ? plugin.activeTextDoc.docId.ydocId
-        : makeYDocId(`file-${fileId}`)
+    const ydocId = await startupYDocId(plugin, file, fileId)
     const docId: FileDocId = { kind: 'file', ydocId }
     const now = Date.now()
     applyFileCreate(metaMap(plugin), {
@@ -243,10 +274,7 @@ export async function adoptLocalFilesAfterRemoteMeta(plugin: KuroflareSpikePlugi
       continue
     }
     const fileId = makeFileId(crypto.randomUUID())
-    const ydocId =
-      plugin.activeFile?.path === file.path && plugin.activeTextDoc !== null
-        ? plugin.activeTextDoc.docId.ydocId
-        : makeYDocId(`file-${fileId}`)
+    const ydocId = await startupYDocId(plugin, file, fileId)
     const docId: FileDocId = { kind: 'file', ydocId }
     const now = Date.now()
     applyFileCreate(metaMap(plugin), {
@@ -272,6 +300,18 @@ export async function adoptLocalFilesAfterRemoteMeta(plugin: KuroflareSpikePlugi
   console.info('[kuroflare] adopted local files after remote meta', { adopted })
 }
 
+async function startupYDocId(
+  plugin: VaultCreatePlugin,
+  file: Pick<TFile, 'path'>,
+  fileId: FileId,
+): Promise<string> {
+  const activeFilePath = plugin.app.workspace.getActiveFile()?.path ?? plugin.activeFile?.path
+  if (activeFilePath !== file.path) {
+    return makeYDocId(`file-${fileId}`)
+  }
+  return (await fileDocIdForPath(plugin, file.path)).ydocId
+}
+
 async function queueJoinAdoptionHashCheck(
   plugin: KuroflareSpikePlugin,
   file: TFile,
@@ -290,6 +330,7 @@ export async function enqueueBinaryUploadFromVaultFile(
   file: TFile,
   reason: string,
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
   if (file.path.startsWith(BLOB_CACHE_PATH_PREFIX)) return
   if (!v.is(VaultRelativePathSchema, file.path)) {
     console.warn('[kuroflare] skipped binary upload for invalid vault path', { path: file.path })
@@ -416,6 +457,7 @@ export async function requestMissingRemoteTextFile(
   plugin: KuroflareSpikePlugin,
   value: { readonly type: unknown; readonly path: string; readonly ydocId?: unknown },
 ): Promise<void> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return
   if (value.type !== 'text' || typeof value.ydocId !== 'string') return
   if (!v.is(VaultRelativePathSchema, value.path)) return
   if (plugin.app.vault.getAbstractFileByPath(value.path) instanceof TFile) return
