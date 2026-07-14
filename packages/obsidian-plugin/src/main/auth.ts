@@ -1,5 +1,7 @@
 import {
   canonicalizeVaultPath,
+  decideClientAuthStart,
+  isClientAuthMetadata,
   makeSha256Hex,
   hashBytesSha256,
   isMetaFile,
@@ -21,11 +23,18 @@ import {
   runAuthRefreshAttempt,
   persistAuthRefreshStart,
 } from '../sync/auth/refresh'
+import type { AuthRefreshMetadataPort } from '../sync/auth/refresh.types'
 import { persistLocalDeviceRevoke as persistLocalDeviceRevokeFn } from '../sync/auth/revoke'
-import type { LocalSetupMetadata } from '../sync/engine/setup'
+import { LOCAL_AUTH_METADATA_KEY, type LocalSetupMetadata } from '../sync/engine/setup'
 import { createLocalStoreIndexedDbMetadataDatabasePort } from '../sync/store/indexeddb'
 import { readLocalStoreIndexedDbMetadataSnapshot } from '../sync/store/indexeddb'
-import { DEVICE_REVOKE_CONFIRMATION, AUTH_REFRESH_STALE_AFTER_MS } from './constants'
+import { waitForIndexedDbRequest, waitForIndexedDbTransaction } from '../sync/store/indexeddb/utils'
+import {
+  DEVICE_REVOKE_CONFIRMATION,
+  AUTH_REFRESH_ESTIMATED_DURATION_MS,
+  AUTH_REFRESH_MARGIN_MS,
+  AUTH_REFRESH_STALE_AFTER_MS,
+} from './constants'
 import {
   localSetupMetadataFromSetupResponse,
   deviceRevokeUrl,
@@ -36,6 +45,8 @@ import {
   createAuthRefreshHttpPort,
   nextAllowedRefreshAtFromFailedAuthRefresh,
   obsidianSecretIdForKey,
+  accessTokenSecretKeyForSetup,
+  safeLogError,
 } from './helpers'
 import { metaMap } from './meta'
 import { scheduleOutboxWorkerTick, runOutboxWorkerTick } from './outbox'
@@ -47,6 +58,100 @@ export interface SetupMetadataSource {
   readonly pendingSetupResponse: SetupExchangeResponse | null
   readonly trustedSetupMetadata: LocalSetupMetadata | null
   readonly kuroflareSettings: Pick<KuroflareSettings, 'setupMetadata' | 'setupVaultId'>
+}
+
+export interface AuthRefreshRetryHost {
+  authRefreshRetryTimeout: number | null
+  workerWebSocketOpenPromise: Promise<void> | null
+}
+
+export interface AuthRefreshLockHost {
+  authRefreshRunning: boolean
+}
+
+export function acquireAuthRefreshLock(plugin: AuthRefreshLockHost): boolean {
+  if (plugin.authRefreshRunning) {
+    return false
+  }
+  plugin.authRefreshRunning = true
+  return true
+}
+
+export function releaseAuthRefreshLock(plugin: AuthRefreshLockHost): void {
+  plugin.authRefreshRunning = false
+}
+
+type AuthRefreshStartupRetry = () => Promise<void>
+
+const authRefreshStartupRetries = new WeakMap<AuthRefreshRetryHost, AuthRefreshStartupRetry>()
+const authRefreshRetryDeadlines = new WeakMap<AuthRefreshRetryHost, number>()
+const authRefreshStartupRetryBackoffs = new WeakMap<AuthRefreshRetryHost, number>()
+const authRefreshRetryGenerations = new WeakMap<AuthRefreshRetryHost, number>()
+const authRefreshRetryTimerGenerations = new WeakMap<AuthRefreshRetryHost, number>()
+
+const AUTH_REFRESH_STARTUP_RETRY_INITIAL_DELAY_MS = 250
+const AUTH_REFRESH_STARTUP_RETRY_MAX_DELAY_MS = 30_000
+
+function authRefreshRetryGeneration(plugin: AuthRefreshRetryHost): number {
+  return authRefreshRetryGenerations.get(plugin) ?? 0
+}
+
+function advanceAuthRefreshRetryGeneration(plugin: AuthRefreshRetryHost): number {
+  const generation = authRefreshRetryGeneration(plugin) + 1
+  authRefreshRetryGenerations.set(plugin, generation)
+  return generation
+}
+
+const clientAuthMetadataKeys = [
+  'deviceId',
+  'authState',
+  'tokenVersion',
+  'accessTokenExpiresAt',
+  'revokedAt',
+  'refreshState',
+  'refreshStartedAt',
+  'retryCount',
+  'nextAllowedRefreshAt',
+  'accessTokenSecretKey',
+  'refreshTokenSecretKey',
+] as const satisfies readonly (keyof ClientAuthMetadata)[]
+
+export function matchesClientAuthMetadata(
+  current: unknown,
+  expected: ClientAuthMetadata,
+): current is ClientAuthMetadata {
+  return (
+    isClientAuthMetadata(current) &&
+    clientAuthMetadataKeys.every((key) => current[key] === expected[key])
+  )
+}
+
+function createConditionalAuthRefreshMetadataPort(
+  db: IDBDatabase,
+  expected: ClientAuthMetadata,
+): AuthRefreshMetadataPort {
+  const metadataDatabase = createLocalStoreIndexedDbMetadataDatabasePort(db)
+  return {
+    async commit(write) {
+      const transaction = metadataDatabase.openMetadataTransaction('readwrite')
+      const current = await waitForIndexedDbRequest(transaction.store.get(LOCAL_AUTH_METADATA_KEY))
+      if (matchesClientAuthMetadata(current, expected)) {
+        await waitForIndexedDbRequest(transaction.store.put(write.value, write.key))
+      }
+      await waitForIndexedDbTransaction(transaction.lifecycle)
+    },
+  }
+}
+
+export function registerAuthRefreshStartupRetry(
+  plugin: AuthRefreshRetryHost,
+  retry: AuthRefreshStartupRetry,
+): void {
+  const generation = advanceAuthRefreshRetryGeneration(plugin)
+  authRefreshStartupRetries.set(plugin, retry)
+  if (plugin.authRefreshRetryTimeout !== null) {
+    authRefreshRetryTimerGenerations.set(plugin, generation)
+  }
 }
 import { openLocalStoreDatabase } from './store'
 
@@ -92,6 +197,236 @@ export async function readAccessToken(
 ): Promise<string | undefined> {
   const value = plugin.app.secretStorage.getSecret(await obsidianSecretIdForKey(key))
   return value !== null && value.length > 0 ? value : undefined
+}
+
+/** Result of one auth refresh attempt used by the WebSocket preflight. */
+export interface UsableAccessTokenRefreshResult {
+  readonly metadata: ClientAuthMetadata
+  readonly accessToken: string | undefined
+}
+
+type AuthRefreshStaleStartRecoveryPlan = Awaited<ReturnType<typeof recoverStaleAuthRefreshStartFn>>
+
+/**
+ * Resolves a persisted refresh marker before WebSocket startup.
+ *
+ * @param metadata - Trusted local auth metadata observed by the preflight.
+ * @param recover - Recovery operation for a possibly abandoned refresh marker.
+ * @param readMetadata - Reader for metadata committed by a successful recovery.
+ * @param scheduleRetryAt - Scheduler used when the in-flight marker is not stale yet.
+ * @returns Metadata that may continue through preflight, or `undefined` while recovery is blocked.
+ */
+export async function recoverAuthRefreshMetadataForPreflight(
+  metadata: ClientAuthMetadata,
+  recover: () => Promise<AuthRefreshStaleStartRecoveryPlan>,
+  readMetadata: () => Promise<ClientAuthMetadata | undefined>,
+  scheduleRetryAt: (retryAt: number) => void,
+  cancelRetry: () => void,
+  staleAfterMs = AUTH_REFRESH_STALE_AFTER_MS,
+): Promise<ClientAuthMetadata | undefined> {
+  if (metadata.refreshState !== 'refreshing') {
+    return metadata
+  }
+  const recovery = await recover()
+  if (!recovery.ok) {
+    if (recovery.phase === 'recovery' && recovery.recovery.action === 'wait') {
+      scheduleRetryAt(recovery.recovery.staleAt)
+      const current = await readMetadata()
+      if (current !== undefined) {
+        if (current.refreshState !== 'refreshing') {
+          cancelRetry()
+          return current
+        }
+        if (
+          current.refreshStartedAt !== undefined &&
+          current.refreshStartedAt !== recovery.recovery.refreshStartedAt
+        ) {
+          scheduleRetryAt(current.refreshStartedAt + staleAfterMs)
+        }
+      }
+    }
+    return undefined
+  }
+  const current = await readMetadata()
+  if (current?.refreshState === 'refreshing') {
+    if (current.refreshStartedAt !== undefined) {
+      scheduleRetryAt(current.refreshStartedAt + staleAfterMs)
+    }
+    return undefined
+  }
+  return current
+}
+
+/**
+ * Decides whether a trusted access token can start a network session, refreshing it when required.
+ *
+ * @param metadata - Trusted local auth metadata for the current device.
+ * @param accessToken - Access token currently held in SecretStorage.
+ * @param refresh - Refresh callback that returns the post-refresh metadata and token.
+ * @param now - Clock function used for deterministic expiry checks.
+ * @returns Whether the token is usable for the session startup.
+ */
+export async function ensureUsableAccessTokenFromMetadata(
+  metadata: ClientAuthMetadata,
+  accessToken: string | undefined,
+  refresh: (
+    reason: 'token-expired' | 'token-expiring-soon',
+  ) => Promise<UsableAccessTokenRefreshResult | undefined>,
+  now: () => number = Date.now,
+): Promise<boolean> {
+  if (metadata.authState !== 'active') {
+    return false
+  }
+  const decideStart = (candidate: ClientAuthMetadata) =>
+    decideClientAuthStart({
+      now: now(),
+      tokenExpiresAt: candidate.accessTokenExpiresAt ?? 0,
+      refreshMarginMs: AUTH_REFRESH_MARGIN_MS,
+      estimatedDurationMs: AUTH_REFRESH_ESTIMATED_DURATION_MS,
+    })
+  const decision = decideStart(metadata)
+  if (decision.action === 'reject') {
+    return false
+  }
+  if (decision.action === 'start' && accessToken !== undefined) {
+    return true
+  }
+
+  const refreshed = await refresh(
+    decision.action === 'refresh-first' ? decision.reason : 'token-expired',
+  )
+  if (refreshed === undefined || refreshed.metadata.authState !== 'active') {
+    return false
+  }
+  const refreshedDecision = decideStart(refreshed.metadata)
+  return refreshedDecision.action === 'start' && refreshed.accessToken !== undefined
+}
+
+/**
+ * Ensures a trusted active access token is usable before opening a Worker WebSocket.
+ *
+ * @param plugin - Plugin runtime whose local metadata and SecretStorage are authoritative.
+ * @param onRefreshRetry - Optional reconnect operation scheduled after transient refresh backoff.
+ * @returns Whether startup may create a socket with the current access token.
+ */
+export async function ensureUsableAccessToken(
+  plugin: KuroflareSpikePlugin,
+  onRefreshRetry?: () => Promise<void>,
+): Promise<boolean> {
+  const setup = currentSetupMetadata(plugin)
+  if (setup === undefined) {
+    return false
+  }
+
+  try {
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+    const readMetadata = async () =>
+      await readLocalStoreIndexedDbMetadataSnapshot({
+        database: createLocalStoreIndexedDbMetadataDatabasePort(db),
+      })
+    const accessTokenSecretKey = accessTokenSecretKeyForSetup(setup)
+
+    const readTrustedMetadata = async (): Promise<ClientAuthMetadata | undefined> => {
+      const snapshot = await readMetadata()
+      if (!snapshot.ok) {
+        console.warn('[kuroflare] websocket auth preflight skipped', {
+          reason: snapshot.reason,
+        })
+        return undefined
+      }
+      if (
+        snapshot.snapshot.setup.vaultId !== setup.vaultId ||
+        snapshot.snapshot.setup.deviceId !== setup.deviceId
+      ) {
+        console.warn('[kuroflare] websocket auth preflight rejected setup mismatch')
+        return undefined
+      }
+      const metadata = snapshot.snapshot.auth
+      if (
+        metadata.authState !== 'active' ||
+        metadata.accessTokenSecretKey !== accessTokenSecretKey
+      ) {
+        return undefined
+      }
+      return metadata
+    }
+
+    const scheduleAuthRefreshRetryAt = (retryAt: number): void => {
+      scheduleAuthRefreshRetry(plugin, Math.max(0, retryAt - Date.now()), onRefreshRetry)
+    }
+
+    const recoverRefreshingMetadata = async (
+      metadata: ClientAuthMetadata,
+    ): Promise<ClientAuthMetadata | undefined> =>
+      await recoverAuthRefreshMetadataForPreflight(
+        metadata,
+        async () => await recoverStaleAuthRefreshStart(plugin, db, metadata),
+        readTrustedMetadata,
+        scheduleAuthRefreshRetryAt,
+        () => cancelAuthRefreshStartupRetry(plugin),
+        AUTH_REFRESH_STALE_AFTER_MS,
+      )
+
+    const metadata = await readTrustedMetadata()
+    if (metadata === undefined) {
+      return false
+    }
+    const recoveredMetadata = await recoverRefreshingMetadata(metadata)
+    if (recoveredMetadata === undefined) {
+      return false
+    }
+
+    return await ensureUsableAccessTokenFromMetadata(
+      recoveredMetadata,
+      await readAccessToken(plugin, accessTokenSecretKey),
+      async (reason) => {
+        const currentMetadata = await readTrustedMetadata()
+        if (currentMetadata === undefined) {
+          return undefined
+        }
+        const currentRecoveredMetadata = await recoverRefreshingMetadata(currentMetadata)
+        if (currentRecoveredMetadata === undefined) {
+          return undefined
+        }
+        if (
+          currentRecoveredMetadata.refreshState === 'backing-off' &&
+          currentRecoveredMetadata.nextAllowedRefreshAt !== undefined &&
+          currentRecoveredMetadata.nextAllowedRefreshAt > Date.now()
+        ) {
+          scheduleAuthRefreshRetryAt(currentRecoveredMetadata.nextAllowedRefreshAt)
+          return undefined
+        }
+        await runAuthRefreshRequest(
+          plugin,
+          {
+            action: 'request-refresh',
+            reason,
+            requestedAt: Date.now(),
+            blockedItemIds: [],
+          },
+          onRefreshRetry,
+        )
+        const refreshedSnapshot = await readMetadata()
+        if (!refreshedSnapshot.ok) {
+          return undefined
+        }
+        const refreshedMetadata = refreshedSnapshot.snapshot.auth
+        if (
+          refreshedMetadata.authState !== 'active' ||
+          refreshedMetadata.accessTokenSecretKey !== accessTokenSecretKey
+        ) {
+          return undefined
+        }
+        return {
+          metadata: refreshedMetadata,
+          accessToken: await readAccessToken(plugin, accessTokenSecretKey),
+        }
+      },
+    )
+  } catch (error: unknown) {
+    console.warn('[kuroflare] websocket auth preflight failed', { error: safeLogError(error) })
+    return false
+  }
 }
 
 export async function activeDocId(plugin: KuroflareSpikePlugin): Promise<DocId> {
@@ -161,10 +496,7 @@ export function stopLocalSyncAfterAuthBlocked(
     window.clearTimeout(plugin.outboxWorkerRetryTimeout)
     plugin.outboxWorkerRetryTimeout = null
   }
-  if (plugin.authRefreshRetryTimeout !== null) {
-    window.clearTimeout(plugin.authRefreshRetryTimeout)
-    plugin.authRefreshRetryTimeout = null
-  }
+  cancelAuthRefreshStartupRetry(plugin)
   plugin.syncStatusEl?.setText(`Kuroflare sync: ${reason}`)
 }
 
@@ -181,54 +513,62 @@ export async function revokeCurrentDeviceAfterConfirmation(
     new Notice('Kuroflare auth: setup metadata is missing')
     return
   }
-  const db = await openLocalStoreDatabase(plugin, setup.vaultId)
-  const metadataSnapshot = await readLocalStoreIndexedDbMetadataSnapshot({
-    database: createLocalStoreIndexedDbMetadataDatabasePort(db),
-  })
-  if (!metadataSnapshot.ok) {
-    new Notice('Kuroflare auth: local auth metadata is missing')
-    console.warn('[kuroflare] device revoke skipped without trusted metadata', {
-      reason: metadataSnapshot.reason,
+  if (!acquireAuthRefreshLock(plugin)) {
+    new Notice('Kuroflare auth: another auth operation is already running')
+    return
+  }
+  try {
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+    const metadataSnapshot = await readLocalStoreIndexedDbMetadataSnapshot({
+      database: createLocalStoreIndexedDbMetadataDatabasePort(db),
     })
-    return
-  }
-  const accessTokenSecretKey = metadataSnapshot.snapshot.auth.accessTokenSecretKey
-  const accessToken =
-    accessTokenSecretKey === undefined
-      ? undefined
-      : await readAccessToken(plugin, accessTokenSecretKey)
-  if (accessToken === undefined) {
-    new Notice('Kuroflare auth: access token is missing')
-    return
-  }
+    if (!metadataSnapshot.ok) {
+      new Notice('Kuroflare auth: local auth metadata is missing')
+      console.warn('[kuroflare] device revoke skipped without trusted metadata', {
+        reason: metadataSnapshot.reason,
+      })
+      return
+    }
+    const accessTokenSecretKey = metadataSnapshot.snapshot.auth.accessTokenSecretKey
+    const accessToken =
+      accessTokenSecretKey === undefined
+        ? undefined
+        : await readAccessToken(plugin, accessTokenSecretKey)
+    if (accessToken === undefined) {
+      new Notice('Kuroflare auth: access token is missing')
+      return
+    }
 
-  const response = await fetch(deviceRevokeUrl(setup), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ reason: 'obsidian-plugin-self-revoke' }),
-  })
-  if (!response.ok) {
-    new Notice(`Kuroflare auth: revoke failed (${response.status})`)
-    console.warn('[kuroflare] device revoke failed', { status: response.status })
-    return
-  }
-  const body: unknown = await response.json().catch(() => undefined)
-  if (!v.is(RevokeDeviceResponseSchema, body)) {
-    new Notice('Kuroflare auth: invalid revoke response')
-    console.warn('[kuroflare] device revoke response rejected by guard')
-    return
-  }
+    const response = await fetch(deviceRevokeUrl(setup), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ reason: 'obsidian-plugin-self-revoke' }),
+    })
+    if (!response.ok) {
+      new Notice(`Kuroflare auth: revoke failed (${response.status})`)
+      console.warn('[kuroflare] device revoke failed', { status: response.status })
+      return
+    }
+    const body: unknown = await response.json().catch(() => undefined)
+    if (!v.is(RevokeDeviceResponseSchema, body)) {
+      new Notice('Kuroflare auth: invalid revoke response')
+      console.warn('[kuroflare] device revoke response rejected by guard')
+      return
+    }
 
-  await persistLocalDeviceRevoke(
-    plugin,
-    db,
-    metadataSnapshot.snapshot.auth,
-    body,
-    metadataSnapshot.snapshot.setup,
-  )
+    await persistLocalDeviceRevoke(
+      plugin,
+      db,
+      metadataSnapshot.snapshot.auth,
+      body,
+      metadataSnapshot.snapshot.setup,
+    )
+  } finally {
+    releaseAuthRefreshLock(plugin)
+  }
 }
 
 async function persistLocalDeviceRevoke(
@@ -260,26 +600,27 @@ export async function recoverStaleAuthRefreshStart(
   plugin: KuroflareSpikePlugin,
   db: IDBDatabase,
   metadata: ClientAuthMetadata,
-): Promise<void> {
+): Promise<Awaited<ReturnType<typeof recoverStaleAuthRefreshStartFn>>> {
   const recovery = await recoverStaleAuthRefreshStartFn({
     metadata,
     now: Date.now(),
     staleAfterMs: AUTH_REFRESH_STALE_AFTER_MS,
-    metadataStore: createAuthRefreshMetadataPort(db, requireSetupMetadata(plugin)),
+    metadataStore: createConditionalAuthRefreshMetadataPort(db, metadata),
   })
   if (!recovery.ok && recovery.phase !== 'recovery') {
     console.warn('[kuroflare] stale auth refresh recovery failed', { phase: recovery.phase })
   }
+  return recovery
 }
 
 export async function runAuthRefreshRequest(
   plugin: KuroflareSpikePlugin,
   request: OutboxAuthRefreshRequestDecision,
+  onRefreshRetry?: () => Promise<void>,
 ): Promise<void> {
-  if (request.action !== 'request-refresh' || plugin.authRefreshRunning) {
+  if (request.action !== 'request-refresh' || !acquireAuthRefreshLock(plugin)) {
     return
   }
-  plugin.authRefreshRunning = true
   try {
     const setup = requireSetupMetadata(plugin)
     const db = await openLocalStoreDatabase(plugin, setup.vaultId)
@@ -326,6 +667,7 @@ export async function runAuthRefreshRequest(
       await plugin.updateSettings({ setupMetadata: refreshedSetup })
       plugin.syncStatusEl?.setText(`Kuroflare sync: auth refreshed ${setup.vaultId}`)
       scheduleOutboxWorkerTick(plugin, 0, 'auth-refresh')
+      notifyAuthRefreshStartupRetry(plugin)
       return
     }
     console.warn('[kuroflare] auth refresh attempt failed', { phase: attempt.phase })
@@ -339,19 +681,124 @@ export async function runAuthRefreshRequest(
     }
     const nextAllowedRefreshAt = nextAllowedRefreshAtFromFailedAuthRefresh(attempt)
     if (nextAllowedRefreshAt !== undefined) {
-      scheduleAuthRefreshRetry(plugin, Math.max(0, nextAllowedRefreshAt - Date.now()))
+      scheduleAuthRefreshRetry(
+        plugin,
+        Math.max(0, nextAllowedRefreshAt - Date.now()),
+        onRefreshRetry,
+      )
     }
   } finally {
-    plugin.authRefreshRunning = false
+    releaseAuthRefreshLock(plugin)
   }
 }
 
-export function scheduleAuthRefreshRetry(plugin: KuroflareSpikePlugin, delayMs: number): void {
+export function scheduleAuthRefreshRetry(
+  plugin: KuroflareSpikePlugin,
+  delayMs: number,
+  onRefreshRetry?: () => Promise<void>,
+): void {
+  if (onRefreshRetry !== undefined) {
+    registerAuthRefreshStartupRetry(plugin, onRefreshRetry)
+  }
+  scheduleAuthRefreshRetryTimer(plugin, delayMs, () => {
+    void runOutboxWorkerTick(plugin, 'auth-refresh-backoff')
+  })
+}
+
+function scheduleAuthRefreshRetryTimer(
+  plugin: AuthRefreshRetryHost,
+  delayMs: number,
+  fallback: () => void,
+): void {
+  const delay = Math.max(0, delayMs)
+  const deadline = Date.now() + delay
+  const generation = authRefreshRetryGeneration(plugin)
+  const existingDeadline = authRefreshRetryDeadlines.get(plugin)
   if (plugin.authRefreshRetryTimeout !== null) {
+    if (existingDeadline !== undefined && existingDeadline <= deadline) {
+      authRefreshRetryTimerGenerations.set(plugin, generation)
+      return
+    }
+    window.clearTimeout(plugin.authRefreshRetryTimeout)
+    plugin.authRefreshRetryTimeout = null
+    authRefreshRetryTimerGenerations.delete(plugin)
+  }
+  authRefreshRetryDeadlines.set(plugin, deadline)
+  authRefreshRetryTimerGenerations.set(plugin, generation)
+  plugin.authRefreshRetryTimeout = window.setTimeout(() => {
+    const timerGeneration = authRefreshRetryTimerGenerations.get(plugin)
+    if (timerGeneration === undefined || authRefreshRetryGeneration(plugin) !== timerGeneration) {
+      return
+    }
+    plugin.authRefreshRetryTimeout = null
+    authRefreshRetryDeadlines.delete(plugin)
+    authRefreshRetryTimerGenerations.delete(plugin)
+    const startupRetry = authRefreshStartupRetries.get(plugin)
+    if (startupRetry !== undefined) {
+      authRefreshStartupRetries.delete(plugin)
+      invokeAuthRefreshStartupRetry(plugin, startupRetry)
+      return
+    }
+    fallback()
+  }, delay)
+}
+
+export function notifyAuthRefreshStartupRetry(plugin: AuthRefreshRetryHost): void {
+  const startupRetry = authRefreshStartupRetries.get(plugin)
+  if (startupRetry === undefined) {
     return
   }
-  plugin.authRefreshRetryTimeout = window.setTimeout(() => {
+  authRefreshStartupRetries.delete(plugin)
+  if (plugin.authRefreshRetryTimeout !== null) {
+    window.clearTimeout(plugin.authRefreshRetryTimeout)
     plugin.authRefreshRetryTimeout = null
-    void runOutboxWorkerTick(plugin, 'auth-refresh-backoff')
-  }, delayMs)
+  }
+  authRefreshRetryDeadlines.delete(plugin)
+  authRefreshRetryTimerGenerations.delete(plugin)
+  invokeAuthRefreshStartupRetry(plugin, startupRetry)
+}
+
+function invokeAuthRefreshStartupRetry(
+  plugin: AuthRefreshRetryHost,
+  startupRetry: AuthRefreshStartupRetry,
+): void {
+  const generation = authRefreshRetryGeneration(plugin)
+  const runStartupRetry = async (): Promise<void> => {
+    try {
+      await startupRetry()
+      if (authRefreshRetryGeneration(plugin) !== generation) {
+        return
+      }
+      authRefreshStartupRetryBackoffs.delete(plugin)
+    } catch (error: unknown) {
+      if (authRefreshRetryGeneration(plugin) !== generation) {
+        return
+      }
+      console.warn('[kuroflare] auth refresh retry failed', { error: safeLogError(error) })
+      authRefreshStartupRetries.set(plugin, startupRetry)
+      const previousDelay =
+        authRefreshStartupRetryBackoffs.get(plugin) ?? AUTH_REFRESH_STARTUP_RETRY_INITIAL_DELAY_MS
+      const nextDelay = Math.min(AUTH_REFRESH_STARTUP_RETRY_MAX_DELAY_MS, previousDelay * 2)
+      authRefreshStartupRetryBackoffs.set(plugin, nextDelay)
+      scheduleAuthRefreshRetryTimer(plugin, previousDelay, () => undefined)
+    }
+  }
+  const inFlightOpen = plugin.workerWebSocketOpenPromise
+  if (inFlightOpen !== null) {
+    void inFlightOpen.then(runStartupRetry, runStartupRetry)
+    return
+  }
+  void runStartupRetry()
+}
+
+export function cancelAuthRefreshStartupRetry(plugin: AuthRefreshRetryHost): void {
+  advanceAuthRefreshRetryGeneration(plugin)
+  authRefreshStartupRetries.delete(plugin)
+  authRefreshStartupRetryBackoffs.delete(plugin)
+  if (plugin.authRefreshRetryTimeout !== null) {
+    window.clearTimeout(plugin.authRefreshRetryTimeout)
+    plugin.authRefreshRetryTimeout = null
+  }
+  authRefreshRetryDeadlines.delete(plugin)
+  authRefreshRetryTimerGenerations.delete(plugin)
 }

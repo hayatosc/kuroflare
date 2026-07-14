@@ -1,31 +1,61 @@
 # Kuroflare Obsidian Plugin
 
-This package is an Obsidian plugin prototype for validating:
+This package contains the production Obsidian client composition used by the
+Kuroflare Worker sync runtime. It persists Yjs documents in IndexedDB, applies
+remote snapshots and updates to the vault, and sends local changes through the
+durable outbox. It is suitable for a disposable desktop trial; it is not yet a
+marketplace-ready distribution.
 
-- CodeMirror 6 editor binding through `Compartment.reconfigure`
-- Yjs binding through `y-codemirror.next` with the Y undo plugin disabled
-- `EditorView` access from an active `MarkdownView`
-- `Y.Text` persistence through `y-indexeddb` before disk seeding
-- watcher hash-gating with SHA-256 canonical text hashes
-- disk-to-`Y.Text` imports using a minimal middle replacement
-- materialize compare-and-swap before writing to disk
+## Safe desktop trial
 
-It is intentionally scoped to one active Markdown file and does not talk to a
-backend. The first file you bind becomes the target for that plugin session;
-other active files are ignored to avoid writing the fixed editor buffer into the
-wrong note.
+Use a disposable vault. The trial exercises file writes, plugin installation,
+local IndexedDB persistence, and remote materialization.
 
-## Build
+1. Start the local Worker in one terminal and leave it running:
+
+   ```bash
+   nr --filter @kuroflare/worker dev:local
+   ```
+
+2. In another terminal, prefer the `:app` harness. It creates and opens the
+   disposable vault at `/tmp/kuroflare-obsidian-cli-smoke` before running the
+   real Linux Obsidian + miniflare E2E:
+
+   ```bash
+   nr --filter @kuroflare/obsidian-plugin test:e2e:obsidian:miniflare:app
+   ```
+
+   `worker dev:local` must already be running in the other terminal; the
+   harness does not start a Worker for you.
+
+3. The direct harness is for an Obsidian instance that is already open. It has
+   a fail-fast guard and refuses to mutate an active vault unless its absolute
+   path exactly matches `KUROFLARE_E2E_OBSIDIAN_VAULT_PATH` (default:
+   `/tmp/kuroflare-obsidian-cli-smoke`):
+
+   ```bash
+   export KUROFLARE_E2E_OBSIDIAN_VAULT_PATH=/tmp/kuroflare-obsidian-cli-smoke
+   nr --filter @kuroflare/obsidian-plugin test:e2e:obsidian:miniflare
+   ```
+
+   Do not point the direct harness at a personal or production vault. The
+   guard validates the active vault before each Obsidian CLI operation and
+   again inside each eval. Do not switch vaults while the harness is running;
+   a CLI vault switch can race the separate validation call. The harness uses
+   run-specific document IDs and does not delete the shared
+   `kuroflare-file:*` IndexedDB namespace.
+
+   Only one harness may own a disposable vault at a time. A concurrent run
+   fails on `.kuroflare-e2e.lock`. If a process was killed without cleanup,
+   remove that file only after confirming no harness is still running.
+
+## Build and manual install
 
 ```bash
-pnpm --filter @kuroflare/obsidian-plugin build
+nr --filter @kuroflare/obsidian-plugin build
 ```
 
-The build writes `main.js` next to `manifest.json`.
-
-## Manual Install
-
-From this repository:
+The build writes `main.js` next to `manifest.json`. For a local manual install:
 
 ```bash
 mkdir -p /path/to/vault/.obsidian/plugins/kuroflare
@@ -34,21 +64,16 @@ cp packages/obsidian-plugin/versions.json /path/to/vault/.obsidian/plugins/kurof
 cp packages/obsidian-plugin/main.js /path/to/vault/.obsidian/plugins/kuroflare/
 ```
 
-Then enable `Kuroflare` from Obsidian's Community plugins settings.
+Enable `Kuroflare` from Obsidian's Community plugins settings, then complete
+setup using the Worker deployment described in the
+[deployment guide](../../docs/deployment.md). The desktop trial commands above
+are not a production deployment procedure.
 
-## Smoke Test
+## Current limits
 
-1. Open a Markdown file.
-2. Run `Kuroflare spike: bind active editor`.
-3. Edit the file and run `Kuroflare spike: log state`.
-4. Run `Kuroflare spike: simulate remote insert`.
-5. Run `Kuroflare spike: flush YText to disk`.
-6. Edit the same file from an external editor and confirm the plugin imports it.
-7. Change only CRLF/LF or the final newline externally and confirm it does not
-   create repeated conflict copies.
-8. Restart Obsidian and confirm the previous YText state loads before disk seeding.
-9. To test the CAS path, edit the file externally after binding, then run
-   `Kuroflare spike: flush YText to disk`. It should create a conflict copy
-   instead of overwriting the external edit.
-
-Use a disposable vault. This spike deliberately exercises write paths.
+- Blob uploads use one PUT. Payloads at or above 16 MiB are rejected until
+  multipart upload is implemented.
+- This trial targets desktop Obsidian. Obsidian mobile/WebView IndexedDB
+  behavior is not yet verified or supported.
+- Presence/awareness, marketplace packaging, and the remaining design-review
+  release gates are not claims of this README.

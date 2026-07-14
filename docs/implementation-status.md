@@ -5,24 +5,25 @@
 設計レビュー（2026-07-03）で見つかった項目は spec 本文へ反映済みで、記録は git 履歴にある。
 The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-review.md](spec/design-review.md).
 
-## 現状サマリ（2026-07-12）
+## Current summary (2026-07-14)
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 190 件、worker 225 件、model-tests 17 件、Obsidian 345 件、worker e2e 7 件。
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 190 件、worker 230 件、model-tests 17 件、Obsidian 394 件、worker e2e 7 件。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
-- **実 Linux Obsidian + miniflare の e2e（`test:e2e:obsidian:miniflare`）は not green**。2026-06-30 以降のリファクタと機能追加で退行し、10 件の実バグを修正した後も、アクティブファイル初回フルシンクの content-loss が 1 件未解決（後述）。
+- **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
+- Production composition/startup, durable outbox worker, and authentication refresh/revoke lifecycle wiring were active at the base HEAD `61afa97`. The trial-readiness fixes and verification recorded here apply to the current uncommitted working tree based on that commit; a clean checkout of `61afa97` does not contain them. The remaining P0/P1/P2 items and the design-review release gates below are still authoritative.
 - DR-008 (snapshot health and rollback) is closed. Immutable R2 bytes are now admitted only by append-only SQLite evidence, and the authenticated health API and Obsidian operator panel expose server-computed action authority.
 
 ### MVP チェックリスト（[operations.md](spec/operations.md) §8 対応）
 
 - [x] MVP-0: local editor loop。実 Linux Obsidian + obsidian-cli で CM6 ⇄ Y.Text ⇄ disk の両レグ、per-file YDoc、watcher-drop CAS conflict-copy を往復（`test:e2e:obsidian`）。
-- [ ] MVP-1: one file remote sync。**2026-07-07 時点で退行し not green**。workerd e2e は green だが、実 Obsidian + miniflare はアクティブファイル初回フルシンクの content-loss で失敗。
-- [x] MVP-2: meta YDoc + path repair。rename = 同一 fileId の path 更新、Worker 経由 cross-device concurrent rename の収束、text 本文の per-file YDoc 化を実機 e2e で実証（miniflare 経由の実証は MVP-1 と同様に退行中）。
+- [x] MVP-1: one file remote sync。The real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14 with `worker dev:local` running separately.
+- [x] MVP-2: meta YDoc + path repair。rename = 同一 fileId の path 更新、Worker 経由 cross-device concurrent rename の収束、text 本文の per-file YDoc 化を実機 e2e で実証。
 - [x] MVP-3: initial sync + binary。binary blob PUT → meta 参照公開、manifest/chunk 再取得、初回 meta/file snapshot からの Markdown materialize を実機 e2e で証明。production API / UX 化は残タスク。
 
 ### 次にやるべきこと
 
-1. 後述の CM6/yCollab content-loss を実ブラウザ DevTools で調査し、MVP-1 を green に戻す。
-2. その後、残タスク P0（startup pipeline の常用化、outbox runner の production 常用化）を進める。
+1. Keep the real Obsidian + miniflare `:app` E2E green while changing the production runtime.
+2. Close the remaining P0/P1/P2 and design-review release gates before distribution.
 
 ## 残タスク
 
@@ -51,8 +52,8 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ### P0: production startup pipeline の常用化
 
-- The startup step interfaces and composition are implemented and unit-tested, but the production plugin does not instantiate the composition root yet.
-- Production adapters for snapshot operations, IndexedDB YDoc loading, setup persistence, and local evidence must be connected before enabling the runtime. The existing ad-hoc WebSocket, outbox, metadata enqueue, and active-file request side effects must be replaced in the same migration to prevent duplicate sends and state-vector requests.
+- The production plugin instantiates the startup composition root and lifecycle wiring present at the base HEAD `61afa97`; the current working-tree Obsidian + miniflare `:app` E2E exercises it together with the trial-readiness fixes.
+- Production adapters for snapshot operations, IndexedDB YDoc loading, setup persistence, local evidence, resume lifecycle, and auth refresh/revoke are connected. Startup side-effect gates still protect the existing WebSocket, outbox, metadata enqueue, and active-file request paths from duplicate effects.
 - setup persistence は SecretStorage + IndexedDB metadata の実行境界を通り、`data.json` に token を保存しない。残りは `data.json.setupMetadata` mirror を UI / 復旧用 cache として明確化するか、完全廃止するかの決着。
 
 ### P0: full snapshot の production 経路
@@ -62,8 +63,9 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ### P0: outbox worker の実 side effect runner 化
 
-- scheduler tick、lease transaction、`blob-put` / `blob-get` / `manifest-put` / `materialize` / `meta-ref-update` / `y-update` runner、completion 分類、failure completion は接続済み。`sendDocUpdateToWorker()` は durable outbox enqueue + runner tick に寄せた。
-- resume lifecycle adapter（layout ready / focus / visibility / online → resume tick）も接続済み。残りは production 常用化と、miniflare smoke で固定した一連の regression（binary upload/download/materialize、rename/delete 伝播、binary restore repair、invalid-meta inspect/discard、path-conflict retry/resolve、remote-materialize-blocked action）の維持。
+- scheduler tick、lease transaction、`blob-put` / `blob-get` / `manifest-put` / `materialize` / `meta-ref-update` / `y-update` runner、completion 分類、failure completion are wired into the production plugin at HEAD `61afa97`. `sendDocUpdateToWorker()` uses durable outbox enqueue + runner tick.
+- Resume lifecycle (layout ready / focus / visibility / online → resume tick) and auth refresh/revoke transitions are also active. Remaining work is operational hardening and preserving the miniflare regression coverage (binary upload/download/materialize, rename/delete propagation, binary restore repair, invalid-meta inspect/discard, path-conflict retry/resolve, and remote-materialize-blocked actions).
+- WebSocket startup now reads trusted auth metadata and refreshes an expired or soon-to-expire token before creating the socket; a transient refresh backoff retries startup without admitting the stale token.
 
 ### P1
 
@@ -76,7 +78,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 - snapshot retention は checkpoint 後に実行され、`snapshot_retention_events` に記録される。残りは retention policy の運用設定、event pagination、alerting。
 - quarantine admin は Worker HTTP と plugin settings panel の両方にある。残りは force-apply 後の user-facing audit summary と大量 quarantine 向け pagination。
-- auth refresh / revoke runtime はあるが、plugin lifecycle（foreground/resume、expiry 前 refresh、revoked device の local shutdown）への接続が残る。
+- Auth refresh / revoke runtime and plugin lifecycle wiring (foreground/resume, pre-expiry refresh, and revoked-device local shutdown) are active at HEAD `61afa97`; distribution still requires the surrounding settings UX, migration policy, and operator documentation.
 - presence / awareness は型とテスト片のみで editor binding 未接続。
 - 配布前に settings UI、Setup URI/QR、ログの secret redaction、migration / backward-incompatible policy、手動エスケープハッチの UI を整える。
 - Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）はほぼ未実装。
@@ -133,7 +135,7 @@ checkpoint / cold-start、outbox、sync-update の実行可能な状態機械。
 
 ## 検証記録
 
-### 2026-07-07: miniflare e2e の退行調査
+### 2026-07-07: miniflare e2e の退行調査 (resolved 2026-07-14)
 
 実 Linux Obsidian + miniflare Worker で `test:e2e:obsidian:miniflare` を再実行したところ、2026-06-30 以降の複数コミット（monolith 分割 `c5cf819`、invalid-meta isolation / quarantine admin `8dcd512`）で退行していた。
 10 件の実バグを修正した末、最後の 1 件が未解決で not green のまま。
@@ -151,10 +153,12 @@ checkpoint / cold-start、outbox、sync-update の実行可能な状態機械。
 9. snapshot-import ルートが既存のリモート内容をマージせず上書きしていた。hydrate してから `Y.applyUpdate` でマージし再スナップショットするよう修正。
 10. `ensureDocHydrated` が並行実行され得た（読み取りパスが write queue 外）。in-flight Promise を共有するよう修正。
 
-未解決: **アクティブファイルの初回フルシンクで content-loss**。
+At the time, the final unresolved issue was **active-file first-full-sync content-loss**.
 CRDT マージ自体は一度成功しているのに、直後に「ローカルの内容だけで delete+insert し直す」何かが走り、リモート側 insert が `deleted: true` になる。
 `bindActiveMarkdownView` が起動時に 2 回連続で呼ばれ、同じ Y.Text に対して yCollab 拡張を作り直していることを確認し、冗長な再バインドをスキップするガードを追加したが、この content-loss 自体は直らなかった。
 obsidian-cli 経由の instrumentation では収束しなかったため、次に取り組む場合は Electron プロセスに実ブラウザ DevTools を繋ぐか、Obsidian の外で yjs + y-codemirror.next の最小再現を作るほうが効率的。
+
+Resolution evidence (2026-07-14): the real Linux Obsidian + miniflare `:app` E2E passed from the uncommitted working tree based on `61afa97` after `worker dev:local` was started in a separate terminal. The historical failure record above is retained for context; the current evidence marks the regression resolved for this working tree.
 
 ### fake が隠していた実バグ（real e2e 立ち上げ時に発見）
 

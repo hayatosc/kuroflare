@@ -22,6 +22,7 @@ import { planOutboxWorkerCompletionIndexedDbWriteTransaction } from '../sync/eng
 import { type LocalStoreOutboxRecord } from '../sync/store/store'
 import {
   currentSetupMetadata,
+  ensureUsableAccessToken,
   requireSetupMetadata,
   nextWorkerMessageId,
   sha256Hex,
@@ -188,12 +189,13 @@ export interface WorkerWebSocketOpenRuntime {
   readonly startupSideEffectGate: {
     readonly canSendNetwork: () => boolean
   }
-  readonly syncStoppedByAuth: string | null
+  syncStoppedByAuth: string | null
   workerWebSocketOpenPromise: Promise<void> | null
   readonly workerWebSocketSession: SyncRuntimeWebSocketSessionPort
   workerWebSocketStartupPort: SyncRuntimeWebSocketStartupStepPort | null
   workerHelloAccepted: boolean
   readonly setup: LocalSetupMetadata
+  readonly ensureUsableAccessToken: () => Promise<boolean>
   readonly createStartupPort: () => SyncRuntimeWebSocketStartupStepPort
 }
 
@@ -225,7 +227,9 @@ export async function openWorkerWebSocket(
   const setup = requireSetupMetadata(plugin)
   const runtime: WorkerWebSocketOpenRuntime = {
     startupSideEffectGate: plugin.startupSideEffectGate,
-    syncStoppedByAuth: plugin.syncStoppedByAuth,
+    get syncStoppedByAuth() {
+      return plugin.syncStoppedByAuth
+    },
     get workerWebSocketOpenPromise() {
       return plugin.workerWebSocketOpenPromise
     },
@@ -246,6 +250,8 @@ export async function openWorkerWebSocket(
       plugin.workerHelloAccepted = value
     },
     setup,
+    ensureUsableAccessToken: async () =>
+      await ensureUsableAccessToken(plugin, async () => await openWorkerWebSocket(plugin)),
     createStartupPort: () => createWorkerWebSocketStartupPort(plugin),
   }
   await openWorkerWebSocketRuntime(runtime, async () => await sendHello(plugin))
@@ -258,10 +264,13 @@ async function openWorkerWebSocketOnce(
   if (!runtime.startupSideEffectGate.canSendNetwork()) return
   if (runtime.syncStoppedByAuth !== null) return
   const snapshot = runtime.workerWebSocketSession.snapshot()
-  if (snapshot.readyState === WebSocket.OPEN) {
-    if (!runtime.workerHelloAccepted) await sendHello()
-    return
+  if (snapshot.readyState === WebSocket.OPEN && runtime.workerHelloAccepted) return
+  const usable = await runtime.ensureUsableAccessToken()
+  if (!usable) {
+    throw new Error('websocket-access-token-unusable')
   }
+  if (!runtime.startupSideEffectGate.canSendNetwork()) return
+  if (runtime.syncStoppedByAuth !== null) return
   runtime.workerHelloAccepted = false
   runtime.workerWebSocketSession.close(1000, 'reconnect')
   runtime.workerWebSocketStartupPort = runtime.createStartupPort()

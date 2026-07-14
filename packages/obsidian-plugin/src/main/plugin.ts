@@ -93,6 +93,7 @@ import {
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import {
   activeDocId,
+  cancelAuthRefreshStartupRetry,
   currentSetupDeviceId,
   currentSetupMetadata,
   currentSetupVaultIdHint,
@@ -286,10 +287,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       window.clearTimeout(this.outboxWorkerRetryTimeout)
       this.outboxWorkerRetryTimeout = null
     }
-    if (this.authRefreshRetryTimeout !== null) {
-      window.clearTimeout(this.authRefreshRetryTimeout)
-      this.authRefreshRetryTimeout = null
-    }
+    cancelAuthRefreshStartupRetry(this)
     this.metaDoc.destroy()
   }
 

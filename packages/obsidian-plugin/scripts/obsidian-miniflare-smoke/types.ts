@@ -4,11 +4,10 @@ import { fileURLToPath } from 'node:url'
 const pluginDir = dirname(fileURLToPath(import.meta.url))
 const packageDir = resolve(pluginDir, '../..')
 const pluginId = 'kuroflare'
-const notePath = 'e2e-miniflare.md'
-
 const endpoint = process.env.KUROFLARE_E2E_ENDPOINT ?? 'http://127.0.0.1:8787'
 const seedSecret = process.env.KUROFLARE_E2E_SEED_SECRET ?? 'e2e-seed-secret'
 const runId = Date.now().toString(36)
+const notePath = `e2e-miniflare-${runId}.md`
 const vaultId = process.env.KUROFLARE_E2E_VAULT_ID ?? `obsidian-miniflare-e2e-${runId}`
 const setupToken = process.env.KUROFLARE_E2E_SETUP_TOKEN ?? `setup-token-${runId}`
 const cliBootstrapSetupToken = `${setupToken}-cli-bootstrap`
@@ -364,12 +363,13 @@ function canonicalizeVaultPath(path: string): string {
   return path.normalize('NFC').replace(/\/+/g, '/').toLowerCase()
 }
 
-// Filename prefixes this script uses for its own runId-suffixed test
-// artifacts (see the path constants near the top of this file). Every one of
-// them embeds `${runId}`, so a prefix match only ever catches *past* runs'
-// leftovers (including Obsidian's " (conflict ...)" renamed copies of them),
-// never the current run's files.
+// Filename prefixes this script uses for its own test artifacts (see the path
+// constants near the top of this file). The first entry removes the legacy
+// fixed active-file fixture; the remaining current paths embed `${runId}` and
+// cleanup runs before the current fixture is written.
 const STALE_VAULT_ARTIFACT_PREFIXES = [
+  'e2e-miniflare.md',
+  'e2e-miniflare-',
   'meta-local-',
   'meta-peer-',
   'meta-shared-',

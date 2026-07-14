@@ -3,13 +3,16 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 
 import * as Y from 'yjs'
 
@@ -49,12 +52,19 @@ import type {
 } from './types.ts'
 import { encodeBase64, decodeBase64, metaPaths } from './yjs.ts'
 
-function obsidian(args: readonly string[]): string {
+function rawObsidian(args: readonly string[]): string {
   return execFileSync('obsidian', args, {
     cwd: packageDir,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim()
+}
+
+function obsidian(args: readonly string[]): string {
+  if (args[0] !== 'vault' || args[1] !== 'info=path') {
+    requireSafeObsidianVaultPath(requireObsidianVaultPath(rawObsidian(['vault', 'info=path'])))
+  }
+  return rawObsidian(args)
 }
 
 /**
@@ -80,10 +90,81 @@ function requireObsidianVaultPath(value: string): string {
   return vaultPath
 }
 
+const DEFAULT_E2E_OBSIDIAN_VAULT_PATH = '/tmp/kuroflare-obsidian-cli-smoke'
+
+/**
+ * Refuses destructive harness operations unless Obsidian is using the disposable e2e vault.
+ *
+ * @param vaultPath - Absolute active vault path returned by the Obsidian CLI.
+ * @returns The validated vault path.
+ * @throws When the active vault does not exactly match the configured e2e vault path.
+ */
+function requireSafeObsidianVaultPath(vaultPath: string): string {
+  const expectedPath = resolve(
+    process.env.KUROFLARE_E2E_OBSIDIAN_VAULT_PATH ?? DEFAULT_E2E_OBSIDIAN_VAULT_PATH,
+  )
+  const resolvedVaultPath = resolve(vaultPath)
+  const canonicalExpectedPath = realpathSync(expectedPath)
+  const canonicalVaultPath = realpathSync(resolvedVaultPath)
+  if (
+    !isAbsolute(vaultPath) ||
+    resolvedVaultPath !== expectedPath ||
+    canonicalExpectedPath !== expectedPath ||
+    canonicalVaultPath !== expectedPath
+  ) {
+    throw new Error(
+      `Refusing to mutate active Obsidian vault ${JSON.stringify(vaultPath)}. ` +
+        `Expected the disposable e2e vault at ${JSON.stringify(expectedPath)}; ` +
+        'set KUROFLARE_E2E_OBSIDIAN_VAULT_PATH to override it.',
+    )
+  }
+  return vaultPath
+}
+
 function requireIncludes(value: string, expected: string, label: string): void {
   if (!value.includes(expected)) {
     throw new Error(`${label} did not include ${JSON.stringify(expected)}:\n${value}`)
   }
+}
+
+function errorCode(error: unknown): unknown {
+  return typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined
+}
+
+/** Acquires exclusive ownership of the shared disposable Obsidian vault. */
+function acquireObsidianE2ELock(vaultPath: string): () => void {
+  requireSafeObsidianVaultPath(vaultPath)
+  const lockPath = join(vaultPath, '.kuroflare-e2e.lock')
+  const owner = JSON.stringify({ pid: process.pid, runId })
+  const writeLock = (): void => writeFileSync(lockPath, owner, { flag: 'wx' })
+  try {
+    writeLock()
+  } catch (error: unknown) {
+    if (errorCode(error) !== 'EEXIST') {
+      throw new Error(`Failed to acquire Obsidian e2e lock: ${lockPath}`, { cause: error })
+    }
+    throw new Error(
+      `Obsidian e2e vault is already in use: ${lockPath}. Remove a stale lock only after confirming no harness is running.`,
+      { cause: error },
+    )
+  }
+
+  let released = false
+  const release = (): void => {
+    if (released) return
+    released = true
+    try {
+      if (readFileSync(lockPath, 'utf8') === owner) {
+        unlinkSync(lockPath)
+      }
+    } catch (error: unknown) {
+      if (errorCode(error) !== 'ENOENT') {
+        console.warn('Failed to release Obsidian e2e lock', { error })
+      }
+    }
+  }
+  process.once('exit', release)
+  return release
 }
 
 // The e2e vault is long-lived and shared across every run of this script, so
@@ -129,7 +210,19 @@ async function waitForRemoteMeta(
 }
 
 function evalInObsidian(code: string): unknown {
-  const output = obsidian(['eval', `code=${code}`])
+  const expectedPath = requireSafeObsidianVaultPath(
+    requireObsidianVaultPath(rawObsidian(['vault', 'info=path'])),
+  )
+  const guardedCode = `(async () => {
+    const activeVaultPath = typeof app.vault.adapter.getBasePath === 'function'
+      ? app.vault.adapter.getBasePath()
+      : app.vault.adapter.basePath;
+    if (activeVaultPath !== ${JSON.stringify(expectedPath)}) {
+      throw new Error('Refusing Obsidian eval after active vault changed.');
+    }
+    return await (${code});
+  })()`
+  const output = rawObsidian(['eval', `code=${guardedCode}`])
   // A console.warn/error fired during eval prints its own line(s) before the
   // return value, so the marker must be found anywhere in the output (not
   // just at the start) and only the text after the last occurrence parsed.
@@ -841,40 +934,15 @@ async function runRemoteMaterializeBlockedActions(): Promise<RemoteMaterializeBl
 }
 
 /**
- * Clears the plugin's local Yjs IndexedDB state before enabling it, so each
- * run starts as a genuine fresh join instead of inheriting fileId/ydocId
- * mappings left behind by earlier runs.
- *
- * This must delete both the per-file text databases (`kuroflare-file:*`) AND
- * the current vault's namespaced meta database (`kuroflare-meta:<vaultId>`),
- * while retaining the legacy `kuroflare-meta` name for old installs. Leaving
- * the current database in place lets a stale local fileId survive across runs
- * for any path reused between them (e.g. the fixed `notePath` used for the
- * active-file join scenario) — the join code then takes the hash-mismatch
- * "adopt-with-local-edit" branch instead of the "no remote entry yet,
- * allocate-new" branch a real fresh join would hit, which made the freshly
- * seeded remote content look like a local edit to be kept.
- */
-function clearTextIndexedDb() {
-  obsidian([
-    'eval',
-    `code=(async () => { const databases = typeof indexedDB.databases === 'function' ? await indexedDB.databases() : []; const names = databases.map((database) => database.name).filter((name) => name?.startsWith('kuroflare-file:') || name === 'kuroflare-meta' || name === 'kuroflare-meta:${vaultId}'); await Promise.all(names.map((name) => new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase(name); request.onsuccess = () => resolve('deleted'); request.onerror = () => reject(request.error); request.onblocked = () => resolve('blocked'); }))); return 'deleted'; })()`,
-  ])
-}
-
-/**
  * Deletes this script's own leftover test files from earlier runs.
  *
  * The e2e vault is long-lived infrastructure shared across every invocation
  * of this script (and the other smoke scripts), so without cleanup it grows
- * forever. Once `clearTextIndexedDb` resets local meta on every run (see
- * above), `adoptLocalFilesAfterRemoteMeta` re-adopts *every* leftover
- * markdown file as a brand-new local file each run, and the worker's
- * alarm-driven checkpoint sweep over that ever-growing file set gets slow
- * enough to blow past this script's `waitFor` timeouts. Pruning prior runs'
- * artifacts up front keeps each run's adoption/checkpoint cost bounded.
+ * forever. Pruning prior runs' artifacts up front keeps adoption and the
+ * worker's alarm-driven checkpoint sweep bounded.
  */
 function cleanupStaleVaultArtifacts(vaultPath: string): void {
+  requireSafeObsidianVaultPath(vaultPath)
   for (const entry of readdirSync(vaultPath)) {
     if (STALE_VAULT_ARTIFACT_PREFIXES.some((prefix) => entry.startsWith(prefix))) {
       // `recursive` handles the (unexpected but observed) case where a past
@@ -885,6 +953,7 @@ function cleanupStaleVaultArtifacts(vaultPath: string): void {
 }
 
 function copyPlugin(vaultPath: string): void {
+  requireSafeObsidianVaultPath(vaultPath)
   const targetDir = join(vaultPath, '.obsidian', 'plugins', pluginId)
   mkdirSync(targetDir, { recursive: true })
   for (const file of ['manifest.json', 'versions.json', 'main.js']) {
@@ -909,6 +978,8 @@ function copyPlugin(vaultPath: string): void {
 export {
   obsidian,
   requireObsidianVaultPath,
+  requireSafeObsidianVaultPath,
+  acquireObsidianE2ELock,
   requireIncludes,
   waitForRemoteMeta,
   evalInObsidian,
@@ -934,7 +1005,6 @@ export {
   retryPathConflictMaterialize,
   resolveRenameMaterializeFailure,
   runRemoteMaterializeBlockedActions,
-  clearTextIndexedDb,
   cleanupStaleVaultArtifacts,
   copyPlugin,
 }

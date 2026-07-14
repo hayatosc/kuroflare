@@ -1,6 +1,3 @@
-import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-
 import * as Y from 'yjs'
 
 import {
@@ -19,6 +16,8 @@ import {
 import {
   obsidian,
   requireObsidianVaultPath,
+  requireSafeObsidianVaultPath,
+  acquireObsidianE2ELock,
   evalInObsidian,
   waitForObsidianPluginLoaded,
   waitForVaultFileIncludes,
@@ -39,7 +38,6 @@ import {
   retryPathConflictMaterialize,
   resolveRenameMaterializeFailure,
   runRemoteMaterializeBlockedActions,
-  clearTextIndexedDb,
   cleanupStaleVaultArtifacts,
   copyPlugin,
   requireIncludes,
@@ -87,7 +85,26 @@ import {
   renameMetaEntry,
 } from './yjs.ts'
 
-const vaultPath = requireObsidianVaultPath(obsidian(['vault', 'info=path']))
+const obsidianPollTimeoutMs = parsePositiveInteger(
+  process.env.KUROFLARE_E2E_OBSIDIAN_POLL_TIMEOUT_MS,
+  30_000,
+)
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback
+  }
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid positive integer: ${value}`)
+  }
+  return parsed
+}
+
+const vaultPath = requireSafeObsidianVaultPath(
+  requireObsidianVaultPath(obsidian(['vault', 'info=path'])),
+)
+acquireObsidianE2ELock(vaultPath)
 
 const docId = activeDocIdForPath(notePath)
 const seedUpdate = makeYTextUpdate(remoteSeedText)
@@ -124,8 +141,6 @@ await seedSetupToken(setupToken)
 
 copyPlugin(vaultPath)
 
-writeFileSync(join(vaultPath, notePath), `Obsidian Miniflare local placeholder ${runId}`)
-
 obsidian(['dev:debug', 'on'])
 obsidian(['dev:errors', 'clear'])
 obsidian(['dev:console', 'clear'])
@@ -133,15 +148,16 @@ obsidian(['plugin:disable', `id=${pluginId}`, 'filter=community'])
 // Prune prior runs' leftover artifacts while the plugin is inactive, so no
 // live vault watcher reacts to files disappearing out from under it.
 cleanupStaleVaultArtifacts(vaultPath)
+requireSafeObsidianVaultPath(vaultPath)
+createOrOverwriteObsidianText(notePath, `Obsidian Miniflare local placeholder ${runId}`)
 obsidian(['open', `path=${notePath}`])
-clearTextIndexedDb()
 obsidian(['plugins:restrict', 'off'])
 obsidian(['plugin:enable', `id=${pluginId}`, 'filter=community'])
-waitForObsidianPluginLoaded()
+waitForObsidianPluginLoaded(obsidianPollTimeoutMs)
 obsidian(['command', 'id=kuroflare:kuroflare-sync-run-startup-tick'])
 
 const resultValue = evalInObsidian(`(async () => {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + ${obsidianPollTimeoutMs};
   while (Date.now() < deadline) {
     const plugin = app.plugins.plugins.kuroflare;
     const file = app.vault.getAbstractFileByPath(${JSON.stringify(notePath)});
@@ -188,6 +204,7 @@ if (
 const initialFullSyncResult = await waitForVaultFileIncludes(
   initialFullSyncPath,
   initialFullSyncText,
+  obsidianPollTimeoutMs,
 )
 if (
   initialFullSyncResult.exists !== true ||
@@ -225,7 +242,7 @@ try {
   )
 
   const remoteEditResult = evalInObsidian(`(async () => {
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + ${obsidianPollTimeoutMs};
     while (Date.now() < deadline) {
       const file = app.vault.getAbstractFileByPath(${JSON.stringify(notePath)});
       const fileText = file ? await app.vault.read(file) : '';
@@ -272,8 +289,8 @@ try {
 
   createOrOverwriteObsidianText(metaLocalPath, 'local meta rename source')
   createOrOverwriteObsidianText(metaPeerPath, 'peer meta rename source')
-  const localMetaEntry = await waitForActiveMetaEntry(metaLocalPath)
-  const peerMetaEntry = await waitForActiveMetaEntry(metaPeerPath)
+  const localMetaEntry = await waitForActiveMetaEntry(metaLocalPath, obsidianPollTimeoutMs)
+  const peerMetaEntry = await waitForActiveMetaEntry(metaPeerPath, obsidianPollTimeoutMs)
   if (localMetaEntry === null || peerMetaEntry === null) {
     throw new Error(
       `Obsidian did not register meta entries: ${JSON.stringify({ localMetaEntry, peerMetaEntry })}`,
@@ -339,8 +356,8 @@ try {
     'remote meta conflict repair broadcast',
   )
 
-  const sharedEntry = await waitForActiveMetaEntry(metaSharedPath)
-  const conflictEntry = await waitForActiveMetaEntry(peerConflictPath)
+  const sharedEntry = await waitForActiveMetaEntry(metaSharedPath, obsidianPollTimeoutMs)
+  const conflictEntry = await waitForActiveMetaEntry(peerConflictPath, obsidianPollTimeoutMs)
   if (
     sharedEntry?.fileId !== localMetaEntry.fileId ||
     conflictEntry?.fileId !== peerMetaEntry.fileId
@@ -355,7 +372,10 @@ try {
       })}`,
     )
   }
-  if (!(await waitForVaultPath(metaSharedPath)) || !(await waitForVaultPath(peerConflictPath))) {
+  if (
+    !(await waitForVaultPath(metaSharedPath, obsidianPollTimeoutMs)) ||
+    !(await waitForVaultPath(peerConflictPath, obsidianPollTimeoutMs))
+  ) {
     throw new Error(
       `meta rename was not materialized on disk: ${JSON.stringify({
         metaSharedPath,
@@ -365,7 +385,10 @@ try {
   }
 
   createOrOverwriteObsidianText(pathConflictRepairSourcePath, 'path conflict repair source')
-  const pathConflictRepairEntry = await waitForActiveMetaEntry(pathConflictRepairSourcePath)
+  const pathConflictRepairEntry = await waitForActiveMetaEntry(
+    pathConflictRepairSourcePath,
+    obsidianPollTimeoutMs,
+  )
   if (pathConflictRepairEntry === null) {
     throw new Error('Obsidian did not register path-conflict repair source')
   }
@@ -392,7 +415,10 @@ try {
   )
 
   createOrOverwriteObsidianText(renameRepairSourcePath, 'rename materialize repair source')
-  const renameRepairEntry = await waitForActiveMetaEntry(renameRepairSourcePath)
+  const renameRepairEntry = await waitForActiveMetaEntry(
+    renameRepairSourcePath,
+    obsidianPollTimeoutMs,
+  )
   if (renameRepairEntry === null) {
     throw new Error('Obsidian did not register rename materialize repair source')
   }
@@ -433,7 +459,7 @@ try {
   const localBinaryBytes = makeLocalBinaryBytes()
   const localBinaryHash = await sha256Hex(localBinaryBytes)
   createObsidianBinary(localBinaryPath, localBinaryBytes)
-  const localBinaryEntry = await waitForActiveMetaEntry(localBinaryPath)
+  const localBinaryEntry = await waitForActiveMetaEntry(localBinaryPath, obsidianPollTimeoutMs)
   if (
     localBinaryEntry?.type !== 'binary' ||
     localBinaryEntry.blobManifestHash === undefined ||
@@ -475,6 +501,7 @@ try {
       typeof entry.blobManifestHash === 'string' &&
       entry.blobManifestHash !== localBinaryEntry.blobManifestHash,
     'local binary modify meta update',
+    obsidianPollTimeoutMs,
   )
   if (
     modifiedLocalBinaryEntry.blobManifestHash === undefined ||
@@ -512,6 +539,7 @@ try {
       entry.type === 'binary' &&
       entry.blobManifestHash === modifiedLocalBinaryEntry.blobManifestHash,
     'local binary rename meta update',
+    obsidianPollTimeoutMs,
   )
   await waitForRemoteMeta(
     remote,
@@ -532,13 +560,14 @@ try {
   }
 
   deleteObsidianFile(localBinaryRenamedPath)
-  if (!(await waitForVaultPathAbsent(localBinaryRenamedPath))) {
+  if (!(await waitForVaultPathAbsent(localBinaryRenamedPath, obsidianPollTimeoutMs))) {
     throw new Error(`binary delete did not remove vault file: ${localBinaryRenamedPath}`)
   }
   const deletedLocalBinaryEntry = await waitForMetaEntryByFileId(
     localBinaryEntry.fileId,
     (entry) => entry.deleted === true && entry.path === localBinaryRenamedPath,
     'local binary delete tombstone',
+    obsidianPollTimeoutMs,
   )
   await waitForRemoteMeta(
     remote,
@@ -652,7 +681,7 @@ try {
     'remote binary meta ack',
   )
 
-  const binaryEntry = await waitForActiveMetaEntry(binaryPath)
+  const binaryEntry = await waitForActiveMetaEntry(binaryPath, obsidianPollTimeoutMs)
   if (
     binaryEntry?.type !== 'binary' ||
     binaryEntry.blobManifestHash !== builtBinary.manifestHash ||
@@ -694,11 +723,11 @@ try {
 
 obsidian(['plugin:disable', `id=${pluginId}`, 'filter=community'])
 obsidian(['plugin:enable', `id=${pluginId}`, 'filter=community'])
-waitForObsidianPluginLoaded()
+waitForObsidianPluginLoaded(obsidianPollTimeoutMs)
 obsidian(['command', 'id=kuroflare:kuroflare-sync-run-startup-tick'])
 
 const reconnectResultValue = evalInObsidian(`(async () => {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + ${obsidianPollTimeoutMs};
   while (Date.now() < deadline) {
     const plugin = app.plugins.plugins.kuroflare;
     const state = {

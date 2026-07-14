@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { accessSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { accessSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 
 const vaultPath = resolve(
@@ -46,7 +46,26 @@ function currentVaultPath(): string | null {
   }
 }
 
+function requireUnsymlinkedVaultAncestor(path: string): void {
+  let existingAncestor = path
+  while (!existsSync(existingAncestor)) {
+    const parent = dirname(existingAncestor)
+    if (parent === existingAncestor) {
+      throw new Error(`Obsidian e2e vault has no existing ancestor: ${path}`)
+    }
+    existingAncestor = parent
+  }
+  if (realpathSync(existingAncestor) !== existingAncestor) {
+    throw new Error(`Refusing Obsidian e2e vault below a symlinked path: ${path}`)
+  }
+}
+
 function openVault(): void {
+  requireUnsymlinkedVaultAncestor(vaultPath)
+  mkdirSync(vaultPath, { recursive: true })
+  if (realpathSync(vaultPath) !== vaultPath) {
+    throw new Error(`Refusing symlinked Obsidian e2e vault path: ${vaultPath}`)
+  }
   mkdirSync(join(vaultPath, '.obsidian'), { recursive: true })
   writeFileSync(
     join(vaultPath, 'e2e-vault-ready.md'),
