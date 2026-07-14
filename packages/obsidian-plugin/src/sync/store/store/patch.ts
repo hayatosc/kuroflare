@@ -32,6 +32,24 @@ export function applyLocalStoreOutboxPatch(
     }
   }
 
+  if (patch.kind === 'sync-update-rejected-repair') {
+    if (
+      record.status !== patch.expected.status ||
+      record.reason !== patch.expected.reason ||
+      record.kind !== patch.expected.kind ||
+      record.docId === undefined ||
+      !sameDocId(record.docId, patch.expected.docId) ||
+      record.messageId !== patch.expected.messageId ||
+      record.updateSha256 !== patch.expected.updateSha256 ||
+      record.rejectionUpdateSha256 !== patch.expected.rejectionUpdateSha256 ||
+      record.rejectionReason !== patch.expected.rejectionReason ||
+      record.rejectionRetryable !== patch.expected.rejectionRetryable ||
+      record.updateBytesBase64 !== patch.expected.updateBytesBase64
+    ) {
+      return { ok: false, reason: 'patch-evidence-mismatch', itemId }
+    }
+  }
+
   switch (patch.kind) {
     case 'resume':
       return {
@@ -117,6 +135,17 @@ export function applyLocalStoreOutboxPatch(
           docId: patch.patch.docId,
         },
       }
+    case 'sync-update-rejected-repair':
+      return {
+        ok: true,
+        record: {
+          ...record,
+          status: patch.patch.status,
+          nextAttemptAt: patch.patch.nextAttemptAt,
+          completedBy: patch.patch.completedBy,
+          snapshotSeq: patch.patch.snapshotSeq,
+        },
+      }
     case 'failure-completion':
       return applyFailureCompletionPatch(record, patch.patch)
     case 'success-completion':
@@ -159,6 +188,7 @@ export function localStoreOutboxPatchItemId(patch: LocalStoreOutboxPatch): Outbo
     case 'ack-completion':
     case 'quarantine-pause':
     case 'sync-update-rejected-pause':
+    case 'sync-update-rejected-repair':
     case 'failure-completion':
     case 'success-completion':
     case 'repair-import-resume':

@@ -71,6 +71,11 @@ import { planInvalidMetaIsolationDetail } from '../sync/obsidian/invalid-meta-is
 import { createSyncRuntimeObsidianResumePort } from '../sync/obsidian/lifecycle'
 import type { SyncRuntimeObsidianRepairPresentation } from '../sync/obsidian/presentation'
 import {
+  listPausedRejectedUpdates,
+  repairPausedRejectedUpdate,
+  type RejectedUpdateRepairResult,
+} from '../sync/obsidian/rejected-update-repair'
+import {
   planPathConflictAutoResolve,
   planRemoteMaterializeBlockedAutoResolve,
 } from '../sync/obsidian/repair-actions'
@@ -186,6 +191,7 @@ export default class KuroflareSpikePlugin extends Plugin {
   syncStatusEl: HTMLElement | null = null
   syncRuntime: SyncRuntimeObsidianComposition | null = null
   syncRepairEntries: readonly SyncRuntimeObsidianRepairPresentation[] = []
+  syncRejectedUpdateRepairEntries: readonly LocalStoreOutboxRecord[] = []
   syncRetryEnabled = false
   quarantineAdminEntries: readonly QuarantinedUpdateEntry[] = []
   quarantineAdminDetail: QuarantinedUpdateDetailResponse | null = null
@@ -338,6 +344,49 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   getSyncRepairEntriesSnapshot(): readonly SyncRuntimeObsidianRepairPresentation[] {
     return this.syncRepairEntries
+  }
+
+  getSyncRejectedUpdateRepairEntriesSnapshot(): readonly LocalStoreOutboxRecord[] {
+    return this.syncRejectedUpdateRepairEntries
+  }
+
+  async refreshSyncRejectedUpdateRepairEntries(): Promise<void> {
+    const setup = requireSetupMetadata(this)
+    const db = await openLocalStoreDatabase(this, setup.vaultId)
+    const snapshot = await readOutboxWorkerSnapshot(db)
+    this.syncRejectedUpdateRepairEntries = listPausedRejectedUpdates(snapshot.outboxRecords).entries
+  }
+
+  async repairSyncRejectedUpdate(
+    itemId: LocalStoreOutboxRecord['id'],
+  ): Promise<RejectedUpdateRepairResult> {
+    const setup = requireSetupMetadata(this)
+    const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
+    if (accessToken === undefined) {
+      return { ok: false, itemId, reason: 'auth-failed' }
+    }
+    const db = await openLocalStoreDatabase(this, setup.vaultId)
+    const result = await repairPausedRejectedUpdate({
+      db,
+      setup,
+      accessToken,
+      itemId,
+      http: { fetch: async (url, init) => await fetch(url, init) },
+    })
+    if (result.ok) {
+      this.syncRejectedUpdateRepairEntries = this.syncRejectedUpdateRepairEntries.filter(
+        (entry) => entry.id !== itemId,
+      )
+      return result
+    }
+    try {
+      await this.refreshSyncRejectedUpdateRepairEntries()
+    } catch (error: unknown) {
+      console.warn('[kuroflare] rejected update repair list refresh failed', {
+        error: safeLogError(error),
+      })
+    }
+    return result
   }
 
   getQuarantineAdminSnapshot(): {

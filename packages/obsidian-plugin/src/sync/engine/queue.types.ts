@@ -23,6 +23,8 @@ import type {
   OutboxQuarantinePausePatch,
   OutboxSyncUpdateRejectedPauseDecision,
   OutboxSyncUpdateRejectedPausePatch,
+  OutboxSyncUpdateRejectedRepairDecision,
+  OutboxSyncUpdateRejectedRepairPatch,
   OutboxResumeEvent,
   OutboxResumePatch,
   OutboxRetryKind,
@@ -274,6 +276,53 @@ export type OutboundQueueSyncUpdateRejectedPausePlan =
       readonly leaseRelease?:
         | Extract<OutboundQueueLeaseReleasePlan, { readonly ok: false }>
         | undefined
+    }
+
+/** Input for completing one exact paused rejection after authenticated snapshot import. */
+export interface OutboundQueueSyncUpdateRejectedRepairInput {
+  readonly itemId: OutboxPlanItemId
+  readonly kind?: OutboxRetryKind | undefined
+  readonly status: OutboxItemStatus
+  readonly reason?: string | undefined
+  readonly docId?: DocId | undefined
+  readonly messageId?: MessageId | undefined
+  readonly updateSha256?: Sha256Hex | undefined
+  readonly rejectionUpdateSha256?: Sha256Hex | undefined
+  readonly rejectionReason?: 'large-update-requires-snapshot-import' | undefined
+  readonly rejectionRetryable?: false | undefined
+  readonly updateBytesBase64?: string | undefined
+  readonly importedSnapshotSeq: number
+}
+
+/** Exact-evidence completion plan for one paused rejection row. */
+export type OutboundQueueSyncUpdateRejectedRepairPlan =
+  | {
+      readonly ok: true
+      readonly itemId: OutboxPlanItemId
+      readonly expected: {
+        readonly status: 'paused'
+        readonly reason: 'sync-update-rejected'
+        readonly kind: Extract<OutboxRetryKind, 'y-update' | 'meta-ref-update'>
+        readonly docId: DocId
+        readonly messageId: MessageId
+        readonly updateSha256: Sha256Hex
+        readonly rejectionUpdateSha256: Sha256Hex
+        readonly rejectionReason: 'large-update-requires-snapshot-import'
+        readonly rejectionRetryable: false
+        readonly updateBytesBase64: string
+      }
+      readonly patch: OutboxSyncUpdateRejectedRepairPatch
+    }
+  | {
+      readonly ok: false
+      readonly reason: Extract<
+        OutboxSyncUpdateRejectedRepairDecision,
+        { readonly action: 'reject' }
+      >['reason']
+      readonly decision: Extract<
+        OutboxSyncUpdateRejectedRepairDecision,
+        { readonly action: 'reject' }
+      >
     }
 
 /** Input for applying a failed side-effect attempt to one running outbox item. */

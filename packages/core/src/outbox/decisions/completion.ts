@@ -8,6 +8,8 @@ import {
   type OutboxFullSnapshotReleaseInput,
   type OutboxFullSnapshotReleasePlan,
   type OutboxFullSnapshotReleasePatch,
+  type OutboxSyncUpdateRejectedRepairInput,
+  type OutboxSyncUpdateRejectedRepairDecision,
 } from '../types'
 import { isNonNegativeSafeInteger, sameDocId } from '../validation'
 
@@ -150,6 +152,58 @@ export function decideOutboxSyncUpdateRejectedPause(
       rejectionRetryable: false,
       rejectionUpdateSha256: input.rejection.updateSha256,
       docId: input.rejection.docId,
+    },
+  }
+}
+
+/** Decides whether one exact paused rejection item can be completed after import. */
+export function decideOutboxSyncUpdateRejectedRepair(
+  input: OutboxSyncUpdateRejectedRepairInput,
+): OutboxSyncUpdateRejectedRepairDecision {
+  if (input.status !== 'paused') return { action: 'reject', reason: 'not-paused' }
+  if (input.reason !== 'sync-update-rejected') {
+    return { action: 'reject', reason: 'wrong-reason' }
+  }
+  if (input.kind === undefined) return { action: 'reject', reason: 'missing-kind' }
+  if (input.kind !== 'y-update' && input.kind !== 'meta-ref-update') {
+    return { action: 'reject', reason: 'unsupported-kind' }
+  }
+  if (input.rejectionReason === undefined) {
+    return { action: 'reject', reason: 'missing-rejection-reason' }
+  }
+  if (input.rejectionReason !== 'large-update-requires-snapshot-import') {
+    return { action: 'reject', reason: 'wrong-rejection-reason' }
+  }
+  if (input.rejectionRetryable === undefined) {
+    return { action: 'reject', reason: 'missing-retryable-evidence' }
+  }
+  if (input.rejectionRetryable !== false) {
+    return { action: 'reject', reason: 'retryable-rejection' }
+  }
+  if (input.docId === undefined) return { action: 'reject', reason: 'missing-doc-id' }
+  if (input.messageId === undefined) return { action: 'reject', reason: 'missing-message-id' }
+  if (input.updateSha256 === undefined) return { action: 'reject', reason: 'missing-update-hash' }
+  if (input.rejectionUpdateSha256 === undefined) {
+    return { action: 'reject', reason: 'missing-rejection-hash' }
+  }
+  if (input.updateSha256 !== input.rejectionUpdateSha256) {
+    return { action: 'reject', reason: 'hash-mismatch' }
+  }
+  if (input.updateBytesBase64 === undefined || input.updateBytesBase64.length === 0) {
+    return { action: 'reject', reason: 'missing-update-bytes' }
+  }
+  if (!isNonNegativeSafeInteger(input.importedSnapshotSeq) || input.importedSnapshotSeq <= 0) {
+    return { action: 'reject', reason: 'invalid-snapshot-seq' }
+  }
+
+  return {
+    action: 'complete',
+    patch: {
+      id: input.itemId,
+      status: 'done',
+      nextAttemptAt: undefined,
+      completedBy: 'sync-update-rejected-repair',
+      snapshotSeq: input.importedSnapshotSeq,
     },
   }
 }

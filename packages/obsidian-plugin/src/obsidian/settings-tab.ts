@@ -13,9 +13,15 @@ import {
 import { readAccessToken, requireSetupMetadata } from '../main/auth'
 import { accessTokenSecretKeyForSetup, deviceRevokeUrl } from '../main/helpers'
 import { planLocalStoreRepairSettingsPresentation } from '../sync/obsidian/local-store-repair-presentation'
+import {
+  planRejectedUpdateRepairOutcomePresentation,
+  planRejectedUpdateRepairSettingsPresentation,
+} from '../sync/obsidian/rejected-update-repair-presentation'
 import { renderSnapshotHealthAdmin } from '../sync/obsidian/snapshot-health-ui'
 
 export class KuroflareSettingTab extends PluginSettingTab {
+  private rejectedRepairStatusText = ''
+
   constructor(
     app: App,
     private readonly plugin: KuroflareSpikePlugin,
@@ -200,6 +206,101 @@ export class KuroflareSettingTab extends PluginSettingTab {
           new Notice('Kuroflare: resume staged imports under refactoring')
         })
       })
+
+    containerEl.createEl('h3', { text: 'Rejected update repair' })
+    let rejectedRepairSetupAvailable = true
+    try {
+      requireSetupMetadata(this.plugin)
+    } catch {
+      rejectedRepairSetupAvailable = false
+    }
+    const rejectedRepairEntries = this.plugin.getSyncRejectedUpdateRepairEntriesSnapshot()
+    const rejectedRepairPresentation = planRejectedUpdateRepairSettingsPresentation({
+      entryCount: rejectedRepairEntries.length,
+      setupAvailable: rejectedRepairSetupAvailable,
+    })
+    containerEl.createEl('p', { text: rejectedRepairPresentation.description })
+    const rejectedRepairStatus = containerEl.createEl('p', {
+      attr: { role: 'status', 'aria-live': 'polite' },
+    })
+    if (this.rejectedRepairStatusText.length > 0) {
+      const statusText = this.rejectedRepairStatusText
+      window.setTimeout(() => {
+        if (rejectedRepairStatus.isConnected) rejectedRepairStatus.setText(statusText)
+      }, 0)
+    }
+    new Setting(containerEl)
+      .setName('Paused rejected updates')
+      .setDesc('Refresh IndexedDB to list current sync-update-rejected rows.')
+      .addButton((button) => {
+        button
+          .setButtonText(rejectedRepairPresentation.refreshButtonText)
+          .setDisabled(rejectedRepairPresentation.disabled)
+          .onClick(() => {
+            button.setDisabled(true)
+            this.rejectedRepairStatusText = 'Pending: loading paused rejected updates…'
+            rejectedRepairStatus.setText(this.rejectedRepairStatusText)
+            void this.plugin
+              .refreshSyncRejectedUpdateRepairEntries()
+              .then(() => {
+                this.rejectedRepairStatusText = `Success: loaded ${this.plugin.getSyncRejectedUpdateRepairEntriesSnapshot().length} paused rejected update(s).`
+                this.display()
+              })
+              .catch(() => {
+                this.rejectedRepairStatusText = 'Error: could not read paused rejected updates.'
+                rejectedRepairStatus.setText(this.rejectedRepairStatusText)
+                button.setDisabled(false)
+              })
+          })
+      })
+    if (rejectedRepairPresentation.emptyStateText !== undefined) {
+      containerEl.createEl('p', { text: rejectedRepairPresentation.emptyStateText })
+    }
+    for (const entry of rejectedRepairEntries) {
+      const docLabel = entry.docId === undefined ? 'unknown document' : docIdLabel(entry.docId)
+      const messageLabel = entry.messageId ?? 'unknown message'
+      new Setting(containerEl)
+        .setName(`${docLabel} — ${messageLabel}`)
+        .setDesc(
+          `Exact local update hash: ${entry.updateSha256 ?? 'missing'}. Rejection evidence: ${
+            entry.rejectionUpdateSha256 ?? 'missing'
+          }. The row remains paused until a valid import response and local commit.`,
+        )
+        .addButton((button) => {
+          button
+            .setButtonText('Repair')
+            .setDisabled(!rejectedRepairSetupAvailable)
+            .onClick(() => {
+              button.setDisabled(true)
+              this.rejectedRepairStatusText = `Pending: importing ${docLabel}…`
+              rejectedRepairStatus.setText(this.rejectedRepairStatusText)
+              void this.plugin
+                .repairSyncRejectedUpdate(entry.id)
+                .then((result) => {
+                  const outcome = result.ok
+                    ? planRejectedUpdateRepairOutcomePresentation({
+                        ok: true,
+                        docLabel,
+                        snapshotSeq: result.snapshotSeq,
+                      })
+                    : planRejectedUpdateRepairOutcomePresentation({
+                        ok: false,
+                        docLabel,
+                        reason: result.reason,
+                      })
+                  new Notice(outcome.noticeText)
+                  this.rejectedRepairStatusText = outcome.statusText
+                  this.display()
+                })
+                .catch(() => {
+                  new Notice('Kuroflare: repair kept paused (unexpected failure).')
+                  this.rejectedRepairStatusText = 'Error: repair kept paused (unexpected failure).'
+                  rejectedRepairStatus.setText(this.rejectedRepairStatusText)
+                  button.setDisabled(false)
+                })
+            })
+        })
+    }
 
     containerEl.createEl('h3', { text: 'Quarantine admin' })
     new Setting(containerEl)

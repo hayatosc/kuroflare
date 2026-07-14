@@ -209,6 +209,54 @@ export interface OutboxSyncUpdateRejectedPausePatch {
   readonly docId: DocId
 }
 
+/** Evidence required to complete one paused update after an explicit snapshot import. */
+export interface OutboxSyncUpdateRejectedRepairInput {
+  readonly itemId: OutboxPlanItemId
+  readonly kind?: OutboxRetryKind | undefined
+  readonly status: OutboxItemStatus
+  readonly reason?: string | undefined
+  readonly docId?: DocId | undefined
+  readonly messageId?: MessageId | undefined
+  readonly updateSha256?: Sha256Hex | undefined
+  readonly rejectionUpdateSha256?: Sha256Hex | undefined
+  readonly rejectionReason?: SyncUpdateRejected['reason'] | undefined
+  readonly rejectionRetryable?: false | undefined
+  readonly updateBytesBase64?: string | undefined
+  readonly importedSnapshotSeq: number
+}
+
+/** Persistable patch after one exact rejected update was imported successfully. */
+export interface OutboxSyncUpdateRejectedRepairPatch {
+  readonly id: OutboxPlanItemId
+  readonly status: 'done'
+  readonly nextAttemptAt: undefined
+  readonly completedBy: 'sync-update-rejected-repair'
+  readonly snapshotSeq: number
+}
+
+/** Decision for completing one exact paused rejected update after snapshot import. */
+export type OutboxSyncUpdateRejectedRepairDecision =
+  | { readonly action: 'complete'; readonly patch: OutboxSyncUpdateRejectedRepairPatch }
+  | {
+      readonly action: 'reject'
+      readonly reason:
+        | 'not-paused'
+        | 'wrong-reason'
+        | 'missing-kind'
+        | 'unsupported-kind'
+        | 'missing-rejection-reason'
+        | 'wrong-rejection-reason'
+        | 'missing-retryable-evidence'
+        | 'retryable-rejection'
+        | 'missing-doc-id'
+        | 'missing-message-id'
+        | 'missing-update-hash'
+        | 'missing-rejection-hash'
+        | 'hash-mismatch'
+        | 'missing-update-bytes'
+        | 'invalid-snapshot-seq'
+    }
+
 /** Decision for pausing a Yjs update outbox item based on server quarantine evidence. */
 export type OutboxQuarantinePauseDecision =
   | { readonly action: 'pause-for-quarantine'; readonly patch: OutboxQuarantinePausePatch }

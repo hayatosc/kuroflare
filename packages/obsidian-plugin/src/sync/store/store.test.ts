@@ -20,6 +20,7 @@ import {
   planOutboundQueueLeaseRenew,
   planOutboundQueueQuarantinePause,
   planOutboundQueueSyncUpdateRejectedPause,
+  planOutboundQueueSyncUpdateRejectedRepair,
   planOutboundQueueSuccessCompletion,
   planOutboundQueueTick,
 } from '../engine/queue'
@@ -33,6 +34,7 @@ import {
   planLocalStoreOutboxSchedulerTransaction,
   planLocalStoreQuarantinePauseTransaction,
   planLocalStoreSyncUpdateRejectedPauseTransaction,
+  planLocalStoreSyncUpdateRejectedRepairTransaction,
   planLocalStoreSuccessCompletionTransaction,
   planLocalStoreTransactionCommit,
   type LocalStoreOutboxRecord,
@@ -970,6 +972,66 @@ test('local store transaction snapshot rejects duplicate current outbox records'
       },
     )
   }
+})
+
+test('local store rejection repair completes only the exact paused evidence row', () => {
+  const target = {
+    ...outboxRecord(yUpdateId, 'y-update', 'paused'),
+    kind: 'y-update' as const,
+    status: 'paused' as const,
+    reason: 'sync-update-rejected' as const,
+    rejectionReason: 'large-update-requires-snapshot-import' as const,
+    rejectionRetryable: false as const,
+    docId: fileDocId,
+    messageId,
+    updateSha256: updateHash,
+    rejectionUpdateSha256: updateHash,
+    updateBytesBase64: 'AQID',
+  }
+  const sibling = {
+    ...target,
+    id: pausedId,
+    messageId: makeMessageId('sibling-message'),
+  }
+  const completion = planOutboundQueueSyncUpdateRejectedRepair({
+    itemId: target.id,
+    status: target.status,
+    reason: target.reason,
+    docId: target.docId,
+    messageId: target.messageId,
+    updateSha256: target.updateSha256,
+    rejectionUpdateSha256: target.rejectionUpdateSha256,
+    updateBytesBase64: target.updateBytesBase64,
+    kind: target.kind,
+    rejectionReason: target.rejectionReason,
+    rejectionRetryable: target.rejectionRetryable,
+    importedSnapshotSeq: 14,
+  })
+  assert.equal(completion.ok, true)
+  if (!completion.ok) return
+
+  const applied = applyLocalStoreTransactionSnapshot({
+    operations: planLocalStoreSyncUpdateRejectedRepairTransaction(completion),
+    currentOutboxRecords: [target, sibling],
+    currentLeaseRows: [],
+  })
+  assert.equal(applied.ok, true)
+  if (applied.ok) {
+    assert.equal(applied.outboxRecords.find((record) => record.id === yUpdateId)?.status, 'done')
+    assert.equal(applied.outboxRecords.find((record) => record.id === pausedId)?.status, 'paused')
+  }
+
+  const changed = { ...target, updateBytesBase64: 'BAUG' }
+  const rejected = applyLocalStoreTransactionSnapshot({
+    operations: planLocalStoreSyncUpdateRejectedRepairTransaction(completion),
+    currentOutboxRecords: [changed],
+    currentLeaseRows: [],
+  })
+  assert.deepEqual(rejected, {
+    ok: false,
+    reason: 'patch-evidence-mismatch',
+    itemId: yUpdateId,
+  })
 })
 
 function runnableItem(

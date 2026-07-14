@@ -8,20 +8,20 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 
 ## 1. Priority and status
 
-| ID     | Priority | Area                                       | Status                                                   |
-| ------ | -------- | ------------------------------------------ | -------------------------------------------------------- |
-| DR-001 | P0       | Durable authority and failure model        | Closed: composite authority and disaster boundary tested |
-| DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested                   |
-| DR-003 | P0       | Large-update snapshot escape               | Safely disabled; full escape remains unimplemented       |
-| DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                       |
-| DR-005 | P1       | Meta entry merge granularity               | Schema decision required                                 |
-| DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                                 |
-| DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship        |
-| DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                          |
-| DR-009 | P1       | Quarantine and public error evidence       | HTTP envelope differs; guarded WS rejection implemented  |
-| DR-010 | P2       | Empty binary files                         | Schema contradiction                                     |
-| DR-011 | P2       | Portable path materialization              | Deterministic policy missing                             |
-| DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing                     |
+| ID     | Priority | Area                                       | Status                                                                               |
+| ------ | -------- | ------------------------------------------ | ------------------------------------------------------------------------------------ |
+| DR-001 | P0       | Durable authority and failure model        | Closed: composite authority and disaster boundary tested                             |
+| DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested                                               |
+| DR-003 | P0       | Large-update snapshot escape               | Closed narrowly: safe rejection + explicit repair; live escape remains unimplemented |
+| DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                                                   |
+| DR-005 | P1       | Meta entry merge granularity               | Schema decision required                                                             |
+| DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                                                             |
+| DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship                                    |
+| DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                                                      |
+| DR-009 | P1       | Quarantine and public error evidence       | HTTP envelope differs; guarded WS rejection implemented                              |
+| DR-010 | P2       | Empty binary files                         | Schema contradiction                                                                 |
+| DR-011 | P2       | Portable path materialization              | Deterministic policy missing                                                         |
+| DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing                                                 |
 
 P0 items can acknowledge or delete durable user data incorrectly.
 P1 items can violate convergence, recovery, or interoperability under realistic concurrency.
@@ -81,7 +81,7 @@ Acceptance evidence:
 - Retrying the same `messageId` always returns the same `durableSeq`.
 - No peer observes an update before its durable transaction commits.
 
-### DR-003: Complete or remove the large-update escape before use
+### DR-003: Safe rejection and explicit repair (live escape remains out of scope)
 
 The specification requires a large update to be applied, written as an R2 snapshot, and connected to a durable pointer before acknowledgement.
 The former `snapshot-escape` branch advanced `docs.latest_seq`, wrote `message_dedup`, sent an acknowledgement, and sent `NeedFullSnapshot` without applying the update or writing an R2 snapshot.
@@ -98,15 +98,27 @@ Recommended contract:
 4. Replace or update the active in-memory YDoc.
 5. Only then send `Ack` and `NeedFullSnapshot(reason="large-update-snapshot")`.
 
-The simpler safe alternative is now active until the full escape transaction exists.
+The simpler safe alternative is active for protocol v1. Oversized live updates remain
+unsupported and fail closed. The Obsidian settings panel now offers an explicit repair
+action for one paused `sync-update-rejected` outbox row. It verifies the complete row
+evidence and the actual update-bytes SHA-256, fetches the latest snapshot manifest
+sequence (a 404 means a new document), imports the exact Yjs delta through the
+authenticated snapshot route, and only then commits a guarded IndexedDB patch for that
+same row with the imported `snapshotSeq`.
+
+Authentication, conflict, network, malformed-response, hash, evidence, and local
+commit failures leave the row paused. A retry after remote success and local interruption
+is safe because Yjs update application is idempotent. Rows for the same document are
+never completed as a group.
 
 Acceptance evidence:
 
 - An oversized live update sends one guarded rejection frame, then closes with `large-update-requires-snapshot-import` and leaves `op_log`, `docs`, and `message_dedup` unchanged.
 - Retrying that message is not treated as a completed duplicate and receives no acknowledgement.
 - Ordinary live updates continue through the existing append path.
+- Explicit repair imports the exact paused update before completing only its evidence-matched local row; all failure classes leave the row paused.
 
-Acceptance evidence for a future full escape:
+Acceptance evidence for a future full escape (not part of this closure):
 
 - Fault injection at every step never leaves an acknowledgement without a restorable snapshot.
 - A duplicate large update returns the original sequence and identical content.

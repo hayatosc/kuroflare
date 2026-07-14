@@ -13,6 +13,7 @@ import type {
   OutboxPlanItemId,
   OutboxQuarantinePausePatch,
   OutboxSyncUpdateRejectedPausePatch,
+  OutboxSyncUpdateRejectedRepairPatch,
   OutboxResumeCondition,
   OutboxResumePatch,
   OutboxRetryKind,
@@ -31,6 +32,7 @@ import type {
   OutboundQueueLeaseWrite,
   OutboundQueueQuarantinePausePlan,
   OutboundQueueSyncUpdateRejectedPausePlan,
+  OutboundQueueSyncUpdateRejectedRepairPlan,
   OutboundQueueSuccessCompletionPlan,
   OutboundQueueTickPlan,
 } from '../engine/queue'
@@ -71,6 +73,12 @@ export type SuccessfulOutboundQueueQuarantinePausePlan = Extract<
 /** Successful guarded rejection pause plan accepted by local store transaction planning. */
 export type SuccessfulOutboundQueueSyncUpdateRejectedPausePlan = Extract<
   OutboundQueueSyncUpdateRejectedPausePlan,
+  { readonly ok: true }
+>
+
+/** Successful exact-evidence rejection repair plan accepted by local-store transaction planning. */
+export type SuccessfulOutboundQueueSyncUpdateRejectedRepairPlan = Extract<
+  OutboundQueueSyncUpdateRejectedRepairPlan,
   { readonly ok: true }
 >
 
@@ -129,6 +137,23 @@ export type LocalStoreOutboxPatch =
       readonly patch: OutboxSyncUpdateRejectedPausePatch
     }
   | {
+      readonly kind: 'sync-update-rejected-repair'
+      readonly itemId: OutboxPlanItemId
+      readonly expected: {
+        readonly status: 'paused'
+        readonly reason: 'sync-update-rejected'
+        readonly kind: Extract<OutboxRetryKind, 'y-update' | 'meta-ref-update'>
+        readonly docId: DocId
+        readonly messageId: MessageId
+        readonly updateSha256: Sha256Hex
+        readonly rejectionUpdateSha256: Sha256Hex
+        readonly rejectionReason: 'large-update-requires-snapshot-import'
+        readonly rejectionRetryable: false
+        readonly updateBytesBase64: string
+      }
+      readonly patch: OutboxSyncUpdateRejectedRepairPatch
+    }
+  | {
       readonly kind: 'failure-completion'
       readonly itemId: OutboxPlanItemId
       readonly patch: OutboxFailureTransition
@@ -185,7 +210,7 @@ export interface LocalStoreOutboxRecord {
   readonly rejectionReason?: string | undefined
   readonly rejectionRetryable?: false | undefined
   readonly rejectionUpdateSha256?: Sha256Hex | undefined
-  readonly completedBy?: 'full-snapshot-apply' | undefined
+  readonly completedBy?: 'full-snapshot-apply' | 'sync-update-rejected-repair' | undefined
   readonly snapshotSeq?: number | undefined
   readonly createdAt?: number | undefined
   readonly fileId?: FileId | undefined

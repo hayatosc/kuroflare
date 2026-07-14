@@ -7,7 +7,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ## Current summary (2026-07-14)
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 191 件、worker 232 件、model-tests 17 件、Obsidian 404 件、worker e2e 7 件。
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 192 件、worker 232 件、model-tests 17 件、Obsidian 414 件、worker e2e 7 件。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
 - Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are committed at `122d2a0`. The rejection-evidence work described below builds on that baseline. The remaining P0/P1/P2 items and design-review release gates are still authoritative.
@@ -52,10 +52,12 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 - Rollback replays a contiguous retained op-log range into a new immutable generation and commits the pointer only after source and target evidence are revalidated. Repeated verification and quarantine requests are idempotent.
 - The worker health API, SQLite/e2e coverage, and Obsidian settings panel are implemented. Protocol-level self-healing guarantees remain gated by DR-009.
 
-### P0: large-update snapshot escape
+### Completed P0: DR-003 safe rejection + explicit repair
 
-- The unsafe live `snapshot-escape` branch is disabled. Oversized live updates are rejected without acknowledgement or durable mutation using a stable close reason. Recovery currently requires manual use of the authenticated snapshot-import route; automatic client transition is future work.
-- DR-009 subset implemented: protocol v1 now carries one guarded `sync-update-rejected` evidence frame for oversized live updates. The current Obsidian runtime matches vault/device/message/document/hash evidence and atomically pauses the exact outbox item with `reason: sync-update-rejected`, `resumeOn: manual`, and lease release. This does not close DR-009 generally; automatic snapshot import, capability negotiation, generalized rejection evidence, and public HTTP error migration remain out of scope.
+- The unsafe live `snapshot-escape` branch remains disabled. Oversized live updates are rejected without acknowledgement or durable mutation using a stable close reason.
+- Protocol v1 carries one guarded `sync-update-rejected` evidence frame. The Obsidian runtime matches vault/device/message/document/hash evidence and atomically pauses the exact outbox item with `reason: sync-update-rejected`, `resumeOn: manual`, and lease release.
+- Obsidian settings now exposes an explicit per-row repair action. It verifies the complete evidence and actual update-bytes SHA-256, fetches the latest `manifestSeq` (404 means a new document), imports the exact Yjs delta through the authenticated snapshot route, and only then marks that same row done with the returned `snapshotSeq` in a guarded IndexedDB transaction. Conflict, authentication, network, malformed-response, hash, evidence, and local-commit failures leave the row paused; retries after remote success are safe.
+- This closes DR-003 narrowly as safe rejection plus explicit repair. It does not claim transparent large-update support and does not close DR-009 generally; capability negotiation, generalized rejection evidence, and public HTTP error migration remain out of scope.
 - A transactional live escape remains future work if live updates above the configured threshold become a product requirement.
 
 ### P0: production startup pipeline の常用化

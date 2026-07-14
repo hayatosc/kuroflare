@@ -11,5 +11,6 @@ export {
   planLocalStoreOutboxSchedulerTransaction,
   planLocalStoreQuarantinePauseTransaction,
   planLocalStoreSyncUpdateRejectedPauseTransaction,
+  planLocalStoreSyncUpdateRejectedRepairTransaction,
   planLocalStoreSuccessCompletionTransaction,
 } from './plan'

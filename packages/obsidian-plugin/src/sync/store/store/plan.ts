@@ -9,6 +9,7 @@ import {
   type SuccessfulOutboundQueueLeaseRenewPlan,
   type SuccessfulOutboundQueueQuarantinePausePlan,
   type SuccessfulOutboundQueueSyncUpdateRejectedPausePlan,
+  type SuccessfulOutboundQueueSyncUpdateRejectedRepairPlan,
   type SuccessfulOutboundQueueSuccessCompletionPlan,
   type SuccessfulOutboundQueueTickPlan,
 } from '../../store/store.types'
@@ -113,6 +114,23 @@ export function planLocalStoreSyncUpdateRejectedPauseTransaction(
       },
     },
     deleteLeaseOperation(plan.leaseDelete),
+  ]
+}
+
+/** Plans one guarded completion patch for the exact paused rejection row. */
+export function planLocalStoreSyncUpdateRejectedRepairTransaction(
+  plan: SuccessfulOutboundQueueSyncUpdateRejectedRepairPlan,
+): readonly LocalStoreTransactionOperation[] {
+  return [
+    {
+      kind: 'patch-outbox',
+      patch: {
+        kind: 'sync-update-rejected-repair',
+        itemId: plan.itemId,
+        expected: plan.expected,
+        patch: plan.patch,
+      },
+    },
   ]
 }
 

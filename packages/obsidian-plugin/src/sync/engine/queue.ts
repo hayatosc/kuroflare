@@ -6,6 +6,7 @@ import {
   decideOutboxLeaseRenew,
   decideOutboxQuarantinePause,
   decideOutboxSyncUpdateRejectedPause,
+  decideOutboxSyncUpdateRejectedRepair,
   planOutboxFullSnapshotRelease,
   planOutboxSchedulerTick,
   transitionOutboxFailure,
@@ -32,6 +33,8 @@ import type {
   OutboundQueueQuarantinePausePlan,
   OutboundQueueSyncUpdateRejectedPauseInput,
   OutboundQueueSyncUpdateRejectedPausePlan,
+  OutboundQueueSyncUpdateRejectedRepairInput,
+  OutboundQueueSyncUpdateRejectedRepairPlan,
   OutboundQueueSuccessCompletionInput,
   OutboundQueueSuccessCompletionPlan,
   OutboundQueueTickInput,
@@ -58,6 +61,8 @@ export type {
   OutboundQueueQuarantinePausePlan,
   OutboundQueueSyncUpdateRejectedPauseInput,
   OutboundQueueSyncUpdateRejectedPausePlan,
+  OutboundQueueSyncUpdateRejectedRepairInput,
+  OutboundQueueSyncUpdateRejectedRepairPlan,
   OutboundQueueSuccessCompletionInput,
   OutboundQueueSuccessCompletionPlan,
   OutboundQueueTickInput,
@@ -357,6 +362,77 @@ export function planOutboundQueueSyncUpdateRejectedPause(
     expectedUpdateSha256: input.updateSha256,
     patch: rejectionDecision.patch,
     leaseDelete: leaseRelease.delete,
+  }
+}
+
+/** Plans an exact guarded completion for one paused rejection after snapshot import. */
+export function planOutboundQueueSyncUpdateRejectedRepair(
+  input: OutboundQueueSyncUpdateRejectedRepairInput,
+): OutboundQueueSyncUpdateRejectedRepairPlan {
+  const decision = decideOutboxSyncUpdateRejectedRepair(input)
+  if (decision.action === 'reject') {
+    return { ok: false, reason: decision.reason, decision }
+  }
+  const kind = input.kind
+  if (kind !== 'y-update' && kind !== 'meta-ref-update') {
+    return {
+      ok: false,
+      reason: 'unsupported-kind',
+      decision: { action: 'reject', reason: 'unsupported-kind' },
+    }
+  }
+  if (input.rejectionReason !== 'large-update-requires-snapshot-import') {
+    return {
+      ok: false,
+      reason: 'wrong-rejection-reason',
+      decision: { action: 'reject', reason: 'wrong-rejection-reason' },
+    }
+  }
+  if (input.rejectionRetryable !== false) {
+    return {
+      ok: false,
+      reason:
+        input.rejectionRetryable === undefined
+          ? 'missing-retryable-evidence'
+          : 'retryable-rejection',
+      decision: {
+        action: 'reject',
+        reason:
+          input.rejectionRetryable === undefined
+            ? 'missing-retryable-evidence'
+            : 'retryable-rejection',
+      },
+    }
+  }
+  if (
+    input.docId === undefined ||
+    input.messageId === undefined ||
+    input.updateSha256 === undefined ||
+    input.rejectionUpdateSha256 === undefined ||
+    input.updateBytesBase64 === undefined
+  ) {
+    return {
+      ok: false,
+      reason: 'missing-update-bytes',
+      decision: { action: 'reject', reason: 'missing-update-bytes' },
+    }
+  }
+  return {
+    ok: true,
+    itemId: input.itemId,
+    expected: {
+      status: 'paused',
+      reason: 'sync-update-rejected',
+      kind,
+      docId: input.docId,
+      messageId: input.messageId,
+      updateSha256: input.updateSha256,
+      rejectionUpdateSha256: input.rejectionUpdateSha256,
+      rejectionReason: input.rejectionReason,
+      rejectionRetryable: false,
+      updateBytesBase64: input.updateBytesBase64,
+    },
+    patch: decision.patch,
   }
 }
 
