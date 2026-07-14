@@ -10,7 +10,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 - ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 190 件、worker 230 件、model-tests 17 件、Obsidian 394 件、worker e2e 7 件。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
-- Production composition/startup, durable outbox worker, and authentication refresh/revoke lifecycle wiring were active at the base HEAD `61afa97`. The trial-readiness fixes and verification recorded here apply to the current uncommitted working tree based on that commit; a clean checkout of `61afa97` does not contain them. The remaining P0/P1/P2 items and the design-review release gates below are still authoritative.
+- Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness fixes are committed at HEAD `122d2a0`. The remaining P0/P1/P2 items and the design-review release gates below are still authoritative.
 - DR-008 (snapshot health and rollback) is closed. Immutable R2 bytes are now admitted only by append-only SQLite evidence, and the authenticated health API and Obsidian operator panel expose server-computed action authority.
 
 ### MVP チェックリスト（[operations.md](spec/operations.md) §8 対応）
@@ -52,18 +52,18 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ### P0: production startup pipeline の常用化
 
-- The production plugin instantiates the startup composition root and lifecycle wiring present at the base HEAD `61afa97`; the current working-tree Obsidian + miniflare `:app` E2E exercises it together with the trial-readiness fixes.
+- The production plugin instantiates the startup composition root and lifecycle wiring at HEAD `122d2a0`; the Obsidian + miniflare `:app` E2E exercises it together with the trial-readiness fixes.
 - Production adapters for snapshot operations, IndexedDB YDoc loading, setup persistence, local evidence, resume lifecycle, and auth refresh/revoke are connected. Startup side-effect gates still protect the existing WebSocket, outbox, metadata enqueue, and active-file request paths from duplicate effects.
 - setup persistence は SecretStorage + IndexedDB metadata の実行境界を通り、`data.json` に token を保存しない。残りは `data.json.setupMetadata` mirror を UI / 復旧用 cache として明確化するか、完全廃止するかの決着。
 
 ### P0: full snapshot の production 経路
 
-- `GET/PUT /vaults/:vaultId/{meta,files/:ydocId}/{latest,snapshot}` は production route として実装済み。plugin の `NeedFullSnapshot` → fetch → guard → 同一 IndexedDB transaction apply も接続済み。
+- The production `GET /vaults/:vaultId/{meta,files/:ydocId}/latest` and `PUT /vaults/:vaultId/{meta,files/:ydocId}/snapshot` routes and guarded startup snapshot fetch/apply are implemented. Runtime `NeedFullSnapshot` handling currently pauses matching outbox work for manual recovery; it does not automatically fetch and apply a replacement snapshot.
 - CLI（`snapshot:import` script）と miniflare smoke は e2e seed API に依存せず production import route を使う。
 
 ### P0: outbox worker の実 side effect runner 化
 
-- scheduler tick、lease transaction、`blob-put` / `blob-get` / `manifest-put` / `materialize` / `meta-ref-update` / `y-update` runner、completion 分類、failure completion are wired into the production plugin at HEAD `61afa97`. `sendDocUpdateToWorker()` uses durable outbox enqueue + runner tick.
+- Scheduler tick, lease transactions, `blob-put` / `blob-get` / `manifest-put` / `materialize` / `meta-ref-update` / `y-update` runners, completion classification, and failure completion are wired into the production plugin at HEAD `122d2a0`. `sendDocUpdateToWorker()` uses durable outbox enqueue + runner tick.
 - Resume lifecycle (layout ready / focus / visibility / online → resume tick) and auth refresh/revoke transitions are also active. Remaining work is operational hardening and preserving the miniflare regression coverage (binary upload/download/materialize, rename/delete propagation, binary restore repair, invalid-meta inspect/discard, path-conflict retry/resolve, and remote-materialize-blocked actions).
 - WebSocket startup now reads trusted auth metadata and refreshes an expired or soon-to-expire token before creating the socket; a transient refresh backoff retries startup without admitting the stale token.
 
@@ -78,7 +78,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 - snapshot retention は checkpoint 後に実行され、`snapshot_retention_events` に記録される。残りは retention policy の運用設定、event pagination、alerting。
 - quarantine admin は Worker HTTP と plugin settings panel の両方にある。残りは force-apply 後の user-facing audit summary と大量 quarantine 向け pagination。
-- Auth refresh / revoke runtime and plugin lifecycle wiring (foreground/resume, pre-expiry refresh, and revoked-device local shutdown) are active at HEAD `61afa97`; distribution still requires the surrounding settings UX, migration policy, and operator documentation.
+- Auth refresh / revoke runtime and plugin lifecycle wiring (foreground/resume, pre-expiry refresh, and revoked-device local shutdown) are active at HEAD `122d2a0`; distribution still requires the surrounding settings UX, migration policy, and operator documentation.
 - presence / awareness は型とテスト片のみで editor binding 未接続。
 - 配布前に settings UI、Setup URI/QR、ログの secret redaction、migration / backward-incompatible policy、手動エスケープハッチの UI を整える。
 - Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）はほぼ未実装。
@@ -158,7 +158,7 @@ CRDT マージ自体は一度成功しているのに、直後に「ローカル
 `bindActiveMarkdownView` が起動時に 2 回連続で呼ばれ、同じ Y.Text に対して yCollab 拡張を作り直していることを確認し、冗長な再バインドをスキップするガードを追加したが、この content-loss 自体は直らなかった。
 obsidian-cli 経由の instrumentation では収束しなかったため、次に取り組む場合は Electron プロセスに実ブラウザ DevTools を繋ぐか、Obsidian の外で yjs + y-codemirror.next の最小再現を作るほうが効率的。
 
-Resolution evidence (2026-07-14): the real Linux Obsidian + miniflare `:app` E2E passed from the uncommitted working tree based on `61afa97` after `worker dev:local` was started in a separate terminal. The historical failure record above is retained for context; the current evidence marks the regression resolved for this working tree.
+Resolution evidence (2026-07-14): the real Linux Obsidian + miniflare `:app` E2E passed for the changes later committed as `122d2a0` after `worker dev:local` was started in a separate terminal. The historical failure record above is retained for context; the current evidence marks the regression resolved at that commit.
 
 ### fake が隠していた実バグ（real e2e 立ち上げ時に発見）
 
