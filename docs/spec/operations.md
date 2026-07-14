@@ -51,6 +51,14 @@ Worker / DO 側は構造化ログを出す。
 
 ### 5.1 Snapshot health operator runbook
 
+Recovery authority is composite: use the latest authoritative, verified R2 snapshot
+with later Durable Object SQLite operation-log rows. Normal runtime eviction is
+recoverable because SQLite survives. Complete SQLite loss is a disaster/manual
+recovery case; acknowledged updates after the last checkpoint may be unavailable,
+and R2 bytes without pointer and health evidence must not be promoted automatically.
+The nominal 128-operation and 30-second checkpoint triggers are best effort, not a
+recovery-point bound.
+
 Snapshot health administration is an authenticated, explicit recovery workflow. The
 operator token must carry the `sync:write` scope. R2 objects are immutable: do not
 delete or overwrite a snapshot object directly.
@@ -164,8 +172,9 @@ plugin 内部は「純粋 decision（core）→ plan / driver（engine）→ con
 **core の単体テスト**：decision と guard は環境非依存の純粋関数なので、unit test で規則を固定する。
 代表: Yjs update の冪等適用、古い SV への full snapshot merge、deterministic repair plan の全クライアント一致、binary 欠損時の tombstone 維持、canonical manifest hash、binary frame の encode / decode、protocolVersion 拒否、outbox 依存 graph が参照公開前に blob PUT 完了を要求すること。
 
-**model test**：「R2 snapshot + residual op_log でいつでも完全復元できる」を実行可能な状態機械として固定する。
-checkpoint / cold-start / outbox / sync-update をモデル化し、ランダム操作列 + crash injection（10,000 ケース規模）で不変条件を検証し、破れたら最小反例を再現する。
+**Model tests**: encode complete recovery from `R2 snapshot + residual op_log` as an executable state machine under the normal eviction and crash boundary where DO SQLite survives.
+Model checkpoint, cold-start, outbox, and sync-update transitions; verify the invariants over randomized operation sequences with crash injection (approximately 10,000 cases), and preserve the smallest counterexample when an invariant fails.
+Complete SQLite loss is a disaster outside the normal guarantee, and R2 bytes alone are never restored automatically.
 
 checkpoint モデルの不変条件:
 

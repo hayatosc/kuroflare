@@ -38,6 +38,10 @@ export function renderSnapshotHealthAdmin(
 ): void {
   containerEl.createEl('h3', { text: 'Snapshot health' })
   const sectionEl = containerEl.createEl('div', { cls: 'kuroflare-snapshot-health' })
+  sectionEl.createEl('p', {
+    cls: 'kuroflare-snapshot-health-authority-note',
+    text: 'Recovery authority is composite: the latest authoritative, verified, healthy R2 snapshot plus later Durable Object SQLite operation-log rows. Normal runtime eviction is recoverable because SQLite survives. Complete SQLite loss is a disaster/manual-recovery case; acknowledged updates after the last checkpoint may be unavailable, and R2 bytes are not promoted without pointer and health evidence. Checkpoint triggers (128 operations or 30 seconds) are best effort, not a recovery-point bound.',
+  })
   const controlsEl = sectionEl.createEl('div', { cls: 'kuroflare-snapshot-health-controls' })
   const statusEl = sectionEl.createEl('p', {
     attr: { role: 'status', 'aria-live': 'polite' },

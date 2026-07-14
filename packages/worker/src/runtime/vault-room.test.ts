@@ -19,7 +19,7 @@ import {
   type SyncUpdate,
 } from '@kuroflare/core'
 import * as v from 'valibot'
-import { assert, test, vi } from 'vitest'
+import { assert, expect, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { VaultRoom } from '../runtime'
@@ -1465,6 +1465,109 @@ test('VaultRoom checkpoints an active document to R2 and advances the SQL snapsh
       action: 'skipped',
       reason: 'no-new-ops',
     })
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom fails closed after complete SQLite loss even when R2 retains a checkpoint', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    const checkpointedUpdate = makeSyncUpdate(makeMessageId('message-disaster-checkpoint'))
+    await room.webSocketMessage(server, JSON.stringify(checkpointedUpdate))
+    assert.equal(findAckForMessage(server.sent, checkpointedUpdate.messageId)?.durableSeq, 1)
+    assert.deepEqual(await room.checkpointDoc({ kind: 'meta' }, 99), {
+      action: 'checkpointed',
+      snapshotKey: 'snapshots/vault-1/meta/1.yupdate',
+      upperSeq: 1,
+      compactedSeq: 1,
+    })
+    const authoritativeEvent = storage.sql.snapshotHealthEvents
+      .filter((event) => event.event === 'verification')
+      .at(-1)
+    assert(authoritativeEvent)
+    assert.equal(authoritativeEvent.snapshotKey, 'snapshots/vault-1/meta/1.yupdate')
+    assert.equal(authoritativeEvent.upperSeq, 1)
+    assert.equal(authoritativeEvent.physicalStatus, 'verified')
+    assert.equal(authoritativeEvent.logicalStatus, 'healthy')
+    assert.equal(authoritativeEvent.authorityStatus, 'authoritative')
+    assert.equal(authoritativeEvent.expectedByteLength !== undefined, true)
+    assert.equal(authoritativeEvent.expectedUpdateSha256 !== undefined, true)
+    assert.equal(authoritativeEvent.expectedStateVectorSha256 !== undefined, true)
+    assert.equal(storage.sql.docs.get('meta')?.latestSnapshotSeq, 1)
+    assert.equal(storage.sql.docs.get('meta')?.latestSnapshotKey, authoritativeEvent.snapshotKey)
+    assert.equal(storage.sql.opLog.has(`meta:${checkpointedUpdate.messageId}`), false)
+
+    const residualUpdate = makeSyncUpdate(makeMessageId('message-disaster-residual'))
+    await room.webSocketMessage(server, JSON.stringify(residualUpdate))
+    assert.equal(findAckForMessage(server.sent, residualUpdate.messageId)?.durableSeq, 2)
+    assert.equal(storage.sql.docs.get('meta')?.latestSeq, 2)
+    assert.equal(storage.sql.opLog.get(`meta:${residualUpdate.messageId}`)?.seq, 2)
+    assert.deepEqual(bucket.puts, ['snapshots/vault-1/meta/1.yupdate'])
+
+    const lostStorage = new SqlOnlyStorage()
+    const recoveredRoom = new VaultRoom(
+      new FakeState(lostStorage),
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    recoveredRoom.vaultId = makeVaultId('vault-1')
+    const putsBeforeHydration = [...bucket.puts]
+    const deletesBeforeHydration = [...bucket.deletes]
+
+    await expect(ensureDocHydrated(recoveredRoom, { kind: 'meta' })).rejects.toThrow(
+      'snapshot-health:no-verified-generation',
+    )
+
+    assert.equal(recoveredRoom.docs.has('meta'), false)
+    assert.equal(recoveredRoom.hydratedDocs.has('meta'), false)
+    assert.equal(lostStorage.sql.docs.size, 0)
+    assert.equal(lostStorage.sql.opLog.size, 0)
+    assert.equal(lostStorage.sql.messageDedup.size, 0)
+    assert.equal(lostStorage.sql.snapshotHealthEvents.length, 0)
+    assert.deepEqual(bucket.puts, putsBeforeHydration)
+    assert.deepEqual(bucket.deletes, deletesBeforeHydration)
+
+    const recoveredSocket = new FakeSocket()
+    const recoveredPeer = new FakeSocket()
+    recoveredRoom.sessions.add(recoveredSocket)
+    recoveredRoom.sessions.add(recoveredPeer)
+    recoveredRoom.sessionStates.set(recoveredSocket, {
+      vaultId: makeVaultId('vault-1'),
+      deviceId: makeDeviceId('device-1'),
+      yClientId: 1,
+    })
+    recoveredRoom.sessionStates.set(recoveredPeer, {
+      vaultId: makeVaultId('vault-1'),
+      deviceId: makeDeviceId('device-1'),
+      yClientId: 1,
+    })
+    recoveredRoom.schemaReady = true
+    await recoveredRoom.webSocketMessage(recoveredSocket, JSON.stringify(residualUpdate))
+    assert.equal(recoveredSocket.closeReason, 'hydrate-failed')
+    assert.deepEqual(recoveredSocket.sent, [])
+    assert.deepEqual(recoveredPeer.sent, [])
+    assert.equal(lostStorage.sql.docs.size, 0)
+    assert.equal(lostStorage.sql.opLog.size, 0)
+    assert.equal(lostStorage.sql.messageDedup.size, 0)
+    assert.deepEqual(bucket.puts, putsBeforeHydration)
+    assert.deepEqual(bucket.deletes, deletesBeforeHydration)
+    assert.isFalse(
+      lostStorage.sql.queries.some((query) => /\b(insert|update|delete)\b/.test(query)),
+    )
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)

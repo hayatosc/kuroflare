@@ -14,9 +14,17 @@ involved:
 - **Cloudflare Worker** (`packages/worker`) — a Hono app (`src/index.ts`,
   `src/runtime.ts`) that routes vault-scoped requests to a per-vault
   **Durable Object** (`VaultRoom`), which owns the vault's SQLite-backed
-  state (op log, device registry, checkpoints).
+  state (op log, device registry, checkpoints). The latest recoverable document
+  is the latest authoritative, verified, healthy R2 snapshot plus later SQLite op-log rows.
 - **R2 bucket** — stores Yjs snapshots and blob (attachment) content written
-  by the Durable Object.
+  by the Durable Object. R2 bytes are immutable storage, not standalone authority;
+  SQLite pointer and snapshot-health evidence are required for automatic restore.
+
+Normal Durable Object execution-instance eviction is recoverable because SQLite
+storage survives the instance. Complete SQLite loss is a disaster/manual-recovery
+case outside the normal guarantee and may lose acknowledged updates newer than the
+last checkpoint. The nominal 128-operation and 30-second checkpoint triggers are
+best-effort scheduling signals, not a hard recovery-point bound.
 
 For personal use, all of this is deployed as a single Worker + one Durable
 Object namespace + one R2 bucket, driven by `wrangler` from

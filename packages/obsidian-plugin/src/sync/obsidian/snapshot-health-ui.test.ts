@@ -166,6 +166,25 @@ describe('snapshot health Obsidian settings UI', () => {
     vi.stubGlobal('fetch', fetchMock)
   })
 
+  test('explains composite authority and the SQLite-loss disaster boundary', () => {
+    const container = document.createElement('div')
+    renderSnapshotHealthAdmin(container, fakePlugin())
+
+    assert.include(
+      container.textContent,
+      'Recovery authority is composite: the latest authoritative, verified, healthy R2 snapshot plus later Durable Object SQLite operation-log rows.',
+    )
+    assert.include(
+      container.textContent,
+      'Normal runtime eviction is recoverable because SQLite survives.',
+    )
+    assert.include(container.textContent, 'Complete SQLite loss is a disaster/manual-recovery case')
+    assert.include(
+      container.textContent,
+      'Checkpoint triggers (128 operations or 30 seconds) are best effort, not a recovery-point bound.',
+    )
+  })
+
   test('renders statuses and actor, paginates, and refreshes after verify with one submit', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ entries: [unverifiedEntry], nextCursor: '1' }))

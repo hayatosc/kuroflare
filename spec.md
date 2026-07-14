@@ -23,19 +23,19 @@ remotely-save が抱える「同期失敗 → ロールバック（データ消�
 
 ## 1. 確定事項
 
-| 項目           | 決定                                | 理由                                                                                                           |
-| -------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| デプロイ形態   | 個人が自分でデプロイ                | 自分の複数端末での利用が主                                                                                     |
-| E2EE           | **採用しない**                      | サーバー（DO）が plaintext の Yjs を読めることで、マージとスナップショット生成と運用コマンドが大幅に単純化する |
-| テキストマージ | **Yjs（真の文字単位 CRDT）を死守**  | 「同じ段落を同時編集しても壊れない」を自動で満たす。これが LiveSync 等に対する最大の差別化点                   |
-| バイナリ       | content-defined chunking (CDC) + R2 | 大ファイルの差分転送と重複排除                                                                                 |
-| 真実の所在     | **R2（source of truth）**           | DO はいつ揮発してもよい再構成可能なキャッシュとして扱う                                                        |
+| 項目              | 決定                                | 理由                                                                                                                          |
+| ----------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| デプロイ形態      | 個人が自分でデプロイ                | 自分の複数端末での利用が主                                                                                                    |
+| E2EE              | **採用しない**                      | サーバー（DO）が plaintext の Yjs を読めることで、マージとスナップショット生成と運用コマンドが大幅に単純化する                |
+| テキストマージ    | **Yjs（真の文字単位 CRDT）を死守**  | 「同じ段落を同時編集しても壊れない」を自動で満たす。これが LiveSync 等に対する最大の差別化点                                  |
+| バイナリ          | content-defined chunking (CDC) + R2 | 大ファイルの差分転送と重複排除                                                                                                |
+| Recoverable state | **R2 snapshot + DO SQLite op-log**  | Combines the latest authoritative, verified, healthy snapshot with later durable operations; R2 bytes alone are not authority |
 
 ## 2. 自己修復という設計原則
 
 本設計で起きる不整合は、すべて「2 つのストアを 1 トランザクションで更新できない継ぎ目」で生じる（§4）。
 跨ぎ書き込みを原子化しようとは頑張らない。
-原子化できない継ぎ目があることを認めたうえで、次の 4 つの道具で「最悪でも一瞬古い状態が見え、すぐ収束する」に落とし、「データが消える」を起こさない。
+Once an un-atomic boundary is accepted, the following four tools keep ordinary failures within “a briefly stale view that quickly converges” and avoid data loss. Complete SQLite loss is treated separately as a disaster boundary outside the normal guarantee.
 
 1. **単調な永続化**：データは内側から外側へ一方向に流し、外側が確定するまで内側を消さない。
 2. **冪等な操作**：すべての操作を何度でも再実行できる形にする。部分失敗は再実行で無害に回収する。
@@ -66,14 +66,14 @@ Cloudflare Worker（Hono）
        │      ├ 定期 + しきい値で R2 へ checkpoint
        │      └ メタ YDoc（fileId ↔ path / blobChunks / tombstone）も収束
        │
-       └─▶ R2（source of truth）
+       └─▶ R2 (immutable snapshot bytes + blobs)
               ├ snapshots/<vaultId>/...    … Yjs スナップショット
               └ vaults/<vaultId>/blobs/... … CDC チャンク（重複排除）
 ```
 
 - **Worker (Hono)**：ステートレスな API 層。認証、ルーティング、blob の認証付き proxy。
 - **Durable Object (VaultRoom)**：vaultId ごとに必ず 1 インスタンス。Yjs の「単一の収束点」。
-- **R2**：不変の最終真実。スナップショットとバイナリチャンクを保管する。
+- **R2**: Stores immutable snapshot bytes and binary chunks. Snapshot restore authority is determined together with the Durable Object SQLite pointer and health evidence.
 
 DO は「マージ機」である必要はない。
 Yjs の update は CRDT op（可換かつ冪等）なので、DO は update を順序付きで追記保存し、新規参加者へ流すだけでよく、実マージは各クライアントの `Y.applyUpdate` が行う（y-websocket の発想）。
@@ -98,6 +98,8 @@ remotely-save がロールバックで悩ましいのは「ファイル全体を
 **継ぎ目 1: メモリ、DO Storage、R2**。
 snapshot と state vector は await を挟まない同一同期ブロックで撮り、順序は `snapshot → R2 確定 → compact` に固定する。
 クラッシュが挟まっても残るのは冗長な op だけで、再生は冪等なので無害（→ [server.md](docs/spec/server.md) §5）。
+
+The recoverable document is the combination of the latest `authoritative + verified + healthy` R2 snapshot and the contiguous op-log rows appended to Durable Object SQLite afterward. A normal Durable Object execution-instance eviction remains recoverable because SQLite survives. Complete SQLite loss is a disaster and may lose updates acknowledged after the last checkpoint. R2 bytes discovered by listing without pointer or health evidence fail closed and require explicit operator verification and recovery.
 
 **継ぎ目 2: R2 blob と Yjs 参照**。
 「参照あり blob 無し」は blob PUT 完了を待ってから参照を書くので原理的に起きない。
@@ -141,7 +143,7 @@ snapshot と state vector は await を挟まない同一同期ブロックで�
 
 **サーバー**（[server.md](docs/spec/server.md)）
 
-- 「R2 のスナップショット + それ以降の op」だけで常に完全復元できる。これさえ守れば DO はいつ蒸発しても安全。
+- The latest authoritative R2 snapshot plus subsequent Durable Object SQLite operations restores the document after a normal execution-instance eviction. Complete SQLite loss is a disaster outside the normal guarantee, and R2 alone is never auto-restored.
 - update は検証してから append。壊れた update は quarantine に隔離し、ack を返さない。
 - checkpoint の pointer は単調前進のみ。R2 確定前に op_log を消さず、compact は retention floor で clamp する。
 - snapshot は複数世代 + rollback 用 op_log を保持し、論理破損から古い健全世代へ戻れるようにする。
@@ -167,18 +169,19 @@ snapshot と state vector は await を挟まない同一同期ブロックで�
 
 ## 6. 既知のリスクと割り切り
 
-| リスク                                   | 状態                    | 割り切り                                                        |
-| ---------------------------------------- | ----------------------- | --------------------------------------------------------------- |
-| `leaf.view.editor.cm` が非公式 API       | Obsidian 更新で壊れうる | 既存協調プラグインも踏む道。前例あり                            |
-| 段落のファイル間移動の並行編集           | CRDT 保証外             | 最悪でも一過性の重複。消失はしない                              |
-| tombstone / 古いクライアント             | 緩和済み                | full snapshot merge 経路で「壊れる」を回避                      |
-| 論理破損した checkpoint                  | 緩和済み                | snapshot retention と quarantine で rollback 可能にする         |
-| Yjs clientID 衝突                        | 緩和済み                | device registry で検出し通常同期へ進めない                      |
-| DO 単一障害点                            | 設計上の前提            | 真実は R2。DO は再構成可能なキャッシュ                          |
-| 初回フルシンクの DO 過負荷               | 緩和済み                | seed / blob データ面を DO に流さず、DO は制御面に寄せる         |
-| materialize による未観測外部編集の上書き | 緩和済み                | 書き込み直前 CAS と conflict copy で消さない                    |
-| blob GC 後の binary 復活                 | 緩和済み                | GC horizon と復活前 chunk 検証で壊れた参照を materialize しない |
-| iOS バックグラウンド制限                 | OS 制約                 | フォアグラウンド復帰 resync で吸収                              |
+| リスク                                   | 状態                              | 割り切り                                                                                    |
+| ---------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------- |
+| `leaf.view.editor.cm` が非公式 API       | Obsidian 更新で壊れうる           | 既存協調プラグインも踏む道。前例あり                                                        |
+| 段落のファイル間移動の並行編集           | CRDT 保証外                       | 最悪でも一過性の重複。消失はしない                                                          |
+| tombstone / 古いクライアント             | 緩和済み                          | full snapshot merge 経路で「壊れる」を回避                                                  |
+| 論理破損した checkpoint                  | 緩和済み                          | snapshot retention と quarantine で rollback 可能にする                                     |
+| Yjs clientID 衝突                        | 緩和済み                          | device registry で検出し通常同期へ進めない                                                  |
+| DO execution-instance eviction           | Mitigated                         | SQLite pointer and op-log survive, so cold start restores the composite state               |
+| Complete DO SQLite loss                  | Disaster outside normal guarantee | Acknowledged post-checkpoint operations may be lost; R2 bytes alone are never auto-promoted |
+| 初回フルシンクの DO 過負荷               | 緩和済み                          | seed / blob データ面を DO に流さず、DO は制御面に寄せる                                     |
+| materialize による未観測外部編集の上書き | 緩和済み                          | 書き込み直前 CAS と conflict copy で消さない                                                |
+| blob GC 後の binary 復活                 | 緩和済み                          | GC horizon と復活前 chunk 検証で壊れた参照を materialize しない                             |
+| iOS バックグラウンド制限                 | OS 制約                           | フォアグラウンド復帰 resync で吸収                                                          |
 
 ## 付録: remotely-save / Self-Hosted LiveSync との比較
 

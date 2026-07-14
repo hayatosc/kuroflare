@@ -20,6 +20,12 @@ R2            … immutable snapshot bytes（SQLite evidence が承認したも�
 で fail closed する。復旧は認証済み operator の snapshot-health verify によって
 evidence と pointer を作成してから行う。
 
+Here, DO disappearance means a normal execution-instance eviction. Eviction with
+SQLite retained is recoverable from the pointer, health evidence, and later op-log
+rows, while complete Durable Object SQLite loss is a disaster outside the normal
+guarantee. Acknowledged updates after the last checkpoint may be lost, so R2 bytes
+alone are never promoted to authority automatically.
+
 稼働中は `client op → メモリ YDoc に適用 → 全 client へブロードキャスト → DO Storage に op 追記`。
 op ごとに R2 へ書くと write 課金とレイテンシで破綻するので、DO Storage が書き込みバッファになる。
 
@@ -235,9 +241,9 @@ orphaned run の回収経路（§6）も同じ floor を適用し、retention �
 
 **alarm のスケジューリング**:
 
-- 通常 append 後は 30 秒後の alarm、未 checkpoint op が 128 件以上なら即時 alarm。
+- After a normal append, schedule a nominal alarm 30 seconds later, or immediately when at least 128 operations remain uncheckpointed. These are best-effort triggers, not a hard acknowledged-data-loss bound, because alarms can be delayed or fail, appends can be concurrent, and each alarm has a work limit.
 - alarm は冒頭で orphaned run を recovery し（§6）、dirty doc（`latest_seq > latest_snapshot_seq`）を 16 件ずつ checkpoint する。
-- バッチ上限まで処理した場合は短い遅延で再スケジュールし、新規 op が来ない doc の op_log 残留を防ぐ。
+- When an alarm reaches the 16-document batch limit, it does not automatically reschedule solely because the batch was full. Remaining dirty documents wait for a later scheduled alarm or a subsequent append; this is another reason the 128-operation and 30-second triggers are not a hard recovery-point bound.
 - alarm は request path を持たないため、vaultId を DO storage に保存し、evict 後の alarm はそこから復元する。
 
 **Hibernation との関係**。
@@ -285,7 +291,7 @@ pointer/docs row を作成した後にだけ復元する。
   hydrate failure（§4）。
 
 将来の目標設計では、更新順を `snapshot PUT → per-doc pointer PUT → latest.json PUT` とし、manifest に世代を持たせて「latest が壊れたら参照先が揃う最大 manifestSeq へ戻る」fallback を用意する。
-R2 を source of truth と呼ぶ以上、復元入口を必ず複数残す。
+Because immutable R2 bytes and SQLite authority evidence are combined, keep multiple recovery entry points.
 
 実装: `worker/src/sync/snapshots.ts`（key 命名、`isSnapshotManifest`、`chooseSnapshotForRestore`）。
 

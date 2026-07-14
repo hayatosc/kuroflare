@@ -8,20 +8,20 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 
 ## 1. Priority and status
 
-| ID     | Priority | Area                                       | Status                                                  |
-| ------ | -------- | ------------------------------------------ | ------------------------------------------------------- |
-| DR-001 | P0       | Durable authority and failure model        | Specification correction required                       |
-| DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested                  |
-| DR-003 | P0       | Large-update snapshot escape               | Safely disabled; full escape remains unimplemented      |
-| DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                      |
-| DR-005 | P1       | Meta entry merge granularity               | Schema decision required                                |
-| DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                                |
-| DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship       |
-| DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                         |
-| DR-009 | P1       | Quarantine and public error evidence       | HTTP envelope differs; guarded WS rejection implemented |
-| DR-010 | P2       | Empty binary files                         | Schema contradiction                                    |
-| DR-011 | P2       | Portable path materialization              | Deterministic policy missing                            |
-| DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing                    |
+| ID     | Priority | Area                                       | Status                                                   |
+| ------ | -------- | ------------------------------------------ | -------------------------------------------------------- |
+| DR-001 | P0       | Durable authority and failure model        | Closed: composite authority and disaster boundary tested |
+| DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested                   |
+| DR-003 | P0       | Large-update snapshot escape               | Safely disabled; full escape remains unimplemented       |
+| DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                       |
+| DR-005 | P1       | Meta entry merge granularity               | Schema decision required                                 |
+| DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                                 |
+| DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship        |
+| DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                          |
+| DR-009 | P1       | Quarantine and public error evidence       | HTTP envelope differs; guarded WS rejection implemented  |
+| DR-010 | P2       | Empty binary files                         | Schema contradiction                                     |
+| DR-011 | P2       | Portable path materialization              | Deterministic policy missing                             |
+| DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing                     |
 
 P0 items can acknowledge or delete durable user data incorrectly.
 P1 items can violate convergence, recovery, or interoperability under realistic concurrency.
@@ -29,34 +29,34 @@ P2 items are bounded compatibility gaps, but they should be resolved before dist
 
 ## 2. Durable state and checkpointing
 
-### DR-001: Define the durable authority as a composite state
+### DR-001: Define the durable authority as a composite state — closed
 
-The overview and server specification call R2 the sole source of truth and state that the Durable Object may disappear safely.
-The runtime acknowledges an ordinary update after writing it to `op_log`, `docs`, and `message_dedup` in Durable Object SQLite.
-That update does not reach R2 until a later checkpoint.
+The recoverable document is the latest `authoritative + verified + healthy` R2
+snapshot plus later Durable Object SQLite `op_log` rows. SQLite is the authority for
+acknowledged updates that have not reached a checkpoint; R2 stores immutable
+checkpoint bytes and blob data. A normal execution-instance eviction is recoverable
+because SQLite survives. Complete SQLite loss is a disaster outside the normal
+guarantee and may lose acknowledged updates newer than the last checkpoint.
 
-The current recoverable state is therefore:
-
-```
-latest durable YDoc = latest valid R2 snapshot + later DO SQLite op_log rows
-```
-
-The phrase “the Durable Object may disappear” must distinguish an evicted execution instance from loss of Durable Object storage.
-Eviction is recoverable today.
-Complete SQLite loss can discard acknowledged updates newer than the last checkpoint.
-
-Recommended contract:
-
-- Treat DO SQLite as the authority for acknowledged, not-yet-checkpointed updates.
-- Treat R2 as the authority for completed checkpoints and immutable blobs.
-- Do not claim recovery from complete DO storage loss until an R2 manifest or pointer is advanced through the same durability boundary as acknowledgement.
-- State the maximum acknowledged-data-loss window explicitly if complete DO storage loss remains an accepted failure mode.
+R2 bytes discovered by prefix listing without a SQLite pointer and snapshot-health
+evidence are never auto-promoted. Hydration fails closed with
+`snapshot-health:no-verified-generation`; an authenticated operator must explicitly
+verify and recover the candidate.
 
 Acceptance evidence:
 
-- A crash test acknowledges update N, evicts the runtime before checkpoint, and restores N from SQLite plus R2.
-- A separate disaster-recovery test documents what survives simulated SQLite loss.
-- The overview, server specification, deployment guide, and operator UI use the same failure model.
+- Existing normal eviction/restart tests restore checkpointed state and residual
+  SQLite operations without duplicating that scenario here.
+- `packages/worker/src/runtime/vault-room.test.ts` creates an authoritative seq 1
+  checkpoint, acknowledges seq 2, then replaces SQLite with an empty store while
+  retaining R2. Hydration rejects the unverified R2 candidate, leaves no document,
+  op-log, dedup, or health mutation, and performs no R2 put/delete.
+- `packages/obsidian-plugin/src/sync/obsidian/snapshot-health-ui.test.ts` checks the
+  operator note for composite authority, normal eviction, complete SQLite loss, and
+  best-effort checkpoint triggers.
+- `spec.md`, `server.md`, `operations.md`, `deployment.md`, and this review use the
+  same failure model. The nominal 128-operation / 30-second triggers are explicitly
+  best effort rather than a hard recovery-point bound.
 
 ### DR-002: Make the SQL append one transaction
 
