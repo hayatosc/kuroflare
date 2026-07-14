@@ -4,6 +4,7 @@ import {
   makeDeviceId,
   makeMessageId,
   makeOutboxPlanItemId,
+  makeSha256Hex,
   makeVaultId,
   makeYDocId,
   type DocId,
@@ -13,7 +14,12 @@ import {
 } from '@kuroflare/core'
 import { assert, expect, test } from 'vitest'
 
-import { planOutboundQueueAckCompletion, planOutboundQueueSuccessCompletion } from '../engine/queue'
+import {
+  planOutboundQueueAckCompletion,
+  planOutboundQueueSuccessCompletion,
+  planOutboundQueueSyncUpdateRejectedPause,
+} from '../engine/queue'
+import { planOutboxWorkerFailureCompletion } from '../engine/worker'
 import {
   applyLocalStoreIndexedDbOpenEffect,
   commitLocalStoreIndexedDbConcreteWriteTransaction,
@@ -36,6 +42,7 @@ import {
 } from '../store/indexeddb'
 import {
   planLocalStoreAckCompletionTransaction,
+  planLocalStoreSyncUpdateRejectedPauseTransaction,
   planLocalStoreSuccessCompletionTransaction,
   type LocalStoreOutboxRecord,
 } from '../store/store'
@@ -46,6 +53,7 @@ const blobPutId = outboxId('indexeddb-blob-put-1')
 const vaultId = makeVaultId('indexeddb-vault-1')
 const deviceId = makeDeviceId('indexeddb-device-1')
 const messageId = makeMessageId('indexeddb-message-1')
+const updateSha256 = makeSha256Hex('a'.repeat(64))
 const fileDocId = { kind: 'file', ydocId: makeYDocId('indexeddb-doc-1') } satisfies DocId
 
 test('local store indexeddb adapter plans reads from outbox before leases', () => {
@@ -420,6 +428,156 @@ test('local store indexeddb database transaction waits for transaction completio
       },
     ])
     assert.deepEqual(database.leaseRows(), [])
+  }
+})
+
+test('local store indexeddb database transaction rejects a stale completion lease without mutation', async () => {
+  const record = {
+    ...outboxRecord(yUpdateId, 'y-update', 'retrying'),
+    docId: fileDocId,
+    messageId,
+    updateSha256,
+  } satisfies LocalStoreOutboxRecord
+  const expectedLease = runningLease(yUpdateId, 'y-update', 'worker-1', 30_000)
+  const newerLease = runningLease(yUpdateId, 'y-update', 'worker-2', 31_000)
+  const database = new FakeIndexedDbDatabasePort({
+    outboxRecords: [record],
+    leaseRows: [newerLease],
+    completion: 'complete',
+  })
+  const completion = planOutboundQueueSyncUpdateRejectedPause({
+    itemId: yUpdateId,
+    kind: 'y-update',
+    status: 'retrying',
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    messageId,
+    updateSha256,
+    rejection: {
+      type: 'sync-update-rejected',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId,
+      deviceId,
+      messageId,
+      docId: fileDocId,
+      updateSha256,
+      reason: 'large-update-requires-snapshot-import',
+      retryable: false,
+    },
+    ownerId: expectedLease.ownerId,
+    now: 1_000,
+    existingLease: expectedLease,
+  })
+  assert.equal(completion.ok, true)
+
+  if (completion.ok) {
+    const plan = await commitLocalStoreIndexedDbDatabaseTransaction({
+      operations: planLocalStoreSyncUpdateRejectedPauseTransaction(completion),
+      database,
+    })
+
+    assert.equal(plan.ok, false)
+    if (!plan.ok) {
+      assert.equal(plan.reason, 'lease-cas-mismatch')
+    }
+    assert.deepEqual(database.outboxRows(), [record])
+    assert.deepEqual(database.leaseRows(), [newerLease])
+  }
+})
+
+test('local store indexeddb failure completion rejects a newer lease without mutation', async () => {
+  const record = outboxRecord(blobPutId, 'blob-put', 'retrying')
+  const expectedLease = runningLease(blobPutId, 'blob-put', 'worker-1', 30_000)
+  const newerLease = runningLease(blobPutId, 'blob-put', 'worker-2', 31_000)
+  const database = new FakeIndexedDbDatabasePort({
+    outboxRecords: [record],
+    leaseRows: [newerLease],
+    completion: 'complete',
+  })
+  const completion = planOutboxWorkerFailureCompletion({
+    itemId: blobPutId,
+    kind: 'blob-put',
+    retryCount: 0,
+    error: { kind: 'network' },
+    ownerId: expectedLease.ownerId,
+    now: 1_000,
+    currentOutboxRecords: [record],
+    currentLeaseRows: [expectedLease],
+  })
+  assert.equal(completion.ok, true)
+
+  if (completion.ok) {
+    const plan = await commitLocalStoreIndexedDbDatabaseTransaction({
+      operations: completion.operations,
+      database,
+    })
+
+    assert.equal(plan.ok, false)
+    if (!plan.ok) {
+      assert.equal(plan.reason, 'lease-cas-mismatch')
+    }
+    assert.deepEqual(database.outboxRows(), [record])
+    assert.deepEqual(database.leaseRows(), [newerLease])
+  }
+})
+
+test('local store indexeddb rejection completion rejects changed outbox evidence without mutation', async () => {
+  const expectedRecord = {
+    ...outboxRecord(yUpdateId, 'y-update', 'retrying'),
+    docId: fileDocId,
+    messageId,
+    updateSha256,
+  } satisfies LocalStoreOutboxRecord
+  const changedRecord = {
+    ...expectedRecord,
+    status: 'paused',
+    updateSha256: makeSha256Hex('b'.repeat(64)),
+  } satisfies LocalStoreOutboxRecord
+  const lease = runningLease(yUpdateId, 'y-update', 'worker-1', 30_000)
+  const database = new FakeIndexedDbDatabasePort({
+    outboxRecords: [changedRecord],
+    leaseRows: [lease],
+    completion: 'complete',
+  })
+  const completion = planOutboundQueueSyncUpdateRejectedPause({
+    itemId: yUpdateId,
+    kind: 'y-update',
+    status: expectedRecord.status,
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    messageId,
+    updateSha256,
+    rejection: {
+      type: 'sync-update-rejected',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId,
+      deviceId,
+      messageId,
+      docId: fileDocId,
+      updateSha256,
+      reason: 'large-update-requires-snapshot-import',
+      retryable: false,
+    },
+    ownerId: lease.ownerId,
+    now: 1_000,
+    existingLease: lease,
+  })
+  assert.equal(completion.ok, true)
+
+  if (completion.ok) {
+    const plan = await commitLocalStoreIndexedDbDatabaseTransaction({
+      operations: planLocalStoreSyncUpdateRejectedPauseTransaction(completion),
+      database,
+    })
+
+    assert.equal(plan.ok, false)
+    if (!plan.ok) {
+      assert.equal(plan.reason, 'patch-evidence-mismatch')
+    }
+    assert.deepEqual(database.outboxRows(), [changedRecord])
+    assert.deepEqual(database.leaseRows(), [lease])
   }
 })
 

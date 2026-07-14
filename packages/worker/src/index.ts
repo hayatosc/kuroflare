@@ -94,6 +94,7 @@ export {
 export {
   decideSyncUpdateQuarantine,
   decideSyncUpdateAppend,
+  makeSyncUpdateRejected,
   type SyncUpdateAppendDecision,
   type SyncUpdateAppendDecisionInput,
   type SyncUpdateDocClock,

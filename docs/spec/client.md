@@ -207,6 +207,8 @@ completion patch と lease release は同一 transaction で保存し、renewal 
 
 - `y-update` / `meta-ref-update` は server `Ack` だけで done（条件は [protocol.md](protocol.md) §1）。runner の送信成功では閉じない。
 - `NeedFullSnapshot` は `paused(reason="full-snapshot-required", resumeOn="manual")` に落とし、full snapshot 経路（§7）を優先する。apply 成功後は対象 doc の該当 item を `done(completedBy="full-snapshot-apply")` に閉じる（manual resume と別系統。snapshot apply と同一 transaction で terminal にしないと古い差分の再送で full snapshot loop に戻る）。
+- `SyncUpdateRejected` is handled as a separate terminal evidence path. The client requires an exact local match for `vaultId`, `deviceId`, `docId`, `messageId`, and `updateSha256`, then atomically patches that outbox item to `paused(reason="sync-update-rejected", resumeOn="manual", rejectionRetryable=false)` and releases its lease with a compare-and-swap. A stale or mismatched lease rejects the transaction and changes neither the newer lease nor the outbox record.
+- `SyncUpdateRejected` does not mean that the update was durably applied, and it must not be routed through the `NeedFullSnapshot` completion or snapshot-apply release path. Snapshot import, discard, or fork remains an explicit repair decision; older clients that do not understand the message retain the existing close/reconnect behavior.
 - server quarantine は ack を返さないため、放置すると同じ破損 update を retry し続ける。`/admin/quarantine` の list / detail と照合し、一致した `y-update` を `paused(reason="server-quarantine", resumeOn="manual")` に落とす。`discard` 後も自動 done にせず、ユーザーが捨てる / fork する / reset する transaction で terminal にする。
 - blob 系と materialize は runner の結果 evidence を分類器に通す（401/403 → auth、408 → timeout、429 / 5xx → retryable、他の非 2xx → non-retryable、disk CAS mismatch → local-conflict）。runner は retry / pause / dead-letter を直接判断しない。
 
@@ -246,11 +248,12 @@ outbound: leased `y-update` / `meta-ref-update` を `sync-update` frame に直�
 inbound:
 
 - 文字列 JSON だけを `parseControlMessage` に通し、binary payload や invalid message を decision に渡さない。
-- routing: `ack` / `need-full-snapshot` は自端末の完了証拠なので local device 一致の時だけ受け、peer の ack は drop。peer `sync-update` は apply へ、peer `sync-request` は SV answer へ、invalid / vault mismatch / self-broadcast / 想定外 `hello` は drop。
+- Routing treats `ack`, `need-full-snapshot`, and `sync-update-rejected` as local outbox evidence only when the device identity matches. Peer `sync-update` messages go to apply, peer `sync-request` messages go to the state-vector answer path, and invalid, vault-mismatched, self-broadcast, or unexpected `hello` messages are dropped.
 - server の sync-request 応答は requester の `deviceId` を持つため、送信中 sync-request の `messageId` を追跡して self-broadcast 判定から除外する。
 - peer `sync-update` の apply は base64 decode、`updateSha256` 照合、`durableSeq` 検証を通った update だけを YDoc に適用し、apply 後に compact state と cursor を同一 IndexedDB transaction で保存する。失敗した update は YDoc も IndexedDB も触らない。
 - peer `sync-request` への応答は `Y.encodeStateAsUpdate(doc, sv)` の差分に `baseStateVector` と `updateSha256` を付け、`durableSeq` は付けない（server が append 後に付与）。
 - ack completion は outbox / lease snapshot と照合し、対象 record が 1 件だけの場合に限って完了させる。候補なし / 複数 / stale lease / owner mismatch は IndexedDB を変更しない。
+- Guarded outbox-completion handlers are serialized per WebSocket, and close/error recovery waits for already-delivered completion handlers to settle. Remote-update, sync-request, and drop handlers run independently with explicit rejection logging so stalled remote I/O cannot block recovery. Inbound outbox completion uses the queued IndexedDB read/validate/write transaction, preserving record-evidence and lease CAS checks at commit time.
 
 ## 7. full snapshot の取得と適用
 

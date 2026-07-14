@@ -176,9 +176,9 @@ append が確定した場合だけ authoritative YDoc に適用し、duplicate �
 
 **5. large update escape**。
 The complete live snapshot escape is not implemented.
-Until it exists, the server rejects oversized live updates with `append-reject:large-update-requires-snapshot-import`, without an ack, `NeedFullSnapshot`, or any mutation to `op_log`, `docs`, `message_dedup`, or the active YDoc.
-Recovery currently requires an operator to use the authenticated snapshot-import route manually.
-Automatic client transition from this close reason to snapshot import is future work.
+Until it exists, the server sends one guarded `sync-update-rejected` JSON frame containing the exact message and update hash, then performs the existing `1011` close with reason `append-reject:large-update-requires-snapshot-import`.
+It sends no ack or `NeedFullSnapshot`, and makes no mutation to `op_log`, `docs`, `message_dedup`, or the active YDoc.
+The client may pause the exact matching outbox item for manual repair; snapshot import still requires an explicit authenticated operator or user action.
 A future live escape may acknowledge only after apply, immutable R2 snapshot write, pointer advancement, `docs.latest_snapshot_seq` / `latest_seq`, and `message_dedup` commit as one restorable boundary.
 
 Snapshot import accepts a `latestSeq` expected-current guard after bootstrap. Omitting it for an existing document returns `409 snapshot-import-latest-seq-required`; a defined mismatch returns `409 snapshot-import-stale-seq`, both before any YDoc, R2, or SQL mutation. Meta imports validate the merged temporary YDoc before writing and return `400 invalid-snapshot-import-meta-schema` on failure.

@@ -7,6 +7,7 @@ import {
   type OutboundQueueLeaseAcquirePlan,
   type OutboundQueueLeaseRenewPlan,
   type OutboundQueueQuarantinePausePlan,
+  type OutboundQueueSyncUpdateRejectedPausePlan,
   type OutboundQueueSuccessCompletionPlan,
   type OutboundQueueTickPlan,
 } from '../../engine/queue'
@@ -94,6 +95,7 @@ export type OutboxWorkerCompletionPlan =
         | 'ack-completion'
         | 'pause-for-full-snapshot'
         | 'pause-for-quarantine'
+        | 'pause-for-sync-update-rejected'
         | 'success-completion'
         | 'retry-after-failure'
         | 'pause-after-failure'
@@ -110,6 +112,7 @@ export type OutboxWorkerCompletionPlan =
       readonly completion: Extract<
         | OutboundQueueAckCompletionPlan
         | OutboundQueueQuarantinePausePlan
+        | OutboundQueueSyncUpdateRejectedPausePlan
         | OutboundQueueSuccessCompletionPlan
         | OutboundQueueFailureCompletionPlan,
         { readonly ok: true }
@@ -121,6 +124,7 @@ export type OutboxWorkerCompletionPlan =
       readonly reason:
         | Extract<OutboundQueueAckCompletionPlan, { readonly ok: false }>['reason']
         | Extract<OutboundQueueQuarantinePausePlan, { readonly ok: false }>['reason']
+        | Extract<OutboundQueueSyncUpdateRejectedPausePlan, { readonly ok: false }>['reason']
         | Extract<OutboundQueueSuccessCompletionPlan, { readonly ok: false }>['reason']
         | Extract<OutboundQueueFailureCompletionPlan, { readonly ok: false }>['reason']
         | Extract<LocalStoreTransactionApplyPlan, { readonly ok: false }>['reason']
@@ -128,6 +132,7 @@ export type OutboxWorkerCompletionPlan =
         | Extract<
             | OutboundQueueAckCompletionPlan
             | OutboundQueueQuarantinePausePlan
+            | OutboundQueueSyncUpdateRejectedPausePlan
             | OutboundQueueSuccessCompletionPlan
             | OutboundQueueFailureCompletionPlan,
             { readonly ok: false }

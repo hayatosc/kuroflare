@@ -19,6 +19,7 @@ import {
   planOutboundQueueLeaseAcquire,
   planOutboundQueueLeaseRenew,
   planOutboundQueueQuarantinePause,
+  planOutboundQueueSyncUpdateRejectedPause,
   planOutboundQueueSuccessCompletion,
   planOutboundQueueTick,
 } from '../engine/queue'
@@ -31,6 +32,7 @@ import {
   planLocalStoreLeaseRenewTransaction,
   planLocalStoreOutboxSchedulerTransaction,
   planLocalStoreQuarantinePauseTransaction,
+  planLocalStoreSyncUpdateRejectedPauseTransaction,
   planLocalStoreSuccessCompletionTransaction,
   planLocalStoreTransactionCommit,
   type LocalStoreOutboxRecord,
@@ -308,6 +310,93 @@ test('local store quarantine pause patches item before releasing lease', () => {
         },
       },
     ])
+  }
+})
+
+test('local store guarded rejection pause patches evidence before releasing lease', () => {
+  const existingLease = runningLease(yUpdateId, 'y-update', 'worker-1', 30_000)
+  const plan = planOutboundQueueSyncUpdateRejectedPause({
+    itemId: yUpdateId,
+    kind: 'y-update',
+    status: 'retrying',
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    messageId,
+    updateSha256: updateHash,
+    rejection: {
+      type: 'sync-update-rejected',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId,
+      deviceId,
+      messageId,
+      docId: fileDocId,
+      updateSha256: updateHash,
+      reason: 'large-update-requires-snapshot-import',
+      retryable: false,
+    },
+    ownerId: 'worker-1',
+    now: 1_000,
+    existingLease,
+  })
+
+  assert.equal(plan.ok, true)
+  if (plan.ok) {
+    assert.deepEqual(planLocalStoreSyncUpdateRejectedPauseTransaction(plan), [
+      {
+        kind: 'patch-outbox',
+        patch: {
+          kind: 'sync-update-rejected-pause',
+          itemId: yUpdateId,
+          expected: {
+            status: 'retrying',
+            messageId,
+            docId: fileDocId,
+            updateSha256: updateHash,
+          },
+          patch: {
+            status: 'paused',
+            nextAttemptAt: undefined,
+            reason: 'sync-update-rejected',
+            resumeOn: 'manual',
+            rejectionReason: 'large-update-requires-snapshot-import',
+            rejectionRetryable: false,
+            rejectionUpdateSha256: updateHash,
+            docId: fileDocId,
+          },
+        },
+      },
+      {
+        kind: 'lease',
+        operation: {
+          kind: 'delete-lease',
+          delete: { itemId: yUpdateId, expectedLease: existingLease },
+        },
+      },
+    ])
+
+    const applied = applyLocalStoreTransactionSnapshot({
+      operations: planLocalStoreSyncUpdateRejectedPauseTransaction(plan),
+      currentOutboxRecords: [
+        {
+          id: yUpdateId,
+          kind: 'y-update',
+          status: 'retrying',
+          dependsOn: [],
+          nextAttemptAt: undefined,
+          docId: fileDocId,
+          messageId,
+          updateSha256: updateHash,
+        },
+      ],
+      currentLeaseRows: [existingLease],
+    })
+    assert.equal(applied.ok, true)
+    if (applied.ok) {
+      assert.equal(applied.outboxRecords[0]?.status, 'paused')
+      assert.equal(applied.outboxRecords[0]?.reason, 'sync-update-rejected')
+      assert.deepEqual(applied.leaseRows, [])
+    }
   }
 })
 

@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { makeDeviceId, makeVaultId } from '@kuroflare/core'
+import {
+  CURRENT_PROTOCOL_VERSION,
+  makeDeviceId,
+  makeMessageId,
+  makeVaultId,
+  makeYDocId,
+} from '@kuroflare/core'
 import { assert, expect, test } from 'vitest'
 
 import {
@@ -8,7 +14,11 @@ import {
   createSyncRuntimeWebSocketSession,
   createSyncRuntimeWebSocketStartupStepPort,
 } from '../sync/engine/websocket'
-import { openWorkerWebSocketRuntime, type WorkerWebSocketOpenRuntime } from './sync-websocket'
+import {
+  openWorkerWebSocketRuntime,
+  routeWorkerInboundMessageForStartup,
+  type WorkerWebSocketOpenRuntime,
+} from './sync-websocket'
 
 class FakeBrowserWebSocket {
   static readonly CONNECTING = 0
@@ -203,6 +213,98 @@ test('fresh token opens without a refresh attempt', async () => {
   assert.equal(preflightCalls, 1)
   assert.deepEqual(events, ['fresh-token-check', 'create-startup-port', 'hello'])
   assert.equal(FakeBrowserWebSocket.instances.length, 1)
+})
+
+test('worker websocket close recovery waits only for guarded outbox completion handling', async () => {
+  const run = async (data: string, waitsForInbound: boolean): Promise<void> => {
+    FakeBrowserWebSocket.instances.length = 0
+    const setup = {
+      endpoint: 'https://worker.example.test',
+      vaultId: makeVaultId(`completion-order-${waitsForInbound ? 'completion' : 'remote'}`),
+      deviceId: makeDeviceId('completion-order-device'),
+      yClientId: 1,
+      protocolVersion: 1,
+      bootstrapMode: 'new-vault',
+      tokenVersion: 1,
+    } as const
+    const session = createSyncRuntimeWebSocketSession()
+    const issues: string[] = []
+    let releaseInbound!: () => void
+    const inboundFinished = new Promise<void>((resolve) => {
+      releaseInbound = resolve
+    })
+    let started = false
+    const port = createSyncRuntimeWebSocketStartupStepPort({
+      metadata: { setup, accessTokenSecretKey: 'access-token-key' },
+      tokenReader: { getAccessToken: async () => 'access-token' },
+      webSocket: createBrowserSyncRuntimeWebSocketFactory(FakeBrowserWebSocket),
+      capabilities: [],
+      session,
+      onConnectionIssue: (issue) => issues.push(issue.kind),
+      onInboundMessage: (message) =>
+        routeWorkerInboundMessageForStartup(message, async () => {
+          started = true
+          await inboundFinished
+        }),
+    })
+
+    await port.openWebSocket({
+      kind: 'run-startup-step',
+      vaultId: setup.vaultId,
+      step: 'open-websocket',
+      phase: 'websocket',
+    })
+    const connection = FakeBrowserWebSocket.instances[0]
+    assert(connection !== undefined)
+    const admitted = port.sendClientHello({
+      kind: 'run-startup-step',
+      vaultId: setup.vaultId,
+      step: 'send-client-hello',
+      phase: 'websocket',
+    })
+    connection.onmessage?.(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'hello-accepted',
+          protocolVersion: CURRENT_PROTOCOL_VERSION,
+          vaultId: setup.vaultId,
+          deviceId: setup.deviceId,
+          yClientId: setup.yClientId,
+        }),
+      }),
+    )
+    await admitted
+
+    connection.onmessage?.(new MessageEvent('message', { data }))
+    await Promise.resolve()
+    assert.equal(started, true)
+    connection.close()
+    if (waitsForInbound) {
+      assert.deepEqual(issues, [])
+    } else {
+      assert.deepEqual(issues, ['close'])
+    }
+
+    releaseInbound()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    if (waitsForInbound) {
+      assert.deepEqual(issues, ['close'])
+    }
+  }
+
+  await run('{', false)
+  await run(
+    JSON.stringify({
+      type: 'ack',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId: makeVaultId('completion-order-completion'),
+      deviceId: makeDeviceId('completion-order-device'),
+      messageId: makeMessageId('completion-order-message'),
+      docId: { kind: 'file', ydocId: makeYDocId('completion-order-doc') },
+      durableSeq: 1,
+    }),
+    true,
+  )
 })
 
 test('failed token refresh blocks startup port and socket creation', async () => {

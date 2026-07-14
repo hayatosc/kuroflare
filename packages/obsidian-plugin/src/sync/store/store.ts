@@ -16,6 +16,7 @@ export type {
   SuccessfulOutboundQueueLeaseReleasePlan,
   SuccessfulOutboundQueueLeaseRenewPlan,
   SuccessfulOutboundQueueQuarantinePausePlan,
+  SuccessfulOutboundQueueSyncUpdateRejectedPausePlan,
   SuccessfulOutboundQueueSuccessCompletionPlan,
   SuccessfulOutboundQueueTickPlan,
 } from '../store/store.types'
@@ -32,6 +33,7 @@ export {
   planLocalStoreLeaseRenewTransaction,
   planLocalStoreOutboxSchedulerTransaction,
   planLocalStoreQuarantinePauseTransaction,
+  planLocalStoreSyncUpdateRejectedPauseTransaction,
   planLocalStoreSuccessCompletionTransaction,
   planLocalStoreTransactionCommit,
 } from '../store/store/index'

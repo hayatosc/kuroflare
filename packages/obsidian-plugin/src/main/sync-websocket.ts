@@ -18,7 +18,10 @@ import {
   type SyncRuntimeWebSocketSessionPort,
   type SyncRuntimeWebSocketInboundMessage,
 } from '../sync/engine/websocket'
-import { planOutboxWorkerCompletionIndexedDbWriteTransaction } from '../sync/engine/worker'
+import {
+  commitLocalStoreIndexedDbDatabaseTransaction,
+  createLocalStoreIndexedDbDatabasePort,
+} from '../sync/store/indexeddb'
 import { type LocalStoreOutboxRecord } from '../sync/store/store'
 import {
   currentSetupMetadata,
@@ -37,12 +40,7 @@ import {
   scheduleOutboxWorkerTick,
 } from './outbox'
 import type KuroflareSpikePlugin from './plugin'
-import {
-  openLocalStoreDatabase,
-  putOutboxRecord,
-  readOutboxWorkerSnapshot,
-  commitOutboxWorkerIndexedDbWriteTransaction,
-} from './store'
+import { openLocalStoreDatabase, putOutboxRecord, readOutboxWorkerSnapshot } from './store'
 
 export async function sendDocUpdateToWorker(
   plugin: KuroflareSpikePlugin,
@@ -358,8 +356,18 @@ export async function handleWorkerInboundMessage(
         },
         commit: {
           async commit(plan) {
-            const transaction = planOutboxWorkerCompletionIndexedDbWriteTransaction(plan)
-            await commitOutboxWorkerIndexedDbWriteTransaction(db, transaction)
+            const committed = await commitLocalStoreIndexedDbDatabaseTransaction({
+              operations: plan.operations,
+              database: createLocalStoreIndexedDbDatabasePort(db),
+            })
+            if (!committed.ok) {
+              console.warn('[kuroflare] inbound outbox completion persistence rejected', {
+                reason: committed.reason,
+                itemId: committed.itemId,
+              })
+              return { ok: false, reason: committed.reason }
+            }
+            return { ok: true }
           },
         },
       }).completeOutbox,
@@ -388,6 +396,27 @@ export async function handleWorkerInboundMessage(
   }
 }
 
+/**
+ * Keeps close recovery independent from remote-update and drop handling while
+ * preserving completion ordering for guarded local outbox evidence.
+ */
+export function routeWorkerInboundMessageForStartup(
+  message: SyncRuntimeWebSocketInboundMessage,
+  handle: (message: SyncRuntimeWebSocketInboundMessage) => Promise<void>,
+): void | Promise<void> {
+  if (
+    message.ok &&
+    (message.message.type === 'ack' ||
+      message.message.type === 'need-full-snapshot' ||
+      message.message.type === 'sync-update-rejected')
+  ) {
+    return handle(message)
+  }
+  void handle(message).catch((error: unknown) => {
+    console.warn('[kuroflare] asynchronous worker inbound handling failed', { error })
+  })
+}
+
 function createWorkerWebSocketStartupPort(
   plugin: KuroflareSpikePlugin,
 ): SyncRuntimeWebSocketStartupStepPort {
@@ -404,7 +433,9 @@ function createWorkerWebSocketStartupPort(
       void handleWorkerWebSocketIssue(plugin, issue)
     },
     onInboundMessage: (message) => {
-      void handleWorkerInboundMessage(plugin, message)
+      return routeWorkerInboundMessageForStartup(message, async (inbound) => {
+        await handleWorkerInboundMessage(plugin, inbound)
+      })
     },
   })
 }

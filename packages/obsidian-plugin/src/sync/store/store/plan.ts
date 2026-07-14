@@ -8,6 +8,7 @@ import {
   type SuccessfulOutboundQueueLeaseReleasePlan,
   type SuccessfulOutboundQueueLeaseRenewPlan,
   type SuccessfulOutboundQueueQuarantinePausePlan,
+  type SuccessfulOutboundQueueSyncUpdateRejectedPausePlan,
   type SuccessfulOutboundQueueSuccessCompletionPlan,
   type SuccessfulOutboundQueueTickPlan,
 } from '../../store/store.types'
@@ -86,6 +87,28 @@ export function planLocalStoreQuarantinePauseTransaction(
       patch: {
         kind: 'quarantine-pause',
         itemId: plan.itemId,
+        patch: plan.patch,
+      },
+    },
+    deleteLeaseOperation(plan.leaseDelete),
+  ]
+}
+
+export function planLocalStoreSyncUpdateRejectedPauseTransaction(
+  plan: SuccessfulOutboundQueueSyncUpdateRejectedPausePlan,
+): readonly LocalStoreTransactionOperation[] {
+  return [
+    {
+      kind: 'patch-outbox',
+      patch: {
+        kind: 'sync-update-rejected-pause',
+        itemId: plan.itemId,
+        expected: {
+          status: plan.expectedStatus,
+          messageId: plan.expectedMessageId,
+          docId: plan.expectedDocId,
+          updateSha256: plan.expectedUpdateSha256,
+        },
         patch: plan.patch,
       },
     },

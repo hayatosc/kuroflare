@@ -3,6 +3,8 @@ import {
   type OutboxAckCompletionDecision,
   type OutboxQuarantinePauseInput,
   type OutboxQuarantinePauseDecision,
+  type OutboxSyncUpdateRejectedPauseInput,
+  type OutboxSyncUpdateRejectedPauseDecision,
   type OutboxFullSnapshotReleaseInput,
   type OutboxFullSnapshotReleasePlan,
   type OutboxFullSnapshotReleasePatch,
@@ -107,6 +109,47 @@ export function decideOutboxQuarantinePause(
       quarantineId: input.quarantine.id,
       quarantineReason: input.quarantine.reason,
       docId: input.quarantine.docId,
+    },
+  }
+}
+
+/** Decides whether guarded rejection evidence can pause an exact outbound Yjs update item. */
+export function decideOutboxSyncUpdateRejectedPause(
+  input: OutboxSyncUpdateRejectedPauseInput,
+): OutboxSyncUpdateRejectedPauseDecision {
+  if (input.kind !== 'y-update' && input.kind !== 'meta-ref-update') {
+    return { action: 'reject', reason: 'unsupported-kind' }
+  }
+  if (input.status !== 'pending' && input.status !== 'retrying') {
+    return { action: 'reject', reason: 'not-runnable-status' }
+  }
+  if (input.rejection.vaultId !== input.vaultId) {
+    return { action: 'reject', reason: 'vault-mismatch' }
+  }
+  if (input.rejection.deviceId !== input.deviceId) {
+    return { action: 'reject', reason: 'device-mismatch' }
+  }
+  if (!sameDocId(input.rejection.docId, input.docId)) {
+    return { action: 'reject', reason: 'doc-mismatch' }
+  }
+  if (input.rejection.messageId !== input.messageId) {
+    return { action: 'reject', reason: 'message-mismatch' }
+  }
+  if (input.updateSha256 === undefined || input.rejection.updateSha256 !== input.updateSha256) {
+    return { action: 'reject', reason: 'hash-mismatch' }
+  }
+
+  return {
+    action: 'pause-for-sync-update-rejected',
+    patch: {
+      status: 'paused',
+      nextAttemptAt: undefined,
+      reason: 'sync-update-rejected',
+      resumeOn: 'manual',
+      rejectionReason: input.rejection.reason,
+      rejectionRetryable: false,
+      rejectionUpdateSha256: input.rejection.updateSha256,
+      docId: input.rejection.docId,
     },
   }
 }

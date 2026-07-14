@@ -7,10 +7,10 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ## Current summary (2026-07-14)
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 190 件、worker 230 件、model-tests 17 件、Obsidian 394 件、worker e2e 7 件。
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 191 件、worker 231 件、model-tests 17 件、Obsidian 403 件、worker e2e 7 件。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
-- Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness fixes are committed at HEAD `122d2a0`. The remaining P0/P1/P2 items and the design-review release gates below are still authoritative.
+- Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are committed at `122d2a0`. The rejection-evidence work described below builds on that baseline. The remaining P0/P1/P2 items and design-review release gates are still authoritative.
 - DR-008 (snapshot health and rollback) is closed. Immutable R2 bytes are now admitted only by append-only SQLite evidence, and the authenticated health API and Obsidian operator panel expose server-computed action authority.
 
 ### MVP チェックリスト（[operations.md](spec/operations.md) §8 対応）
@@ -48,6 +48,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 ### P0: large-update snapshot escape
 
 - The unsafe live `snapshot-escape` branch is disabled. Oversized live updates are rejected without acknowledgement or durable mutation using a stable close reason. Recovery currently requires manual use of the authenticated snapshot-import route; automatic client transition is future work.
+- DR-009 subset implemented: protocol v1 now carries one guarded `sync-update-rejected` evidence frame for oversized live updates. The current Obsidian runtime matches vault/device/message/document/hash evidence and atomically pauses the exact outbox item with `reason: sync-update-rejected`, `resumeOn: manual`, and lease release. This does not close DR-009 generally; automatic snapshot import, capability negotiation, generalized rejection evidence, and public HTTP error migration remain out of scope.
 - A transactional live escape remains future work if live updates above the configured threshold become a product requirement.
 
 ### P0: production startup pipeline の常用化

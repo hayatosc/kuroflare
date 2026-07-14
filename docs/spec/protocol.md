@@ -43,12 +43,26 @@ type NeedFullSnapshot = {
   docId: DocId;
   reason: "state-vector-too-old" | "missing-log" | "protocol-upgrade" | "large-update-snapshot";
 };
+
+type SyncUpdateRejected = {
+  type: "sync-update-rejected";
+  protocolVersion: number;
+  vaultId: string;
+  deviceId: string;
+  messageId: string;
+  docId: DocId;
+  updateSha256: string;
+  reason: "large-update-requires-snapshot-import";
+  retryable: false;
+};
 ```
 
 メッセージ意味論:
 
 - `Ack` は「DO の SQLite op_log にこの update が durable append 済み」だけを意味する。client は `vaultId / deviceId / docId / messageId` が pending outbox item と完全一致し、`durableSeq` が既知の durable seq より新しい場合だけ item を `done` にできる。別 doc / 別 message / 別 device の ack を流用してはいけない。
 - `NeedFullSnapshot` は ack ではなく、full snapshot 境界（[client.md](client.md) §7）へ戻る要求である。
+- `SyncUpdateRejected` is a terminal, evidence-bearing response for an oversized live update. The Worker computes `updateSha256` from the received bytes, sends exactly one JSON rejection before closing the session with `1011`, and does not append the update, write a deduplication row, or mutate the hydrated YDoc. `retryable: false` requires snapshot import or an explicit local repair decision; the update is not acknowledged.
+- The rejection contains no update bytes. Clients must only accept it when `vaultId`, `deviceId`, `docId`, `messageId`, and `updateSha256` exactly match one locally pending outbox item. A mismatch or missing item is ignored without changing local queue state.
 - `durableSeq` は client → server では未設定。Worker が append 後に確定した値を peer broadcast と `sync-request` 応答に付与する。
 - server が `sync-request` に応答する `sync-update` には、requester 自身の `deviceId` と `updateSha256` を載せる。client は送信中 sync-request の `messageId` を追跡し、一致する応答を self-broadcast 判定（[client.md](client.md) §6）から除外する。
 - ack がなければ client は同じ update を再送する。永続 op log の重複は `messageId` unique 制約で弾く（[server.md](server.md) §3）。

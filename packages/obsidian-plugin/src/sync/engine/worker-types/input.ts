@@ -4,6 +4,7 @@ import {
   type DocId,
   type MessageId,
   type NeedFullSnapshot,
+  type SyncUpdateRejected,
   type OutboxRunError,
   type OutboxRunningLease,
   type QuarantinedUpdateEntry,
@@ -61,6 +62,23 @@ export interface OutboxWorkerQuarantineCompletionInput {
   readonly messageId: MessageId
   readonly updateSha256?: QuarantinedUpdateEntry['updateSha256'] | undefined
   readonly quarantine: QuarantinedUpdateEntry
+  readonly ownerId: string
+  readonly now: number
+  readonly currentOutboxRecords: readonly LocalStoreOutboxRecord[]
+  readonly currentLeaseRows: readonly OutboxRunningLease[]
+}
+
+/** Evidence for one y-update side effect matched to a guarded worker rejection. */
+export interface OutboxWorkerSyncUpdateRejectedCompletionInput {
+  readonly itemId: LocalStoreOutboxRecord['id']
+  readonly kind: LocalStoreOutboxRecord['kind']
+  readonly status: LocalStoreOutboxRecord['status']
+  readonly vaultId: VaultId
+  readonly deviceId: DeviceId
+  readonly docId: DocId
+  readonly messageId: MessageId
+  readonly updateSha256?: SyncUpdateRejected['updateSha256'] | undefined
+  readonly rejection: SyncUpdateRejected
   readonly ownerId: string
   readonly now: number
   readonly currentOutboxRecords: readonly LocalStoreOutboxRecord[]

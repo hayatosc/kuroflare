@@ -3,19 +3,19 @@ import { TFolder } from 'obsidian'
 
 import {
   type OutboxWorkerSideEffectResultEvidence,
+  type OutboxWorkerCompletionPlan,
   classifyOutboxWorkerSideEffectCompletionEvidence,
   planOutboxWorkerSuccessCompletion,
   planOutboxWorkerFailureCompletion,
-  planOutboxWorkerCompletionIndexedDbWriteTransaction,
 } from '../../sync/engine/worker'
+import {
+  commitLocalStoreIndexedDbDatabaseTransaction,
+  createLocalStoreIndexedDbDatabasePort,
+} from '../../sync/store/indexeddb'
 import { type LocalStoreOutboxRecord } from '../../sync/store/store'
 import { currentSetupMetadata, findActiveFileId } from '../auth'
 import type KuroflareSpikePlugin from '../plugin'
-import {
-  commitOutboxWorkerIndexedDbWriteTransaction,
-  openLocalStoreDatabase,
-  readOutboxWorkerSnapshot,
-} from '../store'
+import { openLocalStoreDatabase, readOutboxWorkerSnapshot } from '../store'
 import { scheduleOutboxWorkerTick } from './tick'
 
 export function isRepairConflictPathAvailable(plugin: KuroflareSpikePlugin, path: string): boolean {
@@ -77,10 +77,8 @@ export async function completeNonAckSideEffect(
     })
     return
   }
-  await commitOutboxWorkerIndexedDbWriteTransaction(
-    db,
-    planOutboxWorkerCompletionIndexedDbWriteTransaction(plan),
-  )
+  const committed = await commitOutboxWorkerCompletionPlan(db, plan)
+  if (!committed) return
   if (plan.action === 'retry-after-failure') {
     scheduleOutboxWorkerTick(plugin, 1_000, 'side-effect-retry')
   } else if (plan.action === 'success-completion') {
@@ -114,13 +112,29 @@ export async function completeLeasedOutboxFailure(
     })
     return
   }
-  await commitOutboxWorkerIndexedDbWriteTransaction(
-    db,
-    planOutboxWorkerCompletionIndexedDbWriteTransaction(plan),
-  )
+  const committed = await commitOutboxWorkerCompletionPlan(db, plan)
+  if (!committed) return
   if (plan.action === 'retry-after-failure') {
     scheduleOutboxWorkerTick(plugin, 1_000, 'side-effect-retry')
   }
+}
+
+async function commitOutboxWorkerCompletionPlan(
+  db: IDBDatabase,
+  plan: Extract<OutboxWorkerCompletionPlan, { readonly ok: true }>,
+): Promise<boolean> {
+  const committed = await commitLocalStoreIndexedDbDatabaseTransaction({
+    operations: plan.operations,
+    database: createLocalStoreIndexedDbDatabasePort(db),
+  })
+  if (!committed.ok) {
+    console.warn('[kuroflare] outbox completion persistence rejected', {
+      itemId: committed.itemId,
+      reason: committed.reason,
+    })
+    return false
+  }
+  return true
 }
 
 /** Requeues this worker's leased WebSocket items after a connection failure. */

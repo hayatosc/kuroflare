@@ -16,14 +16,23 @@ export interface SyncRuntimeWebSocketOutboxCompletionSnapshotReaderPort {
 }
 
 /** Port that durably commits a successful inbound outbox completion plan. */
+export type SyncRuntimeWebSocketOutboxCompletionCommitResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: string }
+
 export interface SyncRuntimeWebSocketOutboxCompletionCommitPort {
   /** Commits a successful completion plan to the local store. */
-  commit(plan: Extract<OutboxWorkerCompletionPlan, { readonly ok: true }>): Promise<void>
+  commit(
+    plan: Extract<OutboxWorkerCompletionPlan, { readonly ok: true }>,
+  ): Promise<void | SyncRuntimeWebSocketOutboxCompletionCommitResult>
 }
 
 /** Input for planning one inbound WebSocket outbox completion. */
 export interface SyncRuntimeWebSocketOutboxCompletionInput {
-  readonly message: Extract<ControlMessage, { readonly type: 'ack' | 'need-full-snapshot' }>
+  readonly message: Extract<
+    ControlMessage,
+    { readonly type: 'ack' | 'need-full-snapshot' | 'sync-update-rejected' }
+  >
   readonly ownerId: string
   readonly now: number
   readonly snapshot: SyncRuntimeWebSocketOutboxCompletionSnapshot

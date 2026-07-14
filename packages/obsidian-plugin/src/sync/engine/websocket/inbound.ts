@@ -53,6 +53,7 @@ export function planSyncRuntimeWebSocketInboundRoute(
   switch (message.type) {
     case 'ack':
     case 'need-full-snapshot':
+    case 'sync-update-rejected':
       if (message.deviceId !== input.deviceId) {
         return { action: 'drop', reason: 'device-mismatch' }
       }
@@ -143,13 +144,16 @@ export function attachSyncRuntimeWebSocketInboundMessageHandler(
   handler: SyncRuntimeWebSocketInboundMessageHandler,
 ): void {
   socket.onmessage = (event) => {
-    handler(parseSyncRuntimeWebSocketMessage(event))
+    void handler(parseSyncRuntimeWebSocketMessage(event))
   }
 }
 
 export function outboxCompletionCandidateMatches(
   record: LocalStoreOutboxRecord,
-  message: Extract<ControlMessage, { readonly type: 'ack' | 'need-full-snapshot' }>,
+  message: Extract<
+    ControlMessage,
+    { readonly type: 'ack' | 'need-full-snapshot' | 'sync-update-rejected' }
+  >,
 ): boolean {
   // `meta-ref-update` items (the DAG-scheduled meta write after a binary upload's
   // blob-put/manifest-put chain) go over the wire as the same sync-update frame as
@@ -166,6 +170,13 @@ export function outboxCompletionCandidateMatches(
   }
   if (message.type === 'ack') {
     return record.messageId === message.messageId
+  }
+  if (message.type === 'sync-update-rejected') {
+    return (
+      record.messageId === message.messageId &&
+      record.updateSha256 !== undefined &&
+      record.updateSha256 === message.updateSha256
+    )
   }
   return record.messageId !== undefined
 }

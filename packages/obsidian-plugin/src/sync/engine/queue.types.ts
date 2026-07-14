@@ -21,6 +21,8 @@ import type {
   OutboxPlanItemId,
   OutboxQuarantinePauseDecision,
   OutboxQuarantinePausePatch,
+  OutboxSyncUpdateRejectedPauseDecision,
+  OutboxSyncUpdateRejectedPausePatch,
   OutboxResumeEvent,
   OutboxResumePatch,
   OutboxRetryKind,
@@ -32,6 +34,8 @@ import type {
   OutboxSchedulerStart,
   OutboxSchedulerTickPlan,
   QuarantinedUpdateEntry,
+  Sha256Hex,
+  SyncUpdateRejected,
   VaultId,
 } from '@kuroflare/core'
 
@@ -210,6 +214,22 @@ export interface OutboundQueueQuarantinePauseInput {
   readonly existingLease: OutboxRunningLease | undefined
 }
 
+/** Input for applying guarded oversized-update rejection evidence to one running update. */
+export interface OutboundQueueSyncUpdateRejectedPauseInput {
+  readonly itemId: OutboxPlanItemId
+  readonly kind: OutboxRetryKind
+  readonly status: OutboxItemStatus
+  readonly vaultId: VaultId
+  readonly deviceId: DeviceId
+  readonly docId: DocId
+  readonly messageId: MessageId
+  readonly updateSha256?: SyncUpdateRejected['updateSha256'] | undefined
+  readonly rejection: SyncUpdateRejected
+  readonly ownerId: string
+  readonly now: number
+  readonly existingLease: OutboxRunningLease | undefined
+}
+
 /** Atomic transaction plan for quarantine pause and lease release. */
 export type OutboundQueueQuarantinePausePlan =
   | {
@@ -225,6 +245,31 @@ export type OutboundQueueQuarantinePausePlan =
         | Extract<OutboundQueueLeaseReleasePlan, { readonly ok: false }>['reason']
       readonly quarantineDecision?:
         | Extract<OutboxQuarantinePauseDecision, { readonly action: 'reject' }>
+        | undefined
+      readonly leaseRelease?:
+        | Extract<OutboundQueueLeaseReleasePlan, { readonly ok: false }>
+        | undefined
+    }
+
+/** Atomic transaction plan for guarded rejection pause and lease release. */
+export type OutboundQueueSyncUpdateRejectedPausePlan =
+  | {
+      readonly ok: true
+      readonly itemId: OutboxPlanItemId
+      readonly expectedStatus: Extract<OutboxItemStatus, 'pending' | 'retrying'>
+      readonly expectedMessageId: MessageId
+      readonly expectedDocId: DocId
+      readonly expectedUpdateSha256: Sha256Hex
+      readonly patch: OutboxSyncUpdateRejectedPausePatch
+      readonly leaseDelete: OutboundQueueLeaseDelete
+    }
+  | {
+      readonly ok: false
+      readonly reason:
+        | Extract<OutboxSyncUpdateRejectedPauseDecision, { readonly action: 'reject' }>['reason']
+        | Extract<OutboundQueueLeaseReleasePlan, { readonly ok: false }>['reason']
+      readonly rejectionDecision?:
+        | Extract<OutboxSyncUpdateRejectedPauseDecision, { readonly action: 'reject' }>
         | undefined
       readonly leaseRelease?:
         | Extract<OutboundQueueLeaseReleasePlan, { readonly ok: false }>

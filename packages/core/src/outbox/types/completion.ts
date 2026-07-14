@@ -1,5 +1,5 @@
 import { type QuarantinedUpdateEntry } from '../../http/admin'
-import { type Ack, type NeedFullSnapshot } from '../../sync/messages'
+import { type Ack, type NeedFullSnapshot, type SyncUpdateRejected } from '../../sync/messages'
 import { type Sha256Hex } from '../../sync/meta'
 import { type DeviceId, type DocId, type MessageId, type VaultId } from '../../utils/ids'
 import { type OutboxAuthStartRefreshBlock } from './auth'
@@ -40,6 +40,18 @@ export interface OutboxQuarantinePauseInput {
   readonly messageId: MessageId
   readonly updateSha256?: Sha256Hex | undefined
   readonly quarantine: QuarantinedUpdateEntry
+}
+
+/** Input for pausing an outbound Yjs update after a guarded oversized-update rejection. */
+export interface OutboxSyncUpdateRejectedPauseInput {
+  readonly kind: OutboxRetryKind
+  readonly status: OutboxItemStatus
+  readonly vaultId: VaultId
+  readonly deviceId: DeviceId
+  readonly docId: DocId
+  readonly messageId: MessageId
+  readonly updateSha256?: Sha256Hex | undefined
+  readonly rejection: SyncUpdateRejected
 }
 
 /** Minimal paused outbox record needed after a full snapshot was applied. */
@@ -185,6 +197,18 @@ export interface OutboxQuarantinePausePatch {
   readonly docId: DocId
 }
 
+/** Persistable patch for an update paused by a guarded worker rejection. */
+export interface OutboxSyncUpdateRejectedPausePatch {
+  readonly status: 'paused'
+  readonly nextAttemptAt: undefined
+  readonly reason: 'sync-update-rejected'
+  readonly resumeOn: 'manual'
+  readonly rejectionReason: SyncUpdateRejected['reason']
+  readonly rejectionRetryable: false
+  readonly rejectionUpdateSha256: Sha256Hex
+  readonly docId: DocId
+}
+
 /** Decision for pausing a Yjs update outbox item based on server quarantine evidence. */
 export type OutboxQuarantinePauseDecision =
   | { readonly action: 'pause-for-quarantine'; readonly patch: OutboxQuarantinePausePatch }
@@ -193,6 +217,24 @@ export type OutboxQuarantinePauseDecision =
       readonly reason:
         | 'unsupported-kind'
         | 'not-runnable-status'
+        | 'device-mismatch'
+        | 'doc-mismatch'
+        | 'message-mismatch'
+        | 'hash-mismatch'
+    }
+
+/** Decision for pausing an update after guarded oversized-update rejection evidence. */
+export type OutboxSyncUpdateRejectedPauseDecision =
+  | {
+      readonly action: 'pause-for-sync-update-rejected'
+      readonly patch: OutboxSyncUpdateRejectedPausePatch
+    }
+  | {
+      readonly action: 'reject'
+      readonly reason:
+        | 'unsupported-kind'
+        | 'not-runnable-status'
+        | 'vault-mismatch'
         | 'device-mismatch'
         | 'doc-mismatch'
         | 'message-mismatch'

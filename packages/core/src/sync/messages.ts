@@ -82,6 +82,24 @@ export const NeedFullSnapshotSchema = v.object({
 })
 export type NeedFullSnapshot = v.InferInput<typeof NeedFullSnapshotSchema>
 
+export const SyncUpdateRejectedReasonSchema = v.union([
+  v.literal('large-update-requires-snapshot-import'),
+])
+export type SyncUpdateRejectedReason = v.InferInput<typeof SyncUpdateRejectedReasonSchema>
+
+export const SyncUpdateRejectedSchema = v.object({
+  type: v.literal('sync-update-rejected'),
+  protocolVersion: ProtocolVersionSchema,
+  vaultId: VaultIdSchema,
+  deviceId: DeviceIdSchema,
+  messageId: MessageIdSchema,
+  docId: DocIdSchema,
+  updateSha256: Sha256HexSchema,
+  reason: SyncUpdateRejectedReasonSchema,
+  retryable: v.literal(false),
+})
+export type SyncUpdateRejected = v.InferInput<typeof SyncUpdateRejectedSchema>
+
 export const ControlMessageSchema = v.union([
   ClientHelloSchema,
   HelloAcceptedSchema,
@@ -89,6 +107,7 @@ export const ControlMessageSchema = v.union([
   SyncUpdateSchema,
   AckSchema,
   NeedFullSnapshotSchema,
+  SyncUpdateRejectedSchema,
 ])
 export type ControlMessage = v.InferInput<typeof ControlMessageSchema>
 

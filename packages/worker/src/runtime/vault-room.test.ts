@@ -1166,19 +1166,27 @@ test('VaultRoom rejects large live updates without acknowledging or advancing du
       update: makeLargeFileYjsUpdateBase64(),
     } satisfies SyncUpdate
     const updateJson = JSON.stringify(update)
-    const emptyDocUpdate = Y.encodeStateAsUpdate(new Y.Doc())
-
     await room.webSocketMessage(server, updateJson)
 
+    const rejection = JSON.parse(stringMessageAt(server.sent, 0)) as Record<string, unknown>
+    assert.deepEqual(rejection, {
+      type: 'sync-update-rejected',
+      protocolVersion: update.protocolVersion,
+      vaultId: update.vaultId,
+      deviceId: update.deviceId,
+      messageId: update.messageId,
+      docId,
+      updateSha256: makeSha256Hex(await hashTestBytes(decodeTestBase64(update.update))),
+      reason: 'large-update-requires-snapshot-import',
+      retryable: false,
+    })
+    assert.equal(syncMessages(server.sent).length, 1)
     assert.equal(storage.sql.opLog.has('file:large-file-doc:message-large-update'), false)
     assert.equal(storage.sql.docs.has('file:large-file-doc'), false)
     assert.equal(storage.sql.messageDedup.has('file:large-file-doc:message-large-update'), false)
-    assert.equal(syncMessages(server.sent).length, 0)
     assert.equal(server.closeCode, 1011)
     assert.equal(server.closeReason, 'append-reject:large-update-requires-snapshot-import')
-    const hydratedDoc = room.docs.get('file:large-file-doc')
-    assert(hydratedDoc instanceof Y.Doc)
-    assert.deepEqual(Y.encodeStateAsUpdate(hydratedDoc), emptyDocUpdate)
+    assert.equal(room.docs.has('file:large-file-doc'), false)
 
     void room.fetch(await makeAuthenticatedWebSocketRequest())
     const retryServer = state.accepted[1]
@@ -1186,14 +1194,62 @@ test('VaultRoom rejects large live updates without acknowledging or advancing du
     await room.webSocketMessage(retryServer, JSON.stringify(makeHello()))
     await room.webSocketMessage(retryServer, updateJson)
 
+    assert.equal(syncMessages(retryServer.sent).length, 1)
+    assert.equal(JSON.parse(stringMessageAt(retryServer.sent, 0)).type, 'sync-update-rejected')
     assert.equal(storage.sql.opLog.has('file:large-file-doc:message-large-update'), false)
     assert.equal(storage.sql.docs.has('file:large-file-doc'), false)
     assert.equal(storage.sql.messageDedup.has('file:large-file-doc:message-large-update'), false)
-    assert.equal(syncMessages(retryServer.sent).length, 0)
     assert.equal(retryServer.closeCode, 1011)
     assert.equal(retryServer.closeReason, 'append-reject:large-update-requires-snapshot-import')
-    assert.equal(room.docs.get('file:large-file-doc'), hydratedDoc)
-    assert.deepEqual(Y.encodeStateAsUpdate(hydratedDoc), emptyDocUpdate)
+    assert.equal(room.docs.has('file:large-file-doc'), false)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom leaves an already-hydrated document byte-for-byte unchanged after oversized rejection', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const docId = { kind: 'file', ydocId: makeYDocId('already-hydrated-large-file') } as const
+    await ensureDocHydrated(room, docId)
+    const hydrated = room.docs.get('file:already-hydrated-large-file')
+    assert(hydrated !== undefined)
+    hydrated.getText('body').insert(0, 'preserved local state')
+    const before = Y.encodeStateAsUpdate(hydrated)
+
+    const update = {
+      ...makeSyncUpdate(makeMessageId('message-large-update-hydrated')),
+      docId,
+      update: makeLargeFileYjsUpdateBase64(),
+    } satisfies SyncUpdate
+    await room.webSocketMessage(server, JSON.stringify(update))
+
+    assert.deepEqual(Y.encodeStateAsUpdate(hydrated), before)
+    assert.equal(syncMessages(server.sent).length, 1)
+    assert.equal(JSON.parse(stringMessageAt(server.sent, 0)).type, 'sync-update-rejected')
+    assert.equal(
+      storage.sql.opLog.has('file:already-hydrated-large-file:message-large-update-hydrated'),
+      false,
+    )
+    assert.equal(
+      storage.sql.messageDedup.has(
+        'file:already-hydrated-large-file:message-large-update-hydrated',
+      ),
+      false,
+    )
+    assert.equal(server.closeCode, 1011)
+    assert.equal(server.closeReason, 'append-reject:large-update-requires-snapshot-import')
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)

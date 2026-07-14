@@ -4,7 +4,10 @@ import {
   type SyncRuntimeWebSocketOutboxCompletionPlan,
   type SyncRuntimeWebSocketOutboxCompletionPortInput,
 } from '../../engine/websocket.types'
-import { planOutboxWorkerAckCompletion } from '../../engine/worker'
+import {
+  planOutboxWorkerAckCompletion,
+  planOutboxWorkerSyncUpdateRejectedCompletion,
+} from '../../engine/worker'
 import { outboxCompletionCandidateMatches } from './inbound'
 
 /**
@@ -34,21 +37,38 @@ export function planSyncRuntimeWebSocketOutboxCompletion(
   if (messageId === undefined) {
     return { ok: false, reason: 'matching-outbox-record-not-found', candidates: [] }
   }
-  const completion = planOutboxWorkerAckCompletion({
-    itemId: record.id,
-    kind: record.kind,
-    status: record.status,
-    vaultId: input.message.vaultId,
-    deviceId: input.message.deviceId,
-    docId: input.message.docId,
-    messageId,
-    minDurableSeqExclusive: input.minDurableSeqExclusive,
-    message: input.message,
-    ownerId: input.ownerId,
-    now: input.now,
-    currentOutboxRecords: input.snapshot.outboxRecords,
-    currentLeaseRows: input.snapshot.leaseRows,
-  })
+  const completion =
+    input.message.type === 'sync-update-rejected'
+      ? planOutboxWorkerSyncUpdateRejectedCompletion({
+          itemId: record.id,
+          kind: record.kind,
+          status: record.status,
+          vaultId: input.message.vaultId,
+          deviceId: input.message.deviceId,
+          docId: input.message.docId,
+          messageId,
+          updateSha256: record.updateSha256,
+          rejection: input.message,
+          ownerId: input.ownerId,
+          now: input.now,
+          currentOutboxRecords: input.snapshot.outboxRecords,
+          currentLeaseRows: input.snapshot.leaseRows,
+        })
+      : planOutboxWorkerAckCompletion({
+          itemId: record.id,
+          kind: record.kind,
+          status: record.status,
+          vaultId: input.message.vaultId,
+          deviceId: input.message.deviceId,
+          docId: input.message.docId,
+          messageId,
+          minDurableSeqExclusive: input.minDurableSeqExclusive,
+          message: input.message,
+          ownerId: input.ownerId,
+          now: input.now,
+          currentOutboxRecords: input.snapshot.outboxRecords,
+          currentLeaseRows: input.snapshot.leaseRows,
+        })
   if (!completion.ok) {
     return { ok: false, reason: completion.reason, candidates, completion }
   }
@@ -67,17 +87,28 @@ export function createSyncRuntimeWebSocketOutboxCompletionPort(
 ): Pick<SyncRuntimeWebSocketInboundRoutePorts, 'completeOutbox'> {
   return {
     async completeOutbox(message) {
-      const plan = planSyncRuntimeWebSocketOutboxCompletion({
-        message,
-        ownerId: input.ownerId,
-        now: input.now(),
-        snapshot: await input.snapshot.read(),
-        minDurableSeqExclusive: input.minDurableSeqExclusive,
-      })
-      if (!plan.ok) {
-        return
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const plan = planSyncRuntimeWebSocketOutboxCompletion({
+          message,
+          ownerId: input.ownerId,
+          now: input.now(),
+          snapshot: await input.snapshot.read(),
+          minDurableSeqExclusive: input.minDurableSeqExclusive,
+        })
+        if (!plan.ok) {
+          return
+        }
+        const committed = await input.commit.commit(plan.completion)
+        if (committed === undefined || committed.ok) {
+          return
+        }
+        if (attempt === 2) {
+          console.warn('[kuroflare] inbound outbox completion retries exhausted', {
+            itemId: plan.record.id,
+            reason: committed.reason,
+          })
+        }
       }
-      await input.commit.commit(plan.completion)
     },
   }
 }

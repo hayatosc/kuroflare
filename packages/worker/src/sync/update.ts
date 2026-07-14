@@ -1,4 +1,4 @@
-import { type Ack, type SyncUpdate } from '@kuroflare/core'
+import { type Ack, type SyncUpdate, type SyncUpdateRejected } from '@kuroflare/core'
 import * as v from 'valibot'
 
 import type {
@@ -25,6 +25,25 @@ export type {
   SyncUpdateOpLogAppend,
   SyncUpdateDocPatch,
   SyncUpdateAppendDecision,
+}
+
+/** Builds the guarded control message sent before closing an oversized live update. */
+export function makeSyncUpdateRejected(
+  update: SyncUpdate,
+  updateSha256: SyncUpdateRejected['updateSha256'],
+  reason: SyncUpdateRejected['reason'],
+): SyncUpdateRejected {
+  return {
+    type: 'sync-update-rejected',
+    protocolVersion: update.protocolVersion,
+    vaultId: update.vaultId,
+    deviceId: update.deviceId,
+    messageId: update.messageId,
+    docId: update.docId,
+    updateSha256,
+    reason,
+    retryable: false,
+  }
 }
 
 /**

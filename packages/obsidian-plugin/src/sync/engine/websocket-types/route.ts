@@ -41,7 +41,10 @@ export interface SyncRuntimeWebSocketInboundRouteInput {
 export type SyncRuntimeWebSocketInboundRoute =
   | {
       readonly action: 'outbox-completion'
-      readonly message: Extract<ControlMessage, { readonly type: 'ack' | 'need-full-snapshot' }>
+      readonly message: Extract<
+        ControlMessage,
+        { readonly type: 'ack' | 'need-full-snapshot' | 'sync-update-rejected' }
+      >
     }
   | {
       readonly action: 'apply-remote-update'
@@ -85,7 +88,10 @@ export type SyncRuntimeWebSocketHelloAdmissionPlan =
 export interface SyncRuntimeWebSocketInboundRoutePorts {
   /** Commits an outbound queue completion or full-snapshot pause after a server response. */
   completeOutbox(
-    message: Extract<ControlMessage, { readonly type: 'ack' | 'need-full-snapshot' }>,
+    message: Extract<
+      ControlMessage,
+      { readonly type: 'ack' | 'need-full-snapshot' | 'sync-update-rejected' }
+    >,
   ): Promise<void>
   /** Applies a peer update to the local YDoc and follow-up materialization pipeline. */
   applyRemoteUpdate(
@@ -116,4 +122,4 @@ export interface SyncRuntimeWebSocketInboundDispatchResult {
 /** Handler invoked after one inbound WebSocket frame has crossed parser validation. */
 export type SyncRuntimeWebSocketInboundMessageHandler = (
   message: SyncRuntimeWebSocketInboundMessage,
-) => void
+) => void | Promise<void>

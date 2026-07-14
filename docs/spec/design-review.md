@@ -8,20 +8,20 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 
 ## 1. Priority and status
 
-| ID     | Priority | Area                                       | Status                                             |
-| ------ | -------- | ------------------------------------------ | -------------------------------------------------- |
-| DR-001 | P0       | Durable authority and failure model        | Specification correction required                  |
-| DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested             |
-| DR-003 | P0       | Large-update snapshot escape               | Safely disabled; full escape remains unimplemented |
-| DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                 |
-| DR-005 | P1       | Meta entry merge granularity               | Schema decision required                           |
-| DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                           |
-| DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship  |
-| DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                    |
-| DR-009 | P1       | Quarantine and public error evidence       | Wire contract and runtime differ                   |
-| DR-010 | P2       | Empty binary files                         | Schema contradiction                               |
-| DR-011 | P2       | Portable path materialization              | Deterministic policy missing                       |
-| DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing               |
+| ID     | Priority | Area                                       | Status                                                  |
+| ------ | -------- | ------------------------------------------ | ------------------------------------------------------- |
+| DR-001 | P0       | Durable authority and failure model        | Specification correction required                       |
+| DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested                  |
+| DR-003 | P0       | Large-update snapshot escape               | Safely disabled; full escape remains unimplemented      |
+| DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                      |
+| DR-005 | P1       | Meta entry merge granularity               | Schema decision required                                |
+| DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                                |
+| DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship       |
+| DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                         |
+| DR-009 | P1       | Quarantine and public error evidence       | HTTP envelope differs; guarded WS rejection implemented |
+| DR-010 | P2       | Empty binary files                         | Schema contradiction                                    |
+| DR-011 | P2       | Portable path materialization              | Deterministic policy missing                            |
+| DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing                    |
 
 P0 items can acknowledge or delete durable user data incorrectly.
 P1 items can violate convergence, recovery, or interoperability under realistic concurrency.
@@ -87,8 +87,8 @@ The specification requires a large update to be applied, written as an R2 snapsh
 The former `snapshot-escape` branch advanced `docs.latest_seq`, wrote `message_dedup`, sent an acknowledgement, and sent `NeedFullSnapshot` without applying the update or writing an R2 snapshot.
 
 That sequence permanently suppressed a retry because the dedup row proved a completion that never happened.
-The runtime now rejects oversized live updates without acknowledgement or durable mutation using the stable `append-reject:large-update-requires-snapshot-import` close reason.
-Recovery currently requires manual use of the authenticated snapshot-import route; automatic client transition is future work.
+The runtime now sends one guarded `sync-update-rejected` frame for an oversized live update, then performs the stable `1011` close with reason `append-reject:large-update-requires-snapshot-import`, without acknowledgement or durable mutation.
+The matching client item is paused with evidence and a released lease; snapshot import still requires manual use of the authenticated route, so DR-009 is not fully closed.
 
 Recommended contract:
 
@@ -102,7 +102,7 @@ The simpler safe alternative is now active until the full escape transaction exi
 
 Acceptance evidence:
 
-- An oversized live update closes with `large-update-requires-snapshot-import` and leaves `op_log`, `docs`, and `message_dedup` unchanged.
+- An oversized live update sends one guarded rejection frame, then closes with `large-update-requires-snapshot-import` and leaves `op_log`, `docs`, and `message_dedup` unchanged.
 - Retrying that message is not treated as a completed duplicate and receives no acknowledgement.
 - Ordinary live updates continue through the existing append path.
 
@@ -270,8 +270,8 @@ Acceptance evidence:
 ### DR-009: Unify completion, quarantine, and public errors
 
 The protocol specifies one `ApiError` shape, while runtime routes commonly return ad hoc `{ error: string }` bodies.
-The WebSocket quarantine path intentionally sends no acknowledgement or rejection evidence.
-The client specification compensates by polling the quarantine admin endpoint and matching records after retries.
+The WebSocket quarantine path intentionally sends no acknowledgement or quarantine evidence.
+Oversized live updates are the explicit exception: they send one guarded rejection frame before the existing close, and the client matches that evidence locally. The client specification still polls the quarantine admin endpoint for quarantined updates.
 
 Recommended contract:
 
@@ -284,6 +284,7 @@ Recommended contract:
 Acceptance evidence:
 
 - Contract tests cover every public route and WebSocket rejection.
+- Oversized live updates emit exactly one guarded rejection frame followed by the existing close, and matching client evidence is persisted atomically.
 - Unknown error codes fail closed and are not retried automatically.
 - One malformed update causes one durable quarantine record and one stable client repair entry without an infinite retry loop.
 

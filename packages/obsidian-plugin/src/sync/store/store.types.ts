@@ -12,6 +12,7 @@ import type {
   OutboxLeaseReclaimPatch,
   OutboxPlanItemId,
   OutboxQuarantinePausePatch,
+  OutboxSyncUpdateRejectedPausePatch,
   OutboxResumeCondition,
   OutboxResumePatch,
   OutboxRetryKind,
@@ -29,6 +30,7 @@ import type {
   OutboundQueueLeaseRenewPlan,
   OutboundQueueLeaseWrite,
   OutboundQueueQuarantinePausePlan,
+  OutboundQueueSyncUpdateRejectedPausePlan,
   OutboundQueueSuccessCompletionPlan,
   OutboundQueueTickPlan,
 } from '../engine/queue'
@@ -63,6 +65,12 @@ export type SuccessfulOutboundQueueAckCompletionPlan = Extract<
 /** Successful outbound queue quarantine pause plan accepted by local store transaction planning. */
 export type SuccessfulOutboundQueueQuarantinePausePlan = Extract<
   OutboundQueueQuarantinePausePlan,
+  { readonly ok: true }
+>
+
+/** Successful guarded rejection pause plan accepted by local store transaction planning. */
+export type SuccessfulOutboundQueueSyncUpdateRejectedPausePlan = Extract<
+  OutboundQueueSyncUpdateRejectedPausePlan,
   { readonly ok: true }
 >
 
@@ -108,6 +116,17 @@ export type LocalStoreOutboxPatch =
       readonly kind: 'quarantine-pause'
       readonly itemId: OutboxPlanItemId
       readonly patch: OutboxQuarantinePausePatch
+    }
+  | {
+      readonly kind: 'sync-update-rejected-pause'
+      readonly itemId: OutboxPlanItemId
+      readonly expected: {
+        readonly status: 'pending' | 'retrying'
+        readonly messageId: MessageId
+        readonly docId: DocId
+        readonly updateSha256: Sha256Hex
+      }
+      readonly patch: OutboxSyncUpdateRejectedPausePatch
     }
   | {
       readonly kind: 'failure-completion'
@@ -163,6 +182,9 @@ export interface LocalStoreOutboxRecord {
   readonly updateBytesBase64?: string | undefined
   readonly quarantineId?: string | undefined
   readonly quarantineReason?: string | undefined
+  readonly rejectionReason?: string | undefined
+  readonly rejectionRetryable?: false | undefined
+  readonly rejectionUpdateSha256?: Sha256Hex | undefined
   readonly completedBy?: 'full-snapshot-apply' | undefined
   readonly snapshotSeq?: number | undefined
   readonly createdAt?: number | undefined
@@ -220,7 +242,7 @@ export type LocalStoreOutboxPatchApplyPlan =
   | { readonly ok: true; readonly record: LocalStoreOutboxRecord }
   | {
       readonly ok: false
-      readonly reason: 'patch-item-mismatch'
+      readonly reason: 'patch-item-mismatch' | 'patch-evidence-mismatch'
       readonly itemId: OutboxPlanItemId
     }
 
@@ -244,6 +266,7 @@ export type LocalStoreTransactionApplyPlan =
       readonly reason:
         | Extract<LocalStoreTransactionCommitPlan, { readonly ok: false }>['reason']
         | 'patch-item-mismatch'
+        | 'patch-evidence-mismatch'
       readonly itemId: OutboxPlanItemId
       readonly commit?: Extract<LocalStoreTransactionCommitPlan, { readonly ok: false }> | undefined
     }

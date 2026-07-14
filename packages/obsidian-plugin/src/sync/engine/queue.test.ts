@@ -19,6 +19,7 @@ import {
   planOutboundQueueLeaseRelease,
   planOutboundQueueLeaseRenew,
   planOutboundQueueQuarantinePause,
+  planOutboundQueueSyncUpdateRejectedPause,
   planOutboundQueueTick,
 } from '../engine/queue'
 
@@ -462,6 +463,81 @@ test('outbound queue quarantine pause returns an atomic pause patch and lease re
   )
 })
 
+test('outbound queue guarded rejection pauses an exact update and releases its lease', () => {
+  const existingLease = runningLease(yUpdateId, 'y-update', 'worker-1', 5_000)
+  const plan = planOutboundQueueSyncUpdateRejectedPause({
+    itemId: yUpdateId,
+    kind: 'y-update',
+    status: 'retrying',
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    messageId,
+    updateSha256: firstHash,
+    rejection: {
+      type: 'sync-update-rejected',
+      protocolVersion: 1,
+      vaultId,
+      deviceId,
+      messageId,
+      docId: fileDocId,
+      updateSha256: firstHash,
+      reason: 'large-update-requires-snapshot-import',
+      retryable: false,
+    },
+    ownerId: 'worker-1',
+    now: 1_000,
+    existingLease,
+  })
+
+  assert.deepEqual(plan, {
+    ok: true,
+    itemId: yUpdateId,
+    expectedStatus: 'retrying',
+    expectedMessageId: messageId,
+    expectedDocId: fileDocId,
+    expectedUpdateSha256: firstHash,
+    patch: {
+      status: 'paused',
+      nextAttemptAt: undefined,
+      reason: 'sync-update-rejected',
+      resumeOn: 'manual',
+      rejectionReason: 'large-update-requires-snapshot-import',
+      rejectionRetryable: false,
+      rejectionUpdateSha256: firstHash,
+      docId: fileDocId,
+    },
+    leaseDelete: { itemId: yUpdateId, expectedLease: existingLease },
+  })
+
+  const mismatch = planOutboundQueueSyncUpdateRejectedPause({
+    itemId: yUpdateId,
+    kind: 'y-update',
+    status: 'retrying',
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    messageId,
+    updateSha256: secondHash,
+    rejection: {
+      type: 'sync-update-rejected',
+      protocolVersion: 1,
+      vaultId,
+      deviceId,
+      messageId,
+      docId: fileDocId,
+      updateSha256: firstHash,
+      reason: 'large-update-requires-snapshot-import',
+      retryable: false,
+    },
+    ownerId: 'worker-1',
+    now: 1_000,
+    existingLease,
+  })
+  assert.equal(mismatch.ok, false)
+  if (!mismatch.ok) assert.equal(mismatch.reason, 'hash-mismatch')
+})
+
 test('outbound queue quarantine pause rejects unrelated evidence and stale leases', () => {
   const existingLease = runningLease(yUpdateId, 'y-update', 'worker-1', 5_000)
   const quarantine = quarantineEntry('quarantine-1', firstHash)
@@ -512,6 +588,7 @@ test('outbound queue full snapshot release closes only superseded paused y-updat
   const matching = outboxId('matching-full-snapshot')
   const otherDoc = outboxId('other-doc')
   const manualPaused = outboxId('manual-paused')
+  const rejectedPaused = outboxId('rejected-paused')
 
   assert.deepEqual(
     planOutboundQueueFullSnapshotRelease({
@@ -537,6 +614,13 @@ test('outbound queue full snapshot release closes only superseded paused y-updat
           kind: 'y-update',
           status: 'paused',
           reason: 'manual-intervention-required',
+          docId: fileDocId,
+        },
+        {
+          id: rejectedPaused,
+          kind: 'y-update',
+          status: 'paused',
+          reason: 'sync-update-rejected',
           docId: fileDocId,
         },
       ],

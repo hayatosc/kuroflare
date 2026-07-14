@@ -2,6 +2,7 @@ import {
   type OutboxAckCompletionPatch,
   type OutboxFailureTransition,
   type OutboxPlanItemId,
+  type DocId,
 } from '@kuroflare/core'
 
 import {
@@ -17,6 +18,18 @@ export function applyLocalStoreOutboxPatch(
   const itemId = localStoreOutboxPatchItemId(patch)
   if (record.id !== itemId) {
     return { ok: false, reason: 'patch-item-mismatch', itemId }
+  }
+
+  if (patch.kind === 'sync-update-rejected-pause') {
+    if (
+      record.status !== patch.expected.status ||
+      record.messageId !== patch.expected.messageId ||
+      record.updateSha256 !== patch.expected.updateSha256 ||
+      record.docId === undefined ||
+      !sameDocId(record.docId, patch.expected.docId)
+    ) {
+      return { ok: false, reason: 'patch-evidence-mismatch', itemId }
+    }
   }
 
   switch (patch.kind) {
@@ -89,6 +102,21 @@ export function applyLocalStoreOutboxPatch(
           docId: patch.patch.docId,
         },
       }
+    case 'sync-update-rejected-pause':
+      return {
+        ok: true,
+        record: {
+          ...record,
+          status: patch.patch.status,
+          nextAttemptAt: patch.patch.nextAttemptAt,
+          reason: patch.patch.reason,
+          resumeOn: patch.patch.resumeOn,
+          rejectionReason: patch.patch.rejectionReason,
+          rejectionRetryable: patch.patch.rejectionRetryable,
+          rejectionUpdateSha256: patch.patch.rejectionUpdateSha256,
+          docId: patch.patch.docId,
+        },
+      }
     case 'failure-completion':
       return applyFailureCompletionPatch(record, patch.patch)
     case 'success-completion':
@@ -114,6 +142,12 @@ export function applyLocalStoreOutboxPatch(
   }
 }
 
+function sameDocId(left: DocId, right: DocId): boolean {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'meta' || right.kind === 'meta') return true
+  return left.ydocId === right.ydocId
+}
+
 export function localStoreOutboxPatchItemId(patch: LocalStoreOutboxPatch): OutboxPlanItemId {
   switch (patch.kind) {
     case 'resume':
@@ -124,6 +158,7 @@ export function localStoreOutboxPatchItemId(patch: LocalStoreOutboxPatch): Outbo
       return patch.patch.id
     case 'ack-completion':
     case 'quarantine-pause':
+    case 'sync-update-rejected-pause':
     case 'failure-completion':
     case 'success-completion':
     case 'repair-import-resume':

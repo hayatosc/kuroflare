@@ -27,6 +27,7 @@ import {
   ControlMessageSchema,
   HelloAcceptedSchema,
   NeedFullSnapshotSchema,
+  SyncUpdateRejectedSchema,
   SetupExchangeRequestSchema,
   SetupExchangeResponseSchema,
   SetupTokenIssueResponseSchema,
@@ -111,6 +112,27 @@ test('validates need full snapshot reasons', () => {
   assert.equal(v.is(NeedFullSnapshotSchema, { ...message, reason: 'protocol-upgrade' }), true)
   assert.equal(v.is(NeedFullSnapshotSchema, { ...message, reason: 'large-update-snapshot' }), true)
   assert.equal(v.is(NeedFullSnapshotSchema, { ...message, reason: 'unknown' }), false)
+})
+
+test('validates guarded sync update rejection evidence', () => {
+  const message = {
+    type: 'sync-update-rejected',
+    protocolVersion: 1,
+    vaultId: makeVaultId('vault-1'),
+    deviceId: makeDeviceId('device-1'),
+    messageId: makeMessageId('message-1'),
+    docId: { kind: 'file', ydocId: makeYDocId('doc-1') },
+    updateSha256: makeSha256Hex('a'.repeat(64)),
+    reason: 'large-update-requires-snapshot-import',
+    retryable: false,
+  }
+
+  assert.equal(v.is(SyncUpdateRejectedSchema, message), true)
+  assert.equal(v.is(ControlMessageSchema, message), true)
+  assert.equal(parseControlMessage(JSON.stringify(message))?.type, 'sync-update-rejected')
+  assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, retryable: true }), false)
+  assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, updateSha256: undefined }), false)
+  assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, reason: 'unknown' }), false)
 })
 
 test('validates setup exchange request bodies', () => {

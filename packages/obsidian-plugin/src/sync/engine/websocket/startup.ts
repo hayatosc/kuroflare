@@ -31,6 +31,67 @@ export function createSyncRuntimeWebSocketStartupStepPort(
         readonly reject: (error: Error) => void
       }
     | undefined
+  let inboundHandlers: Promise<void> | undefined
+  let pendingInboundHandlers = 0
+
+  const notifyConnectionIssue = (issue: {
+    readonly kind: 'close' | 'error'
+    readonly code?: number | undefined
+    readonly reason?: string | undefined
+  }): void => {
+    const notify = (): void => {
+      try {
+        input.onConnectionIssue?.(issue)
+      } catch (error: unknown) {
+        console.warn('[kuroflare] websocket connection issue handler failed', { error })
+      }
+    }
+    if (pendingInboundHandlers === 0) {
+      notify()
+      return
+    }
+    void inboundHandlers?.then(notify, notify)
+  }
+
+  const enqueueInboundMessage = (
+    message: Parameters<NonNullable<typeof input.onInboundMessage>>[0],
+  ): void => {
+    pendingInboundHandlers += 1
+    const logHandlerError = (error: unknown): void => {
+      console.warn('[kuroflare] websocket inbound message handler failed', { error })
+    }
+    const complete = (): void => {
+      pendingInboundHandlers -= 1
+      if (pendingInboundHandlers === 0) {
+        inboundHandlers = undefined
+      }
+    }
+    const runQueued = (): Promise<void> => {
+      try {
+        return Promise.resolve(input.onInboundMessage?.(message)).catch(logHandlerError)
+      } catch (error: unknown) {
+        logHandlerError(error)
+        return Promise.resolve()
+      }
+    }
+
+    if (inboundHandlers !== undefined) {
+      inboundHandlers = inboundHandlers.then(runQueued, runQueued).finally(complete)
+      return
+    }
+
+    try {
+      const result = input.onInboundMessage?.(message)
+      if (result === undefined) {
+        complete()
+        return
+      }
+      inboundHandlers = Promise.resolve(result).catch(logHandlerError).finally(complete)
+    } catch (error: unknown) {
+      logHandlerError(error)
+      complete()
+    }
+  }
 
   return {
     async openWebSocket() {
@@ -49,25 +110,25 @@ export function createSyncRuntimeWebSocketStartupStepPort(
       socket = input.webSocket.connect(url, [...buildSyncRuntimeWebSocketProtocols(accessToken)])
       input.session?.attach(socket)
       attachSyncRuntimeWebSocketInboundMessageHandler(socket, (message) => {
-        if (pendingHelloAdmission !== undefined) {
-          const admission = planSyncRuntimeWebSocketHelloAdmission({
-            inbound: message,
-            metadata: input.metadata.setup,
-          })
-          if (admission.action === 'accepted') {
-            const pending = pendingHelloAdmission
-            pendingHelloAdmission = undefined
-            pending.resolve()
-            return
-          }
-          const pending = pendingHelloAdmission
-          pendingHelloAdmission = undefined
-          pending.reject(new Error(`websocket-hello-admission:${admission.reason}`))
+        if (pendingHelloAdmission === undefined) {
+          enqueueInboundMessage(message)
           return
         }
-        input.onInboundMessage?.(message)
+        const admission = planSyncRuntimeWebSocketHelloAdmission({
+          inbound: message,
+          metadata: input.metadata.setup,
+        })
+        if (admission.action === 'accepted') {
+          const pending = pendingHelloAdmission
+          pendingHelloAdmission = undefined
+          pending.resolve()
+          return
+        }
+        const pending = pendingHelloAdmission
+        pendingHelloAdmission = undefined
+        pending.reject(new Error(`websocket-hello-admission:${admission.reason}`))
       })
-      await waitForWebSocketOpen(socket, (issue) => input.onConnectionIssue?.(issue))
+      await waitForWebSocketOpen(socket, notifyConnectionIssue)
     },
     async sendClientHello(effect) {
       if (socket === undefined || socket.readyState !== OPEN_READY_STATE) {
@@ -86,11 +147,11 @@ export function createSyncRuntimeWebSocketStartupStepPort(
         () => {
           pendingHelloAdmission = undefined
         },
-        (issue) => input.onConnectionIssue?.(issue),
+        notifyConnectionIssue,
       )
       socket.send(JSON.stringify(hello))
       await admission
-      installConnectionIssueHandlers(socket, (issue) => input.onConnectionIssue?.(issue))
+      installConnectionIssueHandlers(socket, notifyConnectionIssue)
     },
     snapshot() {
       return {

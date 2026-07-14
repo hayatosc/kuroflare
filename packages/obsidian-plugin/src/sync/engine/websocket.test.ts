@@ -305,6 +305,75 @@ test('websocket runtime reports a post-admission close to the host for outbox re
   assert.deepEqual(issues, [{ kind: 'close', code: 0, reason: '' }])
 })
 
+test('websocket runtime waits for inbound handlers before reporting connection issues', async () => {
+  const webSocket = new FakeWebSocketFactory()
+  const events: string[] = []
+  let releaseInbound!: () => void
+  const inboundFinished = new Promise<void>((resolve) => {
+    releaseInbound = resolve
+  })
+  const port = createSyncRuntimeWebSocketStartupStepPort({
+    metadata: { setup, accessTokenSecretKey: 'access-token-key' },
+    tokenReader: new FakeAccessTokenReader([['access-token-key', 'token']]),
+    webSocket,
+    onConnectionIssue: (issue) => events.push(`issue:${issue.kind}`),
+    onInboundMessage: async () => {
+      events.push('message-start')
+      await inboundFinished
+      events.push('message-end')
+    },
+  })
+  const open = port.openWebSocket({
+    kind: 'run-startup-step',
+    vaultId,
+    step: 'open-websocket',
+    phase: 'websocket',
+  })
+  await Promise.resolve()
+  const connection = webSocket.connections[0]
+  connection?.open()
+  await open
+
+  const admitted = port.sendClientHello({
+    kind: 'run-startup-step',
+    vaultId,
+    step: 'send-client-hello',
+    phase: 'websocket',
+  })
+  await Promise.resolve()
+  connection?.message(
+    JSON.stringify({
+      type: 'hello-accepted',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId,
+      deviceId,
+      yClientId: 12,
+    }),
+  )
+  await admitted
+
+  connection?.message(
+    JSON.stringify({
+      type: 'need-full-snapshot',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      vaultId,
+      deviceId,
+      docId: fileDocId,
+      reason: 'missing-log',
+    }),
+  )
+  await Promise.resolve()
+  assert.deepEqual(events, ['message-start'])
+
+  connection?.close()
+  await Promise.resolve()
+  assert.deepEqual(events, ['message-start'])
+
+  releaseInbound()
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  assert.deepEqual(events, ['message-start', 'message-end', 'issue:close'])
+})
+
 test('websocket runtime rejects hello admission close and identity mismatch', async () => {
   const wrongDeviceAdmission = {
     ok: true,
@@ -434,6 +503,17 @@ test('websocket runtime routes inbound ack and full snapshot messages to outbox 
     docId: fileDocId,
     reason: 'missing-log',
   } as const
+  const rejection = {
+    type: 'sync-update-rejected',
+    protocolVersion: 1,
+    vaultId,
+    deviceId,
+    messageId: makeMessageId('websocket-rejected-message-1'),
+    docId: fileDocId,
+    updateSha256: updateHash,
+    reason: 'large-update-requires-snapshot-import',
+    retryable: false,
+  } as const
 
   assert.deepEqual(
     planSyncRuntimeWebSocketInboundRoute({
@@ -450,6 +530,14 @@ test('websocket runtime routes inbound ack and full snapshot messages to outbox 
       deviceId,
     }),
     { action: 'outbox-completion', message: needFullSnapshot },
+  )
+  assert.deepEqual(
+    planSyncRuntimeWebSocketInboundRoute({
+      inbound: { ok: true, message: rejection },
+      vaultId,
+      deviceId,
+    }),
+    { action: 'outbox-completion', message: rejection },
   )
 })
 
@@ -733,6 +821,51 @@ test('websocket runtime plans and commits inbound outbox completions', async () 
   assert.equal(commit.plans[0]?.action, 'ack-completion')
 })
 
+test('websocket runtime replans guarded completion after a lease CAS rejection', async () => {
+  const record = { ...yUpdateRecord(), updateSha256: updateHash }
+  const message = {
+    type: 'sync-update-rejected',
+    protocolVersion: CURRENT_PROTOCOL_VERSION,
+    vaultId,
+    deviceId,
+    messageId,
+    docId: fileDocId,
+    updateSha256: updateHash,
+    reason: 'large-update-requires-snapshot-import',
+    retryable: false,
+  } as const
+  const lease = runningLease()
+  const renewedLease = { ...lease, leaseExpiresAt: lease.leaseExpiresAt + 1_000 }
+  let reads = 0
+  const commits: Parameters<SyncRuntimeWebSocketOutboxCompletionCommitPort['commit']>[0][] = []
+  const port = createSyncRuntimeWebSocketOutboxCompletionPort({
+    ownerId: lease.ownerId,
+    now: () => 1_000,
+    snapshot: {
+      async read() {
+        reads += 1
+        return {
+          outboxRecords: [record],
+          leaseRows: [reads === 1 ? lease : renewedLease],
+        }
+      },
+    },
+    commit: {
+      async commit(plan) {
+        commits.push(plan)
+        return commits.length === 1 ? { ok: false, reason: 'lease-cas-mismatch' } : { ok: true }
+      },
+    },
+  })
+
+  await port.completeOutbox(message)
+
+  assert.equal(reads, 2)
+  assert.equal(commits.length, 2)
+  assert.deepEqual(commits[1]?.completion.leaseDelete.expectedLease, renewedLease)
+  assert.equal(commits[1]?.action, 'pause-for-sync-update-rejected')
+})
+
 test('websocket runtime completes a meta-ref-update item on ack', () => {
   const record = metaRefUpdateRecord()
   const message = {
@@ -761,6 +894,56 @@ test('websocket runtime completes a meta-ref-update item on ack', () => {
     assert.equal(plan.completion.nextOutboxRecords[0]?.status, 'done')
     assert.deepEqual(plan.completion.nextLeaseRows, [])
   }
+})
+
+test('websocket runtime pauses only the exact matching update after guarded rejection', () => {
+  const record = { ...yUpdateRecord(), updateSha256: updateHash }
+  const lease = runningLease()
+  const rejection = {
+    type: 'sync-update-rejected',
+    protocolVersion: CURRENT_PROTOCOL_VERSION,
+    vaultId,
+    deviceId,
+    messageId,
+    docId: fileDocId,
+    updateSha256: updateHash,
+    reason: 'large-update-requires-snapshot-import',
+    retryable: false,
+  } as const
+
+  const plan = planSyncRuntimeWebSocketOutboxCompletion({
+    message: rejection,
+    ownerId: 'worker-1',
+    now: 1_000,
+    snapshot: { outboxRecords: [record], leaseRows: [lease] },
+  })
+
+  assert.equal(plan.ok, true)
+  if (plan.ok) {
+    assert.equal(plan.completion.action, 'pause-for-sync-update-rejected')
+    assert.deepEqual(plan.completion.nextOutboxRecords[0], {
+      ...record,
+      status: 'paused',
+      nextAttemptAt: undefined,
+      reason: 'sync-update-rejected',
+      resumeOn: 'manual',
+      rejectionReason: 'large-update-requires-snapshot-import',
+      rejectionRetryable: false,
+      rejectionUpdateSha256: updateHash,
+      docId: fileDocId,
+    })
+    assert.deepEqual(plan.completion.nextLeaseRows, [])
+  }
+
+  assert.deepEqual(
+    planSyncRuntimeWebSocketOutboxCompletion({
+      message: rejection,
+      ownerId: 'worker-1',
+      now: 1_000,
+      snapshot: { outboxRecords: [{ ...record, updateSha256: undefined }], leaseRows: [lease] },
+    }),
+    { ok: false, reason: 'matching-outbox-record-not-found', candidates: [] },
+  )
 })
 
 test('websocket runtime ignores unmatched or ambiguous inbound outbox completions', async () => {
@@ -1267,7 +1450,10 @@ class FakeSyncRequestAnswerRejectPort implements SyncRuntimeWebSocketSyncRequest
 
 class FakeInboundRoutePorts implements SyncRuntimeWebSocketInboundRoutePorts {
   readonly calls: (
-    | { readonly action: 'outbox-completion'; readonly type: 'ack' | 'need-full-snapshot' }
+    | {
+        readonly action: 'outbox-completion'
+        readonly type: 'ack' | 'need-full-snapshot' | 'sync-update-rejected'
+      }
     | { readonly action: 'apply-remote-update'; readonly type: 'sync-update' }
     | { readonly action: 'answer-sync-request'; readonly type: 'sync-request' }
     | { readonly action: 'drop'; readonly reason: string }

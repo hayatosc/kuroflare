@@ -4,6 +4,7 @@ import {
   planOutboundQueueAckCompletion,
   planOutboundQueueFailureCompletion,
   planOutboundQueueQuarantinePause,
+  planOutboundQueueSyncUpdateRejectedPause,
   planOutboundQueueSuccessCompletion,
 } from '../../engine/queue'
 import {
@@ -11,6 +12,7 @@ import {
   type OutboxWorkerCompletionPlan,
   type OutboxWorkerFailureCompletionInput,
   type OutboxWorkerQuarantineCompletionInput,
+  type OutboxWorkerSyncUpdateRejectedCompletionInput,
   type OutboxWorkerSideEffectCompletionEvidence,
   type OutboxWorkerSideEffectCompletionEvidenceInput,
   type OutboxWorkerSideEffectResultEvidence,
@@ -22,6 +24,7 @@ import {
   planLocalStoreAckCompletionTransaction,
   planLocalStoreFailureCompletionTransaction,
   planLocalStoreQuarantinePauseTransaction,
+  planLocalStoreSyncUpdateRejectedPauseTransaction,
   planLocalStoreSuccessCompletionTransaction,
 } from '../../store/store'
 
@@ -255,6 +258,72 @@ export function planOutboxWorkerQuarantineCompletion(
     indexedDbWrites: planLocalStoreIndexedDbWrites(driverCommit.writes),
     driverCommit,
     apply,
+    nextOutboxRecords: driverCommit.snapshot.outboxRecords,
+    nextLeaseRows: driverCommit.snapshot.leaseRows,
+    completion,
+  }
+}
+
+/** Plans the transaction that pauses an update after matching guarded rejection evidence. */
+export function planOutboxWorkerSyncUpdateRejectedCompletion(
+  input: OutboxWorkerSyncUpdateRejectedCompletionInput,
+): OutboxWorkerCompletionPlan {
+  const existingLease = input.currentLeaseRows.find((lease) => lease.itemId === input.itemId)
+  const completion = planOutboundQueueSyncUpdateRejectedPause({
+    itemId: input.itemId,
+    kind: input.kind,
+    status: input.status,
+    vaultId: input.vaultId,
+    deviceId: input.deviceId,
+    docId: input.docId,
+    messageId: input.messageId,
+    updateSha256: input.updateSha256,
+    rejection: input.rejection,
+    ownerId: input.ownerId,
+    now: input.now,
+    existingLease,
+  })
+  if (!completion.ok) {
+    return {
+      ok: false,
+      phase: 'completion',
+      reason: completion.reason,
+      completion,
+    }
+  }
+
+  const operations = planLocalStoreSyncUpdateRejectedPauseTransaction(completion)
+  const readSet = planLocalStoreDriverReadSet(operations)
+  const indexedDbReads = planLocalStoreIndexedDbReads(readSet)
+  const driverCommit = applyLocalStoreDriverCommit({
+    operations,
+    snapshot: {
+      outboxRecords: input.currentOutboxRecords,
+      leaseRows: input.currentLeaseRows,
+    },
+  })
+  if (!driverCommit.ok) {
+    return {
+      ok: false,
+      phase: 'completion-persist',
+      reason: driverCommit.reason,
+      readSet,
+      indexedDbReads,
+      driverCommit,
+      apply: driverCommit.apply,
+    }
+  }
+
+  return {
+    ok: true,
+    action: 'pause-for-sync-update-rejected',
+    operations,
+    readSet,
+    writes: driverCommit.writes,
+    indexedDbReads,
+    indexedDbWrites: planLocalStoreIndexedDbWrites(driverCommit.writes),
+    driverCommit,
+    apply: driverCommit.apply,
     nextOutboxRecords: driverCommit.snapshot.outboxRecords,
     nextLeaseRows: driverCommit.snapshot.leaseRows,
     completion,

@@ -26,7 +26,11 @@ import {
   type SnapshotVerificationExpectedEvidence,
 } from '../sync/snapshot-health'
 import { makeSnapshotListPrefix, type SnapshotCandidate } from '../sync/snapshots'
-import { decideSyncUpdateAppend, decideSyncUpdateQuarantine } from '../sync/update'
+import {
+  decideSyncUpdateAppend,
+  decideSyncUpdateQuarantine,
+  makeSyncUpdateRejected,
+} from '../sync/update'
 import { readSession, messageMatchesSession } from './auth'
 import {
   CHECKPOINT_OP_THRESHOLD,
@@ -235,6 +239,28 @@ async function handleSyncUpdateSerialized(
       return { action: 'stop' }
     }
     webSocket.close(1011, 'duplicate-reject')
+    return { action: 'stop' }
+  }
+
+  const preflight = decideSyncUpdateAppend({
+    update,
+    doc,
+    duplicate: undefined,
+    updateBytesLength: updateBytes.byteLength,
+    updateSha256,
+    yClientId: session.yClientId,
+    now,
+    largeUpdateThresholdBytes: LARGE_UPDATE_THRESHOLD_BYTES,
+  })
+  if (preflight.action === 'reject') {
+    if (preflight.reason === 'large-update-requires-snapshot-import') {
+      webSocket.send(
+        JSON.stringify(
+          makeSyncUpdateRejected(update, updateSha256, 'large-update-requires-snapshot-import'),
+        ),
+      )
+    }
+    webSocket.close(1011, `append-reject:${preflight.reason}`)
     return { action: 'stop' }
   }
 

@@ -5,6 +5,7 @@ import {
   decideOutboxLeaseRelease,
   decideOutboxLeaseRenew,
   decideOutboxQuarantinePause,
+  decideOutboxSyncUpdateRejectedPause,
   planOutboxFullSnapshotRelease,
   planOutboxSchedulerTick,
   transitionOutboxFailure,
@@ -29,6 +30,8 @@ import type {
   OutboundQueuePersistPlan,
   OutboundQueueQuarantinePauseInput,
   OutboundQueueQuarantinePausePlan,
+  OutboundQueueSyncUpdateRejectedPauseInput,
+  OutboundQueueSyncUpdateRejectedPausePlan,
   OutboundQueueSuccessCompletionInput,
   OutboundQueueSuccessCompletionPlan,
   OutboundQueueTickInput,
@@ -53,6 +56,8 @@ export type {
   OutboundQueuePersistPlan,
   OutboundQueueQuarantinePauseInput,
   OutboundQueueQuarantinePausePlan,
+  OutboundQueueSyncUpdateRejectedPauseInput,
+  OutboundQueueSyncUpdateRejectedPausePlan,
   OutboundQueueSuccessCompletionInput,
   OutboundQueueSuccessCompletionPlan,
   OutboundQueueTickInput,
@@ -239,7 +244,6 @@ export function planOutboundQueueAckCompletion(
       leaseRelease,
     }
   }
-
   return {
     ok: true,
     action: ackDecision.action,
@@ -291,6 +295,67 @@ export function planOutboundQueueQuarantinePause(
     ok: true,
     itemId: input.itemId,
     patch: quarantineDecision.patch,
+    leaseDelete: leaseRelease.delete,
+  }
+}
+
+/** Plans an atomic guarded rejection pause and lease release. */
+export function planOutboundQueueSyncUpdateRejectedPause(
+  input: OutboundQueueSyncUpdateRejectedPauseInput,
+): OutboundQueueSyncUpdateRejectedPausePlan {
+  const rejectionDecision = decideOutboxSyncUpdateRejectedPause({
+    kind: input.kind,
+    status: input.status,
+    vaultId: input.vaultId,
+    deviceId: input.deviceId,
+    docId: input.docId,
+    messageId: input.messageId,
+    updateSha256: input.updateSha256,
+    rejection: input.rejection,
+  })
+
+  if (rejectionDecision.action === 'reject') {
+    return {
+      ok: false,
+      reason: rejectionDecision.reason,
+      rejectionDecision,
+    }
+  }
+
+  const leaseRelease = planOutboundQueueLeaseRelease({
+    itemId: input.itemId,
+    ownerId: input.ownerId,
+    now: input.now,
+    existingLease: input.existingLease,
+  })
+  if (!leaseRelease.ok) {
+    return {
+      ok: false,
+      reason: leaseRelease.reason,
+      leaseRelease,
+    }
+  }
+  if (input.status !== 'pending' && input.status !== 'retrying') {
+    return {
+      ok: false,
+      reason: 'not-runnable-status',
+    }
+  }
+  if (input.updateSha256 === undefined) {
+    return {
+      ok: false,
+      reason: 'hash-mismatch',
+    }
+  }
+
+  return {
+    ok: true,
+    itemId: input.itemId,
+    expectedStatus: input.status,
+    expectedMessageId: input.messageId,
+    expectedDocId: input.docId,
+    expectedUpdateSha256: input.updateSha256,
+    patch: rejectionDecision.patch,
     leaseDelete: leaseRelease.delete,
   }
 }
