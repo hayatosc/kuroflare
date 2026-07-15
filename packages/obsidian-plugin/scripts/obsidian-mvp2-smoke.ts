@@ -68,9 +68,10 @@ function readActiveMetaEntry(path: string): ActiveMetaEntry | null {
   const value = evalInObsidian(`(() => {
     const plugin = app.plugins.plugins.kuroflare;
     const map = plugin?.metaDoc?.getMap('meta');
-    if (!map) return JSON.stringify(null);
+    if (!map || typeof plugin?.readMetaEntry !== 'function') return JSON.stringify(null);
     const target = ${JSON.stringify(path)}.normalize('NFC').replace(/\\/+/g, '/').toLowerCase();
-    for (const [fileId, value] of map.entries()) {
+    for (const [fileId] of map.entries()) {
+      const value = plugin.readMetaEntry(fileId);
       if (value && value.deleted === false && value.canonicalPath === target) {
         return JSON.stringify({ fileId, path: value.path, type: value.type, deleted: value.deleted });
       }

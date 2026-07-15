@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 
+import { decodeMetaValue, type MetaFile } from '@kuroflare/core'
 import * as Y from 'yjs'
 
 import { yTextName, canonicalizeVaultPath } from './types.ts'
@@ -38,6 +39,11 @@ function makeMetaSnapshotUpdate(entries: readonly JsonRecord[]): Uint8Array {
   const update = Y.encodeStateAsUpdate(doc)
   doc.destroy()
   return update
+}
+
+/** Decodes one remote metadata root into the normalized view used by assertions. */
+function readNormalizedMetaEntry(doc: Y.Doc, fileId: string): MetaFile | undefined {
+  return decodeMetaValue(doc.getMap<unknown>('meta').get(fileId), fileId).metaFile
 }
 
 function setMetaEntry(doc: Y.Doc, entry: JsonRecord): void {
@@ -90,12 +96,9 @@ function setMetaEntry(doc: Y.Doc, entry: JsonRecord): void {
 
 function metaPaths(doc: Y.Doc): [string, unknown][] {
   return [...doc.getMap<unknown>('meta').entries()]
-    .map(([fileId, value]) => {
-      const location = value instanceof Y.Map ? value.get('location') : undefined
-      return [String(fileId), isJsonRecord(location) ? location.path : undefined] as [
-        string,
-        unknown,
-      ]
+    .map(([fileId]) => {
+      const normalized = readNormalizedMetaEntry(doc, String(fileId))
+      return [String(fileId), normalized?.path] as [string, unknown]
     })
     .sort(([left], [right]) => left.localeCompare(right))
 }
@@ -175,6 +178,7 @@ export {
   makeYTextUpdate,
   makeMetaSnapshotUpdate,
   setMetaEntry,
+  readNormalizedMetaEntry,
   metaPaths,
   renameMetaEntry,
 }

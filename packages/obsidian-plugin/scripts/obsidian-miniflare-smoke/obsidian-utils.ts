@@ -1,5 +1,6 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import {
+  accessSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +14,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 
 import * as Y from 'yjs'
 
@@ -58,6 +60,182 @@ function rawObsidian(args: readonly string[]): string {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim()
+}
+
+export interface LinuxProcessSnapshot {
+  readonly pid: number
+  readonly uid: number
+  readonly argv: readonly string[]
+  readonly executablePath: string
+  readonly state: string
+  readonly startTime: string
+}
+
+export interface ObsidianProcessRestartOptions {
+  readonly appCommand: string
+  readonly vaultPath: string
+  readonly timeoutMs?: number
+}
+
+function resolveExecutablePath(command: string): string {
+  const path = command.includes('/')
+    ? command
+    : execFileSync('which', [command], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim()
+  if (path === '') throw new Error(`Obsidian app command resolved to an empty path: ${command}`)
+  accessSync(path)
+  return realpathSync(path)
+}
+
+function parseLinuxProcessStat(
+  value: string,
+): { readonly state: string; readonly startTime: string } | null {
+  const commandEnd = value.lastIndexOf(')')
+  if (commandEnd < 0) return null
+  const fields = value
+    .slice(commandEnd + 2)
+    .trim()
+    .split(/\s+/)
+  const state = fields[0]
+  const startTime = fields[19]
+  if (state === undefined || startTime === undefined || !/^\d+$/.test(startTime)) return null
+  return { state, startTime }
+}
+
+function readLinuxProcessSnapshots(): readonly LinuxProcessSnapshot[] {
+  if (process.platform !== 'linux') {
+    throw new Error('Obsidian process restart requires Linux /proc process inspection.')
+  }
+  const snapshots: LinuxProcessSnapshot[] = []
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue
+    const pid = Number(entry)
+    try {
+      const argv = readFileSync(`/proc/${pid}/cmdline`)
+        .toString('utf8')
+        .split('\0')
+        .filter((value, index, values) => index < values.length - 1 || value !== '')
+      if (argv.length === 0) continue
+      const status = readFileSync(`/proc/${pid}/status`, 'utf8')
+      const uidLine = status.split('\n').find((line) => line.startsWith('Uid:'))
+      const uid = Number(uidLine?.trim().split(/\s+/)[1])
+      if (!Number.isSafeInteger(uid)) continue
+      const executablePath = realpathSync(`/proc/${pid}/exe`)
+      const processStat = parseLinuxProcessStat(readFileSync(`/proc/${pid}/stat`, 'utf8'))
+      if (processStat === null) continue
+      snapshots.push({ pid, uid, argv, executablePath, ...processStat })
+    } catch {
+      // Processes can exit between /proc reads; an unreadable candidate is not safe to kill.
+    }
+  }
+  return snapshots
+}
+
+function isSameLinuxProcessIdentity(
+  expected: LinuxProcessSnapshot,
+  current: LinuxProcessSnapshot | null,
+): boolean {
+  return (
+    current !== null &&
+    current.state !== 'Z' &&
+    current.pid === expected.pid &&
+    current.uid === expected.uid &&
+    current.executablePath === expected.executablePath &&
+    current.startTime === expected.startTime &&
+    sameArgv(current.argv, expected.argv)
+  )
+}
+
+function sameArgv(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function selectUniqueObsidianRootProcess(
+  snapshots: readonly LinuxProcessSnapshot[],
+  expected: {
+    readonly executablePath: string
+    readonly argv: readonly string[]
+    readonly uid: number
+  },
+): LinuxProcessSnapshot {
+  const matches = snapshots.filter(
+    (snapshot) =>
+      snapshot.uid === expected.uid &&
+      snapshot.executablePath === expected.executablePath &&
+      sameArgv(snapshot.argv, expected.argv) &&
+      snapshot.state !== 'Z',
+  )
+  if (matches.length !== 1) {
+    throw new Error(
+      `Refusing Obsidian process restart: expected exactly one matching root process, found ${matches.length}.`,
+    )
+  }
+  const match = matches[0]
+  if (match === undefined) throw new Error('Obsidian process match disappeared during selection.')
+  return match
+}
+
+function readLinuxProcessState(pid: number): string | null {
+  try {
+    return parseLinuxProcessStat(readFileSync(`/proc/${pid}/stat`, 'utf8'))?.state ?? null
+  } catch {
+    return null
+  }
+}
+
+async function waitForLinuxProcessStopped(pid: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const state = readLinuxProcessState(pid)
+    if (state === null || state === 'Z') return
+    await sleep(100)
+  }
+  throw new Error(`Obsidian root process ${pid} did not stop within ${timeoutMs}ms.`)
+}
+
+async function restartObsidianProcess(options: ObsidianProcessRestartOptions): Promise<void> {
+  requireSafeObsidianVaultPath(options.vaultPath)
+  const timeoutMs = options.timeoutMs ?? 30_000
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`Invalid Obsidian process restart timeout: ${timeoutMs}`)
+  }
+  const executablePath = resolveExecutablePath(options.appCommand)
+  const uid = process.getuid?.()
+  if (uid === undefined) throw new Error('Obsidian process restart requires a Linux process uid.')
+  const expectedArgv = [options.appCommand, options.vaultPath]
+  const rootProcess = selectUniqueObsidianRootProcess(readLinuxProcessSnapshots(), {
+    executablePath,
+    argv: expectedArgv,
+    uid,
+  })
+  const currentRootProcess =
+    readLinuxProcessSnapshots().find((snapshot) => snapshot.pid === rootProcess.pid) ?? null
+  if (!isSameLinuxProcessIdentity(rootProcess, currentRootProcess)) {
+    throw new Error(
+      `Refusing Obsidian process restart: root process identity changed before SIGTERM (pid ${rootProcess.pid}).`,
+    )
+  }
+  try {
+    process.kill(rootProcess.pid, 'SIGTERM')
+  } catch (error: unknown) {
+    throw new Error(`Failed to stop Obsidian root process ${rootProcess.pid}.`, { cause: error })
+  }
+  await waitForLinuxProcessStopped(rootProcess.pid, timeoutMs)
+  const child = spawn(options.appCommand, [options.vaultPath], {
+    detached: true,
+    stdio: 'ignore',
+  })
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', (error: unknown) => {
+      reject(new Error(`Failed to start Obsidian: ${options.appCommand}`, { cause: error }))
+    })
+    child.once('spawn', () => {
+      child.unref()
+      resolve()
+    })
+  })
 }
 
 function obsidian(args: readonly string[]): string {
@@ -232,6 +410,121 @@ function evalInObsidian(code: string): unknown {
   return parsed
 }
 
+async function waitForObsidianVaultReady(vaultPath: string, timeoutMs = 30_000): Promise<void> {
+  requireSafeObsidianVaultPath(vaultPath)
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      if (
+        requireObsidianVaultPath(rawObsidian(['vault', 'info=path'])) ===
+        requireSafeObsidianVaultPath(vaultPath)
+      ) {
+        return
+      }
+    } catch {
+      // The CLI socket is expected to be unavailable while the app restarts.
+    }
+    await sleep(250)
+  }
+  throw new Error(`Obsidian did not reopen the e2e vault within ${timeoutMs}ms.`)
+}
+
+async function deleteObsidianProviderDatabase(ydocId: string, timeoutMs = 10_000): Promise<void> {
+  if (ydocId === '')
+    throw new Error('Cannot delete an Obsidian provider database without a ydocId.')
+  const databaseName = `kuroflare-file:${ydocId}`
+  const result = evalInObsidian(`(async () => {
+    const expectedName = ${JSON.stringify(databaseName)};
+    const request = indexedDB.deleteDatabase(expectedName);
+    let blocked = false;
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('provider database deletion timed out')), ${timeoutMs});
+      request.onblocked = () => { blocked = true; };
+      request.onerror = () => { clearTimeout(timeout); reject(request.error ?? new Error('provider database deletion failed')); };
+      request.onsuccess = () => { clearTimeout(timeout); resolve(undefined); };
+    });
+    return JSON.stringify({ databaseName: expectedName, blocked });
+  })()`)
+  if (
+    !isRecord(result) ||
+    result.databaseName !== databaseName ||
+    typeof result.blocked !== 'boolean'
+  ) {
+    throw new Error(`invalid provider database deletion result: ${JSON.stringify(result)}`)
+  }
+}
+
+interface OutboxDrainSummary {
+  readonly kind: string
+  readonly status: string
+  readonly messageId: string
+}
+
+async function drainStartupOutbox(timeoutMs = 30_000): Promise<void> {
+  const result = evalInObsidian(`(async () => {
+    const plugin = app.plugins.plugins.kuroflare;
+    if (!plugin || typeof plugin.runOutboxWorkerTick !== 'function') {
+      throw new Error('kuroflare outbox worker is unavailable');
+    }
+    const metadataAccess = plugin.metadataAccess;
+    const db = plugin.localStoreDb;
+    if (!db) throw new Error('kuroflare local store is unavailable');
+    const deadline = Date.now() + ${timeoutMs};
+    async function readSnapshot() {
+      return await new Promise((resolve, reject) => {
+        const transaction = db.transaction(['outbox', 'running-leases'], 'readonly');
+        const outboxRequest = transaction.objectStore('outbox').getAll();
+        const leasesRequest = transaction.objectStore('running-leases').getAll();
+        transaction.oncomplete = () => resolve({ outbox: outboxRequest.result, leases: leasesRequest.result });
+        transaction.onerror = () => reject(transaction.error ?? new Error('outbox snapshot read failed'));
+        transaction.onabort = () => reject(transaction.error ?? new Error('outbox snapshot read aborted'));
+      });
+    }
+    function summary(rows) {
+      return rows.map((row) => ({
+        kind: typeof row?.kind === 'string' ? row.kind : 'unknown',
+        status: typeof row?.status === 'string' ? row.status : 'unknown',
+        messageId: typeof row?.messageId === 'string' ? row.messageId : typeof row?.id === 'string' ? row.id : 'unknown',
+      }));
+    }
+    function remainingRows(snapshot) {
+      return snapshot.outbox.filter((row) => {
+        if (!row || (row.kind !== 'y-update' && row.kind !== 'meta-ref-update') || (row.status !== 'pending' && row.status !== 'retrying')) return false;
+        return !(metadataAccess === 'read-only' && row.docId?.kind === 'meta');
+      });
+    }
+    let emptySince = null;
+    while (Date.now() < deadline) {
+      const snapshot = await readSnapshot();
+      const remaining = remainingRows(snapshot);
+      if (remaining.length === 0) {
+        emptySince ??= Date.now();
+        if (Date.now() - emptySince >= 500) {
+          return JSON.stringify({ ok: true, remaining: [] });
+        }
+      } else {
+        emptySince = null;
+        await plugin.runOutboxWorkerTick('e2e-startup-drain');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const snapshot = await readSnapshot();
+    return JSON.stringify({ ok: false, remaining: summary(remainingRows(snapshot)) });
+  })()`)
+  if (!isRecord(result) || typeof result.ok !== 'boolean' || !Array.isArray(result.remaining)) {
+    throw new Error(`invalid startup outbox drain result: ${JSON.stringify(result)}`)
+  }
+  if (result.ok) return
+  const summary = result.remaining.filter(
+    (entry): entry is OutboxDrainSummary =>
+      isRecord(entry) &&
+      typeof entry.kind === 'string' &&
+      typeof entry.status === 'string' &&
+      typeof entry.messageId === 'string',
+  )
+  throw new Error(`startup outbox drain timed out: ${JSON.stringify(summary)}`)
+}
+
 function waitForObsidianPluginLoaded(timeoutMs = 10_000): void {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -249,9 +542,10 @@ function readActiveMetaEntry(path: string): ActiveMetaEntry | null {
   const value = evalInObsidian(`(() => {
     const plugin = app.plugins.plugins.kuroflare;
     const map = plugin?.metaDoc?.getMap('meta');
-    if (!map) return JSON.stringify(null);
+    if (!map || typeof plugin?.readMetaEntry !== 'function') return JSON.stringify(null);
     const target = ${JSON.stringify(path)}.normalize('NFC').replace(/\\/+/g, '/').toLowerCase();
-    for (const [fileId, value] of map.entries()) {
+    for (const [fileId] of map.entries()) {
+      const value = plugin.readMetaEntry(fileId);
       if (value && value.deleted === false && value.canonicalPath === target) {
         return JSON.stringify({
           fileId,
@@ -274,9 +568,8 @@ function readActiveMetaEntry(path: string): ActiveMetaEntry | null {
 function readMetaEntryByFileId(fileId: string): JsonRecord | null {
   const value = evalInObsidian(`(() => {
     const plugin = app.plugins.plugins.kuroflare;
-    const map = plugin?.metaDoc?.getMap('meta');
-    if (!map) return JSON.stringify(null);
-    const value = map.get(${JSON.stringify(fileId)});
+    if (!plugin || typeof plugin.readMetaEntry !== 'function') return JSON.stringify(null);
+    const value = plugin.readMetaEntry(${JSON.stringify(fileId)});
     return JSON.stringify(value ?? null);
   })()`)
   if (value === null || isRecord(value)) {
@@ -551,6 +844,10 @@ async function retryBinaryRestoreCheck(fileId: string): Promise<RepairRetryResul
         deleted: true,
         deletedAt,
         deletedBy: 'e2e-delete-device',
+        // A stale deletion witness (distinct from the entry's real, still-uploaded
+        // blobManifestHash) simulates a concurrent edit the deletion evidence never
+        // observed, so reconciliation restores the current, restorable content.
+        deletedContentVersion: { kind: 'binary', blobManifestHash: 'f'.repeat(64) },
         contentUpdatedAt: deletedAt + 1,
         contentUpdatedBy: 'e2e-edit-device',
         updatedAt: deletedAt + 1,
@@ -612,6 +909,7 @@ async function retryDegradedBinaryRestoreCheck(
         deleted: true,
         deletedAt: now,
         deletedBy: 'e2e-delete-device',
+        deletedContentVersion: { kind: 'binary', blobManifestHash: 'f'.repeat(64) },
         createdAt: now - 10,
         createdBy: 'e2e-create-device',
         contentUpdatedAt: now + 1,
@@ -652,6 +950,35 @@ async function discardInvalidMetaEntry(fileId: string): Promise<InvalidMetaDisca
       });
     }
     map.set(${JSON.stringify(fileId)}, { invalid: true, path: 'invalid-meta.bin' });
+    // Let this raw insert's own outbox item durably sync before discarding
+    // (deleting) the same key below: deleting it immediately would send a
+    // delete for content this device has not yet synced, which the server
+    // rejects as causally invalid (quarantined) until the insert lands.
+    // The listener that enqueues the insert's outbox row runs asynchronously
+    // (unawaited) after \`map.set\` returns, so an empty read here can be seen
+    // before that row even exists; only trust "empty" once it stays empty
+    // across a follow-up read, the same guard \`drainStartupOutbox\` uses.
+    {
+      const db = plugin.localStoreDb;
+      const deadline = Date.now() + 30000;
+      let emptySince = null;
+      while (db && Date.now() < deadline) {
+        const outbox = await new Promise((resolve, reject) => {
+          const request = db.transaction(['outbox'], 'readonly').objectStore('outbox').getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error ?? new Error('outbox read failed'));
+        });
+        const pending = outbox.some((row) => row?.kind === 'y-update' && row?.docId?.kind === 'meta' && (row.status === 'pending' || row.status === 'retrying'));
+        if (!pending) {
+          emptySince ??= Date.now();
+          if (Date.now() - emptySince >= 500) break;
+        } else {
+          emptySince = null;
+          await plugin.runOutboxWorkerTick('e2e-invalid-meta-settle');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
     const repairEntry = {
       id: 'invalid-meta:' + ${JSON.stringify(fileId)},
       kind: 'invalid-meta',
@@ -977,12 +1304,18 @@ function copyPlugin(vaultPath: string): void {
 
 export {
   obsidian,
+  isSameLinuxProcessIdentity,
+  selectUniqueObsidianRootProcess,
+  restartObsidianProcess,
   requireObsidianVaultPath,
   requireSafeObsidianVaultPath,
   acquireObsidianE2ELock,
   requireIncludes,
   waitForRemoteMeta,
   evalInObsidian,
+  waitForObsidianVaultReady,
+  deleteObsidianProviderDatabase,
+  drainStartupOutbox,
   waitForObsidianPluginLoaded,
   readActiveMetaEntry,
   readMetaEntryByFileId,

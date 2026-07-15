@@ -11,6 +11,7 @@ import {
   pluginDir,
   runId,
   requireRecord,
+  isRecord,
   stringRecord,
   isSnapshotImportCliResult,
   isSetupExchangeResponse,
@@ -268,6 +269,32 @@ async function fetchLatestMetaUpdate(setup: SetupExchangeResponse): Promise<Uint
   return decodeBase64(body.updateBytesBase64)
 }
 
+async function fetchLatestFileUpdate(
+  setup: SetupExchangeResponse,
+  ydocId: string,
+): Promise<Uint8Array> {
+  const response = await fetch(
+    `${endpoint}/vaults/${encodeURIComponent(setup.vaultId)}/files/${encodeURIComponent(ydocId)}/latest`,
+    {
+      headers: { authorization: `Bearer ${setup.accessToken}` },
+    },
+  )
+  if (!response.ok) {
+    throw new Error(`file latest fetch failed: ${response.status} ${await response.text()}`)
+  }
+  const body = requireRecord(await response.json(), 'file latest response')
+  if (
+    !isRecord(body.docId) ||
+    body.docId.kind !== 'file' ||
+    body.docId.ydocId !== ydocId ||
+    typeof body.updateBytesBase64 !== 'string' ||
+    body.updateBytesBase64.length === 0
+  ) {
+    throw new Error(`file latest response was invalid: ${JSON.stringify(body)}`)
+  }
+  return decodeBase64(body.updateBytesBase64)
+}
+
 async function downloadWorkerBinaryByManifest(
   setup: SetupExchangeResponse,
   manifestHash: string,
@@ -417,7 +444,10 @@ async function connectRemoteDevice(setup: SetupExchangeResponse): Promise<Remote
       protocolVersion: 1,
       vaultId: setup.vaultId,
       deviceId: setup.deviceId,
-      capabilities: [],
+      // Matches the real plugin's default advertisement (sync-websocket.ts)
+      // so this raw test client is granted read-write metadata access, the
+      // same as a real device performing a remote meta write.
+      capabilities: ['binary-v1', 'awareness', 'metadata-schema-v2'],
     }),
   )
   await waitFor(
@@ -443,6 +473,7 @@ export {
   uploadBlobManifest,
   downloadWorkerBytes,
   fetchLatestMetaUpdate,
+  fetchLatestFileUpdate,
   downloadWorkerBinaryByManifest,
   exchangeSetupToken,
   workerWebSocketUrl,

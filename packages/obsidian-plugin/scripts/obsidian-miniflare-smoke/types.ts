@@ -16,6 +16,7 @@ const yTextName = 'fixed-file'
 const remoteSeedText = `R2 seeded content ${runId}`
 const remotePeerText = `Remote peer edit ${runId}`
 const localObsidianText = `Obsidian local edit ${runId}`
+const pendingRecoveryText = `Pending recovery edit ${runId}`
 const metaLocalPath = `meta-local-${runId}.md`
 const metaPeerPath = `meta-peer-${runId}.md`
 const metaSharedPath = `meta-shared-${runId}.md`
@@ -397,6 +398,7 @@ export {
   remoteSeedText,
   remotePeerText,
   localObsidianText,
+  pendingRecoveryText,
   metaLocalPath,
   metaPeerPath,
   metaSharedPath,
