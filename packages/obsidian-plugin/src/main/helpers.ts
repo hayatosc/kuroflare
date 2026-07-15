@@ -164,11 +164,7 @@ export async function responseErrorCode(response: Response): Promise<string | un
     return undefined
   }
   const code = Reflect.get(body, 'code')
-  if (typeof code === 'string' && code.length > 0) {
-    return code
-  }
-  const error = Reflect.get(body, 'error')
-  return typeof error === 'string' && error.length > 0 ? error : undefined
+  return typeof code === 'string' && code.length > 0 ? code : undefined
 }
 
 export function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
@@ -355,7 +351,7 @@ export async function authRefreshHttpFailure(response: Response): Promise<AuthRe
     return { ok: false, reason: 'server-retryable', retryAfterMs }
   }
   const code = await responseErrorCode(response)
-  if (code?.includes('device-revoked') === true) {
+  if (code === 'auth/revoked') {
     return { ok: false, reason: 'device-revoked' }
   }
   if (response.status === 400) {
