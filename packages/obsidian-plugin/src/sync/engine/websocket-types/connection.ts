@@ -1,4 +1,4 @@
-import { type ClientCapability, type ClientHello } from '@kuroflare/core'
+import { type ClientCapability, type ClientHello, type HelloAccepted } from '@kuroflare/core'
 
 import { type LocalSetupMetadata } from '../../engine/setup'
 import { type SyncRuntimeWebSocketInboundMessageHandler } from './route'
@@ -65,6 +65,7 @@ export interface SyncRuntimeWebSocketStepPortInput {
   readonly webSocket: SyncRuntimeWebSocketFactoryPort
   readonly capabilities?: readonly ClientCapability[] | undefined
   readonly onInboundMessage?: SyncRuntimeWebSocketInboundMessageHandler | undefined
+  readonly onHelloAccepted?: ((message: HelloAccepted) => void) | undefined
   /** Notifies the host when an authenticated connection closes or errors. */
   readonly onConnectionIssue?:
     | ((issue: {

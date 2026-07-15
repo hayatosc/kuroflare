@@ -45,6 +45,7 @@ export type DocLatestSnapshotResponse = v.InferInput<typeof DocLatestSnapshotRes
 export const SnapshotImportRequestSchema = v.object({
   updateBytesBase64: Base64Schema,
   latestSeq: v.optional(PositiveSafeIntegerSchema),
+  metadataSchemaVersion: v.optional(v.literal(2)),
 })
 export type SnapshotImportRequest = v.InferInput<typeof SnapshotImportRequestSchema>
 

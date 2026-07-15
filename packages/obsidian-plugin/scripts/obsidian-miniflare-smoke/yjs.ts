@@ -32,28 +32,71 @@ function makeYTextUpdate(text: string): Uint8Array {
 
 function makeMetaSnapshotUpdate(entries: readonly JsonRecord[]): Uint8Array {
   const doc = new Y.Doc()
-  const map = doc.getMap('meta')
   for (const entry of entries) {
-    const fileId = entry.fileId
-    if (typeof fileId !== 'string') {
-      throw new Error(`meta snapshot entry missing fileId: ${JSON.stringify(entry)}`)
-    }
-    map.set(fileId, entry)
+    setMetaEntry(doc, entry)
   }
   const update = Y.encodeStateAsUpdate(doc)
   doc.destroy()
   return update
 }
 
+function setMetaEntry(doc: Y.Doc, entry: JsonRecord): void {
+  const fileId = requiredString(entry, 'fileId')
+  const type = requiredString(entry, 'type')
+  if (type !== 'text' && type !== 'binary') {
+    throw new Error(`meta snapshot entry type is unsupported: ${type}`)
+  }
+  if (type === 'text' && typeof entry.ydocId !== 'string') {
+    throw new Error('text meta snapshot entry is missing ydocId')
+  }
+  const child = new Y.Map<unknown>()
+  child.set('identity', {
+    schemaVersion: 2,
+    fileId,
+    type,
+    ...(typeof entry.ydocId === 'string' ? { ydocId: entry.ydocId } : {}),
+    createdAt: requiredNumber(entry, 'createdAt'),
+    createdBy: requiredString(entry, 'createdBy'),
+  })
+  child.set('location', {
+    path: requiredString(entry, 'path'),
+    canonicalPath: requiredString(entry, 'canonicalPath'),
+    updatedAt: requiredNumber(entry, 'updatedAt'),
+    updatedBy: requiredString(entry, 'updatedBy'),
+    mtime: requiredNumber(entry, 'mtime'),
+  })
+  child.set('content', {
+    contentUpdatedAt: requiredNumber(entry, 'contentUpdatedAt'),
+    contentUpdatedBy: requiredString(entry, 'contentUpdatedBy'),
+    ...(type === 'binary'
+      ? {
+          blobManifestHash: requiredString(entry, 'blobManifestHash'),
+          blobChunks: requiredStringArray(entry, 'blobChunks'),
+        }
+      : {}),
+  })
+  child.set(
+    'deletion',
+    entry.deleted === true
+      ? {
+          deleted: true,
+          deletedAt: requiredNumber(entry, 'deletedAt'),
+          deletedBy: requiredString(entry, 'deletedBy'),
+        }
+      : { deleted: false },
+  )
+  doc.getMap('meta').set(fileId, child)
+}
+
 function metaPaths(doc: Y.Doc): [string, unknown][] {
-  return [...doc.getMap('meta').entries()]
-    .map(
-      ([fileId, value]) =>
-        [
-          String(fileId),
-          typeof value === 'object' && value !== null ? Reflect.get(value, 'path') : undefined,
-        ] as [string, unknown],
-    )
+  return [...doc.getMap<unknown>('meta').entries()]
+    .map(([fileId, value]) => {
+      const location = value instanceof Y.Map ? value.get('location') : undefined
+      return [String(fileId), isJsonRecord(location) ? location.path : undefined] as [
+        string,
+        unknown,
+      ]
+    })
     .sort(([left], [right]) => left.localeCompare(right))
 }
 
@@ -66,17 +109,62 @@ function renameMetaEntry(
 ): void {
   const map = doc.getMap('meta')
   const entry = map.get(fileId)
-  if (typeof entry !== 'object' || entry === null || Reflect.get(entry, 'type') !== 'text') {
+  if (!(entry instanceof Y.Map)) {
     throw new Error(`remote meta entry missing for ${fileId}`)
   }
-  map.set(fileId, {
-    ...entry,
+  const identity = entry.get('identity')
+  const location = entry.get('location')
+  if (
+    typeof identity !== 'object' ||
+    identity === null ||
+    !isJsonRecord(identity) ||
+    identity.type !== 'text' ||
+    typeof location !== 'object' ||
+    location === null
+  ) {
+    throw new Error(`remote meta entry is not a text grouped entry for ${fileId}`)
+  }
+  if (!isJsonRecord(location)) {
+    throw new Error(`remote meta location is not a plain object for ${fileId}`)
+  }
+  entry.set('location', {
+    ...location,
     path: toPath,
     canonicalPath: canonicalizeVaultPath(toPath),
     updatedAt: now,
     updatedBy: deviceId,
-    mtime: now,
   })
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function requiredString(entry: JsonRecord, key: string): string {
+  const value = entry[key]
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`meta snapshot entry field ${key} must be a non-empty string`)
+  }
+  return value
+}
+
+function requiredNumber(entry: JsonRecord, key: string): number {
+  const value = entry[key]
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`meta snapshot entry field ${key} must be a non-negative integer`)
+  }
+  return value
+}
+
+function requiredStringArray(entry: JsonRecord, key: string): string[] {
+  const value = entry[key]
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => typeof item !== 'string' || item.length === 0)
+  ) {
+    throw new Error(`meta snapshot entry field ${key} must be a non-empty string array`)
+  }
+  return [...value]
 }
 
 export {
@@ -86,6 +174,7 @@ export {
   activeDocIdForPath,
   makeYTextUpdate,
   makeMetaSnapshotUpdate,
+  setMetaEntry,
   metaPaths,
   renameMetaEntry,
 }

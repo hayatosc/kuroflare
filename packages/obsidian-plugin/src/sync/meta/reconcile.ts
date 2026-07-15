@@ -1,6 +1,6 @@
 import {
   applyMetaRepair,
-  isMetaFile,
+  decodeMetaValue,
   planDeleteVsEditRepairs,
   planPathConflictRepairs,
   type DeviceId,
@@ -9,6 +9,8 @@ import {
   type MetaRepair,
 } from '@kuroflare/core'
 import type * as Y from 'yjs'
+
+import { insertMetaFile, readMetaFile, updateMetaFile } from '../../main/meta'
 
 const NO_RESTORABLE_BINARIES: ReadonlySet<FileId> = new Set()
 
@@ -50,12 +52,10 @@ export function reconcileMetaDoc(
 ): MetaReconcileResult {
   const entries: MetaFile[] = []
   const invalidFileIds: string[] = []
-  for (const [fileId, value] of metaMap.entries()) {
-    if (isMetaFile(value, fileId)) {
-      entries.push(value)
-    } else {
-      invalidFileIds.push(fileId)
-    }
+  for (const [fileId] of metaMap.entries()) {
+    const decoded = decodeMetaValue(metaMap.get(fileId), fileId)
+    if (decoded.metaFile !== undefined) entries.push(decoded.metaFile)
+    else if (decoded.disposition === 'invalid') invalidFileIds.push(fileId)
   }
 
   const repairs: readonly MetaRepair[] = [
@@ -73,13 +73,16 @@ export function reconcileMetaDoc(
   if (mutations.length > 0) {
     const apply = (): void => {
       for (const repair of mutations) {
-        const current = metaMap.get(repair.fileId)
-        if (!isMetaFile(current, repair.fileId)) {
+        const current = readMetaFile(metaMap, repair.fileId)
+        if (current === undefined) {
           continue
         }
         const repaired = applyMetaRepair(current, repair)
         if (repaired !== current) {
-          metaMap.set(repair.fileId, repaired)
+          if (!updateMetaFile(metaMap, repaired)) {
+            insertMetaFile(metaMap, current)
+            updateMetaFile(metaMap, repaired)
+          }
         }
       }
     }

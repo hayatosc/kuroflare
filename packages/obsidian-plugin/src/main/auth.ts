@@ -4,7 +4,6 @@ import {
   isClientAuthMetadata,
   makeSha256Hex,
   hashBytesSha256,
-  isMetaFile,
   type DeviceId,
   type ClientAuthMetadata,
   type DocId,
@@ -48,7 +47,7 @@ import {
   accessTokenSecretKeyForSetup,
   safeLogError,
 } from './helpers'
-import { metaMap } from './meta'
+import { metaMap, readMetaFile } from './meta'
 import { scheduleOutboxWorkerTick, runOutboxWorkerTick } from './outbox'
 import type KuroflareSpikePlugin from './plugin'
 import { createRemoteSetupAccessTokenVerifier } from './setup-verifier'
@@ -440,8 +439,8 @@ export async function fileDocIdForPath(
 ): Promise<FileDocId> {
   const fileId = findActiveFileId(plugin, path)
   if (fileId !== undefined) {
-    const value = metaMap(plugin).get(fileId)
-    if (isMetaFile(value, fileId) && value.type === 'text') {
+    const value = readMetaFile(metaMap(plugin), fileId)
+    if (value !== undefined && value.type === 'text') {
       return { kind: 'file', ydocId: value.ydocId }
     }
   }
@@ -463,8 +462,9 @@ export function findActiveFileId(
   path: string,
 ): FileId | undefined {
   const canonical = canonicalizeVaultPath(path)
-  for (const [fileId, value] of metaMap(plugin).entries()) {
-    if (isMetaFile(value, fileId) && !value.deleted && value.canonicalPath === canonical) {
+  for (const [fileId] of metaMap(plugin).entries()) {
+    const value = readMetaFile(metaMap(plugin), fileId)
+    if (value !== undefined && !value.deleted && value.canonicalPath === canonical) {
       return value.fileId
     }
   }
@@ -475,8 +475,9 @@ export function findMetaFileIdForDoc(
   plugin: KuroflareSpikePlugin,
   docId: FileDocId,
 ): FileId | undefined {
-  for (const [fileId, value] of metaMap(plugin).entries()) {
-    if (isMetaFile(value, fileId) && value.ydocId === docId.ydocId) {
+  for (const [fileId] of metaMap(plugin).entries()) {
+    const value = readMetaFile(metaMap(plugin), fileId)
+    if (value !== undefined && value.type === 'text' && value.ydocId === docId.ydocId) {
       return value.fileId
     }
   }

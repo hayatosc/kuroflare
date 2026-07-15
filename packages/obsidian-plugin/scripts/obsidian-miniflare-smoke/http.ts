@@ -138,7 +138,7 @@ function importBootstrapSnapshotsWithCli(input: {
   writeFileSync(
     inputPath,
     JSON.stringify({
-      meta: { updateBytesBase64: encodeBase64(input.metaUpdate) },
+      meta: { updateBytesBase64: encodeBase64(input.metaUpdate), metadataSchemaVersion: 2 },
       files: input.files.map((file) => ({
         ydocId: file.ydocId,
         updateBytesBase64: encodeBase64(file.update),

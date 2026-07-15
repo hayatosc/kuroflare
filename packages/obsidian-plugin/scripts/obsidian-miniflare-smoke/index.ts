@@ -78,6 +78,7 @@ import {
   activeDocIdForPath,
   makeYTextUpdate,
   makeMetaSnapshotUpdate,
+  setMetaEntry,
   encodeBase64,
   decodeBase64,
   sha256Hex,
@@ -646,7 +647,7 @@ try {
   await uploadBlobManifest(remoteSetup, builtBinary.manifestHash, builtBinary.manifestBytes)
 
   const binaryMetaBaseVector = Y.encodeStateVector(remoteMetaDoc)
-  remoteMetaDoc.getMap('meta').set(binaryFileId, {
+  setMetaEntry(remoteMetaDoc, {
     schemaVersion: 1,
     fileId: binaryFileId,
     path: binaryPath,

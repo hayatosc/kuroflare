@@ -18,6 +18,7 @@ import {
 
 const vaultId = makeVaultId('repair-vault')
 const docId = { kind: 'file', ydocId: makeYDocId('repair-doc') } as const
+const metaDocId = { kind: 'meta' } as const
 const updateSha256 = makeSha256Hex(
   '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
 )
@@ -155,6 +156,59 @@ test('rejected repair remote adapter treats latest 404 as a new document without
   assert.deepEqual(JSON.parse(importBody), { updateBytesBase64: 'AQID' })
 })
 
+test('rejected metadata repair preserves the explicit grouped-v2 marker', async () => {
+  let importBody = ''
+  const result = await repairRejectedUpdateRemote({
+    setup,
+    accessToken: 'access-token',
+    row: {
+      kind: 'meta-ref-update',
+      docId: metaDocId,
+      updateSha256,
+      rejectionUpdateSha256: updateSha256,
+      rejectionReason: 'large-update-requires-snapshot-import',
+      rejectionRetryable: false,
+      updateBytesBase64: 'AQID',
+      metadataSchemaVersion: 2,
+    },
+    http: {
+      fetch: async (_url, init): Promise<Response> => {
+        if (init?.method === 'PUT') {
+          importBody = typeof init.body === 'string' ? init.body : ''
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              vaultId,
+              docId: metaDocId,
+              snapshotKey: 'snapshots/repair-vault/meta/8.yupdate',
+              snapshotSeq: 8,
+            }),
+            { status: 200 },
+          )
+        }
+        return new Response(
+          JSON.stringify({
+            manifestSeq: 3,
+            snapshotKey: 'snapshots/repair-vault/meta/7.yupdate',
+            snapshotSeq: 7,
+            updateSha256,
+            stateVectorSha256: updateSha256,
+            stateVector: 'AQID',
+            updateBytesBase64: 'AQID',
+          }),
+          { status: 200 },
+        )
+      },
+    },
+  })
+  assert.deepEqual(result, { ok: true, snapshotSeq: 8 })
+  assert.deepEqual(JSON.parse(importBody), {
+    updateBytesBase64: 'AQID',
+    latestSeq: 3,
+    metadataSchemaVersion: 2,
+  })
+})
+
 test('rejected repair remote adapter leaves 409 and invalid import identity as incomplete', async () => {
   const rejectedRow: RejectedUpdateRepairRemoteRow = {
     kind: 'y-update',
@@ -246,5 +300,19 @@ test('rejected repair list keeps one row per paused rejection without doc-wide r
       { ...base, id: 'wrong-reason', rejectionReason: undefined },
     ]).entries.length,
     0,
+  )
+
+  const metaBase = {
+    ...base,
+    id: 'meta-unmarked',
+    kind: 'meta-ref-update' as const,
+    docId: metaDocId,
+  } satisfies LocalStoreOutboxRecord
+  assert.equal(listPausedRejectedUpdates([metaBase]).entries.length, 0)
+  assert.deepEqual(
+    listPausedRejectedUpdates([
+      { ...metaBase, id: 'meta-marked', metadataSchemaVersion: 2 },
+    ]).entries.map((entry) => entry.id),
+    ['meta-marked'],
   )
 })

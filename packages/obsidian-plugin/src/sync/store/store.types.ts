@@ -205,6 +205,8 @@ export interface LocalStoreOutboxRecord {
   readonly messageId?: MessageId | undefined
   readonly updateSha256?: Sha256Hex | undefined
   readonly updateBytesBase64?: string | undefined
+  /** Explicit evidence that a metadata update uses the grouped v2 schema. */
+  readonly metadataSchemaVersion?: 2 | undefined
   readonly quarantineId?: string | undefined
   readonly quarantineReason?: string | undefined
   readonly rejectionReason?: string | undefined

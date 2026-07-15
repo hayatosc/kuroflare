@@ -1648,6 +1648,23 @@ test('outbox failure transition schedules retries atomically', () => {
 test('outbox failure transition pauses or fails without changing retry count', () => {
   assert.deepEqual(
     transitionOutboxFailure({
+      kind: 'y-update',
+      retryCount: 0,
+      error: { kind: 'metadata-migration-required' },
+      now: 1_000,
+    }),
+    {
+      status: 'paused',
+      retryCount: 0,
+      nextAttemptAt: undefined,
+      lastError: { kind: 'metadata-migration-required' },
+      reason: 'metadata-schema-v2-migration-required',
+      resumeOn: 'manual',
+    },
+  )
+
+  assert.deepEqual(
+    transitionOutboxFailure({
       kind: 'materialize',
       retryCount: 3,
       error: { kind: 'timeout' },

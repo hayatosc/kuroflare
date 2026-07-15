@@ -119,6 +119,7 @@ export function createSyncRuntimeWebSocketStartupStepPort(
           metadata: input.metadata.setup,
         })
         if (admission.action === 'accepted') {
+          input.onHelloAccepted?.(admission.message)
           const pending = pendingHelloAdmission
           pendingHelloAdmission = undefined
           pending.resolve()
@@ -195,7 +196,7 @@ async function waitForHelloAccepted(
     socket.onclose = (event) => {
       notify({ kind: 'close', code: event.code, reason: event.reason })
       clear()
-      reject(new Error('websocket-closed-before-hello-accepted'))
+      reject(new Error(`websocket-closed-before-hello-accepted:${event.code}:${event.reason}`))
     }
   })
 }

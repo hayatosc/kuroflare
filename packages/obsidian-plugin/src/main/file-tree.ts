@@ -1,7 +1,6 @@
 import {
   hashBytesSha256,
   canonicalizeVaultPath,
-  isMetaFile,
   makeDeviceId,
   makeFileId,
   makeSha256Hex,
@@ -38,7 +37,14 @@ import {
 } from './constants'
 import { importFileTextIntoDoc, importFileTextIntoDocAndSend } from './editor'
 import { encodeBase64, binaryBlobCacheKey, requireOutboxPlanItemId } from './helpers'
-import { loadTextDoc, metaMap } from './meta'
+import {
+  insertMetaFile,
+  loadTextDoc,
+  metadataWritesEnabled,
+  metaMap,
+  readMetaFile,
+  updateMetaFile,
+} from './meta'
 import { runOutboxWorkerTick } from './outbox'
 import { writeBlobCacheBytes } from './outbox'
 import type KuroflareSpikePlugin from './plugin'
@@ -50,12 +56,24 @@ export function fileTreeDeviceId(plugin: SetupMetadataSource): DeviceId {
   return makeDeviceId(currentSetupMetadata(plugin)?.deviceId ?? 'local-device')
 }
 
+function canWriteMetadata(plugin: {
+  readonly metadataAccess?: 'read-only' | 'read-write'
+  readonly metaDoc?: Y.Doc
+}): boolean {
+  if (plugin.metaDoc === undefined) return false
+  if (plugin.metadataAccess === undefined) {
+    return metadataWritesEnabled({ metaDoc: plugin.metaDoc })
+  }
+  return metadataWritesEnabled({ metadataAccess: plugin.metadataAccess, metaDoc: plugin.metaDoc })
+}
+
 /** Minimal plugin surface needed to register a newly created text file. */
 export interface VaultCreatePlugin extends SetupMetadataSource {
   readonly startupSideEffectGate: {
     readonly canRun: () => boolean
   }
   readonly metaDoc: Y.Doc
+  readonly metadataAccess?: 'read-only' | 'read-write'
   readonly materializedPaths: Map<FileId, string>
   readonly activeFile: { readonly path: string } | null
   readonly app: {
@@ -112,11 +130,11 @@ export async function handleVaultCreate(
   plugin: VaultCreatePlugin,
   file: Pick<TFile, 'path'>,
 ): Promise<void> {
-  if (!plugin.startupSideEffectGate.canRun()) return
+  if (!plugin.startupSideEffectGate.canRun() || !canWriteMetadata(plugin)) return
   if (findActiveFileId(plugin, file.path) !== undefined) return
   const fileId = makeFileId(crypto.randomUUID())
   const activeYDocId = await startupYDocId(plugin, file, fileId)
-  if (!plugin.startupSideEffectGate.canRun()) return
+  if (!plugin.startupSideEffectGate.canRun() || !canWriteMetadata(plugin)) return
   if (findActiveFileId(plugin, file.path) !== undefined) return
   applyFileCreate(metaMap(plugin), {
     fileId,
@@ -130,7 +148,7 @@ export async function handleVaultCreate(
 }
 
 function handleVaultRename(plugin: KuroflareSpikePlugin, file: TFile, oldPath: string): void {
-  if (!plugin.startupSideEffectGate.canRun()) return
+  if (!plugin.startupSideEffectGate.canRun() || !canWriteMetadata(plugin)) return
   if (consumePendingFsRename(plugin.pendingFsRenames, file.path)) return
   const result = applyFileRename(metaMap(plugin), {
     fromPath: oldPath,
@@ -145,7 +163,7 @@ function handleVaultRename(plugin: KuroflareSpikePlugin, file: TFile, oldPath: s
 }
 
 function handleVaultDelete(plugin: KuroflareSpikePlugin, file: TFile): void {
-  if (!plugin.startupSideEffectGate.canRun()) return
+  if (!plugin.startupSideEffectGate.canRun() || !canWriteMetadata(plugin)) return
   const result = applyFileDelete(metaMap(plugin), {
     path: file.path,
     deviceId: fileTreeDeviceId(plugin),
@@ -162,14 +180,14 @@ async function handleBinaryVaultRename(
   file: TFile,
   oldPath: string,
 ): Promise<void> {
-  if (!plugin.startupSideEffectGate.canSendNetwork()) return
+  if (!plugin.startupSideEffectGate.canSendNetwork() || !canWriteMetadata(plugin)) return
   const oldFileId = findActiveFileId(plugin, oldPath)
   if (oldFileId === undefined) {
     await enqueueBinaryUploadFromVaultFile(plugin, file, 'binary-rename')
     return
   }
-  const oldEntry = metaMap(plugin).get(oldFileId)
-  if (!isMetaFile(oldEntry, oldFileId) || oldEntry.type !== 'binary') return
+  const oldEntry = readMetaFile(metaMap(plugin), oldFileId)
+  if (oldEntry === undefined || oldEntry.type !== 'binary') return
   if (consumePendingFsRename(plugin.pendingFsRenames, file.path)) return
   const result = applyFileRename(metaMap(plugin), {
     fromPath: oldPath,
@@ -215,7 +233,12 @@ export async function planBinaryMetaUpdate(
       updatedBy: fileTreeDeviceId(plugin),
       mtime: input.now,
     }
-    tempDoc.getMap<unknown>('meta').set(input.fileId, entry)
+    const tempMeta = tempDoc.getMap<unknown>('meta')
+    if (input.previous !== undefined && updateMetaFile(tempMeta, entry)) {
+      // Updated content/location groups are emitted without replacing the root entry.
+    } else {
+      insertMetaFile(tempMeta, entry)
+    }
     return Y.encodeStateAsUpdate(tempDoc, before)
   } finally {
     tempDoc.destroy()
@@ -235,6 +258,7 @@ export async function createLocalMetaYDocFromStartupScan(
   plugin: KuroflareSpikePlugin,
   reason: string,
 ): Promise<void> {
+  if (!canWriteMetadata(plugin)) return
   const files =
     plugin.startupScannedMarkdownFiles.length === 0
       ? plugin.app.vault.getMarkdownFiles()
@@ -266,6 +290,7 @@ export async function createLocalMetaYDocFromStartupScan(
 }
 
 export async function adoptLocalFilesAfterRemoteMeta(plugin: KuroflareSpikePlugin): Promise<void> {
+  if (!canWriteMetadata(plugin)) return
   let adopted = 0
   for (const file of plugin.app.vault.getMarkdownFiles()) {
     const remoteFileId = findActiveFileId(plugin, file.path)
@@ -317,8 +342,8 @@ async function queueJoinAdoptionHashCheck(
   file: TFile,
   fileId: FileId,
 ): Promise<void> {
-  const value = metaMap(plugin).get(fileId)
-  if (!isMetaFile(value, fileId) || value.deleted || value.type !== 'text') return
+  const value = readMetaFile(metaMap(plugin), fileId)
+  if (value === undefined || value.deleted || value.type !== 'text') return
   plugin.materializedPaths.set(fileId, file.path)
   const docId: FileDocId = { kind: 'file', ydocId: value.ydocId }
   await loadTextDoc(plugin, docId)
@@ -330,19 +355,20 @@ export async function enqueueBinaryUploadFromVaultFile(
   file: TFile,
   reason: string,
 ): Promise<void> {
-  if (!plugin.startupSideEffectGate.canSendNetwork()) return
+  if (!plugin.startupSideEffectGate.canSendNetwork() || !canWriteMetadata(plugin)) return
   if (file.path.startsWith(BLOB_CACHE_PATH_PREFIX)) return
   if (!v.is(VaultRelativePathSchema, file.path)) {
     console.warn('[kuroflare] skipped binary upload for invalid vault path', { path: file.path })
     return
   }
   const existingFileId = findActiveFileId(plugin, file.path)
-  const existing = existingFileId === undefined ? undefined : metaMap(plugin).get(existingFileId)
-  if (existingFileId !== undefined && !isMetaFile(existing, existingFileId)) return
+  const existing =
+    existingFileId === undefined ? undefined : readMetaFile(metaMap(plugin), existingFileId)
+  if (existingFileId !== undefined && existing === undefined) return
   if (
     existingFileId !== undefined &&
     existing !== undefined &&
-    isMetaFile(existing, existingFileId) &&
+    existing !== undefined &&
     existing.type === 'text'
   ) {
     console.warn('[kuroflare] skipped binary upload over text meta entry', { path: file.path })
@@ -362,7 +388,7 @@ export async function enqueueBinaryUploadFromVaultFile(
   const built = await buildBlobManifest(fileId, bytes, fileTreeDeviceId(plugin), now)
   if (
     existing !== undefined &&
-    isMetaFile(existing, fileId) &&
+    existing !== undefined &&
     existing.type === 'binary' &&
     existing.path === file.path &&
     blobManifestMatchesMetaFile(built.manifest, existing)
@@ -377,8 +403,7 @@ export async function enqueueBinaryUploadFromVaultFile(
   const metaUpdate = await planBinaryMetaUpdate(plugin, {
     fileId,
     path: file.path,
-    previous:
-      existing && isMetaFile(existing, fileId) && existing.type === 'binary' ? existing : undefined,
+    previous: existing !== undefined && existing.type === 'binary' ? existing : undefined,
     manifestHash: built.manifestHash,
     chunkHashes: built.manifest.chunks.map((chunk) => chunk.sha256),
     now,
@@ -443,6 +468,7 @@ export async function enqueueBinaryUploadFromVaultFile(
         messageId,
         updateSha256,
         updateBytesBase64,
+        metadataSchemaVersion: 2,
       })
     }
   }

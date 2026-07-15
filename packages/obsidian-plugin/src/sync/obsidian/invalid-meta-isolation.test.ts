@@ -1,8 +1,19 @@
-import { canonicalizeVaultPath, makeDeviceId, makeFileId, makeYDocId } from '@kuroflare/core'
+import {
+  canonicalizeVaultPath,
+  groupedEntryFromMetaFile,
+  makeDeviceId,
+  makeFileId,
+  makeYDocId,
+  type MetaFile,
+} from '@kuroflare/core'
 import { assert, test } from 'vitest'
+import * as Y from 'yjs'
 
 import type { KuroflareRepairLogEntry } from '../../main-types'
-import { planInvalidMetaIsolationDetail } from './invalid-meta-isolation'
+import {
+  canDiscardInvalidMetaRepairEntry,
+  planInvalidMetaIsolationDetail,
+} from './invalid-meta-isolation'
 
 const fileId = makeFileId('invalid-meta-file-1')
 
@@ -44,6 +55,31 @@ test('invalid meta isolation treats missing or now-valid meta as stale', () => {
     }),
     { action: 'stale' },
   )
+  const grouped = groupedEntryFromMetaFile(validTextMeta())
+  const groupedDoc = new Y.Doc()
+  const groupedMap = new Y.Map<unknown>()
+  groupedMap.set('identity', grouped.identity)
+  groupedMap.set('location', grouped.location)
+  groupedMap.set('content', grouped.content)
+  groupedMap.set('deletion', grouped.deletion)
+  groupedDoc.getMap('meta').set(fileId, groupedMap)
+  assert.deepEqual(
+    planInvalidMetaIsolationDetail({
+      entry: invalidMetaEntry(),
+      current: groupedDoc.getMap('meta').get(fileId),
+      inspectedAt: 10,
+    }),
+    { action: 'stale' },
+  )
+  assert.deepEqual(
+    planInvalidMetaIsolationDetail({
+      entry: invalidMetaEntry(),
+      current: { schemaVersion: 3 },
+      inspectedAt: 10,
+    }),
+    { action: 'stale' },
+  )
+  groupedDoc.destroy()
 })
 
 test('invalid meta isolation ignores non invalid-meta repair entries', () => {
@@ -57,6 +93,22 @@ test('invalid meta isolation ignores non invalid-meta repair entries', () => {
   )
 })
 
+test('invalid meta discard requires read-write access and an invalid current value', () => {
+  const input = {
+    metadataAccess: 'read-write' as const,
+    fileId,
+    current: { invalid: true },
+    confirmation: 'DISCARD INVALID META',
+  }
+  assert.equal(canDiscardInvalidMetaRepairEntry(input), true)
+  assert.equal(canDiscardInvalidMetaRepairEntry({ ...input, metadataAccess: 'read-only' }), false)
+  assert.equal(canDiscardInvalidMetaRepairEntry({ ...input, current: validTextMeta() }), false)
+  assert.equal(
+    canDiscardInvalidMetaRepairEntry({ ...input, confirmation: 'wrong confirmation' }),
+    false,
+  )
+})
+
 function invalidMetaEntry(): KuroflareRepairLogEntry {
   return {
     id: `invalid-meta:${fileId}`,
@@ -67,7 +119,7 @@ function invalidMetaEntry(): KuroflareRepairLogEntry {
   }
 }
 
-function validTextMeta() {
+function validTextMeta(): MetaFile {
   return {
     schemaVersion: 1,
     fileId,

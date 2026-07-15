@@ -45,6 +45,7 @@ export interface RejectedUpdateRepairRemoteRow {
   readonly rejectionReason: 'large-update-requires-snapshot-import'
   readonly rejectionRetryable: false
   readonly updateBytesBase64: string
+  readonly metadataSchemaVersion?: 2 | undefined
 }
 
 /** Result of the remote import before local outbox completion. */
@@ -129,7 +130,10 @@ export async function repairPausedRejectedUpdate(input: {
   const importResponse = await repairRejectedUpdateRemote({
     setup: input.setup,
     accessToken: input.accessToken,
-    row: evidence,
+    row: {
+      ...evidence,
+      ...(row.docId?.kind === 'meta' ? { metadataSchemaVersion: 2 as const } : {}),
+    },
     http: input.http,
   })
   if (!importResponse.ok) {
@@ -159,6 +163,13 @@ function planRepairCompletion(
   row: LocalStoreOutboxRecord,
   importedSnapshotSeq = 1,
 ): OutboundQueueSyncUpdateRejectedRepairPlan {
+  if (row.docId?.kind === 'meta' && row.metadataSchemaVersion !== 2) {
+    return {
+      ok: false,
+      reason: 'missing-update-bytes',
+      decision: { action: 'reject', reason: 'missing-update-bytes' },
+    }
+  }
   return planOutboundQueueSyncUpdateRejectedRepair({
     itemId: row.id,
     status: row.status,
@@ -267,7 +278,7 @@ async function importRejectedUpdate(
     readonly accessToken: string
     readonly http: RejectedUpdateRepairHttpPort
   },
-  row: { readonly docId: DocId; readonly updateBytesBase64: string },
+  row: RejectedUpdateRepairRemoteRow,
   latestSeq: number | undefined,
 ): Promise<
   | { readonly ok: true; readonly snapshotSeq: number }
@@ -282,10 +293,21 @@ async function importRejectedUpdate(
       readonly status?: number | undefined
     }
 > {
-  const body: { readonly updateBytesBase64: string; readonly latestSeq?: number } =
+  const body: {
+    readonly updateBytesBase64: string
+    readonly latestSeq?: number
+    readonly metadataSchemaVersion?: 2
+  } =
     latestSeq === undefined
-      ? { updateBytesBase64: row.updateBytesBase64 }
-      : { updateBytesBase64: row.updateBytesBase64, latestSeq }
+      ? {
+          updateBytesBase64: row.updateBytesBase64,
+          ...(row.metadataSchemaVersion === 2 ? { metadataSchemaVersion: 2 as const } : {}),
+        }
+      : {
+          updateBytesBase64: row.updateBytesBase64,
+          latestSeq,
+          ...(row.metadataSchemaVersion === 2 ? { metadataSchemaVersion: 2 as const } : {}),
+        }
   let response: Response
   try {
     response = await input.http.fetch(snapshotImportUrl(input.setup, row.docId), {

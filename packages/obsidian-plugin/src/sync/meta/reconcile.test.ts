@@ -1,6 +1,5 @@
 import {
   canonicalizeVaultPath,
-  isMetaFile,
   makeDeviceId,
   makeFileId,
   makeSha256Hex,
@@ -12,6 +11,7 @@ import {
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
+import { insertMetaFile, readMetaFile } from '../../main/meta'
 import { reconcileMetaDoc } from '../meta/reconcile'
 
 const REPAIR = makeDeviceId('repair')
@@ -113,7 +113,7 @@ test('reconcileMetaDoc reports schema-invalid entries without touching them', ()
   const valid = textMeta(makeFileId('file-a'), 'A.md', 1)
   doc.transact(() => {
     map.set('file-bad', { not: 'a meta file' })
-    map.set(valid.fileId, valid)
+    insertMetaFile(map, valid)
   })
 
   const result = reconcileMetaDoc(map, { updatedAt: 100, updatedBy: REPAIR })
@@ -130,22 +130,37 @@ function metaDocWith(...entries: readonly MetaFile[]): {
   const map = doc.getMap<unknown>('meta')
   doc.transact(() => {
     for (const entry of entries) {
-      map.set(entry.fileId, entry)
+      insertMetaFile(map, entry)
     }
   })
   return { doc, map }
 }
 
 function getMeta(map: Y.Map<unknown>, fileId: string): MetaFile {
-  const value = map.get(fileId)
-  assert.ok(isMetaFile(value, fileId), `expected a valid meta entry for ${fileId}`)
+  const value = readMetaFile(map, fileId)
+  assert.ok(value !== undefined, `expected a valid meta entry for ${fileId}`)
+  assertGroupedEntry(map, fileId)
   return value
+}
+
+function assertGroupedEntry(map: Y.Map<unknown>, fileId: string): void {
+  const child = map.get(fileId)
+  assert.ok(child instanceof Y.Map)
+  assert.deepEqual([...child.keys()].sort(compareCodeUnit), [
+    'content',
+    'deletion',
+    'identity',
+    'location',
+  ])
+  for (const group of ['identity', 'location', 'content', 'deletion']) {
+    assert.ok(!(child.get(group) instanceof Y.Map), `${group} must remain a plain group object`)
+  }
 }
 
 function snapshot(map: Y.Map<unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const key of [...map.keys()].sort(compareCodeUnit)) {
-    out[key] = map.get(key)
+    out[key] = getMeta(map, key)
   }
   return out
 }

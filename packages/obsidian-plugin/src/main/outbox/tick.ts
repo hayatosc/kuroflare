@@ -1,4 +1,5 @@
 import { type OutboxResumeEvent } from '@kuroflare/core'
+import type { Doc } from 'yjs'
 
 import { planOutboundQueueTick } from '../../sync/engine/queue'
 import { createSyncRuntimeWebSocketOutboxSendPort } from '../../sync/engine/websocket'
@@ -11,6 +12,7 @@ import {
   readLocalStoreIndexedDbMetadataSnapshot,
   createLocalStoreIndexedDbMetadataDatabasePort,
 } from '../../sync/store/indexeddb'
+import type { LocalStoreOutboxRecord } from '../../sync/store/store'
 import {
   requireSetupMetadata,
   readAccessToken,
@@ -25,6 +27,7 @@ import {
   schedulerAuthGateFromMetadata,
   outboxAuthRefreshStateFromMetadata,
 } from '../helpers'
+import { metadataWritesEnabled } from '../meta'
 import type KuroflareSpikePlugin from '../plugin'
 import {
   openLocalStoreDatabase,
@@ -38,6 +41,35 @@ import {
   runManifestPutSideEffect,
   runMaterializeSideEffect,
 } from './side-effects'
+
+export function schedulerItemsForMetadataAccess(
+  records: readonly LocalStoreOutboxRecord[],
+  metadataAccess: 'read-only' | 'read-write',
+): readonly LocalStoreOutboxRecord[] {
+  if (metadataAccess !== 'read-only') return records
+  return records.map((record) =>
+    record.docId?.kind === 'meta' && (record.status === 'pending' || record.status === 'retrying')
+      ? { ...record, status: 'blocked' as const }
+      : record,
+  )
+}
+
+export function shouldSendMetadataOutbox(
+  plugin: {
+    readonly metadataAccess?: 'read-only' | 'read-write'
+    readonly metaDoc: Doc
+  },
+  record: {
+    readonly docId?: { readonly kind: string } | undefined
+    readonly metadataSchemaVersion?: 2 | undefined
+  },
+): boolean {
+  return (
+    record.docId?.kind === 'meta' &&
+    metadataWritesEnabled(plugin) &&
+    record.metadataSchemaVersion === 2
+  )
+}
 
 export function scheduleOutboxWorkerTick(
   plugin: KuroflareSpikePlugin,
@@ -107,7 +139,7 @@ export async function runOutboxWorkerTick(
     const now = Date.now()
     const resumeEvents = consumePendingOutboxResumeEvents(plugin)
     const tick = planOutboundQueueTick({
-      items: snapshot.outboxRecords,
+      items: schedulerItemsForMetadataAccess(snapshot.outboxRecords, plugin.metadataAccess),
       now,
       profile: 'desktop',
       resumeEvents,
@@ -159,6 +191,15 @@ export async function runOutboxWorkerTick(
         continue
       }
       if (record.kind === 'y-update') {
+        if (record.docId?.kind === 'meta') {
+          if (!metadataWritesEnabled(plugin)) continue
+          if (!shouldSendMetadataOutbox(plugin, record)) {
+            await completeLeasedOutboxFailure(plugin, db, record, {
+              kind: 'metadata-migration-required',
+            })
+            continue
+          }
+        }
         try {
           const send = await sender.sendSyncUpdate({
             record,
@@ -224,6 +265,15 @@ export async function runOutboxWorkerTick(
       }
       if (sideEffect.action !== 'meta-ref-update') {
         continue
+      }
+      if (record.docId?.kind === 'meta') {
+        if (!metadataWritesEnabled(plugin)) continue
+        if (!shouldSendMetadataOutbox(plugin, record)) {
+          await completeLeasedOutboxFailure(plugin, db, record, {
+            kind: 'metadata-migration-required',
+          })
+          continue
+        }
       }
       try {
         const send = await sender.sendSyncUpdate({

@@ -103,6 +103,7 @@ import { E2eSetupTokenSeedRequestSchema, E2eSnapshotSeedRequestSchema } from './
 import {
   docKey,
   canApplyYjsUpdate,
+  canApplyYjsUpdateToDoc,
   decodeBase64,
   encodeBase64,
   encodeOptionalBase64,
@@ -112,7 +113,10 @@ import {
   sha256Text,
   sha256Hex,
   logEvent,
-  metaYDocSchemaValid,
+  metaYDocSchemaDisposition,
+  metaYDocWritable,
+  metaIdentityImmutable,
+  metaRootMutationAllowed,
   retentionErrorMessage,
 } from './utils'
 import type { VaultRoom } from './vault-room'
@@ -582,6 +586,9 @@ async function handleSnapshotImportRequest(
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(SnapshotImportRequestSchema, body))
     return c.json({ error: 'invalid-snapshot-import-request' }, 400)
+  if (docId.kind === 'meta' && body.metadataSchemaVersion !== 2) {
+    return c.json({ error: 'metadata-schema-v2-evidence-required' }, 400)
+  }
 
   const update = decodeBase64(body.updateBytesBase64)
   if (update === null || !canApplyYjsUpdate(update))
@@ -616,9 +623,27 @@ async function handleSnapshotImportRequest(
     const key = docKey(docId)
     const importedDoc = new Y.Doc()
     const existingDoc = room.docs.get(key)
+    if (
+      docId.kind === 'meta' &&
+      existingDoc !== undefined &&
+      !['supported-v2', 'legacy-v1'].includes(metaYDocSchemaDisposition(existingDoc))
+    ) {
+      importedDoc.destroy()
+      return c.json({ error: 'invalid-snapshot-import-meta-schema' }, 400)
+    }
+    if (!canApplyYjsUpdateToDoc(existingDoc ?? importedDoc, update)) {
+      importedDoc.destroy()
+      return c.json({ error: 'invalid-snapshot-import-update' }, 400)
+    }
     if (existingDoc !== undefined) Y.applyUpdate(importedDoc, Y.encodeStateAsUpdate(existingDoc))
     Y.applyUpdate(importedDoc, update)
-    if (docId.kind === 'meta' && !metaYDocSchemaValid(importedDoc)) {
+    if (
+      docId.kind === 'meta' &&
+      (!metaYDocWritable(importedDoc) ||
+        (existingDoc !== undefined &&
+          (!metaIdentityImmutable(existingDoc, importedDoc) ||
+            !metaRootMutationAllowed(existingDoc, update, true))))
+    ) {
       importedDoc.destroy()
       return c.json({ error: 'invalid-snapshot-import-meta-schema' }, 400)
     }
@@ -1386,7 +1411,13 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
       if (expectedSeq !== currentLatestSeq + 1) {
         throw new Error('snapshot-rollback-op-log-gap')
       }
-      if (body.docId.kind === 'meta' && !metaYDocSchemaValid(rollbackDoc)) {
+      const currentRollbackDoc = room.docs.get(docKey(body.docId))
+      if (
+        body.docId.kind === 'meta' &&
+        (!metaYDocWritable(rollbackDoc) ||
+          (currentRollbackDoc !== undefined &&
+            !metaIdentityImmutable(currentRollbackDoc, rollbackDoc)))
+      ) {
         rollbackDoc.destroy()
         rollbackDoc = undefined
         return c.json({ error: 'snapshot-rollback-meta-schema-invalid' }, 409)

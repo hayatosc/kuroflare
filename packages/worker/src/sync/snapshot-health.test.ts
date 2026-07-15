@@ -1,4 +1,10 @@
-import { hashBytesSha256, makeSha256Hex } from '@kuroflare/core'
+import {
+  hashBytesSha256,
+  makeDeviceId,
+  makeFileId,
+  makeSha256Hex,
+  makeYDocId,
+} from '@kuroflare/core'
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
@@ -6,6 +12,75 @@ import type { R2BucketBinding } from '../runtime/types'
 import { verifySnapshotBytes, verifySnapshotObject } from './snapshot-health'
 
 const docId = { kind: 'file' as const, ydocId: 'ydoc-snapshot-health' }
+
+test('metadata snapshot health accepts grouped v2 and readable legacy flat values', async () => {
+  const fileId = makeFileId('snapshot-meta-file')
+  const deviceId = makeDeviceId('snapshot-meta-device')
+  const grouped = new Y.Doc()
+  const child = new Y.Map<unknown>()
+  child.set('identity', {
+    schemaVersion: 2,
+    fileId,
+    type: 'text',
+    ydocId: makeYDocId('snapshot-meta-doc'),
+    createdAt: 1,
+    createdBy: deviceId,
+  })
+  child.set('location', {
+    path: 'Notes/Snapshot.md',
+    canonicalPath: 'notes/snapshot.md',
+    updatedAt: 1,
+    updatedBy: deviceId,
+    mtime: 1,
+  })
+  child.set('content', { contentUpdatedAt: 1, contentUpdatedBy: deviceId })
+  child.set('deletion', { deleted: false })
+  grouped.getMap('meta').set(fileId, child)
+  const groupedBytes = Y.encodeStateAsUpdate(grouped)
+  const groupedStateVector = Y.encodeStateVector(grouped)
+  const groupedResult = await verifySnapshotBytes(
+    groupedBytes,
+    { kind: 'meta' },
+    {
+      byteLength: groupedBytes.byteLength,
+      updateSha256: await hashBytesSha256(groupedBytes),
+      stateVectorSha256: await hashBytesSha256(groupedStateVector),
+    },
+  )
+  assert.equal(groupedResult.status, 'verified')
+  grouped.destroy()
+
+  const legacy = new Y.Doc()
+  legacy.getMap('meta').set(fileId, {
+    schemaVersion: 1,
+    fileId,
+    path: 'Notes/Snapshot.md',
+    canonicalPath: 'notes/snapshot.md',
+    type: 'text',
+    ydocId: makeYDocId('snapshot-meta-doc'),
+    deleted: false,
+    createdAt: 1,
+    createdBy: deviceId,
+    contentUpdatedAt: 1,
+    contentUpdatedBy: deviceId,
+    updatedAt: 1,
+    updatedBy: deviceId,
+    mtime: 1,
+  })
+  const legacyBytes = Y.encodeStateAsUpdate(legacy)
+  const legacyResult = await verifySnapshotBytes(
+    legacyBytes,
+    { kind: 'meta' },
+    {
+      byteLength: legacyBytes.byteLength,
+      updateSha256: await hashBytesSha256(legacyBytes),
+      stateVectorSha256: await hashBytesSha256(Y.encodeStateVector(legacy)),
+    },
+  )
+  assert.equal(legacyResult.status, 'verified')
+  assert.deepEqual(legacyResult.reasons, [])
+  legacy.destroy()
+})
 
 test('snapshot verifier accepts matching byte, update hash, state vector, and Yjs evidence', async () => {
   const source = new Y.Doc()

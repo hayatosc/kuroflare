@@ -96,7 +96,7 @@ export function makeHello(): ClientHello {
     vaultId: makeVaultId('vault-1'),
     deviceId: makeDeviceId('device-1'),
     yClientId: 1,
-    capabilities: [],
+    capabilities: ['metadata-schema-v2'],
   }
 }
 
@@ -130,22 +130,25 @@ export function makeSyncRequest(
 export function makeYjsUpdateBase64(messageId: SyncUpdate['messageId']): string {
   const doc = new Y.Doc()
   const fileId = makeFileId(`file-${messageId}`)
-  doc.getMap('meta').set(fileId, {
-    schemaVersion: 1,
+  const entry = new Y.Map<unknown>()
+  entry.set('identity', {
+    schemaVersion: 2,
     fileId,
-    path: `${messageId}.md`,
-    canonicalPath: `${messageId}.md`,
-    deleted: false,
     type: 'text',
     ydocId: makeYDocId(`ydoc-${messageId}`),
     createdAt: 1,
     createdBy: makeDeviceId('device-1'),
-    contentUpdatedAt: 1,
-    contentUpdatedBy: makeDeviceId('device-1'),
+  })
+  entry.set('location', {
+    path: `${messageId}.md`,
+    canonicalPath: `${messageId}.md`,
     updatedAt: 1,
     updatedBy: makeDeviceId('device-1'),
     mtime: 1,
   })
+  entry.set('content', { contentUpdatedAt: 1, contentUpdatedBy: makeDeviceId('device-1') })
+  entry.set('deletion', { deleted: false })
+  doc.getMap('meta').set(fileId, entry)
   return Buffer.from(Y.encodeStateAsUpdate(doc)).toString('base64')
 }
 

@@ -26,9 +26,11 @@ import {
   type QuarantinedUpdateDetailResponse,
   type SyncUpdate,
   type BinaryMetaFile,
+  type MetaFile,
   type BlobManifest,
+  type MetadataAccess,
 } from '@kuroflare/core'
-import { VaultRelativePathSchema, isMetaFile, type MetaRepair } from '@kuroflare/core'
+import { VaultRelativePathSchema, decodeMetaValue, type MetaRepair } from '@kuroflare/core'
 import { Notice, Plugin, TFile, TFolder, type EventRef } from 'obsidian'
 import * as v from 'valibot'
 import { IndexeddbPersistence } from 'y-indexeddb'
@@ -67,7 +69,10 @@ import {
   createSyncRuntimeObsidianComposition,
   type SyncRuntimeObsidianComposition,
 } from '../sync/obsidian/composition'
-import { planInvalidMetaIsolationDetail } from '../sync/obsidian/invalid-meta-isolation'
+import {
+  canDiscardInvalidMetaRepairEntry,
+  planInvalidMetaIsolationDetail,
+} from '../sync/obsidian/invalid-meta-isolation'
 import { createSyncRuntimeObsidianResumePort } from '../sync/obsidian/lifecycle'
 import type { SyncRuntimeObsidianRepairPresentation } from '../sync/obsidian/presentation'
 import {
@@ -114,7 +119,6 @@ import {
   BINARY_UPLOAD_ORIGIN,
   REPAIR_ORIGIN,
   REPAIR_DEVICE,
-  INVALID_META_DISCARD_CONFIRMATION,
   DEFAULT_SETTINGS,
 } from './constants'
 import { flushYTextToDisk, importFileTextIntoDocAndSend } from './editor'
@@ -153,7 +157,21 @@ import {
   waitForIndexedDbRequest,
   waitForIndexedDbTransaction,
 } from './helpers'
-import { activateLoadedTextDoc, loadTextDoc, metaMap, replaceTextDoc } from './meta'
+import {
+  activateLoadedTextDoc,
+  loadTextDoc,
+  insertMetaFile,
+  metaMap,
+  migrateLegacyMetaDoc,
+  metadataWritesEnabled,
+  metaDocWritable,
+  metaDocLegacyOnly,
+  shouldAdoptRemoteMetadata,
+  shouldPrepareMetadataMigration,
+  readMetaFile,
+  replaceTextDoc,
+  updateMetaFile,
+} from './meta'
 import { createFreshMetaDocForVaultSwitch } from './meta-namespace'
 import { runOutboxWorkerTick } from './outbox'
 import {
@@ -214,6 +232,11 @@ export default class KuroflareSpikePlugin extends Plugin {
   syncStoppedByAuth: ClientAuthMetadata['authState'] | null = null
   foregroundResumeRunning = false
   workerHelloAccepted = false
+  metadataAccess: MetadataAccess = 'read-only'
+  metadataMigrationPromise: Promise<void> | null = null
+  metadataMigrationPending = false
+  metadataCapabilityAdvertised = true
+  metadataCapabilityFallbackAttempted = false
   workerMessageCounter = 0
   pendingSyncRequestMessageIds = new Set<MessageId>()
   activeFile: TFile | null = null
@@ -456,8 +479,9 @@ export default class KuroflareSpikePlugin extends Plugin {
       this.metaPersistence = new IndexeddbPersistence(name, this.metaDoc)
       this.metaPersistenceName = name
       await this.metaPersistence.whenSynced
-      for (const [fileId, value] of metaMap(this).entries()) {
-        if (isMetaFile(value, fileId) && !value.deleted) {
+      for (const [fileId] of metaMap(this).entries()) {
+        const value = readMetaFile(metaMap(this), fileId)
+        if (value !== undefined && !value.deleted) {
           this.materializedPaths.set(value.fileId, value.path)
         }
       }
@@ -482,6 +506,111 @@ export default class KuroflareSpikePlugin extends Plugin {
     this.attachMetaDocObservers()
     await this.openMetaPersistence()
     this.materializedPaths.clear()
+  }
+
+  /** Performs the legacy-to-v2 transition through the snapshot-import CAS endpoint. */
+  async prepareMetadataAfterHello(): Promise<void> {
+    if (this.metadataAccess !== 'read-write') return
+    const root = this.metaDoc.getMap<unknown>('meta')
+    if (root.size === 0) return
+    if (metaDocWritable(this.metaDoc)) {
+      this.metadataMigrationPending = false
+      return
+    }
+    const localUpdate = Y.encodeStateAsUpdate(this.metaDoc)
+    let latest: Awaited<ReturnType<KuroflareSpikePlugin['fetchLatestSnapshotPayload']>> = null
+    let manualRepairRequired = false
+    try {
+      latest = await this.fetchLatestSnapshotPayload(META_SYNC_DOC_ID, 'metadata-migration')
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const candidate = new Y.Doc()
+        try {
+          if (latest !== null) {
+            Y.applyUpdate(candidate, latest.verifiedBytes.updateBytes)
+            const candidateRoot = candidate.getMap<unknown>('meta')
+            if (shouldAdoptRemoteMetadata(this.metaDoc, candidate)) {
+              this.metadataMigrationPending = false
+              await this.replaceMetaDoc(latest.verifiedBytes.updateBytes)
+              return
+            }
+            if (candidateRoot.size > 0 && !metaDocLegacyOnly(candidate)) {
+              manualRepairRequired = true
+              break
+            }
+          }
+          const baseStateVector = Y.encodeStateVector(candidate)
+          Y.applyUpdate(candidate, localUpdate)
+          if (!migrateLegacyMetaDoc(candidate)) break
+          const migrationUpdate = Y.encodeStateAsUpdate(candidate, baseStateVector)
+          const setup = requireSetupMetadata(this)
+          const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
+          if (accessToken === undefined) break
+          const response = await fetch(this.snapshotImportUrl(setup, META_SYNC_DOC_ID), {
+            method: 'PUT',
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              updateBytesBase64: encodeBase64(migrationUpdate),
+              ...(latest !== null && latest.response.manifestSeq > 0
+                ? { latestSeq: latest.response.manifestSeq }
+                : {}),
+              metadataSchemaVersion: 2,
+            }),
+          })
+          if (response.ok) {
+            this.metadataMigrationPending = false
+            await this.replaceMetaDoc(Y.encodeStateAsUpdate(candidate))
+            return
+          }
+          if (response.status !== 409) break
+          latest = await this.fetchLatestSnapshotPayload(
+            META_SYNC_DOC_ID,
+            'metadata-migration-retry',
+          )
+        } finally {
+          candidate.destroy()
+        }
+      }
+    } catch (error: unknown) {
+      console.warn('[kuroflare] metadata migration CAS failed', { error: safeLogError(error) })
+    }
+    this.metadataMigrationPending = false
+    this.metadataAccess = 'read-only'
+    if (manualRepairRequired) {
+      new Notice(
+        'Kuroflare metadata: local metadata differs from remote v2; local data was preserved. Manual repair is required.',
+      )
+    }
+  }
+
+  /** Starts at most one deferred metadata migration and exposes its completion to startup. */
+  startMetadataMigrationAfterHello(): Promise<void> {
+    if (
+      this.metadataMigrationPending &&
+      this.metaDoc.getMap<unknown>('meta').size > 0 &&
+      metaDocWritable(this.metaDoc)
+    ) {
+      this.metadataMigrationPending = false
+    }
+    if (
+      !shouldPrepareMetadataMigration({
+        metadataAccess: this.metadataAccess,
+        migrationPending: this.metadataMigrationPending,
+        metaDoc: this.metaDoc,
+      })
+    ) {
+      return Promise.resolve()
+    }
+    const inFlight = this.metadataMigrationPromise
+    if (inFlight !== null) return inFlight
+    const migration = this.prepareMetadataAfterHello()
+    const tracked = migration.finally(() => {
+      if (this.metadataMigrationPromise === tracked) this.metadataMigrationPromise = null
+    })
+    this.metadataMigrationPromise = tracked
+    return tracked
   }
 
   private createSyncRuntime(): SyncRuntimeObsidianComposition {
@@ -839,6 +968,7 @@ export default class KuroflareSpikePlugin extends Plugin {
     updateBytes: Uint8Array,
     reason: string,
   ): Promise<void> {
+    if (docId.kind === 'meta' && !metadataWritesEnabled(this)) return
     const setup = requireSetupMetadata(this)
     const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
     if (accessToken === undefined) throw new Error('snapshot-import-token-missing')
@@ -848,7 +978,10 @@ export default class KuroflareSpikePlugin extends Plugin {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ updateBytesBase64: encodeBase64(updateBytes) }),
+      body: JSON.stringify({
+        updateBytesBase64: encodeBase64(updateBytes),
+        ...(docId.kind === 'meta' ? { metadataSchemaVersion: 2 } : {}),
+      }),
     })
     if (!response.ok) {
       console.warn('[kuroflare] local snapshot import failed', {
@@ -975,14 +1108,24 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   private async reconcileAndMaterializeMeta(): Promise<void> {
     if (!this.startupSideEffectGate.canSendNetwork()) return
-    const restorableBinaryFileIds = await this.findRestorableBinaryFileIdsForReconcile()
-    const reconciled = reconcileMetaDoc(this.metaDoc.getMap<unknown>('meta'), {
-      updatedAt: Date.now(),
-      updatedBy: REPAIR_DEVICE,
-      restorableBinaryFileIds,
-      origin: REPAIR_ORIGIN,
-    })
-    await this.recordMetaRepairLog(reconciled.repairs, reconciled.invalidFileIds)
+    if (metadataWritesEnabled(this)) {
+      const restorableBinaryFileIds = await this.findRestorableBinaryFileIdsForReconcile()
+      const reconciled = reconcileMetaDoc(this.metaDoc.getMap<unknown>('meta'), {
+        updatedAt: Date.now(),
+        updatedBy: REPAIR_DEVICE,
+        restorableBinaryFileIds,
+        origin: REPAIR_ORIGIN,
+      })
+      await this.recordMetaRepairLog(reconciled.repairs, reconciled.invalidFileIds)
+    } else if (this.metadataAccess === 'read-write') {
+      const invalidFileIds: string[] = []
+      for (const [fileId, value] of metaMap(this).entries()) {
+        if (decodeMetaValue(value, fileId).disposition === 'invalid') {
+          invalidFileIds.push(fileId)
+        }
+      }
+      await this.recordMetaRepairLog([], invalidFileIds)
+    }
     await this.materializeMetaRenames()
     this.materializeMetaDeletes()
     await this.enqueueMissingRemoteBinaryDownloads('meta-reconcile')
@@ -995,8 +1138,9 @@ export default class KuroflareSpikePlugin extends Plugin {
     if (accessToken === undefined) return new Set()
 
     const restorable = new Set<FileId>()
-    for (const [fileId, value] of metaMap(this).entries()) {
-      if (!isMetaFile(value, fileId) || !value.deleted || value.type !== 'binary') continue
+    for (const [fileId] of metaMap(this).entries()) {
+      const value = readMetaFile(metaMap(this), fileId)
+      if (value === undefined || !value.deleted || value.type !== 'binary') continue
       const manifest = await this.fetchBlobManifestForMeta(setup, accessToken, value)
       if (
         manifest !== undefined &&
@@ -1019,8 +1163,9 @@ export default class KuroflareSpikePlugin extends Plugin {
     const snapshot = await readOutboxWorkerSnapshot(db)
     const records: LocalStoreOutboxRecord[] = []
     const now = Date.now()
-    for (const [fileId, value] of metaMap(this).entries()) {
-      if (!isMetaFile(value, fileId) || value.deleted || value.type !== 'binary') continue
+    for (const [fileId] of metaMap(this).entries()) {
+      const value = readMetaFile(metaMap(this), fileId)
+      if (value === undefined || value.deleted || value.type !== 'binary') continue
       if (!v.is(VaultRelativePathSchema, value.path)) continue
       if (
         snapshot.outboxRecords.some(
@@ -1244,8 +1389,9 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async materializeMetaRenames(): Promise<void> {
-    for (const [fileId, value] of metaMap(this).entries()) {
-      if (!isMetaFile(value, fileId) || value.deleted) continue
+    for (const [fileId] of metaMap(this).entries()) {
+      const value = readMetaFile(metaMap(this), fileId)
+      if (value === undefined || value.deleted) continue
       this.activeRemoteDeletedFileIds.delete(value.fileId)
       const known = this.materializedPaths.get(value.fileId)
       if (known === value.path) continue
@@ -1281,8 +1427,9 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private materializeMetaDeletes(): void {
-    for (const [fileId, value] of metaMap(this).entries()) {
-      if (!isMetaFile(value, fileId) || !value.deleted) continue
+    for (const [fileId] of metaMap(this).entries()) {
+      const value = readMetaFile(metaMap(this), fileId)
+      if (value === undefined || !value.deleted) continue
       if (this.activeFile?.path !== value.path) continue
       if (this.activeRemoteDeletedFileIds.has(value.fileId)) continue
       this.activeRemoteDeletedFileIds.add(value.fileId)
@@ -1368,6 +1515,7 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   async handleWorkerSyncUpdate(message: SyncUpdate): Promise<void> {
     if (message.docId.kind === 'meta') {
+      await this.startMetadataMigrationAfterHello()
       await this.reconcileAndMaterializeMeta()
       await bindActiveMarkdownView(this, 'meta-update')
       return
@@ -1386,6 +1534,7 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   async retryPathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'path-conflict') return
+    if (!metadataWritesEnabled(this)) return
     await this.materializeMetaRenames()
     if (this.workerWebSocketSession.snapshot().readyState !== WebSocket.OPEN) {
       await openWorkerWebSocket(this)
@@ -1397,22 +1546,24 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   async retryKeepDeletedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'delete-vs-edit' || entry.reason !== 'missing-binary-content') return
+    if (!metadataWritesEnabled(this)) return
 
-    const current = metaMap(this).get(entry.fileId)
-    if (!isMetaFile(current, entry.fileId) || !current.deleted || current.type !== 'binary') {
+    const current = readMetaFile(metaMap(this), entry.fileId)
+    if (current === undefined || !current.deleted || current.type !== 'binary') {
       await this.removeRepairLogEntry(entry.id)
       return
     }
 
     await this.reconcileAndMaterializeMeta()
-    const reconciled = metaMap(this).get(entry.fileId)
-    if (!isMetaFile(reconciled, entry.fileId) || reconciled.deleted) return
+    const reconciled = readMetaFile(metaMap(this), entry.fileId)
+    if (reconciled === undefined || reconciled.deleted) return
     await this.removeRepairLogEntry(entry.id)
   }
 
   async resolvePathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'path-conflict') return
-    const current = metaMap(this).get(entry.fileId)
+    if (!metadataWritesEnabled(this)) return
+    const current = readMetaFile(metaMap(this), entry.fileId)
     const plan = planPathConflictAutoResolve({
       entry,
       current,
@@ -1420,9 +1571,9 @@ export default class KuroflareSpikePlugin extends Plugin {
     })
     if (plan.action === 'rename-meta-path') {
       this.metaDoc.transact(() => {
-        const value = metaMap(this).get(entry.fileId)
-        if (!isMetaFile(value, entry.fileId)) return
-        metaMap(this).set(entry.fileId, {
+        const value = readMetaFile(metaMap(this), entry.fileId)
+        if (value === undefined) return
+        updateMetaFile(metaMap(this), {
           ...value,
           path: plan.toPath,
           canonicalPath: plan.toCanonicalPath,
@@ -1437,8 +1588,8 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   async retryRemoteMaterializeBlockedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'remote-materialize-blocked') return
-    const current = metaMap(this).get(entry.fileId)
-    if (!isMetaFile(current, entry.fileId) || current.deleted) {
+    const current = readMetaFile(metaMap(this), entry.fileId)
+    if (current === undefined || current.deleted) {
       await this.removeRepairLogEntry(entry.id)
       return
     }
@@ -1452,7 +1603,8 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   async resolveRemoteMaterializeBlockedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'remote-materialize-blocked') return
-    const current = metaMap(this).get(entry.fileId)
+    if (!metadataWritesEnabled(this)) return
+    const current = readMetaFile(metaMap(this), entry.fileId)
     const plan = planRemoteMaterializeBlockedAutoResolve({
       entry,
       current,
@@ -1460,14 +1612,14 @@ export default class KuroflareSpikePlugin extends Plugin {
     })
     if (
       plan.action === 'rename-meta-path' &&
-      isMetaFile(current, entry.fileId) &&
+      current !== undefined &&
       !current.deleted &&
       current.type === 'text'
     ) {
       this.metaDoc.transact(() => {
-        const value = metaMap(this).get(entry.fileId)
-        if (!isMetaFile(value, entry.fileId)) return
-        metaMap(this).set(entry.fileId, {
+        const value = readMetaFile(metaMap(this), entry.fileId)
+        if (value === undefined) return
+        updateMetaFile(metaMap(this), {
           ...value,
           path: plan.toPath,
           canonicalPath: plan.toCanonicalPath,
@@ -1501,9 +1653,19 @@ export default class KuroflareSpikePlugin extends Plugin {
     confirmation: string,
   ): Promise<void> {
     if (entry.kind !== 'invalid-meta') return
-    if (confirmation.trim() !== INVALID_META_DISCARD_CONFIRMATION) return
     const current = metaMap(this).get(entry.fileId)
-    if (current === undefined || isMetaFile(current, entry.fileId)) {
+    if (
+      !canDiscardInvalidMetaRepairEntry({
+        metadataAccess: this.metadataAccess,
+        fileId: entry.fileId,
+        current,
+        confirmation,
+      })
+    ) {
+      return
+    }
+    const decoded = decodeMetaValue(current, entry.fileId)
+    if (current === undefined || decoded.disposition !== 'invalid') {
       if (this.invalidMetaIsolationDetail?.fileId === entry.fileId) {
         this.invalidMetaIsolationDetail = null
       }
@@ -1516,7 +1678,25 @@ export default class KuroflareSpikePlugin extends Plugin {
     if (this.invalidMetaIsolationDetail?.fileId === entry.fileId) {
       this.invalidMetaIsolationDetail = null
     }
+    if (metadataWritesEnabled(this)) {
+      await sendMetaDocToWorker(this, 'repair:invalid-meta-discard')
+    }
     await this.removeRepairLogEntry(entry.id)
+  }
+
+  /** Reads one normalized metadata entry for concrete integration adapters. */
+  readMetaEntry(fileId: string): MetaFile | undefined {
+    return readMetaFile(metaMap(this), fileId)
+  }
+
+  /** Writes one grouped metadata entry, preserving the identity write gate. */
+  writeMetaEntry(value: MetaFile): boolean {
+    if (!metadataWritesEnabled(this)) return false
+    const map = metaMap(this)
+    if (updateMetaFile(map, value)) return true
+    if (map.has(value.fileId)) return false
+    insertMetaFile(map, value)
+    return true
   }
 
   setStatus(status: string): void {

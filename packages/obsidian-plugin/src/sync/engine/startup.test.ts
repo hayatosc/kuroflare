@@ -250,7 +250,7 @@ test('sync runtime startup gates setup response paths by the setup vault local s
   })
   assert.deepEqual(
     plan.effects.slice(1).map((effect) => effect.kind),
-    Array.from({ length: 7 }, () => 'run-sync-startup-effect'),
+    Array.from({ length: 8 }, () => 'run-sync-startup-effect'),
   )
 })
 

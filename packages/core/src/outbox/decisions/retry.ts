@@ -40,6 +40,12 @@ export function decideOutboxRetry(input: OutboxRetryDecisionInput): OutboxRetryD
         reason: 'dependency-or-local-state',
         resumeOn: 'local-state-change',
       }
+    case 'metadata-migration-required':
+      return {
+        action: 'pause',
+        reason: 'metadata-schema-v2-migration-required',
+        resumeOn: 'manual',
+      }
     case 'invalid-payload':
       return { action: 'dead-letter', reason: 'invalid-payload' }
     case 'auth':

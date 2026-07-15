@@ -14,7 +14,7 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 | DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested                                               |
 | DR-003 | P0       | Large-update snapshot escape               | Closed narrowly: safe rejection + explicit repair; live escape remains unimplemented |
 | DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                                                   |
-| DR-005 | P1       | Meta entry merge granularity               | Schema decision required                                                             |
+| DR-005 | P1       | Meta entry merge granularity               | Closed: grouped schema v2, migration, and write admission implemented and tested     |
 | DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                                                             |
 | DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship                                    |
 | DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                                                      |
@@ -154,39 +154,56 @@ Acceptance evidence:
 
 ## 3. Metadata convergence
 
-### DR-005: Avoid whole-entry last-writer-wins updates
+### DR-005: Avoid whole-entry last-writer-wins updates — closed
 
-The data model describes path, content reference, and deletion as independently changing fields.
-The plugin stores each `MetaFile` as one plain object under `Y.Map<fileId, value>` and replaces the entire value for rename, binary publication, deletion, and repair.
+The metadata merge-granularity decision is now implemented as grouped schema version 2.
+Each root `fileId` points to an integrated child `Y.Map` with independent `identity`,
+`location`, `content`, and `deletion` groups. Path/canonical-path and binary
+manifest/chunk invariants remain atomic plain objects inside their groups.
 
-Concurrent writes to the same map key do not merge object fields.
-A rename can therefore lose a concurrent binary update, and a deletion can erase metadata needed to detect a concurrent edit.
+The normalized `MetaFile` view is read-only at the boundary. All production mutations
+use grouped helpers, and identity fields are immutable after creation. Version-1 flat
+entries are readable but read-only; after Hello admission, migration merges the
+authoritative latest v1 snapshot with local v1 state and commits through a
+latest-sequence snapshot-import CAS. If the latest snapshot is already v2, adoption is
+allowed only when every local normalized entry is represented unchanged; otherwise
+the local document is retained and downgraded to read-only. Mixed, detached,
+unsupported, or invalid values fail closed rather than being silently overwritten.
+Flat-v1 metadata outbox rows that cannot be losslessly converted are paused with an
+actionable migration reason.
 
-Recommended target schema:
+The wire admission rule is deliberately narrow: `metadata-schema-v2` is a metadata
+write capability, not the general capability-intersection policy. A missing capability
+gets `metadataAccess: "read-only"`; an old-server invalid-control close triggers one
+legacy-capability retry, and file-YDoc synchronization remains available in either
+read-only case.
+Metadata updates from a read-only session are rejected before Yjs hydration, SQL/R2
+mutation, acknowledgement, or broadcast. Snapshot imports require explicit
+`metadataSchemaVersion: 2` evidence and preserve immutable identities.
+
+Implemented schema:
 
 ```
 fileId -> Y.Map {
   identity: { schemaVersion, fileId, type, ydocId?, createdAt, createdBy }
-  location: { path, canonicalPath, updatedAt, updatedBy }
-  content:  { blobManifestHash?, blobChunks, contentUpdatedAt, contentUpdatedBy }
-  deletion: { deleted, deletedAt?, deletedBy?, deletedContentVersion? }
+  location: { path, canonicalPath, updatedAt, updatedBy, mtime }
+  content:  { contentUpdatedAt, contentUpdatedBy, blobManifestHash?, blobChunks? }
+  deletion: { deleted, deletedAt?, deletedBy? }
 }
 ```
 
-Independent groups use separate Y.Map keys so rename and content publication can merge.
-Values that must pass validation together remain one atomic plain object inside a group.
-For example, `path` and `canonicalPath` stay together, as do `blobManifestHash` and `blobChunks`.
-Identity becomes immutable after creation.
-
-An append-only metadata operation log is a valid alternative, but it adds replay and compaction machinery without removing the need for deterministic reduction.
-The grouped nested-map schema is the smaller change.
-
 Acceptance evidence:
 
-- Concurrent rename plus binary update preserves both results.
-- Concurrent rename plus delete follows the documented deletion policy.
-- Changing immutable identity fields is rejected or quarantined.
-- Schema migration keeps older clients read-only instead of letting them overwrite unknown fields.
+- [x] Concurrent rename plus binary update preserves both results.
+- [x] Concurrent rename plus stale delete preserves the renamed location and tombstone.
+- [x] Changing immutable identity fields is rejected before append/import.
+- [x] Schema migration preserves location mtime and leaves grouped child maps.
+- [x] Older clients remain metadata read-only without mutating legacy values.
+- [x] File-YDoc updates from metadata read-only sessions remain accepted.
+
+DR-006 (delete-versus-edit causality) remains open: the deletion group does not yet
+carry a content-version or state-vector witness. DR-012 (general capability
+negotiation) also remains open; this release only defines the metadata write gate.
 
 ### DR-006: Replace wall-clock delete detection with content-version evidence
 

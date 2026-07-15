@@ -2,7 +2,7 @@ import { hashBytesSha256, type DocId } from '@kuroflare/core'
 import * as Y from 'yjs'
 
 import type { R2BucketBinding } from '../runtime/types'
-import { metaYDocSchemaValid } from '../runtime/utils'
+import { metaYDocSchemaDisposition } from '../runtime/utils'
 
 /** Stable server identities used for automatically generated health events. */
 export const SNAPSHOT_HEALTH_SYSTEM_ACTORS = {
@@ -99,7 +99,12 @@ export async function verifySnapshotBytes(
     reasons.push('state-vector-hash-mismatch')
   }
 
-  if (docId.kind === 'meta' && !metaYDocSchemaValid(doc)) reasons.push('meta-schema-invalid')
+  if (
+    docId.kind === 'meta' &&
+    !['supported-v2', 'legacy-v1'].includes(metaYDocSchemaDisposition(doc))
+  ) {
+    reasons.push('meta-schema-invalid')
+  }
   doc.destroy()
 
   const uniqueReasons = [...new Set(reasons)]

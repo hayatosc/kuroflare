@@ -19,7 +19,9 @@ export type OutboxRunError =
       readonly retryAfterMs?: number
       readonly code?: string
     }
-  | { readonly kind: 'local-conflict' | 'invalid-payload' | 'auth' }
+  | {
+      readonly kind: 'local-conflict' | 'invalid-payload' | 'auth' | 'metadata-migration-required'
+    }
 
 /** Retry timing policy for a class of outbox item. */
 export interface OutboxRetryPolicy {

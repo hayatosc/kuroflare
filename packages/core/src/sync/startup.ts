@@ -97,20 +97,22 @@ export type ClientStartupPlan =
 const BOOTSTRAP_NEW_VAULT_STEPS = [
   'persist-setup-response',
   'scan-local-vault',
+  'open-websocket',
+  'send-client-hello',
   'create-local-meta-ydoc',
   'publish-local-meta-snapshot',
   'publish-initial-file-snapshots',
   'send-meta-update',
-  'open-websocket',
 ] as const satisfies readonly ClientStartupStep[]
 
 const JOIN_EXISTING_VAULT_STEPS = [
   'persist-setup-response',
   'fetch-remote-meta-snapshot',
   'apply-remote-meta-snapshot',
+  'open-websocket',
+  'send-client-hello',
   'adopt-local-files-after-remote-meta',
   'enqueue-missing-downloads',
-  'open-websocket',
 ] as const satisfies readonly ClientStartupStep[]
 
 const RECONNECT_STEPS = [

@@ -157,6 +157,7 @@ export interface LocalOutboxRepairImportedYUpdate {
   readonly messageId: MessageId
   readonly updateSha256: Sha256Hex
   readonly updateBytesBase64: string
+  readonly metadataSchemaVersion?: 2 | undefined
   readonly createdAt: number
 }
 

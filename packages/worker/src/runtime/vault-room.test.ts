@@ -14,6 +14,7 @@ import {
   makeSha256Hex,
   makeVaultId,
   makeYDocId,
+  groupedEntryFromMetaFile,
   type Ack,
   type NeedFullSnapshot,
   type SyncUpdate,
@@ -24,6 +25,12 @@ import * as Y from 'yjs'
 
 import { VaultRoom } from '../runtime'
 import { ensureDocHydrated } from '../runtime/sync'
+import {
+  metaIdentityImmutable,
+  metaRootMutationAllowed,
+  metaYDocSchemaDisposition,
+  metaYDocWritable,
+} from '../runtime/utils'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -43,6 +50,7 @@ import {
   syncMessages,
   hashTestBytes,
   makeInvalidMetaSchemaYjsUpdateBase64,
+  makeYjsUpdateBase64,
   makeAuthenticatedWebSocketRequest,
   makeSyncRequest,
   makeLargeFileYjsUpdateBase64,
@@ -87,6 +95,48 @@ function isRetentionAdminResponse(value: unknown): value is RetentionAdminRespon
         typeof Reflect.get(event, 'attemptedAt') === 'number',
     )
   )
+}
+
+function makePoisonedMetaDoc(fileId: ReturnType<typeof makeFileId>): Y.Doc {
+  const parent = new Y.Doc()
+  const parentEntry = new Y.Map<unknown>()
+  parentEntry.set('identity', {
+    schemaVersion: 2,
+    fileId,
+    type: 'text',
+    ydocId: makeYDocId(`poison-${fileId}`),
+    createdAt: 1,
+    createdBy: makeDeviceId('device-1'),
+  })
+  parentEntry.set('location', {
+    path: 'Notes/Poison.md',
+    canonicalPath: 'notes/poison.md',
+    updatedAt: 1,
+    updatedBy: makeDeviceId('device-1'),
+    mtime: 1,
+  })
+  parentEntry.set('content', { contentUpdatedAt: 1, contentUpdatedBy: makeDeviceId('device-1') })
+  parentEntry.set('deletion', { deleted: false })
+  parent.getMap('meta').set(fileId, parentEntry)
+
+  const client = new Y.Doc()
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(parent))
+  const clientEntry = client.getMap<Y.Map<unknown>>('meta').get(fileId)
+  assert(clientEntry instanceof Y.Map)
+  clientEntry.set('location', {
+    path: 'Notes/Poisoned.md',
+    canonicalPath: 'notes/poisoned.md',
+    updatedAt: 2,
+    updatedBy: makeDeviceId('device-1'),
+    mtime: 2,
+  })
+  const pendingUpdate = Y.encodeStateAsUpdate(client, Y.encodeStateVector(parent))
+
+  const poisoned = new Y.Doc()
+  Y.applyUpdate(poisoned, pendingUpdate)
+  client.destroy()
+  parent.destroy()
+  return poisoned
 }
 
 async function seedVerifiedSnapshotEvidence(
@@ -1208,6 +1258,47 @@ test('VaultRoom rejects large live updates without acknowledging or advancing du
   }
 })
 
+test('VaultRoom quarantines a live delta with a missing predecessor without appending it', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const docId = { kind: 'file', ydocId: makeYDocId('causal-live-file') } as const
+    await ensureDocHydrated(room, docId)
+    const source = new Y.Doc()
+    source.getText('body').insert(0, 'base')
+    const baseStateVector = Y.encodeStateVector(source)
+    source.getText('body').insert(4, ' delta')
+    const delta = Y.encodeStateAsUpdate(source, baseStateVector)
+    const update = {
+      ...makeSyncUpdate(makeMessageId('message-causal-live-delta')),
+      docId,
+      update: Buffer.from(delta).toString('base64'),
+    } satisfies SyncUpdate
+
+    await room.webSocketMessage(server, JSON.stringify(update))
+
+    assert.equal(storage.sql.opLog.has('file:causal-live-file:message-causal-live-delta'), false)
+    assert.equal(
+      storage.sql.messageDedup.has('file:causal-live-file:message-causal-live-delta'),
+      false,
+    )
+    assert.equal(server.closeCode, undefined)
+    assert.equal(syncMessages(server.sent).length, 0)
+    source.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
 test('VaultRoom leaves an already-hydrated document byte-for-byte unchanged after oversized rejection', async () => {
   const previousPair = installFakeWebSocketPair()
   const previousResponse = installFakeUpgradeResponse()
@@ -1549,11 +1640,15 @@ test('VaultRoom fails closed after complete SQLite loss even when R2 retains a c
       vaultId: makeVaultId('vault-1'),
       deviceId: makeDeviceId('device-1'),
       yClientId: 1,
+      metadataAccess: 'read-write',
+      metadataCapabilityAdvertised: true,
     })
     recoveredRoom.sessionStates.set(recoveredPeer, {
       vaultId: makeVaultId('vault-1'),
       deviceId: makeDeviceId('device-1'),
       yClientId: 1,
+      metadataAccess: 'read-write',
+      metadataCapabilityAdvertised: true,
     })
     recoveredRoom.schemaReady = true
     await recoveredRoom.webSocketMessage(recoveredSocket, JSON.stringify(residualUpdate))
@@ -1809,6 +1904,7 @@ test('VaultRoom serializes snapshot import with a concurrent live append', async
         body: JSON.stringify({
           updateBytesBase64: Buffer.from(importUpdate).toString('base64'),
           latestSeq: 1,
+          metadataSchemaVersion: 2,
         }),
       }),
     )
@@ -1878,7 +1974,10 @@ test('VaultRoom fails closed when an import target key already exists', async ()
         })}`,
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ updateBytesBase64: Buffer.from(importBytes).toString('base64') }),
+      body: JSON.stringify({
+        updateBytesBase64: Buffer.from(importBytes).toString('base64'),
+        metadataSchemaVersion: 2,
+      }),
     }),
   )
 
@@ -1888,6 +1987,162 @@ test('VaultRoom fails closed when an import target key already exists', async ()
   assert(persisted)
   assert.deepEqual(new Uint8Array(await persisted.arrayBuffer()), existingBytes)
   assert.equal(storage.sql.checkpointRuns.size, 0)
+})
+
+test('VaultRoom requires explicit v2 evidence for metadata snapshot imports', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const response = await room.fetch(
+    new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        updateBytesBase64: Buffer.from(
+          makeYjsUpdateBytes(makeMessageId('meta-evidence-missing')),
+        ).toString('base64'),
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 400)
+  assert.deepEqual(await response.json(), { error: 'metadata-schema-v2-evidence-required' })
+  assert.deepEqual(bucket.puts, [])
+  assert.equal(storage.sql.checkpointRuns.size, 0)
+})
+
+test('VaultRoom rejects unresolved snapshot-import deltas without advancing the sequence', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const source = new Y.Doc()
+  const firstFileId = makeFileId('causal-import-base')
+  source.getMap('meta').set(
+    firstFileId,
+    groupedEntryFromMetaFile({
+      schemaVersion: 1,
+      fileId: firstFileId,
+      path: 'Notes/Base.md',
+      canonicalPath: 'notes/base.md',
+      type: 'text',
+      ydocId: makeYDocId('causal-import-base-doc'),
+      deleted: false,
+      createdAt: 1,
+      createdBy: makeDeviceId('causal-import-device'),
+      contentUpdatedAt: 1,
+      contentUpdatedBy: makeDeviceId('causal-import-device'),
+      updatedAt: 1,
+      updatedBy: makeDeviceId('causal-import-device'),
+      mtime: 1,
+    }),
+  )
+  const baseStateVector = Y.encodeStateVector(source)
+  const secondFileId = makeFileId('causal-import-delta')
+  source.getMap('meta').set(
+    secondFileId,
+    groupedEntryFromMetaFile({
+      schemaVersion: 1,
+      fileId: secondFileId,
+      path: 'Notes/Delta.md',
+      canonicalPath: 'notes/delta.md',
+      type: 'text',
+      ydocId: makeYDocId('causal-import-delta-doc'),
+      deleted: false,
+      createdAt: 1,
+      createdBy: makeDeviceId('causal-import-device'),
+      contentUpdatedAt: 1,
+      contentUpdatedBy: makeDeviceId('causal-import-device'),
+      updatedAt: 1,
+      updatedBy: makeDeviceId('causal-import-device'),
+      mtime: 1,
+    }),
+  )
+  const unresolvedDelta = Y.encodeStateAsUpdate(source, baseStateVector)
+  const response = await room.fetch(
+    new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        updateBytesBase64: Buffer.from(unresolvedDelta).toString('base64'),
+        metadataSchemaVersion: 2,
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 400)
+  assert.deepEqual(await response.json(), { error: 'invalid-snapshot-import-update' })
+  assert.deepEqual(bucket.puts, [])
+  assert.equal(storage.sql.docs.size, 0)
+  source.destroy()
+})
+
+test('VaultRoom rejects metadata snapshot imports when the current document is poisoned', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const poisoned = makePoisonedMetaDoc(makeFileId('poisoned-import-meta'))
+  room.docs.set('meta', poisoned)
+  room.hydratedDocs.add('meta')
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 1,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    latestStateVector: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+
+  const beforeStateVector = Y.encodeStateVector(poisoned)
+  const response = await room.fetch(
+    new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        updateBytesBase64: makeYjsUpdateBase64(makeMessageId('poisoned-import-v2-root')),
+        latestSeq: 1,
+        metadataSchemaVersion: 2,
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 400)
+  assert.deepEqual(await response.json(), { error: 'invalid-snapshot-import-meta-schema' })
+  assert.deepEqual(bucket.puts, [])
+  assert.equal(storage.sql.checkpointRuns.size, 0)
+  assert.equal(storage.sql.docs.get('meta')?.latestSeq, 1)
+  assert.equal(storage.sql.docs.get('meta')?.latestSnapshotSeq, 0)
+  assert.deepEqual(Y.encodeStateVector(poisoned), beforeStateVector)
+  assert.equal(metaYDocSchemaDisposition(poisoned), 'invalid')
+  assert.equal(room.docs.get('meta'), poisoned)
 })
 
 test('VaultRoom rejects stale snapshot import sequences without durable mutation', async () => {
@@ -1929,6 +2184,7 @@ test('VaultRoom rejects stale snapshot import sequences without durable mutation
           updateBytesBase64: Buffer.from(
             makeYjsUpdateBytes(makeMessageId('message-import-seq-omitted')),
           ).toString('base64'),
+          metadataSchemaVersion: 2,
         }),
       }),
     )
@@ -1948,6 +2204,7 @@ test('VaultRoom rejects stale snapshot import sequences without durable mutation
               makeYjsUpdateBytes(makeMessageId(`message-import-seq-stale-${latestSeq}`)),
             ).toString('base64'),
             latestSeq,
+            metadataSchemaVersion: 2,
           }),
         }),
       )
@@ -1963,6 +2220,39 @@ test('VaultRoom rejects stale snapshot import sequences without durable mutation
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
   }
+})
+
+test('VaultRoom lets only one snapshot importer win an identical latest sequence', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, { tokenVersion: 1 })
+  const request = (updateBytesBase64: string): Promise<Response> =>
+    Promise.resolve(
+      room.fetch(
+        new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ updateBytesBase64, metadataSchemaVersion: 2 }),
+        }),
+      ),
+    )
+
+  const first = await request(makeYjsUpdateBase64(makeMessageId('cas-first')))
+  assert.equal(first.status, 200)
+  const second = await request(makeYjsUpdateBase64(makeMessageId('cas-second')))
+  assert.equal(second.status, 409)
+  assert.equal(storage.sql.docs.get('meta')?.latestSnapshotSeq, 1)
+  assert.equal(bucket.puts.length, 1)
+  const active = room.docs.get('meta')
+  assert(active)
+  assert.equal(active.getMap('meta').size, 1)
+  assert.equal(active.getMap('meta').has(makeFileId('file-cas-first')), true)
+  assert.equal(active.getMap('meta').has(makeFileId('file-cas-second')), false)
 })
 
 test('VaultRoom rejects invalid meta snapshot imports without replacing the active document', async () => {
@@ -1999,6 +2289,7 @@ test('VaultRoom rejects invalid meta snapshot imports without replacing the acti
         body: JSON.stringify({
           updateBytesBase64: makeInvalidMetaSchemaYjsUpdateBase64(),
           latestSeq: 1,
+          metadataSchemaVersion: 2,
         }),
       }),
     )
@@ -2007,6 +2298,67 @@ test('VaultRoom rejects invalid meta snapshot imports without replacing the acti
     assert.deepEqual(bucket.puts, [])
     assert.equal(storage.sql.checkpointRuns.size, 0)
     assert.equal(storage.sql.docs.get('meta')?.latestSnapshotSeq, 0)
+    assert.equal(room.docs.get('meta'), activeDoc)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom rejects metadata snapshot imports that mutate immutable identity', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-import-identity-base'))),
+    )
+    const activeDoc = room.docs.get('meta')
+    assert(activeDoc)
+    const fileId = [...activeDoc.getMap('meta').keys()][0]
+    assert(fileId)
+
+    const candidate = new Y.Doc()
+    Y.applyUpdate(candidate, Y.encodeStateAsUpdate(activeDoc))
+    const child = candidate.getMap<Y.Map<unknown>>('meta').get(fileId)
+    assert(child instanceof Y.Map)
+    const identity = child.get('identity')
+    assert(typeof identity === 'object' && identity !== null)
+    child.set('identity', { ...(identity as Record<string, unknown>), createdAt: 2 })
+    const importUpdate = Y.encodeStateAsUpdate(candidate, Y.encodeStateVector(activeDoc))
+    candidate.destroy()
+
+    const response = await room.fetch(
+      new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+            tokenVersion: 1,
+          })}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          updateBytesBase64: Buffer.from(importUpdate).toString('base64'),
+          latestSeq: 1,
+          metadataSchemaVersion: 2,
+        }),
+      }),
+    )
+
+    assert.equal(response.status, 400)
+    assert.deepEqual(bucket.puts, [])
+    assert.equal(storage.sql.checkpointRuns.size, 0)
     assert.equal(room.docs.get('meta'), activeDoc)
   } finally {
     restoreResponse(previousResponse)
@@ -2050,6 +2402,7 @@ test('VaultRoom rehydrates an active document after recovering a failed snapshot
         body: JSON.stringify({
           updateBytesBase64: Buffer.from(importUpdate).toString('base64'),
           latestSeq: 1,
+          metadataSchemaVersion: 2,
         }),
       }),
     )
@@ -2156,6 +2509,7 @@ test('VaultRoom preserves an imported document when pointer run status fails aft
         body: JSON.stringify({
           updateBytesBase64: Buffer.from(importUpdate).toString('base64'),
           latestSeq: 1,
+          metadataSchemaVersion: 2,
         }),
       }),
     )
@@ -3644,6 +3998,71 @@ test('rollback writes a new audited generation and preserves the source object',
   expectedColdDoc.destroy()
 })
 
+test('rollback accepts and preserves grouped metadata generations', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const sourceKey = 'snapshots/vault-1/meta/1.yupdate'
+  const currentKey = 'snapshots/vault-1/meta/2.yupdate'
+  const sourceBytes = makeYjsUpdateBytes(makeMessageId('rollback-meta-source'))
+  const currentBytes = makeYjsUpdateBytes(makeMessageId('rollback-meta-current'))
+  bucket.set(sourceKey, sourceBytes)
+  bucket.set(currentKey, currentBytes)
+  await seedVerifiedSnapshotEvidence(storage, sourceKey, 'meta', sourceBytes)
+  await seedVerifiedSnapshotEvidence(storage, currentKey, 'meta', currentBytes)
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 2,
+    latestSnapshotSeq: 2,
+    latestSnapshotKey: currentKey,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.opLog.set('meta:rollback-meta-current', {
+    docId: 'meta',
+    seq: 2,
+    messageId: 'rollback-meta-current',
+    deviceId: 'device-1',
+    yClientId: 1,
+    updateBytes: currentBytes,
+    updateSha256: await hashTestBytes(currentBytes),
+    createdAt: 2,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/rollback', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        docId: { kind: 'meta' },
+        snapshotKey: sourceKey,
+        upperSeq: 1,
+        actor: 'spoofed-request-actor',
+        reason: 'Rollback grouped metadata to the last verified generation',
+        confirmation: 'rollback',
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 200)
+  const coldRoom = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  coldRoom.vaultId = makeVaultId('vault-1')
+  await ensureDocHydrated(coldRoom, { kind: 'meta' })
+  const coldMeta = coldRoom.docs.get('meta')
+  assert(coldMeta)
+  for (const value of coldMeta.getMap('meta').values()) {
+    assert(value instanceof Y.Map)
+  }
+})
+
 test('rollback refuses to overwrite an existing target key', async () => {
   const storage = new SqlOnlyStorage()
   const bucket = new FakeR2Bucket()
@@ -4940,6 +5359,286 @@ test('VaultRoom validates client hello against the SQL device registry', async (
     assert.equal(server.closed, true)
     assert.equal(server.closeCode, 1008)
     assert.equal(server.closeReason, 'auth-reject:unknown-device')
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom grants grouped metadata write access only to clients advertising v2', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(server, JSON.stringify({ ...makeHello(), capabilities: [] }))
+
+    const helloAcceptedRaw = server.sent[0]
+    if (typeof helloAcceptedRaw !== 'string') throw new Error('missing hello-accepted frame')
+    const helloAccepted = JSON.parse(helloAcceptedRaw) as { metadataAccess?: string }
+    assert.equal(helloAccepted.metadataAccess, 'read-only')
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const modernServer = state.accepted[1]
+    assert(modernServer instanceof FakeSocket)
+    await room.webSocketMessage(modernServer, JSON.stringify(makeHello()))
+    const modernHelloAcceptedRaw = modernServer.sent[0]
+    if (typeof modernHelloAcceptedRaw !== 'string') {
+      throw new Error('missing modern hello-accepted frame')
+    }
+    const modernHelloAccepted = JSON.parse(modernHelloAcceptedRaw) as {
+      metadataAccess?: string
+    }
+    assert.equal(modernHelloAccepted.metadataAccess, 'read-write')
+    await room.webSocketMessage(
+      server,
+      JSON.stringify({
+        ...makeSyncUpdate(makeMessageId('message-legacy-meta-write')),
+        updateSha256: undefined,
+      }),
+    )
+    assert.equal(server.closeReason, 'metadata-read-only')
+    assert.equal(storage.sql.opLog.size, 0)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom quarantines live v1-to-v2 migration updates instead of appending them', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    const fileId = makeFileId('live-v1-root')
+    const legacy = new Y.Doc()
+    legacy.getMap('meta').set(fileId, {
+      schemaVersion: 1,
+      fileId,
+      path: 'Notes/Legacy.md',
+      canonicalPath: 'notes/legacy.md',
+      type: 'text',
+      ydocId: makeYDocId('live-v1-doc'),
+      deleted: false,
+      createdAt: 1,
+      createdBy: makeDeviceId('device-1'),
+      contentUpdatedAt: 1,
+      contentUpdatedBy: makeDeviceId('device-1'),
+      updatedAt: 1,
+      updatedBy: makeDeviceId('device-1'),
+      mtime: 1,
+    })
+    room.docs.set('meta', legacy)
+    room.hydratedDocs.add('meta')
+    storage.sql.docs.set('meta', {
+      kind: 'meta',
+      latestSeq: 0,
+      latestSnapshotSeq: 0,
+      latestSnapshotKey: undefined,
+      latestStateVector: undefined,
+      minRetainedSeq: 0,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    const migrated = new Y.Doc()
+    Y.applyUpdate(migrated, Y.encodeStateAsUpdate(legacy))
+    const child = new Y.Map<unknown>()
+    child.set('identity', {
+      schemaVersion: 2,
+      fileId,
+      type: 'text',
+      ydocId: makeYDocId('live-v1-doc'),
+      createdAt: 1,
+      createdBy: makeDeviceId('device-1'),
+    })
+    child.set('location', {
+      path: 'Notes/Legacy.md',
+      canonicalPath: 'notes/legacy.md',
+      updatedAt: 1,
+      updatedBy: makeDeviceId('device-1'),
+      mtime: 1,
+    })
+    child.set('content', { contentUpdatedAt: 1, contentUpdatedBy: makeDeviceId('device-1') })
+    child.set('deletion', { deleted: false })
+    migrated.getMap('meta').set(fileId, child)
+    const update = Y.encodeStateAsUpdate(migrated, Y.encodeStateVector(legacy))
+    const message = {
+      ...makeSyncUpdate(makeMessageId('live-v1-to-v2')),
+      docId: { kind: 'meta' as const },
+      update: Buffer.from(update).toString('base64'),
+    }
+    await room.webSocketMessage(server, JSON.stringify(message))
+    assert.equal(storage.sql.opLog.size, 0)
+    assert.equal(
+      storage.sql.quarantines.get(`q-${message.messageId}`)?.reason,
+      'meta-schema-invalid',
+    )
+    migrated.destroy()
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom quarantines live metadata updates when the current document is poisoned', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    const poisoned = makePoisonedMetaDoc(makeFileId('poisoned-live-meta'))
+    room.docs.set('meta', poisoned)
+    room.hydratedDocs.add('meta')
+    storage.sql.docs.set('meta', {
+      kind: 'meta',
+      latestSeq: 0,
+      latestSnapshotSeq: 0,
+      latestSnapshotKey: undefined,
+      latestStateVector: undefined,
+      minRetainedSeq: 0,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const beforeStateVector = Y.encodeStateVector(poisoned)
+    const message = {
+      ...makeSyncUpdate(makeMessageId('message-poisoned-live-meta')),
+      update: makeYjsUpdateBase64(makeMessageId('poisoned-live-v2-root')),
+    } satisfies SyncUpdate
+    await room.webSocketMessage(server, JSON.stringify(message))
+
+    assert.equal(storage.sql.opLog.size, 0)
+    assert.equal(storage.sql.messageDedup.size, 0)
+    assert.equal(
+      storage.sql.quarantines.get(`q-${message.messageId}`)?.reason,
+      'meta-schema-invalid',
+    )
+    assert.deepEqual(Y.encodeStateVector(poisoned), beforeStateVector)
+    assert.equal(metaYDocSchemaDisposition(poisoned), 'invalid')
+    assert.equal(room.docs.get('meta'), poisoned)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom accepts a v1 migration delta against an empty sequence-0 snapshot', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const fileId = makeFileId('seq-zero-migration')
+  const legacyFile = {
+    schemaVersion: 1 as const,
+    fileId,
+    path: 'Notes/Legacy.md',
+    canonicalPath: 'notes/legacy.md',
+    type: 'text' as const,
+    ydocId: makeYDocId('seq-zero-migration-doc'),
+    deleted: false as const,
+    createdAt: 1,
+    createdBy: makeDeviceId('device-1'),
+    contentUpdatedAt: 1,
+    contentUpdatedBy: makeDeviceId('device-1'),
+    updatedAt: 1,
+    updatedBy: makeDeviceId('device-1'),
+    mtime: 1,
+  }
+  const legacy = new Y.Doc()
+  legacy.getMap('meta').set(fileId, legacyFile)
+  room.docs.set('meta', legacy)
+  room.hydratedDocs.add('meta')
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 0,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    latestStateVector: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+
+  const migrated = new Y.Doc()
+  Y.applyUpdate(migrated, Y.encodeStateAsUpdate(legacy))
+  const grouped = groupedEntryFromMetaFile(legacyFile)
+  const groupedMap = new Y.Map<unknown>()
+  groupedMap.set('identity', grouped.identity)
+  groupedMap.set('location', grouped.location)
+  groupedMap.set('content', grouped.content)
+  groupedMap.set('deletion', grouped.deletion)
+  migrated.getMap('meta').set(fileId, groupedMap)
+  const migrationDelta = Y.encodeStateAsUpdate(migrated, Y.encodeStateVector(legacy))
+  const candidate = new Y.Doc()
+  Y.applyUpdate(candidate, Y.encodeStateAsUpdate(legacy))
+  Y.applyUpdate(candidate, migrationDelta)
+  assert.equal(metaYDocWritable(candidate), true)
+  assert.equal(metaIdentityImmutable(legacy, candidate), true)
+  assert.equal(metaRootMutationAllowed(legacy, migrationDelta, true), true)
+  candidate.destroy()
+  const response = await room.fetch(
+    new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        updateBytesBase64: Buffer.from(migrationDelta).toString('base64'),
+        metadataSchemaVersion: 2,
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 200, await response.clone().text())
+  assert.equal(storage.sql.docs.get('meta')?.latestSeq, 1)
+  assert.equal(bucket.puts.length, 1)
+  migrated.destroy()
+  legacy.destroy()
+})
+
+test('metadata read-only sessions still append file YDoc updates', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify({ ...makeHello(), capabilities: [] }))
+
+    const update = {
+      ...makeSyncUpdate(makeMessageId('message-read-only-file')),
+      docId: { kind: 'file', ydocId: makeYDocId('read-only-file') },
+    }
+    await room.webSocketMessage(server, JSON.stringify(update))
+
+    assert.equal(server.closed, false)
+    assert.ok(findAckForMessage(server.sent, update.messageId))
+    assert.equal(storage.sql.opLog.has(`file:${update.docId.ydocId}:${update.messageId}`), true)
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)

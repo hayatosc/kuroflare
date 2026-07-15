@@ -6,7 +6,11 @@ import { DeviceIdSchema, DocIdSchema, MessageIdSchema, VaultIdSchema } from '../
 import { NonEmptyBase64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
 import { ProtocolVersionSchema } from '../utils/version'
 
-export const ClientCapabilitySchema = v.union([v.literal('awareness'), v.literal('binary-v1')])
+export const ClientCapabilitySchema = v.union([
+  v.literal('awareness'),
+  v.literal('binary-v1'),
+  v.literal('metadata-schema-v2'),
+])
 export type ClientCapability = v.InferInput<typeof ClientCapabilitySchema>
 
 export const ClientHelloSchema = v.object({
@@ -25,8 +29,12 @@ export const HelloAcceptedSchema = v.object({
   vaultId: VaultIdSchema,
   deviceId: DeviceIdSchema,
   yClientId: WireYClientIdSchema,
+  metadataAccess: v.optional(v.union([v.literal('read-only'), v.literal('read-write')])),
 })
 export type HelloAccepted = v.InferInput<typeof HelloAcceptedSchema>
+
+export const MetadataAccessSchema = v.union([v.literal('read-only'), v.literal('read-write')])
+export type MetadataAccess = v.InferInput<typeof MetadataAccessSchema>
 
 export const SyncRequestSchema = v.object({
   type: v.literal('sync-request'),
@@ -84,6 +92,7 @@ export type NeedFullSnapshot = v.InferInput<typeof NeedFullSnapshotSchema>
 
 export const SyncUpdateRejectedReasonSchema = v.union([
   v.literal('large-update-requires-snapshot-import'),
+  v.literal('metadata-read-only'),
 ])
 export type SyncUpdateRejectedReason = v.InferInput<typeof SyncUpdateRejectedReasonSchema>
 

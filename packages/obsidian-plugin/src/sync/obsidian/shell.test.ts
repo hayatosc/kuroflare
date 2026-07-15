@@ -439,11 +439,12 @@ test('Obsidian shell driver transport tick runs setup exchange, local-store gate
     [
       'persist-setup-response',
       'scan-local-vault',
+      'open-websocket',
+      'send-client-hello',
       'create-local-meta-ydoc',
       'publish-local-meta-snapshot',
       'publish-initial-file-snapshots',
       'send-meta-update',
-      'open-websocket',
     ],
   )
   assert.equal(result.state.shell.runnableEffects.length, 0)

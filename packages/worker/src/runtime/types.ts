@@ -1,4 +1,4 @@
-import { type ClientHello, type DocId, type VaultId } from '@kuroflare/core'
+import { type ClientHello, type DocId, type MetadataAccess, type VaultId } from '@kuroflare/core'
 import { VaultIdSchema, DocIdSchema } from '@kuroflare/core'
 import * as v from 'valibot'
 
@@ -113,6 +113,8 @@ export interface SessionState {
   readonly vaultId: VaultId
   readonly deviceId: ClientHello['deviceId']
   readonly yClientId: YClientId
+  readonly metadataAccess?: MetadataAccess
+  readonly metadataCapabilityAdvertised?: boolean
 }
 
 export interface WebSocketAttachment {

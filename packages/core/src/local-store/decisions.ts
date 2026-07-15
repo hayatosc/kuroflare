@@ -215,6 +215,7 @@ export function planLocalOutboxRepairImport(
       messageId,
       updateSha256,
       updateBytesBase64,
+      ...(entry.metadataSchemaVersion === 2 ? { metadataSchemaVersion: 2 as const } : {}),
       createdAt: entry.createdAt,
     })
   }

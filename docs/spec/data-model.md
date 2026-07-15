@@ -12,49 +12,81 @@
 生成箇所は `crypto.randomUUID()` に統一するが、これは呼び出し規約であって trust boundary の保証ではない。
 conflict rename（[sync-model.md](sync-model.md) §6）は fileId の先頭 8 文字を suffix に使うため、低エントロピー ID が混入すると suffix が衝突しやすくなるが、その場合も `-2, -3...` の採番が一意性を担保する。
 
-## 2. メタ YDoc（ファイルツリー）
+## 2. Meta YDoc (file tree)
 
-Yjs の `Y.Map` で全ファイルのメタデータを管理し、DO で収束させる。
+The metadata document is a root `Y.Map` keyed by the stable `fileId`. Each root value is
+an integrated child `Y.Map` with four independently mergeable plain-object groups:
 
 ```
-fileId → {
-  schemaVersion: 1
-  path:       string        // 現在のパス。リネームはこのフィールド更新
-  canonicalPath: string     // §5 の正規化。衝突検出用
-  type:       "text" | "binary"
-  ydocId?:    string        // type=text のとき、本文 YDoc の識別子
-  blobManifestHash?: string // type=binary のとき、manifest の content hash
-  blobChunks?: string[]     // type=binary の fast path。manifest と一致必須
-  deleted:    boolean       // 削除は tombstone（即物理削除しない）
-  deletedAt?: number
-  deletedBy?: string
-  createdAt / createdBy / contentUpdatedAt / contentUpdatedBy
-  updatedAt / updatedBy     // updatedBy は deviceId
-  mtime:      number
+fileId -> Y.Map {
+  identity: {
+    schemaVersion: 2
+    fileId: string
+    type: "text" | "binary"
+    ydocId?: string       // required for text
+    createdAt: number
+    createdBy: string
+  }
+  location: {
+    path: string
+    canonicalPath: string
+    updatedAt: number
+    updatedBy: string
+    mtime: number
+  }
+  content: {
+    contentUpdatedAt: number
+    contentUpdatedBy: string
+    blobManifestHash?: string // required for binary
+    blobChunks?: string[]     // required for binary
+  }
+  deletion: {
+    deleted: boolean
+    deletedAt?: number
+    deletedBy?: string
+  }
 }
 ```
 
-正規化した `MetaFile` 型は `type` を判別子とする discriminated union で、text entry は blob 系フィールドを持てず、binary entry は `ydocId` を持てない。
+`path` and `canonicalPath` are one location group, and the binary manifest hash and
+chunk list are one content group. A rename therefore cannot erase a concurrent binary
+publication, and a tombstone cannot remove the location or content evidence. Identity
+is immutable after creation. Downstream planners use a validated normalized `MetaFile`
+view; they never write that flattened view back to the root map.
 
-検証規則（`core/src/sync/meta.ts` の schema guard）:
+Validation is strict (`core/src/sync/meta.ts`): file IDs must match the root key,
+paths must be vault-relative, canonical paths must equal `canonicalizeVaultPath(path)`,
+text entries require `ydocId` and forbid blob fields, binary entries require a valid
+manifest hash and at least one chunk and forbid `ydocId`, and an active entry cannot
+carry deletion evidence. A deleted entry remains a tombstone; its body YDoc or blob
+manifest is not removed ([sync-model.md](sync-model.md) §4).
 
-| 対象           | 規則                                                                                               |
-| -------------- | -------------------------------------------------------------------------------------------------- |
-| fileId         | branded `FileId`。YMap key と値の両方が一致する場合だけ valid                                      |
-| path           | Vault 相対のみ。絶対パス、`\`、NUL、`.` / `..` segment、`.obsidian` 配下を拒否                     |
-| canonicalPath  | `canonicalizeVaultPath(path)` と一致必須。手入力値を信用しない                                     |
-| text entry     | `ydocId` 必須。blob 系フィールドを持てば拒否                                                       |
-| binary entry   | lowercase SHA-256 hex の `blobManifestHash` と 1 個以上の `blobChunks` 必須。`ydocId` を持てば拒否 |
-| 削除メタデータ | `deleted=false` で `deletedAt` / `deletedBy` を持てば拒否                                          |
+Version-1 flat entries remain readable through the normalized decoder, but are
+read-only. After Hello grants metadata write access, a local document containing
+only valid v1 entries is merged with the authoritative latest server snapshot while
+both are still v1, migrated to fresh grouped child maps, and committed through a
+latest-sequence snapshot-import CAS. A stale CAS retry rebuilds from the newly fetched
+authoritative snapshot while it is still v1. If the authoritative snapshot is already
+v2, it is adopted only when every local normalized entry is represented unchanged;
+otherwise the local document is retained and downgraded to read-only for explicit
+repair. Metadata writes remain disabled until this transition succeeds.
+Unknown versions, mixed v1/v2 documents, detached child maps, invalid groups, and
+identity changes fail closed. A client that does not advertise `metadata-schema-v2`
+may continue file-YDoc synchronization, but metadata writes are rejected without
+acknowledgement, broadcast, SQL, or R2 mutation. Snapshot imports must carry explicit
+`metadataSchemaVersion: 2` evidence.
 
-`deleted=true` でも本文 YDoc / blob manifest は即消さない（[sync-model.md](sync-model.md) §4）。
-schema validation に失敗した meta update は quarantine し（[server.md](server.md) §3）、通常の materialize へ進めない。
+When a non-empty remote v2 snapshot diverges from local metadata, the client keeps
+the local IndexedDB/Yjs state, switches metadata to read-only, and displays a
+manual-repair notice. Invalid local values are recorded for inspection without
+rewriting them; an explicit discard requires write access and the exact confirmation
+phrase, then synchronizes the resulting metadata document as a whole.
 
-**schemaVersion の移行**：現状 `1` 固定で、version 2 以降を受け付ける経路が無い。
-version を導入する場合は次の 2 点を先に決めておく。
-
-- 旧 client は未知の `schemaVersion` を持つ entry を quarantine ではなく read-only 扱いにする。書き込み対象からは外すが、同期対象からは外さず、削除も上書きもしない。
-- 新フィールドの追加は同一 version 内で optional として行う。bump は不変条件（必須フィールドの増減、型の意味変更）が変わる時だけに限る。
+Metadata updates already persisted in the local outbox are schema-gated as well. A
+flat-v1 metadata update or metadata reference update is never sent after the local
+write gate opens; when conversion cannot preserve its dependency history, the row is
+paused with `metadata-schema-v2-migration-required` for manual repair while file and
+blob work continues.
 
 ## 3. 本文 YDoc（テキスト）
 

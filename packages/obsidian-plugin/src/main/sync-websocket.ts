@@ -33,7 +33,7 @@ import {
 } from './auth'
 import { META_SYNC_DOC_ID, WORKER_ORIGIN } from './constants'
 import { safeLogError, encodeBase64, accessTokenSecretKeyForSetup } from './helpers'
-import { loadTextDoc } from './meta'
+import { loadTextDoc, metaDocWritable, metadataWritesEnabled } from './meta'
 import {
   recoverLeasedOutboxAfterWebSocketFailure,
   runOutboxWorkerTick,
@@ -49,6 +49,7 @@ export async function sendDocUpdateToWorker(
   reason: string,
 ): Promise<void> {
   if (!plugin.startupSideEffectGate.canSendNetwork()) return
+  if (docId.kind === 'meta' && !metadataWritesEnabled(plugin)) return
   const setup = currentSetupMetadata(plugin)
   if (setup === undefined) {
     return
@@ -67,6 +68,7 @@ export async function sendDocUpdateToWorker(
     messageId,
     updateSha256,
     updateBytesBase64,
+    ...(docId.kind === 'meta' ? { metadataSchemaVersion: 2 as const } : {}),
     createdAt: Date.now(),
   } as LocalStoreOutboxRecord
   try {
@@ -195,6 +197,8 @@ export interface WorkerWebSocketOpenRuntime {
   readonly setup: LocalSetupMetadata
   readonly ensureUsableAccessToken: () => Promise<boolean>
   readonly createStartupPort: () => SyncRuntimeWebSocketStartupStepPort
+  readonly shouldRetryLegacyMetadataCapability?: ((error: unknown) => boolean) | undefined
+  readonly onLegacyMetadataCapabilityFallback?: (() => void) | undefined
 }
 
 /** Serializes a worker WebSocket open and hello sequence for a mutable runtime state. */
@@ -207,7 +211,22 @@ export async function openWorkerWebSocketRuntime(
     await inFlight
     return
   }
-  const opening = openWorkerWebSocketOnce(runtime, sendHello)
+  const opening = (async () => {
+    let fallbackAttempted = false
+    while (true) {
+      try {
+        await openWorkerWebSocketOnce(runtime, sendHello)
+        return
+      } catch (error: unknown) {
+        if (!fallbackAttempted && runtime.shouldRetryLegacyMetadataCapability?.(error) === true) {
+          fallbackAttempted = true
+          runtime.onLegacyMetadataCapabilityFallback?.()
+          continue
+        }
+        throw error
+      }
+    }
+  })()
   runtime.workerWebSocketOpenPromise = opening
   try {
     await opening
@@ -223,6 +242,7 @@ export async function openWorkerWebSocket(
   sendHello: (plugin: KuroflareSpikePlugin) => Promise<void> = sendWorkerHello,
 ): Promise<void> {
   const setup = requireSetupMetadata(plugin)
+  plugin.metadataAccess = 'read-only'
   const runtime: WorkerWebSocketOpenRuntime = {
     startupSideEffectGate: plugin.startupSideEffectGate,
     get syncStoppedByAuth() {
@@ -251,6 +271,15 @@ export async function openWorkerWebSocket(
     ensureUsableAccessToken: async () =>
       await ensureUsableAccessToken(plugin, async () => await openWorkerWebSocket(plugin)),
     createStartupPort: () => createWorkerWebSocketStartupPort(plugin),
+    shouldRetryLegacyMetadataCapability: (error) =>
+      isLegacyMetadataCapabilityError(error) &&
+      plugin.metadataCapabilityAdvertised &&
+      !plugin.metadataCapabilityFallbackAttempted,
+    onLegacyMetadataCapabilityFallback: () => {
+      plugin.metadataCapabilityFallbackAttempted = true
+      plugin.metadataCapabilityAdvertised = false
+      plugin.metadataAccess = 'read-only'
+    },
   }
   await openWorkerWebSocketRuntime(runtime, async () => await sendHello(plugin))
 }
@@ -293,6 +322,7 @@ export async function sendWorkerHello(plugin: KuroflareSpikePlugin): Promise<voi
     step: 'send-client-hello',
     phase: 'websocket',
   })
+  await plugin.metadataMigrationPromise
   plugin.workerHelloAccepted = true
   plugin.syncStatusEl?.setText(`Kuroflare sync: connected ${setup.vaultId}`)
   await requestMetaDocFromWorker(plugin, 'hello-accepted')
@@ -427,7 +457,15 @@ function createWorkerWebSocketStartupPort(
       getAccessToken: async (key) => await readAccessToken(plugin, key),
     },
     webSocket: createBrowserSyncRuntimeWebSocketFactory(WebSocket),
-    capabilities: [],
+    capabilities: plugin.metadataCapabilityAdvertised
+      ? ['binary-v1', 'awareness', 'metadata-schema-v2']
+      : ['binary-v1', 'awareness'],
+    onHelloAccepted: (message) => {
+      plugin.metadataAccess = message.metadataAccess ?? 'read-only'
+      plugin.metadataMigrationPending =
+        plugin.metaDoc.getMap<unknown>('meta').size === 0 || !metaDocWritable(plugin.metaDoc)
+      void plugin.startMetadataMigrationAfterHello()
+    },
     session: plugin.workerWebSocketSession,
     onConnectionIssue: (issue) => {
       void handleWorkerWebSocketIssue(plugin, issue)
@@ -456,6 +494,14 @@ async function handleWorkerWebSocketIssue(
   ) {
     return
   }
+  if (
+    issue.kind === 'close' &&
+    issue.code === 1003 &&
+    issue.reason === 'invalid-control-message' &&
+    plugin.metadataCapabilityFallbackAttempted
+  ) {
+    return
+  }
 
   const opening = plugin.workerWebSocketOpenPromise
   if (opening !== null) {
@@ -464,6 +510,13 @@ async function handleWorkerWebSocketIssue(
       .finally(() => {
         void handleWorkerWebSocketIssue(plugin, issue)
       })
+    return
+  }
+  if (shouldRetryWithLegacyMetadataCapability(plugin, issue)) {
+    plugin.metadataCapabilityFallbackAttempted = true
+    plugin.metadataCapabilityAdvertised = false
+    plugin.metadataAccess = 'read-only'
+    await openWorkerWebSocket(plugin)
     return
   }
   if (plugin.workerWebSocketRecoveryPromise !== null) return
@@ -484,4 +537,31 @@ async function handleWorkerWebSocketIssue(
       plugin.workerWebSocketRecoveryPromise = null
     }
   }
+}
+
+export function shouldRetryWithLegacyMetadataCapability(
+  plugin: Pick<
+    KuroflareSpikePlugin,
+    'metadataCapabilityAdvertised' | 'metadataCapabilityFallbackAttempted'
+  >,
+  issue: {
+    readonly kind: 'close' | 'error'
+    readonly code?: number | undefined
+    readonly reason?: string | undefined
+  },
+): boolean {
+  return (
+    issue.kind === 'close' &&
+    issue.code === 1003 &&
+    issue.reason === 'invalid-control-message' &&
+    plugin.metadataCapabilityAdvertised &&
+    !plugin.metadataCapabilityFallbackAttempted
+  )
+}
+
+export function isLegacyMetadataCapabilityError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith('websocket-closed-before-hello-accepted:1003:invalid-control-message')
+  )
 }

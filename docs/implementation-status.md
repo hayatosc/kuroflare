@@ -7,12 +7,13 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ## Current summary (2026-07-14)
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 192 件、worker 232 件、model-tests 17 件、Obsidian 414 件、worker e2e 7 件。
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 193 件、worker 246 件、model-tests 17 件、Obsidian 421 件、worker e2e 7 件。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
 - Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are committed at `122d2a0`. The rejection-evidence work described below builds on that baseline. The remaining P0/P1/P2 items and design-review release gates are still authoritative.
 - DR-008 (snapshot health and rollback) is closed. Immutable R2 bytes are now admitted only by append-only SQLite evidence, and the authenticated health API and Obsidian operator panel expose server-computed action authority.
 - DR-001 (durability contract) is closed. Recovery authority is the latest authoritative, verified, healthy R2 snapshot plus later SQLite op-log rows; normal runtime eviction is recoverable, while complete SQLite loss is a disaster/manual-recovery case. The Worker disaster test and snapshot-health operator note prove that R2 bytes without pointer/health evidence fail closed. The nominal 128-operation / 30-second checkpoint triggers remain best-effort signals, not an RPO bound.
+- DR-005 (metadata merge granularity) is closed. Schema version 2 stores each file ID in grouped child maps (`identity`, `location`, `content`, `deletion`), preserves concurrent rename/content and rename/delete changes, and rejects immutable-identity changes. Legacy migration is an authoritative snapshot-import CAS after Hello admission; stale retries rebuild from the latest v1 snapshot, while an already-v2 remote is adopted only when all local entries are represented unchanged. Otherwise local metadata is retained and downgraded to read-only; legacy outbox rows are paused with an actionable migration reason. Legacy and unsupported metadata remain read-only; file-YDoc synchronization remains available. DR-006 (delete-versus-edit causality) and DR-012 (general capability negotiation) remain open.
 
 ### MVP チェックリスト（[operations.md](spec/operations.md) §8 対応）
 
@@ -59,6 +60,14 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 - Obsidian settings now exposes an explicit per-row repair action. It verifies the complete evidence and actual update-bytes SHA-256, fetches the latest `manifestSeq` (404 means a new document), imports the exact Yjs delta through the authenticated snapshot route, and only then marks that same row done with the returned `snapshotSeq` in a guarded IndexedDB transaction. Conflict, authentication, network, malformed-response, hash, evidence, and local-commit failures leave the row paused; retries after remote success are safe.
 - This closes DR-003 narrowly as safe rejection plus explicit repair. It does not claim transparent large-update support and does not close DR-009 generally; capability negotiation, generalized rejection evidence, and public HTTP error migration remain out of scope.
 - A transactional live escape remains future work if live updates above the configured threshold become a product requirement.
+
+### Completed P1: DR-005 grouped metadata schema
+
+- Core decodes strict grouped schema version 2 values into the normalized `MetaFile` view while preserving explicit `supported-v2`, `legacy-v1`, `unsupported`, and `invalid` dispositions.
+- Obsidian creates and mutates only integrated child maps. Legacy v1 entries are migrated only after Hello admission through a latest-sequence snapshot-import CAS; metadata writes remain disabled until the CAS succeeds. A remote v2 snapshot is adopted only when it contains every local entry unchanged; divergent/local-only entries remain local, trigger a manual-repair Notice, and force read-only repair. Read-only sessions do not enqueue or send metadata, and already-persisted flat-v1 metadata outbox rows are paused with `metadata-schema-v2-migration-required` rather than discarded. Invalid values are logged without rewriting local IndexedDB/Yjs state; explicit discard requires write access and exact confirmation, and the repaired state is synchronized in full once the document becomes writable.
+- Worker hello admission records `metadataAccess`. The `metadata-schema-v2` capability grants metadata write access; an old-server invalid-control close triggers one retry without that capability, and an accepted omission remains read-only. Metadata live updates reject v1-to-v2 root replacement and v2 root replacement/deletion; imports use the CAS path and preserve immutable identity. File-YDoc updates remain available to read-only sessions.
+- Regression coverage includes grouped child invariants, CAS migration sequencing and stale import rejection, migration and mtime preservation, detached/mixed fail-closed handling, immutable identity rejection, concurrent rename/content and rename/delete merges, old-server capability fallback, legacy outbox pausing, and metadata import evidence.
+- DR-006 and DR-012 are intentionally not closed by this implementation.
 
 ### P0: production startup pipeline の常用化
 

@@ -49,11 +49,12 @@ test('client startup plans new vault bootstrap without remote meta adoption', ()
       steps: [
         'persist-setup-response',
         'scan-local-vault',
+        'open-websocket',
+        'send-client-hello',
         'create-local-meta-ydoc',
         'publish-local-meta-snapshot',
         'publish-initial-file-snapshots',
         'send-meta-update',
-        'open-websocket',
       ],
     },
   )

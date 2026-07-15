@@ -83,6 +83,7 @@ export interface LocalStoreRepairImportedOutboxRecord {
   readonly messageId: MessageId
   readonly updateSha256: Sha256Hex
   readonly updateBytesBase64: string
+  readonly metadataSchemaVersion?: 2 | undefined
 }
 
 /** Concrete effect for staging one imported repair entry in the local outbox. */
@@ -209,6 +210,7 @@ export interface LocalStoreRepairExportOutboxRecord {
   readonly messageId?: MessageId | undefined
   readonly updateSha256?: Sha256Hex | undefined
   readonly updateBytesBase64?: string | undefined
+  readonly metadataSchemaVersion?: 2 | undefined
   readonly blobSha256?: Sha256Hex | undefined
   readonly localCacheKey?: string | undefined
   readonly reason?: string | undefined

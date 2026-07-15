@@ -51,6 +51,8 @@ export async function acceptHello(
     vaultId: hello.vaultId,
     deviceId: hello.deviceId,
     yClientId: hello.yClientId,
+    metadataAccess: hello.capabilities.includes('metadata-schema-v2') ? 'read-write' : 'read-only',
+    metadataCapabilityAdvertised: hello.capabilities.includes('metadata-schema-v2'),
   })
   await persistVaultId(room, hello.vaultId)
   webSocket.send(
@@ -60,6 +62,9 @@ export async function acceptHello(
       vaultId: hello.vaultId,
       deviceId: hello.deviceId,
       yClientId: hello.yClientId,
+      metadataAccess: hello.capabilities.includes('metadata-schema-v2')
+        ? 'read-write'
+        : 'read-only',
     }),
   )
 }

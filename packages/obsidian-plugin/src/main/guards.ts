@@ -82,11 +82,13 @@ export function isLocalStoreOutboxRecord(value: unknown): value is LocalStoreOut
   const kind = Reflect.get(value, 'kind')
   const status = Reflect.get(value, 'status')
   const dependsOn = Reflect.get(value, 'dependsOn')
+  const metadataSchemaVersion = Reflect.get(value, 'metadataSchemaVersion')
   return (
     typeof id === 'string' &&
     typeof kind === 'string' &&
     typeof status === 'string' &&
-    Array.isArray(dependsOn)
+    Array.isArray(dependsOn) &&
+    (metadataSchemaVersion === undefined || metadataSchemaVersion === 2)
   )
 }
 

@@ -1,12 +1,13 @@
 import {
   canonicalizeVaultPath,
-  isMetaFile,
   type DeviceId,
   type FileId,
   type MetaFile,
   type YDocId,
 } from '@kuroflare/core'
-import type * as Y from 'yjs'
+import * as Y from 'yjs'
+
+import { insertMetaFile, readMetaEntries, updateMetaGroup } from '../../main/meta'
 
 /** Input for registering a newly created text file in the meta YDoc. */
 export interface FileCreateInput {
@@ -56,6 +57,9 @@ export type FileTreeResult =
  * @param input File identity, path, and provenance.
  */
 export function applyFileCreate(metaMap: Y.Map<unknown>, input: FileCreateInput): void {
+  if (findActiveEntryByCanonicalPath(metaMap, canonicalizeVaultPath(input.path)) !== undefined) {
+    return
+  }
   const entry: MetaFile = {
     schemaVersion: 1,
     fileId: input.fileId,
@@ -72,9 +76,7 @@ export function applyFileCreate(metaMap: Y.Map<unknown>, input: FileCreateInput)
     updatedBy: input.deviceId,
     mtime: input.now,
   }
-  transact(metaMap, input.origin, () => {
-    metaMap.set(input.fileId, entry)
-  })
+  transact(metaMap, input.origin, () => insertMetaFile(metaMap, entry))
 }
 
 /**
@@ -94,15 +96,16 @@ export function applyFileRename(metaMap: Y.Map<unknown>, input: FileRenameInput)
     return { action: 'not-found' }
   }
 
-  const next: MetaFile = {
-    ...found,
+  const nextLocation = {
     path: input.toPath,
     canonicalPath: canonicalizeVaultPath(input.toPath),
     updatedAt: input.now,
     updatedBy: input.deviceId,
+    mtime: found.mtime,
   }
   transact(metaMap, input.origin, () => {
-    metaMap.set(found.fileId, next)
+    ensureGroupedEntry(metaMap, found.fileId, found)
+    updateMetaGroup(metaMap, found.fileId, 'location', nextLocation)
   })
   return { action: 'renamed', fileId: found.fileId }
 }
@@ -123,16 +126,10 @@ export function applyFileDelete(
     return { action: 'not-found' }
   }
 
-  const next: MetaFile = {
-    ...found,
-    deleted: true,
-    deletedAt: input.now,
-    deletedBy: input.deviceId,
-    updatedAt: input.now,
-    updatedBy: input.deviceId,
-  }
+  const nextDeletion = { deleted: true as const, deletedAt: input.now, deletedBy: input.deviceId }
   transact(metaMap, input.origin, () => {
-    metaMap.set(found.fileId, next)
+    ensureGroupedEntry(metaMap, found.fileId, found)
+    updateMetaGroup(metaMap, found.fileId, 'deletion', nextDeletion)
   })
   return { action: 'deleted', fileId: found.fileId }
 }
@@ -141,10 +138,8 @@ function findActiveEntryByCanonicalPath(
   metaMap: Y.Map<unknown>,
   canonicalPath: string,
 ): MetaFile | undefined {
-  for (const [fileId, value] of metaMap.entries()) {
-    if (isMetaFile(value, fileId) && !value.deleted && value.canonicalPath === canonicalPath) {
-      return value
-    }
+  for (const value of readMetaEntries(metaMap)) {
+    if (!value.deleted && value.canonicalPath === canonicalPath) return value
   }
   return undefined
 }
@@ -156,4 +151,9 @@ function transact(metaMap: Y.Map<unknown>, origin: unknown, fn: () => void): voi
   } else {
     fn()
   }
+}
+
+function ensureGroupedEntry(metaMap: Y.Map<unknown>, fileId: FileId, value: MetaFile): void {
+  if (metaMap.get(fileId) instanceof Y.Map) return
+  insertMetaFile(metaMap, value)
 }

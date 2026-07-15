@@ -16,7 +16,9 @@ import {
 } from '../sync/engine/websocket'
 import {
   openWorkerWebSocketRuntime,
+  isLegacyMetadataCapabilityError,
   routeWorkerInboundMessageForStartup,
+  shouldRetryWithLegacyMetadataCapability,
   type WorkerWebSocketOpenRuntime,
 } from './sync-websocket'
 
@@ -45,12 +47,44 @@ class FakeBrowserWebSocket {
     })
   }
 
-  send(): void {}
+  send(_data: string | ArrayBuffer): void {}
 
   close(): void {
     this.closeCalls += 1
     this.readyState = FakeBrowserWebSocket.CLOSED
     this.onclose?.(new CloseEvent('close'))
+  }
+}
+
+class LegacyRejectingBrowserWebSocket extends FakeBrowserWebSocket {
+  override send(data: string | ArrayBuffer): void {
+    if (typeof data !== 'string') return
+    const message: unknown = JSON.parse(data)
+    if (
+      typeof message !== 'object' ||
+      message === null ||
+      Array.isArray(message) ||
+      Reflect.get(message, 'type') !== 'hello'
+    ) {
+      return
+    }
+    const index = FakeBrowserWebSocket.instances.indexOf(this)
+    if (index === 0) {
+      this.readyState = FakeBrowserWebSocket.CLOSED
+      this.onclose?.(new CloseEvent('close', { code: 1003, reason: 'invalid-control-message' }))
+      return
+    }
+    this.onmessage?.(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'hello-accepted',
+          protocolVersion: CURRENT_PROTOCOL_VERSION,
+          vaultId: makeVaultId('legacy-runtime-vault'),
+          deviceId: makeDeviceId('legacy-runtime-device'),
+          yClientId: 1,
+        }),
+      }),
+    )
   }
 }
 
@@ -213,6 +247,204 @@ test('fresh token opens without a refresh attempt', async () => {
   assert.equal(preflightCalls, 1)
   assert.deepEqual(events, ['fresh-token-check', 'create-startup-port', 'hello'])
   assert.equal(FakeBrowserWebSocket.instances.length, 1)
+})
+
+test('hello acceptance without metadata access defaults the client to read-only', async () => {
+  FakeBrowserWebSocket.instances.length = 0
+  const setup = {
+    endpoint: 'https://worker.example.test',
+    vaultId: makeVaultId('hello-compat-vault'),
+    deviceId: makeDeviceId('hello-compat-device'),
+    yClientId: 1,
+    protocolVersion: 1,
+    bootstrapMode: 'new-vault',
+    tokenVersion: 1,
+  } as const
+  const session = createSyncRuntimeWebSocketSession()
+  let metadataAccess: 'read-only' | 'read-write' = 'read-only'
+  const port = createSyncRuntimeWebSocketStartupStepPort({
+    metadata: { setup, accessTokenSecretKey: 'access-token-key' },
+    tokenReader: { getAccessToken: async () => 'access-token' },
+    webSocket: createBrowserSyncRuntimeWebSocketFactory(FakeBrowserWebSocket),
+    capabilities: ['metadata-schema-v2'],
+    onHelloAccepted: (message) => {
+      metadataAccess = message.metadataAccess ?? 'read-only'
+    },
+    session,
+  })
+
+  await withFakeWebSocket(async () => {
+    await port.openWebSocket({
+      kind: 'run-startup-step',
+      vaultId: setup.vaultId,
+      step: 'open-websocket',
+      phase: 'websocket',
+    })
+    const admitted = port.sendClientHello({
+      kind: 'run-startup-step',
+      vaultId: setup.vaultId,
+      step: 'send-client-hello',
+      phase: 'websocket',
+    })
+    const connection = FakeBrowserWebSocket.instances[0]
+    assert(connection !== undefined)
+    connection.onmessage?.(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'hello-accepted',
+          protocolVersion: CURRENT_PROTOCOL_VERSION,
+          vaultId: setup.vaultId,
+          deviceId: setup.deviceId,
+          yClientId: setup.yClientId,
+        }),
+      }),
+    )
+    await admitted
+  })
+
+  assert.equal(metadataAccess, 'read-only')
+})
+
+test('invalid-control close triggers one legacy capability retry', () => {
+  assert.equal(
+    shouldRetryWithLegacyMetadataCapability(
+      { metadataCapabilityAdvertised: true, metadataCapabilityFallbackAttempted: false },
+      { kind: 'close', code: 1003, reason: 'invalid-control-message' },
+    ),
+    true,
+  )
+  assert.equal(
+    shouldRetryWithLegacyMetadataCapability(
+      { metadataCapabilityAdvertised: false, metadataCapabilityFallbackAttempted: false },
+      { kind: 'close', code: 1003, reason: 'invalid-control-message' },
+    ),
+    false,
+  )
+})
+
+test('worker websocket open retries legacy metadata capability within the original promise', async () => {
+  FakeBrowserWebSocket.instances.length = 0
+  const setup = {
+    endpoint: 'https://worker.example.test',
+    vaultId: makeVaultId('legacy-runtime-vault'),
+    deviceId: makeDeviceId('legacy-runtime-device'),
+    yClientId: 1,
+    protocolVersion: 1,
+    bootstrapMode: 'new-vault',
+    tokenVersion: 1,
+  } as const
+  const session = createSyncRuntimeWebSocketSession()
+  let advertised = true
+  let fallbackAttempted = false
+  const capabilities: string[][] = []
+  const runtime: WorkerWebSocketOpenRuntime = {
+    startupSideEffectGate: { canSendNetwork: () => true },
+    syncStoppedByAuth: null,
+    workerWebSocketOpenPromise: null,
+    workerWebSocketSession: session,
+    workerWebSocketStartupPort: null,
+    workerHelloAccepted: false,
+    setup,
+    ensureUsableAccessToken: async () => true,
+    createStartupPort: () =>
+      createSyncRuntimeWebSocketStartupStepPort({
+        metadata: { setup, accessTokenSecretKey: 'access-token-key' },
+        tokenReader: { getAccessToken: async () => 'access-token' },
+        webSocket: createBrowserSyncRuntimeWebSocketFactory(LegacyRejectingBrowserWebSocket),
+        capabilities: advertised
+          ? ['binary-v1', 'awareness', 'metadata-schema-v2']
+          : ['binary-v1', 'awareness'],
+        session,
+      }),
+    shouldRetryLegacyMetadataCapability: (error) =>
+      !fallbackAttempted && advertised && isLegacyMetadataCapabilityError(error),
+    onLegacyMetadataCapabilityFallback: () => {
+      fallbackAttempted = true
+      advertised = false
+    },
+  }
+
+  await openWorkerWebSocketRuntime(runtime, async () => {
+    const port = runtime.workerWebSocketStartupPort
+    assert(port)
+    const accepted = port.sendClientHello({
+      kind: 'run-startup-step',
+      vaultId: setup.vaultId,
+      step: 'send-client-hello',
+      phase: 'websocket',
+    })
+    capabilities.push([...(port.snapshot().hello?.capabilities ?? [])])
+    await accepted
+    runtime.workerHelloAccepted = true
+  })
+
+  assert.equal(FakeBrowserWebSocket.instances.length, 2)
+  assert.deepEqual(capabilities, [
+    ['binary-v1', 'awareness', 'metadata-schema-v2'],
+    ['binary-v1', 'awareness'],
+  ])
+  assert.equal(fallbackAttempted, true)
+  assert.equal(runtime.workerHelloAccepted, true)
+})
+
+test('legacy capability retry sends a second hello without the v2 capability', async () => {
+  FakeBrowserWebSocket.instances.length = 0
+  const setup = {
+    endpoint: 'https://worker.example.test',
+    vaultId: makeVaultId('legacy-retry-vault'),
+    deviceId: makeDeviceId('legacy-retry-device'),
+    yClientId: 1,
+    protocolVersion: 1,
+    bootstrapMode: 'new-vault',
+    tokenVersion: 1,
+  } as const
+  const session = createSyncRuntimeWebSocketSession()
+  const open = async (
+    capabilities: readonly ('binary-v1' | 'awareness' | 'metadata-schema-v2')[],
+  ) => {
+    const port = createSyncRuntimeWebSocketStartupStepPort({
+      metadata: { setup, accessTokenSecretKey: 'access-token-key' },
+      tokenReader: { getAccessToken: async () => 'access-token' },
+      webSocket: createBrowserSyncRuntimeWebSocketFactory(FakeBrowserWebSocket),
+      capabilities,
+      session,
+    })
+    await port.openWebSocket({
+      kind: 'run-startup-step',
+      vaultId: setup.vaultId,
+      step: 'open-websocket',
+      phase: 'websocket',
+    })
+    const accepted = port.sendClientHello({
+      kind: 'run-startup-step',
+      vaultId: setup.vaultId,
+      step: 'send-client-hello',
+      phase: 'websocket',
+    })
+    const connection = FakeBrowserWebSocket.instances.at(-1)
+    assert(connection)
+    connection.onmessage?.(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'hello-accepted',
+          protocolVersion: CURRENT_PROTOCOL_VERSION,
+          vaultId: setup.vaultId,
+          deviceId: setup.deviceId,
+          yClientId: setup.yClientId,
+        }),
+      }),
+    )
+    await accepted
+    return port.snapshot().hello?.capabilities
+  }
+
+  await withFakeWebSocket(async () => {
+    const first = await open(['binary-v1', 'awareness', 'metadata-schema-v2'])
+    const second = await open(['binary-v1', 'awareness'])
+    assert.deepEqual(first, ['binary-v1', 'awareness', 'metadata-schema-v2'])
+    assert.deepEqual(second, ['binary-v1', 'awareness'])
+    assert.equal(FakeBrowserWebSocket.instances.length, 2)
+  })
 })
 
 test('worker websocket close recovery waits only for guarded outbox completion handling', async () => {

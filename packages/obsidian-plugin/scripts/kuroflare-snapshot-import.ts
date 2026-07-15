@@ -20,6 +20,7 @@ interface SnapshotImportFileInput {
 interface SnapshotImportManifest {
   readonly meta: {
     readonly updateBytesBase64: string
+    readonly metadataSchemaVersion: 2
   }
   readonly files: readonly SnapshotImportFileInput[]
 }
@@ -78,8 +79,12 @@ function parseManifest(value: unknown): SnapshotImportManifest {
   if (!isRecord(value) || !isRecord(value.meta) || !Array.isArray(value.files)) {
     throw new Error('snapshot import manifest must contain meta and files')
   }
+  if (value.meta.metadataSchemaVersion !== 2) {
+    throw new Error('meta.metadataSchemaVersion must be 2')
+  }
   const meta = {
     updateBytesBase64: requireString(value.meta.updateBytesBase64, 'meta.updateBytesBase64'),
+    metadataSchemaVersion: 2 as const,
   }
   const files = value.files.map((file, index): SnapshotImportFileInput => {
     if (!isRecord(file)) {
@@ -145,6 +150,7 @@ async function importSnapshot(
   setup: SetupExchangeResponse,
   docId: SnapshotImportResult['docId'],
   updateBytesBase64: string,
+  metadataSchemaVersion?: 2,
 ): Promise<SnapshotImportResult> {
   const response = await fetch(snapshotImportUrl(setup, docId), {
     method: 'PUT',
@@ -152,7 +158,10 @@ async function importSnapshot(
       authorization: `Bearer ${setup.accessToken}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ updateBytesBase64 }),
+    body: JSON.stringify({
+      updateBytesBase64,
+      ...(metadataSchemaVersion === 2 ? { metadataSchemaVersion: 2 } : {}),
+    }),
   })
   if (!response.ok) {
     throw new Error(`snapshot import failed: ${response.status}`)
@@ -190,7 +199,12 @@ async function main(): Promise<void> {
   const manifest = parseManifest(JSON.parse(await readFile(options.input, 'utf8')))
   const setup = await exchangeSetupToken(options)
   const imports: SnapshotImportResult[] = [
-    await importSnapshot(setup, { kind: 'meta' }, manifest.meta.updateBytesBase64),
+    await importSnapshot(
+      setup,
+      { kind: 'meta' },
+      manifest.meta.updateBytesBase64,
+      manifest.meta.metadataSchemaVersion,
+    ),
   ]
   for (const file of manifest.files) {
     imports.push(

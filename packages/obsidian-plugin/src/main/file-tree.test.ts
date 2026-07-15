@@ -3,7 +3,7 @@ import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
 import { handleVaultCreate } from './file-tree'
-import { metaMap } from './meta'
+import { metaMap, readMetaEntries } from './meta'
 
 test('concurrent vault create events recheck meta after async startup work', async () => {
   const plugin = {
@@ -31,10 +31,7 @@ test('concurrent vault create events recheck meta after async startup work', asy
 
   await Promise.all([handleVaultCreate(plugin, file), handleVaultCreate(plugin, file)])
 
-  const entries = [...metaMap(plugin).values()].filter(
-    (value) =>
-      typeof value === 'object' && value !== null && Reflect.get(value, 'path') === 'note.md',
-  )
+  const entries = readMetaEntries(metaMap(plugin)).filter((value) => value.path === 'note.md')
   assert.equal(entries.length, 1)
   plugin.metaDoc.destroy()
 })

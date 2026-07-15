@@ -90,11 +90,11 @@ test('setup exchange replan maps reconnect response into new-vault bootstrap sta
   })
   assert.deepEqual(
     plan.startup.effects.slice(1).map((effect) => effect.kind),
-    Array.from({ length: 7 }, () => 'run-sync-startup-effect'),
+    Array.from({ length: 8 }, () => 'run-sync-startup-effect'),
   )
   assert.deepEqual(
     plan.actuation.commands.filter((command) => command.kind === 'run-runtime-effect').length,
-    8,
+    9,
   )
 })
 
@@ -124,9 +124,10 @@ test('setup exchange replan maps reconnect response into join-existing startup',
       'persist-setup-response',
       'fetch-remote-meta-snapshot',
       'apply-remote-meta-snapshot',
+      'open-websocket',
+      'send-client-hello',
       'adopt-local-files-after-remote-meta',
       'enqueue-missing-downloads',
-      'open-websocket',
     ],
   )
 })
@@ -210,6 +211,7 @@ test('setup exchange shell replan acknowledges completed setup effect and replac
     result.state.runnableEffects.map((effect) => effect.kind),
     [
       'run-local-store-open-effect',
+      'run-sync-startup-effect',
       'run-sync-startup-effect',
       'run-sync-startup-effect',
       'run-sync-startup-effect',

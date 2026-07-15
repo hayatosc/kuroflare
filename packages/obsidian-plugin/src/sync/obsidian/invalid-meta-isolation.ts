@@ -1,6 +1,7 @@
-import { isMetaFile } from '@kuroflare/core'
+import { decodeMetaValue } from '@kuroflare/core'
 
 import type { KuroflareInvalidMetaIsolationDetail, KuroflareRepairLogEntry } from '../../main-types'
+import { INVALID_META_DISCARD_CONFIRMATION } from '../../main/constants'
 
 const DEFAULT_INVALID_META_JSON_LIMIT = 4_000
 
@@ -11,6 +12,19 @@ export type InvalidMetaIsolationPlan =
       readonly action: 'isolate'
       readonly detail: KuroflareInvalidMetaIsolationDetail
     }
+
+export function canDiscardInvalidMetaRepairEntry(input: {
+  readonly metadataAccess: 'read-only' | 'read-write'
+  readonly fileId: string
+  readonly current: unknown
+  readonly confirmation: string
+}): boolean {
+  return (
+    input.metadataAccess === 'read-write' &&
+    input.confirmation.trim() === INVALID_META_DISCARD_CONFIRMATION &&
+    decodeMetaValue(input.current, input.fileId).disposition === 'invalid'
+  )
+}
 
 /**
  * Plans the settings-panel isolation detail for an invalid meta repair entry.
@@ -27,7 +41,10 @@ export function planInvalidMetaIsolationDetail(input: {
   if (input.entry.kind !== 'invalid-meta') {
     return { action: 'ignored-kind' }
   }
-  if (input.current === undefined || isMetaFile(input.current, input.entry.fileId)) {
+  if (
+    input.current === undefined ||
+    decodeMetaValue(input.current, input.entry.fileId).disposition !== 'invalid'
+  ) {
     return { action: 'stale' }
   }
 

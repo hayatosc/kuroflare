@@ -1,5 +1,4 @@
 import {
-  isMetaFile,
   makeDeviceId,
   makeFileId,
   makeSha256Hex,
@@ -10,6 +9,7 @@ import {
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
+import { insertMetaFile, readMetaFile, updateMetaFile, updateMetaGroup } from '../../main/meta'
 import { reconcileMetaDoc } from '../meta/reconcile'
 import { applyFileCreate, applyFileDelete, applyFileRename } from '../meta/tree'
 
@@ -34,6 +34,22 @@ test('applyFileCreate registers an active text entry keyed by file ID', () => {
   assert.equal(entry.path, 'Notes/Idea.md')
   assert.equal(entry.canonicalPath, 'notes/idea.md')
   assert.equal(entry.deleted, false)
+})
+
+test('grouped metadata updates reject immutable identity changes without mutation', () => {
+  const { map } = metaDoc()
+  const fileId = makeFileId('immutable-identity')
+  const original = binaryMeta(
+    fileId,
+    'Assets/Immutable.bin',
+    makeSha256Hex('a'.repeat(64)),
+    [makeSha256Hex('b'.repeat(64))],
+    1,
+  )
+  insertMetaFile(map, original)
+
+  assert.equal(updateMetaFile(map, { ...original, createdAt: 2, updatedAt: 2 }), false)
+  assert.deepEqual(getMeta(map, fileId), original)
 })
 
 test('applyFileRename updates the path on the same file ID instead of delete+create', () => {
@@ -92,7 +108,7 @@ test('applyFileRename preserves binary blob references on the same file ID', () 
   const fileId = makeFileId('file-a')
   const manifestHash = makeSha256Hex('a'.repeat(64))
   const chunkHash = makeSha256Hex('b'.repeat(64))
-  map.set(fileId, binaryMeta(fileId, 'Images/Old.png', manifestHash, [chunkHash], 1))
+  insertMetaFile(map, binaryMeta(fileId, 'Images/Old.png', manifestHash, [chunkHash], 1))
 
   const result = applyFileRename(map, {
     fromPath: 'Images/Old.png',
@@ -135,7 +151,7 @@ test('applyFileDelete tombstones binary entries without dropping blob references
   const fileId = makeFileId('file-a')
   const manifestHash = makeSha256Hex('a'.repeat(64))
   const chunkHash = makeSha256Hex('b'.repeat(64))
-  map.set(fileId, binaryMeta(fileId, 'Images/A.png', manifestHash, [chunkHash], 1))
+  insertMetaFile(map, binaryMeta(fileId, 'Images/A.png', manifestHash, [chunkHash], 1))
 
   const result = applyFileDelete(map, { path: 'Images/A.png', deviceId: DEVICE_B, now: 5 })
 
@@ -146,6 +162,92 @@ test('applyFileDelete tombstones binary entries without dropping blob references
   assert.equal(entry.deleted === true && entry.deletedAt, 5)
   assert.equal(entry.type === 'binary' && entry.blobManifestHash, manifestHash)
   assert.deepEqual(entry.type === 'binary' ? entry.blobChunks : [], [chunkHash])
+})
+
+test('concurrent rename and binary content update preserve both grouped changes', () => {
+  const base = metaDoc()
+  const fileId = makeFileId('binary-concurrent')
+  insertMetaFile(
+    base.map,
+    binaryMeta(
+      fileId,
+      'Images/Old.png',
+      makeSha256Hex('a'.repeat(64)),
+      [makeSha256Hex('b'.repeat(64))],
+      1,
+    ),
+  )
+  const rename = metaDoc()
+  const content = metaDoc()
+  Y.applyUpdate(rename.doc, Y.encodeStateAsUpdate(base.doc))
+  Y.applyUpdate(content.doc, Y.encodeStateAsUpdate(base.doc))
+
+  assert.deepEqual(
+    applyFileRename(rename.map, {
+      fromPath: 'Images/Old.png',
+      toPath: 'Images/New.png',
+      deviceId: DEVICE_A,
+      now: 2,
+    }),
+    { action: 'renamed', fileId },
+  )
+  const nextManifestHash = makeSha256Hex('c'.repeat(64))
+  assert.equal(
+    updateMetaGroup(content.map, fileId, 'content', {
+      contentUpdatedAt: 3,
+      contentUpdatedBy: DEVICE_B,
+      blobManifestHash: nextManifestHash,
+      blobChunks: [makeSha256Hex('d'.repeat(64))],
+    }),
+    true,
+  )
+
+  Y.applyUpdate(rename.doc, Y.encodeStateAsUpdate(content.doc))
+  const merged = getMeta(rename.map, fileId)
+  assert.equal(merged.path, 'Images/New.png')
+  assert.equal(merged.type, 'binary')
+  assert.equal(merged.type === 'binary' && merged.blobManifestHash, nextManifestHash)
+  assert.deepEqual(merged.type === 'binary' ? merged.blobChunks : [], [
+    makeSha256Hex('d'.repeat(64)),
+  ])
+  assertGroupedEntry(rename.map, fileId)
+})
+
+test('concurrent rename and stale delete preserve the renamed location and tombstone', () => {
+  const base = metaDoc()
+  const fileId = makeFileId('rename-delete')
+  applyFileCreate(base.map, {
+    fileId,
+    path: 'Old.md',
+    ydocId: makeYDocId('doc-rename-delete'),
+    deviceId: DEVICE_A,
+    now: 1,
+  })
+  const rename = metaDoc()
+  const staleDelete = metaDoc()
+  Y.applyUpdate(rename.doc, Y.encodeStateAsUpdate(base.doc))
+  Y.applyUpdate(staleDelete.doc, Y.encodeStateAsUpdate(base.doc))
+
+  assert.deepEqual(
+    applyFileRename(rename.map, {
+      fromPath: 'Old.md',
+      toPath: 'New.md',
+      deviceId: DEVICE_A,
+      now: 2,
+    }),
+    { action: 'renamed', fileId },
+  )
+  assert.deepEqual(
+    applyFileDelete(staleDelete.map, { path: 'Old.md', deviceId: DEVICE_B, now: 3 }),
+    { action: 'deleted', fileId },
+  )
+
+  Y.applyUpdate(rename.doc, Y.encodeStateAsUpdate(staleDelete.doc))
+  const merged = getMeta(rename.map, fileId)
+  assert.equal(merged.path, 'New.md')
+  assert.equal(merged.deleted, true)
+  assert.equal(merged.deleted === true && merged.deletedAt, 3)
+  assertGroupedEntry(rename.map, fileId)
 })
 
 test('a rename is no longer found at its old path but is found at its new path', () => {
@@ -210,15 +312,30 @@ function metaDoc(): { readonly doc: Y.Doc; readonly map: Y.Map<unknown> } {
 }
 
 function getMeta(map: Y.Map<unknown>, fileId: string): MetaFile {
-  const value = map.get(fileId)
-  assert.ok(isMetaFile(value, fileId), `expected a valid meta entry for ${fileId}`)
+  const value = readMetaFile(map, fileId)
+  assert.ok(value !== undefined, `expected a valid meta entry for ${fileId}`)
+  assertGroupedEntry(map, fileId)
   return value
+}
+
+function assertGroupedEntry(map: Y.Map<unknown>, fileId: string): void {
+  const child = map.get(fileId)
+  assert.ok(child instanceof Y.Map)
+  assert.deepEqual([...child.keys()].sort(compareCodeUnit), [
+    'content',
+    'deletion',
+    'identity',
+    'location',
+  ])
+  for (const group of ['identity', 'location', 'content', 'deletion']) {
+    assert.ok(!(child.get(group) instanceof Y.Map), `${group} must remain a plain group object`)
+  }
 }
 
 function snapshot(map: Y.Map<unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const key of [...map.keys()].sort(compareCodeUnit)) {
-    out[key] = map.get(key)
+    out[key] = getMeta(map, key)
   }
   return out
 }

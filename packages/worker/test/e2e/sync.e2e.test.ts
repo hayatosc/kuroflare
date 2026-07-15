@@ -1,6 +1,7 @@
 import {
   canonicalizeVaultPath,
   CURRENT_PROTOCOL_VERSION,
+  groupedEntryFromMetaFile,
   makeDeviceId,
   makeFileId,
   makeVaultId,
@@ -88,9 +89,52 @@ function metaFile(
 }
 
 function metaPaths(doc: Y.Doc): readonly (readonly [string, string])[] {
-  return [...doc.getMap<MetaFile>('meta').entries()]
-    .map(([fileId, value]) => [fileId, value.path] as const)
+  return [...doc.getMap<Y.Map<unknown>>('meta').entries()]
+    .map(([fileId, value]) => {
+      if (!(value instanceof Y.Map)) throw new Error(`expected grouped metadata for ${fileId}`)
+      const location = value.get('location')
+      if (typeof location !== 'object' || location === null || typeof location.path !== 'string') {
+        throw new Error(`missing grouped location for ${fileId}`)
+      }
+      return [fileId, location.path] as const
+    })
     .sort(([left], [right]) => left.localeCompare(right))
+}
+
+function setMetaFile(map: Y.Map<unknown>, value: MetaFile): void {
+  const grouped = groupedEntryFromMetaFile(value)
+  const child = new Y.Map<unknown>()
+  child.set('identity', grouped.identity)
+  child.set('location', grouped.location)
+  child.set('content', grouped.content)
+  child.set('deletion', grouped.deletion)
+  map.set(value.fileId, child)
+}
+
+function updateMetaPath(
+  map: Y.Map<unknown>,
+  fileId: FileId,
+  path: string,
+  deviceId: string,
+  now: number,
+): void {
+  const child = map.get(fileId)
+  if (!(child instanceof Y.Map)) throw new Error(`expected grouped metadata for ${fileId}`)
+  const location = child.get('location')
+  if (!isJsonRecord(location)) {
+    throw new Error(`missing grouped location for ${fileId}`)
+  }
+  child.set('location', {
+    ...location,
+    path,
+    canonicalPath: canonicalizeVaultPath(path),
+    updatedAt: now,
+    updatedBy: makeDeviceId(deviceId),
+  })
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function roomStub() {
@@ -204,7 +248,7 @@ class TestClient {
         vaultId: VAULT_ID,
         deviceId: device.deviceId,
         yClientId: device.yClientId,
-        capabilities: [],
+        capabilities: ['metadata-schema-v2'],
       }),
     )
     await client.waitFor((message) => message.type === 'hello-accepted')
@@ -360,8 +404,8 @@ test('meta YDoc updates broadcast across clients and late joiners reconstruct th
   const aliceMap = aliceDoc.getMap<unknown>('meta')
   const fileA = makeFileId('meta-file-a')
   const fileB = makeFileId('meta-file-b')
-  aliceMap.set(fileA, metaFile(fileA, 'a.md', makeYDocId('meta-doc-a'), DEVICE_A.deviceId, 1))
-  aliceMap.set(fileB, metaFile(fileB, 'b.md', makeYDocId('meta-doc-b'), DEVICE_A.deviceId, 2))
+  setMetaFile(aliceMap, metaFile(fileA, 'a.md', makeYDocId('meta-doc-a'), DEVICE_A.deviceId, 1))
+  setMetaFile(aliceMap, metaFile(fileB, 'b.md', makeYDocId('meta-doc-b'), DEVICE_A.deviceId, 2))
   alice.sendUpdate('meta-base', META_DOC_ID, Y.encodeStateAsUpdate(aliceDoc))
   await alice.waitFor((message) => message.type === 'ack' && message.messageId === 'meta-base')
   const baseBroadcast = await bob.waitFor(
@@ -377,10 +421,8 @@ test('meta YDoc updates broadcast across clients and late joiners reconstruct th
   const aliceBaseVector = Y.encodeStateVector(aliceDoc)
   const bobBaseVector = Y.encodeStateVector(bobDoc)
 
-  aliceMap.set(fileA, metaFile(fileA, 'Shared.md', makeYDocId('meta-doc-a'), DEVICE_A.deviceId, 10))
-  bobDoc
-    .getMap<unknown>('meta')
-    .set(fileB, metaFile(fileB, 'Shared.md', makeYDocId('meta-doc-b'), DEVICE_B.deviceId, 10))
+  updateMetaPath(aliceMap, fileA, 'Shared.md', DEVICE_A.deviceId, 10)
+  updateMetaPath(bobDoc.getMap<unknown>('meta'), fileB, 'Shared.md', DEVICE_B.deviceId, 10)
 
   alice.sendUpdate(
     'meta-alice-rename',

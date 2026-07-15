@@ -79,6 +79,7 @@ export type OutboxRetryDecision =
         | 'manual-intervention-required'
         | 'dependency-or-local-state'
         | 'auth-required'
+        | 'metadata-schema-v2-migration-required'
       readonly resumeOn: OutboxResumeCondition
     }
   | {
@@ -128,6 +129,7 @@ export type OutboxFailureTransition =
         | 'manual-intervention-required'
         | 'dependency-or-local-state'
         | 'auth-required'
+        | 'metadata-schema-v2-migration-required'
       readonly resumeOn: OutboxResumeCondition
     }
   | {

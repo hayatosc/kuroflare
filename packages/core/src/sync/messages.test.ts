@@ -1,12 +1,15 @@
 import * as v from 'valibot'
 import { assert, test } from 'vitest'
+import * as Y from 'yjs'
 
 import {
   blobManifestMatchesMetaFile,
+  decodeMetaValue,
   decodeBinaryFrame,
   DEVICE_TOKEN_ISSUER,
   encodeBlobManifestJson,
   encodeBinaryFrame,
+  groupedEntryFromMetaFile,
   LOCAL_OUTBOX_REPAIR_EXPORT_FORMAT,
   LOCAL_OUTBOX_REPAIR_EXPORT_VERSION,
   isMetaFile,
@@ -90,11 +93,23 @@ test('validates hello accepted', () => {
     vaultId: makeVaultId('vault-1'),
     deviceId: makeDeviceId('device-1'),
     yClientId: 42,
+    metadataAccess: 'read-write',
   }
 
   assert.equal(v.is(HelloAcceptedSchema, accepted), true)
   assert.equal(v.is(ControlMessageSchema, accepted), true)
   assert.equal(v.is(HelloAcceptedSchema, { ...accepted, yClientId: 0 }), false)
+  assert.equal(v.is(HelloAcceptedSchema, { ...accepted, metadataAccess: 'read-only' }), true)
+  assert.equal(
+    v.is(HelloAcceptedSchema, {
+      type: accepted.type,
+      protocolVersion: accepted.protocolVersion,
+      vaultId: accepted.vaultId,
+      deviceId: accepted.deviceId,
+      yClientId: accepted.yClientId,
+    }),
+    true,
+  )
 })
 
 test('validates need full snapshot reasons', () => {
@@ -568,6 +583,8 @@ test('validates snapshot import request and response bodies', () => {
   }
 
   assert.equal(v.is(SnapshotImportRequestSchema, request), true)
+  assert.equal(v.is(SnapshotImportRequestSchema, { ...request, metadataSchemaVersion: 2 }), true)
+  assert.equal(v.is(SnapshotImportRequestSchema, { ...request, metadataSchemaVersion: 1 }), false)
   assert.equal(v.is(SnapshotImportRequestSchema, { ...request, latestSeq: 0 }), false)
   assert.equal(
     v.is(SnapshotImportRequestSchema, { ...request, updateBytesBase64: 'not base64!' }),
@@ -1084,6 +1101,51 @@ test('validates binary meta files', () => {
   assert.equal(isMetaFile({ ...entry, ydocId: makeYDocId('doc-1') }, fileId), false)
   assert.equal(isMetaFile({ ...entry, blobChunks: [] }, fileId), false)
   assert.equal(isMetaFile({ ...entry, path: '.obsidian/plugins/foo' }, fileId), false)
+})
+
+test('decodes grouped metadata, preserves normalized fields, and classifies unsupported values', () => {
+  const fileId = makeFileId('grouped-file')
+  const deviceId = makeDeviceId('grouped-device')
+  const entry = {
+    schemaVersion: 1 as const,
+    fileId,
+    path: 'Assets/Grouped.bin',
+    canonicalPath: 'assets/grouped.bin',
+    type: 'binary' as const,
+    blobManifestHash: makeSha256Hex('a'.repeat(64)),
+    blobChunks: [makeSha256Hex('b'.repeat(64))],
+    deleted: true as const,
+    deletedAt: 8,
+    deletedBy: deviceId,
+    createdAt: 2,
+    createdBy: deviceId,
+    contentUpdatedAt: 7,
+    contentUpdatedBy: deviceId,
+    updatedAt: 6,
+    updatedBy: deviceId,
+    mtime: 99,
+  }
+  const grouped = groupedEntryFromMetaFile(entry)
+  const doc = new Y.Doc()
+  const child = new Y.Map<unknown>()
+  child.set('identity', grouped.identity)
+  child.set('location', grouped.location)
+  child.set('content', grouped.content)
+  child.set('deletion', grouped.deletion)
+  doc.getMap('meta').set(fileId, child)
+
+  const decoded = decodeMetaValue(doc.getMap('meta').get(fileId), fileId)
+  assert.equal(decoded.disposition, 'supported-v2')
+  assert.deepEqual(decoded.metaFile, entry)
+  assert.equal(isMetaFile(doc.getMap('meta').get(fileId), fileId), false)
+  assert.equal(decodeMetaValue(entry, fileId).disposition, 'legacy-v1')
+  assert.equal(decodeMetaValue(new Map(Object.entries(grouped)), fileId).disposition, 'invalid')
+  assert.equal(decodeMetaValue({ schemaVersion: 3 }, fileId).disposition, 'unsupported')
+  assert.equal(decodeMetaValue(new Y.Map<unknown>(), fileId).disposition, 'invalid')
+
+  child.set('location', { ...grouped.location, canonicalPath: 'wrong' })
+  assert.equal(decodeMetaValue(child, fileId).disposition, 'invalid')
+  doc.destroy()
 })
 
 test('validates blob manifests', () => {

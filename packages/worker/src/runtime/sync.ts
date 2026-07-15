@@ -59,9 +59,12 @@ import {
   makeQuarantineId,
   snapshotCandidateFromKey,
   stateVectorCoversHorizon,
-  canApplyYjsUpdate,
+  canApplyYjsUpdateToDoc,
   isEmptyYjsUpdate,
-  metaYDocSchemaValid,
+  metaYDocSchemaDisposition,
+  metaYDocWritable,
+  metaIdentityImmutable,
+  metaRootMutationAllowed,
   decodeBase64,
   encodeBase64,
   sha256Hex,
@@ -163,6 +166,19 @@ export async function handleSyncUpdate(
   }
   if (!messageMatchesSession(session, update)) {
     webSocket.close(1008, 'session-mismatch')
+    return { action: 'stop' }
+  }
+  if (update.docId.kind === 'meta' && session.metadataAccess !== 'read-write') {
+    if (session.metadataCapabilityAdvertised) {
+      const candidate = decodeBase64(update.update)
+      if (candidate !== null) {
+        const updateSha256 = makeSha256Hex(await sha256Hex(candidate))
+        webSocket.send(
+          JSON.stringify(makeSyncUpdateRejected(update, updateSha256, 'metadata-read-only')),
+        )
+      }
+    }
+    webSocket.close(1008, 'metadata-read-only')
     return { action: 'stop' }
   }
   if (room.state.storage.sql === undefined) {
@@ -271,7 +287,9 @@ async function handleSyncUpdateSerialized(
     return { action: 'stop' }
   }
 
-  const yjsApplySucceeded = canApplyYjsUpdate(updateBytes)
+  const currentDoc = room.docs.get(docKey(update.docId))
+  const yjsApplySucceeded =
+    currentDoc !== undefined && canApplyYjsUpdateToDoc(currentDoc, updateBytes)
   const metaSchemaValid =
     update.docId.kind === 'meta' && yjsApplySucceeded
       ? metaSchemaValidAfterUpdate(room, updateBytes)
@@ -501,17 +519,27 @@ export async function rehydrateAfterDocPointer(room: VaultRoom, docId: DocId): P
 function metaSchemaValidAfterUpdate(room: VaultRoom, updateBytes: Uint8Array): boolean {
   const doc = room.docs.get(docKey({ kind: 'meta' }))
   if (doc === undefined) return false
+  const currentDisposition = metaYDocSchemaDisposition(doc)
+  if (currentDisposition !== 'supported-v2' && currentDisposition !== 'legacy-v1') {
+    return false
+  }
 
   const candidate = new Y.Doc()
   try {
     Y.applyUpdate(candidate, Y.encodeStateAsUpdate(doc))
     Y.applyUpdate(candidate, updateBytes)
-    return metaYDocSchemaValid(candidate)
+    return metaYDocWritableCandidate(room, candidate) && metaRootMutationAllowed(doc, updateBytes)
   } catch {
     return false
   } finally {
     candidate.destroy()
   }
+}
+
+function metaYDocWritableCandidate(room: VaultRoom, candidate: Y.Doc): boolean {
+  const current = room.docs.get(docKey({ kind: 'meta' }))
+  if (current === undefined) return metaYDocWritable(candidate)
+  return metaIdentityImmutable(current, candidate)
 }
 
 export async function ensureDocHydrated(room: VaultRoom, docId: DocId): Promise<void> {

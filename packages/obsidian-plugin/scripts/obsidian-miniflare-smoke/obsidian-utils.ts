@@ -542,11 +542,11 @@ async function retryBinaryRestoreCheck(fileId: string): Promise<RepairRetryResul
     const plugin = app.plugins.plugins.kuroflare;
     const map = plugin?.metaDoc?.getMap('meta');
     if (!plugin || !map) return JSON.stringify({ repairLogContainsEntry: false });
-    const current = map.get(${JSON.stringify(fileId)});
+    const current = plugin.readMetaEntry(${JSON.stringify(fileId)});
     if (!current) return JSON.stringify({ repairLogContainsEntry: false });
     const deletedAt = typeof current.deletedAt === 'number' ? current.deletedAt : Date.now();
     map.doc.transact(() => {
-      map.set(${JSON.stringify(fileId)}, {
+      plugin.writeMetaEntry({
         ...current,
         deleted: true,
         deletedAt,
@@ -568,7 +568,7 @@ async function retryBinaryRestoreCheck(fileId: string): Promise<RepairRetryResul
       repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), repairEntry],
     });
     await plugin.retryKeepDeletedRepairEntry(repairEntry);
-    const after = map.get(${JSON.stringify(fileId)});
+    const after = plugin.readMetaEntry(${JSON.stringify(fileId)});
     return JSON.stringify({
       deleted: after?.deleted,
       path: after?.path,
@@ -601,7 +601,7 @@ async function retryDegradedBinaryRestoreCheck(
       createdAt: now,
     };
     map.doc.transact(() => {
-      map.set(${JSON.stringify(fileId)}, {
+      plugin.writeMetaEntry({
         schemaVersion: 1,
         fileId: ${JSON.stringify(fileId)},
         path: 'degraded-binary-restore-' + ${JSON.stringify(runId)} + '.bin',
@@ -700,7 +700,7 @@ async function retryPathConflictMaterialize(input: {
         repairLogContainsEntry: false,
       });
     }
-    const current = map.get(${JSON.stringify(input.fileId)});
+    const current = plugin.readMetaEntry(${JSON.stringify(input.fileId)});
     if (!current) {
       return JSON.stringify({
         sourceExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.sourcePath)})),
@@ -710,7 +710,7 @@ async function retryPathConflictMaterialize(input: {
     }
     const now = Date.now();
     map.doc.transact(() => {
-      map.set(${JSON.stringify(input.fileId)}, {
+      plugin.writeMetaEntry({
         ...current,
         path: ${JSON.stringify(input.targetPath)},
         canonicalPath: ${JSON.stringify(canonicalizeVaultPath(input.targetPath))},
@@ -730,7 +730,7 @@ async function retryPathConflictMaterialize(input: {
       repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), repairEntry],
     });
     await plugin.retryPathConflictRepairEntry(repairEntry);
-    const after = map.get(${JSON.stringify(input.fileId)});
+    const after = plugin.readMetaEntry(${JSON.stringify(input.fileId)});
     return JSON.stringify({
       sourceExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.sourcePath)})),
       targetExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.targetPath)})),
@@ -762,7 +762,7 @@ async function resolveRenameMaterializeFailure(input: {
         repairLogContainsEntry: false,
       });
     }
-    const current = map.get(${JSON.stringify(input.fileId)});
+    const current = plugin.readMetaEntry(${JSON.stringify(input.fileId)});
     if (!current) {
       return JSON.stringify({
         sourceExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.sourcePath)})),
@@ -776,7 +776,7 @@ async function resolveRenameMaterializeFailure(input: {
     }
     const now = Date.now();
     map.doc.transact(() => {
-      map.set(${JSON.stringify(input.fileId)}, {
+      plugin.writeMetaEntry({
         ...current,
         path: ${JSON.stringify(input.targetPath)},
         canonicalPath: ${JSON.stringify(canonicalizeVaultPath(input.targetPath))},
@@ -796,7 +796,7 @@ async function resolveRenameMaterializeFailure(input: {
       repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), repairEntry],
     });
     await plugin.resolvePathConflictRepairEntry(repairEntry);
-    const after = map.get(${JSON.stringify(input.fileId)});
+    const after = plugin.readMetaEntry(${JSON.stringify(input.fileId)});
     const resolvedPath = after?.path;
     return JSON.stringify({
       sourceExists: Boolean(app.vault.getAbstractFileByPath(${JSON.stringify(input.sourcePath)})),
@@ -838,7 +838,7 @@ async function runRemoteMaterializeBlockedActions(): Promise<RemoteMaterializeBl
       createdAt: now,
     };
     map.doc.transact(() => {
-      map.set(retryFileId, {
+      plugin.writeMetaEntry({
         schemaVersion: 1,
         fileId: retryFileId,
         path: ${JSON.stringify(remoteMaterializeBlockedPath)},
@@ -889,7 +889,7 @@ async function runRemoteMaterializeBlockedActions(): Promise<RemoteMaterializeBl
       createdAt: Date.now(),
     };
     map.doc.transact(() => {
-      map.set(autoFileId, {
+      plugin.writeMetaEntry({
         schemaVersion: 1,
         fileId: autoFileId,
         path: autoPath,
@@ -910,7 +910,7 @@ async function runRemoteMaterializeBlockedActions(): Promise<RemoteMaterializeBl
       repairLog: [...(plugin.kuroflareSettings.repairLog ?? []), autoEntry],
     });
     await plugin.resolveRemoteMaterializeBlockedRepairEntry(autoEntry);
-    const autoResolved = map.get(autoFileId);
+    const autoResolved = plugin.readMetaEntry(autoFileId);
 
     return JSON.stringify({
       retryRepairLogContainsEntry: Boolean(

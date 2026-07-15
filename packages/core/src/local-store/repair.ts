@@ -66,6 +66,7 @@ export const LocalOutboxRepairExportEntrySchema = v.object({
   messageId: v.optional(MessageIdSchema),
   updateSha256: v.optional(Sha256HexSchema),
   updateBytesBase64: v.optional(BoundedBase64Schema),
+  metadataSchemaVersion: v.optional(v.literal(2)),
   blobSha256: v.optional(Sha256HexSchema),
   localCacheKey: v.optional(
     v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_LOCAL_CACHE_KEY_LENGTH)),

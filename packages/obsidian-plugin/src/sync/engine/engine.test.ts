@@ -53,6 +53,7 @@ test('sync engine converts new-vault startup into ordered plugin effects', () =>
       'run-startup-step',
       'run-startup-step',
       'run-startup-step',
+      'run-startup-step',
     ],
   )
   assert.deepEqual(plan.effects, [
@@ -67,6 +68,18 @@ test('sync engine converts new-vault startup into ordered plugin effects', () =>
       vaultId,
       step: 'scan-local-vault',
       phase: 'local-scan',
+    },
+    {
+      kind: 'run-startup-step',
+      vaultId,
+      step: 'open-websocket',
+      phase: 'websocket',
+    },
+    {
+      kind: 'run-startup-step',
+      vaultId,
+      step: 'send-client-hello',
+      phase: 'websocket',
     },
     {
       kind: 'run-startup-step',
@@ -91,12 +104,6 @@ test('sync engine converts new-vault startup into ordered plugin effects', () =>
       vaultId,
       step: 'send-meta-update',
       phase: 'outbox',
-    },
-    {
-      kind: 'run-startup-step',
-      vaultId,
-      step: 'open-websocket',
-      phase: 'websocket',
     },
   ])
 })

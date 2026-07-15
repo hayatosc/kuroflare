@@ -415,6 +415,7 @@ function buildLocalStoreRepairExportEntry(
     dependsOn: [...record.dependsOn],
     createdAt: record.createdAt,
     retryCount,
+    ...(record.metadataSchemaVersion === 2 ? { metadataSchemaVersion: 2 as const } : {}),
   }
   if (record.docId !== undefined) {
     entry = { ...entry, docId: record.docId }
@@ -470,5 +471,6 @@ function convertImportedYUpdateToOutboxRecord(
     messageId: item.messageId,
     updateSha256: item.updateSha256,
     updateBytesBase64: item.updateBytesBase64,
+    ...(item.metadataSchemaVersion === 2 ? { metadataSchemaVersion: 2 as const } : {}),
   }
 }
