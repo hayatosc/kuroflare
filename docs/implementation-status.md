@@ -5,15 +5,26 @@
 設計レビュー（2026-07-03）で見つかった項目は spec 本文へ反映済みで、記録は git 履歴にある。
 The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-review.md](spec/design-review.md).
 
-## Current summary (2026-07-14)
+## Current summary (2026-07-15)
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 193 件、worker 246 件、model-tests 17 件、Obsidian 421 件、worker e2e 7 件。
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 196 件、worker 257 件、model-tests 17 件、Obsidian 467 件、worker e2e 7 件。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
 - Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are committed at `122d2a0`. The rejection-evidence work described below builds on that baseline. The remaining P0/P1/P2 items and design-review release gates are still authoritative.
 - DR-008 (snapshot health and rollback) is closed. Immutable R2 bytes are now admitted only by append-only SQLite evidence, and the authenticated health API and Obsidian operator panel expose server-computed action authority.
 - DR-001 (durability contract) is closed. Recovery authority is the latest authoritative, verified, healthy R2 snapshot plus later SQLite op-log rows; normal runtime eviction is recoverable, while complete SQLite loss is a disaster/manual-recovery case. The Worker disaster test and snapshot-health operator note prove that R2 bytes without pointer/health evidence fail closed. The nominal 128-operation / 30-second checkpoint triggers remain best-effort signals, not an RPO bound.
 - DR-005 (metadata merge granularity) and DR-006 (delete-versus-edit causality) are closed. Schema version 2 stores each file ID in grouped child maps (`identity`, `location`, `content`, `deletion`), preserves concurrent rename/content and rename/delete changes, and rejects immutable-identity changes. Deleted v2 entries carry a typed `deletedContentVersion` witness (text YDoc state vector + canonical content hash, or binary manifest hash). Reconciliation is clock-skew invariant, restores unseen edits, keeps deletes whose base content is unchanged, and defers missing/incomplete evidence without materializing deletion. Legacy migration is an authoritative snapshot-import CAS after Hello admission; stale retries rebuild from the latest v1 snapshot, while an already-v2 remote is adopted only when all local entries are represented unchanged. Otherwise local metadata is retained and downgraded to read-only; legacy outbox rows are paused with an actionable migration reason. Legacy deleted tombstones remain read-only/manual recovery. DR-012 (general capability negotiation) remains open.
+- DR-007 slice 2 is implemented in the Obsidian provider/startup path. Non-creating
+  `indexedDB.databases()` probes establish per-document epoch evidence in the existing
+  local-store `metadata` store. Provider loss enters a global gated recovery that merges
+  authoritative remote snapshots, local YDoc bases, and retained outbox updates, retries
+  bounded snapshot CAS conflicts, and atomically commits candidate YDoc/cursor state,
+  exact outbox completions, and a ready epoch after a fresh provider persistence barrier.
+  Malformed, dependency-missing, wrong-document, or unavailable-directory evidence fails
+  closed without dropping rows. DR-007 closure remains gated on the full crash-boundary
+  and Worker E2E acceptance run. The checked-in tests use fake-indexeddb for actual
+  y-indexeddb provider and local-store transactions; real Obsidian process-restart
+  coverage remains outstanding. DR-009 and DR-012 are not claimed.
 
 ### MVP チェックリスト（[operations.md](spec/operations.md) §8 対応）
 

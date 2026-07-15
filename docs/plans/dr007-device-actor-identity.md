@@ -31,13 +31,15 @@
    - Keep document update bytes authoritative for CRDT causality; do not infer actor
      authorship from the authenticated device.
 
-3. Add document-epoch evidence to local-store schema version 4.
+3. Add document-epoch evidence to the existing local-store `metadata` object store.
    - Store one epoch record per meta/file document independently from YDoc snapshot
      records, because local snapshots are not rewritten for every local edit.
    - Record the provider database name, fresh epoch identifier, recovery status, and
      the state-vector/base evidence used to complete recovery.
-   - Migrate existing readable local stores without fabricating persistence-presence
-     evidence. The first verified provider probe establishes the initial epoch.
+   - A schema bump is unnecessary: `metadata` already participates in the required
+     atomic local-store transaction. Existing readable stores gain no fabricated
+     provider-presence evidence; the first verified provider probe establishes the
+     initial epoch.
 
 4. Probe y-indexeddb databases before opening them.
    - Reuse the non-creating `indexedDB.databases()` directory-probe pattern.
@@ -90,3 +92,19 @@
 - Rolling compatibility with the superseded `yClientId` wire contract.
 - General capability negotiation (DR-012).
 - Generalized quarantine/error evidence (DR-009).
+
+## Slice 2 completion evidence
+
+Slice 2 implementation is present; final closure remains gated on the full crash-boundary
+and Worker E2E acceptance run. Provider directory probes are non-creating and fail
+closed when unavailable or malformed. Epoch rows live in the existing `metadata` store;
+recovery writes a `recovering` row before remote mutation and commits the candidate YDoc,
+remote cursor, exact outbox completions, and `ready` row atomically. Recovery holds the
+startup side-effect gate while it fetches the latest authoritative snapshot, retries a
+bounded manifest-sequence CAS conflict, validates metadata, and applies retained local
+base plus pending/paused/in-flight updates. A 404 latest snapshot is accepted only for a
+new remote document. Malformed or dependency-missing rows remain preserved and block the
+document with repair evidence. This slice does not claim DR-009 or DR-012.
+The deterministic crash tests use fake-indexeddb for actual y-indexeddb provider and
+local-store transactions; real Obsidian process-restart coverage remains part of the
+final closure gate.

@@ -243,3 +243,23 @@ checkpoint モデルの不変条件:
 - **MVP-3: initial sync + binary**。bootstrap と join を分離。binary は blob PUT 完了後に参照公開。初回 seed は snapshot 直 PUT。
 
 MVP を越えるまでやらないこと: full conflict UI の作り込み、tombstone / blob GC の実行、mobile 最適化、複数 vault / multi-tenant UX、marketplace 配布向け polish。
+
+## 9. DR-007 provider-loss runbook
+
+At startup, inspect the IndexedDB directory before opening any y-indexeddb provider. A
+missing or malformed directory API is a degraded, fail-closed condition; do not delete
+the local store or create a replacement provider to make the warning disappear.
+
+For an affected document, the plugin writes a `recovering` epoch row before making a
+remote request and stops editor, watcher, metadata, WebSocket, and outbox side effects.
+Inspect the latest authenticated snapshot, local-store YDoc base, and retained outbox
+rows. A 404 latest response is safe only when the remote document is genuinely new.
+Malformed bytes, wrong-document rows, or missing dependencies require repair; do not
+discard any row.
+
+Recovery imports a merged candidate with the latest manifest sequence and retries a
+bounded 409 conflict by refetching and rebuilding. Only after import validation does it
+create the fresh provider and await the persistence barrier. The final local transaction
+stores YDoc/cursor state, exact outbox completions, and the `ready` epoch together. If a
+crash occurs at any boundary, leave the epoch `recovering` and rerun the same guarded
+procedure; never resume queues while recovery evidence is incomplete.

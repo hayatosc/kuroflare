@@ -12,7 +12,19 @@ import * as Y from 'yjs'
 import type { FileDocId, LoadedTextDoc } from '../main-types'
 import { createYTextEditorExtension, dispatchFullDocumentReplace } from '../obsidian/editor-binding'
 import { DISK_ORIGIN, REMOTE_ORIGIN, WORKER_ORIGIN, SPIKE_TEXT_NAME } from './constants'
-import { waitForIndexedDbDeleteDatabase } from './helpers'
+import {
+  classifyDocumentEpoch,
+  createReadyDocumentEpoch,
+  documentEpochMetadataKey,
+  isDocumentEpochRecord,
+  probeIndexedDbProvider,
+  type DocumentEpochRecord,
+} from './epoch-recovery'
+import {
+  waitForIndexedDbDeleteDatabase,
+  waitForIndexedDbRequest,
+  waitForIndexedDbTransaction,
+} from './helpers'
 import type KuroflareSpikePlugin from './plugin'
 import { sendDocUpdateToWorker } from './sync-websocket'
 
@@ -231,11 +243,117 @@ export async function loadTextDoc(
     }
     void sendDocUpdateToWorker(plugin, docId, update, 'local-update')
   })
-  const persistence = new IndexeddbPersistence(`kuroflare-file:${docId.ydocId}`, doc)
+  const providerDbName = `kuroflare-file:${docId.ydocId}`
+  const epoch = await prepareDocumentProvider(plugin, docId, providerDbName)
+  const persistence = new IndexeddbPersistence(providerDbName, doc)
   loaded.persistence = persistence
   plugin.loadedTextDocs.set(docId.ydocId, loaded)
   await persistence.whenSynced
+  if (epoch === undefined) {
+    await establishInitialDocumentEpoch(plugin, docId, providerDbName)
+  }
   return loaded
+}
+
+/** Inspects provider/local evidence before y-indexeddb is allowed to open. */
+export async function prepareDocumentProvider(
+  plugin: KuroflareSpikePlugin,
+  docId: FileDocId | { readonly kind: 'meta' },
+  providerDbName: string,
+): Promise<DocumentEpochRecord | undefined> {
+  const provider = await probeIndexedDbProvider(indexedDB, providerDbName)
+  const localStore = plugin.localStoreDb
+  const evidence =
+    localStore === null
+      ? { epoch: undefined, malformedEpoch: false, hasLocalYDoc: false, hasPendingOutbox: false }
+      : await readDocumentEpochEvidence(localStore, docId)
+  if (evidence.malformedEpoch) {
+    plugin.documentRecoveryRequired.add(documentEpochMetadataKey(docId))
+    plugin.startupSideEffectGate.setPermission('blocked')
+    throw new Error(`document-epoch-evidence-malformed:${documentEpochMetadataKey(docId)}`)
+  }
+  const classification = classifyDocumentEpoch({
+    provider,
+    epoch: evidence.epoch,
+    hasLocalYDoc: evidence.hasLocalYDoc,
+    hasPendingOutbox: evidence.hasPendingOutbox,
+  })
+  if (classification.action === 'blocked' || classification.action === 'recover') {
+    const epochKey = documentEpochMetadataKey(docId)
+    if (
+      plugin.documentRecoveryHydrating.has(epochKey) ||
+      plugin.documentReplacementInProgress.has(epochKey)
+    ) {
+      return evidence.epoch
+    }
+    plugin.documentRecoveryRequired.add(documentEpochMetadataKey(docId))
+    plugin.startupSideEffectGate.setPermission('blocked')
+    throw new Error(`document-provider-recovery-required:${documentEpochMetadataKey(docId)}`)
+  }
+  return evidence.epoch
+}
+
+/** Persists the first ready epoch only after provider synchronization has completed. */
+export async function establishInitialDocumentEpoch(
+  plugin: KuroflareSpikePlugin,
+  docId: FileDocId | { readonly kind: 'meta' },
+  providerDbName: string,
+): Promise<void> {
+  const db = plugin.localStoreDb
+  if (db === null) return
+  const epoch = createReadyDocumentEpoch({ docId, providerDbName, now: Date.now() })
+  const transaction = db.transaction(['metadata'], 'readwrite')
+  await waitForIndexedDbRequest(
+    transaction.objectStore('metadata').put(epoch, documentEpochMetadataKey(docId)),
+  )
+  await waitForIndexedDbTransaction(transaction)
+}
+
+async function readDocumentEpochEvidence(
+  db: IDBDatabase,
+  docId: FileDocId | { readonly kind: 'meta' },
+): Promise<{
+  readonly epoch: DocumentEpochRecord | undefined
+  readonly malformedEpoch: boolean
+  readonly hasLocalYDoc: boolean
+  readonly hasPendingOutbox: boolean
+}> {
+  const transaction = db.transaction(
+    ['metadata', docId.kind === 'meta' ? 'meta-ydoc' : 'file-ydocs', 'outbox'],
+    'readonly',
+  )
+  const epochRequest = transaction.objectStore('metadata').get(documentEpochMetadataKey(docId))
+  const ydocRequest = transaction
+    .objectStore(docId.kind === 'meta' ? 'meta-ydoc' : 'file-ydocs')
+    .get(docId.kind === 'meta' ? 'meta' : docId.ydocId)
+  const outboxRequest = transaction.objectStore('outbox').getAll()
+  const [epochValue, ydocValue, outboxValues] = await Promise.all([
+    waitForIndexedDbRequest(epochRequest),
+    waitForIndexedDbRequest(ydocRequest),
+    waitForIndexedDbRequest(outboxRequest),
+  ])
+  await waitForIndexedDbTransaction(transaction)
+  const epoch = isDocumentEpochRecord(epochValue) ? epochValue : undefined
+  const hasPendingOutbox =
+    Array.isArray(outboxValues) &&
+    outboxValues.some((value) => {
+      if (typeof value !== 'object' || value === null) return false
+      const candidate = Reflect.get(value, 'docId')
+      const status = Reflect.get(value, 'status')
+      return (
+        typeof candidate === 'object' &&
+        candidate !== null &&
+        Reflect.get(candidate, 'kind') === docId.kind &&
+        (docId.kind === 'meta' || Reflect.get(candidate, 'ydocId') === docId.ydocId) &&
+        (status === 'pending' || status === 'retrying' || status === 'paused')
+      )
+    })
+  return {
+    epoch,
+    malformedEpoch: epochValue !== undefined && !isDocumentEpochRecord(epochValue),
+    hasLocalYDoc: ydocValue !== undefined,
+    hasPendingOutbox,
+  }
 }
 
 export async function replaceTextDoc(
@@ -245,18 +363,26 @@ export async function replaceTextDoc(
   origin: unknown,
 ): Promise<LoadedTextDoc> {
   const existing = plugin.loadedTextDocs.get(docId.ydocId)
-  if (existing !== undefined) {
-    await existing.persistence?.clearData()
-    await waitForIndexedDbDeleteDatabase(indexedDB.deleteDatabase(`kuroflare-file:${docId.ydocId}`))
-    existing.doc.destroy()
-    plugin.loadedTextDocs.delete(docId.ydocId)
-    if (plugin.activeTextDoc === existing) {
-      plugin.activeTextDoc = null
+  const epochKey = documentEpochMetadataKey(docId)
+  plugin.documentReplacementInProgress.add(epochKey)
+  try {
+    if (existing !== undefined) {
+      await existing.persistence?.clearData()
+      await waitForIndexedDbDeleteDatabase(
+        indexedDB.deleteDatabase(`kuroflare-file:${docId.ydocId}`),
+      )
+      existing.doc.destroy()
+      plugin.loadedTextDocs.delete(docId.ydocId)
+      if (plugin.activeTextDoc === existing) {
+        plugin.activeTextDoc = null
+      }
     }
+    const loaded = await loadTextDoc(plugin, docId)
+    Y.applyUpdate(loaded.doc, updateBytes, origin)
+    return loaded
+  } finally {
+    plugin.documentReplacementInProgress.delete(epochKey)
   }
-  const loaded = await loadTextDoc(plugin, docId)
-  Y.applyUpdate(loaded.doc, updateBytes, origin)
-  return loaded
 }
 
 export function setActiveTextDoc(plugin: ActiveTextDocPlugin, loaded: LoadedTextDoc): void {

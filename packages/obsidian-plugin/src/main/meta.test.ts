@@ -9,11 +9,12 @@ import {
   makeYDocId,
   type MetaFile,
 } from '@kuroflare/core'
-import { assert, test } from 'vitest'
+import { assert, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import type { LoadedTextDoc } from '../main-types'
 import { flushYTextToDisk } from './editor'
+import { createReadyDocumentEpoch, documentEpochMetadataKey } from './epoch-recovery'
 import {
   activateLoadedTextDoc,
   hasLegacyDeletedTombstones,
@@ -21,9 +22,48 @@ import {
   insertMetaFile,
   metaDocWritable,
   metaDocEntriesRepresented,
+  prepareDocumentProvider,
   shouldAdoptRemoteMetadata,
   shouldPrepareMetadataMigration,
 } from './meta'
+import type KuroflareSpikePlugin from './plugin'
+
+function castForTest<T>(value: unknown): T {
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  return value as T
+}
+
+function createEvidenceReadDatabase(epoch: unknown): IDBDatabase {
+  const metadata = new Map([[documentEpochMetadataKey({ kind: 'meta' }), epoch]])
+  const requestFor = (result: unknown): IDBRequest<unknown> => {
+    const request = { result, onsuccess: null as (() => void) | null, onerror: null }
+    queueMicrotask(() => request.onsuccess?.())
+    return castForTest<IDBRequest<unknown>>(request)
+  }
+  const database = {
+    transaction: () => {
+      const transaction = {
+        objectStore: (name: string) => ({
+          get: (key: string) =>
+            requestFor(
+              name === 'metadata'
+                ? metadata.get(key)
+                : name === 'meta-ydoc'
+                  ? { docId: { kind: 'meta' }, updateBytes: new Uint8Array() }
+                  : undefined,
+            ),
+          getAll: () => requestFor([]),
+        }),
+        oncomplete: null as (() => void) | null,
+        onabort: null,
+        onerror: null,
+      }
+      setTimeout(() => transaction.oncomplete?.(), 0)
+      return transaction
+    },
+  }
+  return castForTest<IDBDatabase>(database)
+}
 
 test('active full-snapshot replacement rebinds editor, active doc, and disk to remote text', async () => {
   const compartment = new Compartment()
@@ -107,6 +147,42 @@ test('active full-snapshot replacement rebinds editor, active doc, and disk to r
   editorView.destroy()
   oldDoc.destroy()
   remoteDoc.destroy()
+})
+
+test('intentional provider replacement bypasses loss recovery while reopening the provider', async () => {
+  const docId = { kind: 'meta' } as const
+  const providerDbName = 'kuroflare-meta:replacement'
+  const epoch = createReadyDocumentEpoch({ docId, providerDbName, now: 1, epochId: 'epoch-1' })
+  const plugin = {
+    localStoreDb: createEvidenceReadDatabase(epoch),
+    documentRecoveryHydrating: new Set<string>(),
+    documentReplacementInProgress: new Set([documentEpochMetadataKey(docId)]),
+    documentRecoveryRequired: new Set<string>(),
+    startupSideEffectGate: { setPermission: vi.fn() },
+  }
+  vi.stubGlobal('indexedDB', { databases: async () => [] })
+  try {
+    const recoveredEpoch = await prepareDocumentProvider(
+      castForTest<KuroflareSpikePlugin>(plugin),
+      docId,
+      providerDbName,
+    )
+    assert.deepEqual(recoveredEpoch, epoch)
+    assert.deepEqual(plugin.documentRecoveryRequired, new Set())
+    plugin.documentReplacementInProgress.clear()
+    try {
+      await prepareDocumentProvider(
+        castForTest<KuroflareSpikePlugin>(plugin),
+        docId,
+        providerDbName,
+      )
+      throw new Error('expected provider-loss recovery to remain guarded')
+    } catch (error: unknown) {
+      assert.match(String(error), /document-provider-recovery-required/)
+    }
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })
 
 test('deferred metadata migration starts after an empty hello receives legacy metadata', () => {

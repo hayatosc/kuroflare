@@ -311,3 +311,25 @@ scan 中に Vault が変更されたら、scan 完了後に差分 scan をもう
 - 初回 index 中の watcher event は即時同期せず、scan 完了後の差分 scan で吸収する。
 
 これで DO は初回の巨大データ面を処理せず、制御面だけを順序付ける。
+
+## 10. Provider-loss epoch recovery
+
+The plugin probes `kuroflare-meta:<vaultId>` and `kuroflare-file:<ydocId>` with
+`indexedDB.databases()` before constructing `IndexeddbPersistence`. It never opens a
+missing provider without local evidence proving that the document is genuinely new;
+directory API absence or malformed entries fail closed.
+
+Each document has an independent epoch row in the existing local-store `metadata` store.
+The row records the provider name, an opaque fresh epoch ID, `recovering`/`ready` status,
+timestamps, base state-vector/hash evidence, and the last remote cursor. A missing
+provider with a ready/recovering row, local YDoc base, or retained outbox update enters
+recovery. The startup side-effect gate blocks edits, metadata writes, WebSocket requests,
+and outbox leasing until recovery commits.
+
+Recovery builds a candidate without opening the provider: latest authenticated snapshot,
+validated local-store base, and retained pending/paused/in-flight Y-update bytes are
+merged idempotently. Missing dependencies, malformed bytes, wrong-document rows, and
+invalid metadata remain preserved and block the document with repair evidence. Snapshot
+import uses the latest `manifestSeq` and retries a bounded number of 409 CAS conflicts.
+After import validation, a fresh provider is created and awaited; one local transaction
+stores the candidate YDoc, remote cursor, exact outbox completions, and `ready` epoch.

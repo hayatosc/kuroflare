@@ -237,7 +237,7 @@ Acceptance evidence:
 - [x] The decision converges on every client after required YDocs load.
 - [x] Binary changed-manifest restoration covers complete and missing evidence.
 
-### DR-007: Separate authenticated device identity from Yjs actor identity
+### DR-007: Separate authenticated device identity from Yjs actor identity — slice 2 implemented
 
 The previous design assigned one `yClientId` per device and carried it through setup and
 hello. That value was not cryptographically bound to the Yjs actor IDs encoded in update
@@ -250,13 +250,24 @@ Recommended simpler contract:
 - Use `deviceId` for authentication and audit identity.
 - Let Yjs generate a fresh actor ID for each YDoc instance.
 - Keep actor IDs out of setup, hello, session, and SQL audit contracts.
-- Treat IndexedDB loss as a later document-epoch recovery slice.
+- Treat IndexedDB loss as a new document epoch. Probe provider databases without opening
+  them, persist epoch evidence in the existing local-store `metadata` store, and recover
+  under a global startup side-effect gate.
 
 Acceptance evidence:
 
 - The specification identifies the exact component that sets each real `Y.Doc.clientID`.
 - Operation-log tests prove that a spoofed client actor field cannot change the authenticated `deviceId` audit attribution.
-- Epoch recovery and actor-ID reuse tests remain open for the follow-up slice.
+- Provider-loss recovery tests cover absent/present/unavailable probes, first epochs,
+  meta/file loss, fresh Yjs actors, restart recovery, remote+local+pending convergence,
+  duplicate idempotency, malformed/dependency-missing rows, 404 new documents, and 409
+  rebuild. Recovery persists `recovering` before import and atomically commits candidate
+  YDoc, cursor, exact outbox completions, and `ready` epoch after provider persistence.
+
+Final DR-007 closure still requires the repository-wide crash-boundary and Worker E2E
+acceptance gate. The checked-in crash tests use fake-indexeddb for actual y-indexeddb
+provider and local-store transactions; real Obsidian process-restart coverage remains
+outstanding. This section must not be read as closing DR-009 or DR-012.
 
 ### DR-008: Define snapshot health as evidence, not a key shape — closed
 

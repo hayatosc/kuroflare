@@ -182,3 +182,18 @@ manifest が chunk の offset / size / sha256 を明示列挙する自己記述�
 
 trailing slash、パス長上限、Windows 予約語（`CON`, `NUL` 等）は正規化規則ではなく materialize 時に OS 別に検証する。
 検証不能な path は conflict copy と同じ退避（別名で書き込み、repair log に記録）に倒す。
+
+## 6. Local document epochs
+
+The local-store `metadata` object store carries one epoch record per logical meta/file
+document; no schema-version bump is required. An epoch record is independent from the
+periodic whole-YDoc base and contains `docId`, provider database name, opaque epoch ID,
+`recovering`/`ready` status, timestamps, base hash/state-vector evidence, and remote
+cursor evidence. Epoch IDs are generated afresh for each recovery and are not sent on
+the wire or used as authenticated authorship.
+
+Provider loss is classified from non-creating directory evidence plus local YDoc/outbox
+evidence. Recovery preserves every retained pending/paused/in-flight update row, merges
+it idempotently with the authoritative remote snapshot and local base, and marks only
+the exact included rows complete in the final atomic local-store transaction. Missing or
+malformed dependency evidence blocks the affected document rather than dropping data.
