@@ -137,7 +137,16 @@ test('applyFileDelete tombstones the entry without removing it', () => {
     now: 1,
   })
 
-  const result = applyFileDelete(map, { path: 'A.md', deviceId: DEVICE_B, now: 5 })
+  const result = applyFileDelete(map, {
+    path: 'A.md',
+    deviceId: DEVICE_B,
+    now: 5,
+    deletedContentVersion: {
+      kind: 'text',
+      stateVectorBase64: 'AA==',
+      contentSha256: makeSha256Hex('a'.repeat(64)),
+    },
+  })
 
   assert.deepEqual(result, { action: 'deleted', fileId })
   assert.equal(map.size, 1)
@@ -153,7 +162,12 @@ test('applyFileDelete tombstones binary entries without dropping blob references
   const chunkHash = makeSha256Hex('b'.repeat(64))
   insertMetaFile(map, binaryMeta(fileId, 'Images/A.png', manifestHash, [chunkHash], 1))
 
-  const result = applyFileDelete(map, { path: 'Images/A.png', deviceId: DEVICE_B, now: 5 })
+  const result = applyFileDelete(map, {
+    path: 'Images/A.png',
+    deviceId: DEVICE_B,
+    now: 5,
+    deletedContentVersion: { kind: 'binary', blobManifestHash: manifestHash },
+  })
 
   assert.deepEqual(result, { action: 'deleted', fileId })
   const entry = getMeta(map, fileId)
@@ -162,6 +176,49 @@ test('applyFileDelete tombstones binary entries without dropping blob references
   assert.equal(entry.deleted === true && entry.deletedAt, 5)
   assert.equal(entry.type === 'binary' && entry.blobManifestHash, manifestHash)
   assert.deepEqual(entry.type === 'binary' ? entry.blobChunks : [], [chunkHash])
+})
+
+test('applyFileDelete defers instead of dropping a delete without a witness', () => {
+  const { map } = metaDoc()
+  const fileId = makeFileId('file-deferred-delete')
+  applyFileCreate(map, {
+    fileId,
+    path: 'Deferred.md',
+    ydocId: makeYDocId('doc-deferred-delete'),
+    deviceId: DEVICE_A,
+    now: 1,
+  })
+
+  assert.deepEqual(applyFileDelete(map, { path: 'Deferred.md', deviceId: DEVICE_B, now: 2 }), {
+    action: 'deferred',
+    fileId,
+    reason: 'deletion-witness-required',
+  })
+  assert.equal(getMeta(map, fileId).deleted, false)
+})
+
+test('applyFileDelete rejects a witness that does not match the observed content', () => {
+  const { map } = metaDoc()
+  const fileId = makeFileId('file-invalid-delete-witness')
+  const manifestHash = makeSha256Hex('a'.repeat(64))
+  insertMetaFile(
+    map,
+    binaryMeta(fileId, 'Invalid.png', manifestHash, [makeSha256Hex('b'.repeat(64))], 1),
+  )
+
+  assert.deepEqual(
+    applyFileDelete(map, {
+      path: 'Invalid.png',
+      deviceId: DEVICE_B,
+      now: 2,
+      deletedContentVersion: {
+        kind: 'binary',
+        blobManifestHash: makeSha256Hex('c'.repeat(64)),
+      },
+    }),
+    { action: 'deferred', fileId, reason: 'deletion-witness-invalid' },
+  )
+  assert.equal(getMeta(map, fileId).deleted, false)
 })
 
 test('concurrent rename and binary content update preserve both grouped changes', () => {
@@ -238,7 +295,16 @@ test('concurrent rename and stale delete preserve the renamed location and tombs
     { action: 'renamed', fileId },
   )
   assert.deepEqual(
-    applyFileDelete(staleDelete.map, { path: 'Old.md', deviceId: DEVICE_B, now: 3 }),
+    applyFileDelete(staleDelete.map, {
+      path: 'Old.md',
+      deviceId: DEVICE_B,
+      now: 3,
+      deletedContentVersion: {
+        kind: 'text',
+        stateVectorBase64: 'AA==',
+        contentSha256: makeSha256Hex('a'.repeat(64)),
+      },
+    }),
     { action: 'deleted', fileId },
   )
 
@@ -265,8 +331,12 @@ test('a rename is no longer found at its old path but is found at its new path',
     action: 'not-found',
   })
   assert.equal(
-    applyFileDelete(map, { path: 'New.md', deviceId: DEVICE_A, now: 3 }).action,
-    'deleted',
+    applyFileDelete(map, {
+      path: 'New.md',
+      deviceId: DEVICE_A,
+      now: 3,
+    }).action,
+    'deferred',
   )
 })
 

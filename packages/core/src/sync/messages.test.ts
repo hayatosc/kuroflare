@@ -1117,6 +1117,10 @@ test('decodes grouped metadata, preserves normalized fields, and classifies unsu
     deleted: true as const,
     deletedAt: 8,
     deletedBy: deviceId,
+    deletedContentVersion: {
+      kind: 'binary' as const,
+      blobManifestHash: makeSha256Hex('a'.repeat(64)),
+    },
     createdAt: 2,
     createdBy: deviceId,
     contentUpdatedAt: 7,
@@ -1144,6 +1148,57 @@ test('decodes grouped metadata, preserves normalized fields, and classifies unsu
   assert.equal(decodeMetaValue(new Y.Map<unknown>(), fileId).disposition, 'invalid')
 
   child.set('location', { ...grouped.location, canonicalPath: 'wrong' })
+  assert.equal(decodeMetaValue(child, fileId).disposition, 'invalid')
+  doc.destroy()
+})
+
+test('fails closed for missing, mismatched, or active deletion witnesses', () => {
+  const fileId = makeFileId('witness-validation')
+  const entry = {
+    schemaVersion: 1 as const,
+    fileId,
+    path: 'Note.md',
+    canonicalPath: 'note.md',
+    type: 'text' as const,
+    ydocId: makeYDocId('witness-doc'),
+    deleted: true as const,
+    deletedAt: 1,
+    deletedBy: makeDeviceId('witness-device'),
+    deletedContentVersion: {
+      kind: 'text' as const,
+      stateVectorBase64: 'AA==',
+      contentSha256: makeSha256Hex('a'.repeat(64)),
+    },
+    createdAt: 1,
+    createdBy: makeDeviceId('witness-device'),
+    contentUpdatedAt: 1,
+    contentUpdatedBy: makeDeviceId('witness-device'),
+    updatedAt: 1,
+    updatedBy: makeDeviceId('witness-device'),
+    mtime: 1,
+  }
+  const grouped = groupedEntryFromMetaFile(entry)
+  const doc = new Y.Doc()
+  const child = new Y.Map<unknown>()
+  child.set('identity', grouped.identity)
+  child.set('location', grouped.location)
+  child.set('content', grouped.content)
+  child.set('deletion', { deleted: true, deletedAt: 1, deletedBy: entry.deletedBy })
+  doc.getMap('meta').set(fileId, child)
+  assert.equal(decodeMetaValue(child, fileId).disposition, 'invalid')
+
+  child.set('deletion', {
+    deleted: true,
+    deletedAt: 1,
+    deletedBy: entry.deletedBy,
+    deletedContentVersion: { kind: 'binary', blobManifestHash: makeSha256Hex('b'.repeat(64)) },
+  })
+  assert.equal(decodeMetaValue(child, fileId).disposition, 'invalid')
+
+  child.set('deletion', {
+    deleted: false,
+    deletedContentVersion: entry.deletedContentVersion,
+  })
   assert.equal(decodeMetaValue(child, fileId).disposition, 'invalid')
   doc.destroy()
 })

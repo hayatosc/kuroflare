@@ -1,6 +1,7 @@
 import * as v from 'valibot'
 
 import { DeviceIdSchema, FileIdSchema, YDocIdSchema } from '../utils/ids'
+import { NonEmptyBase64Schema } from '../utils/shared'
 
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/
 const FORBIDDEN_PATH_SEGMENTS = new Set(['', '.', '..'])
@@ -44,10 +45,24 @@ export const DeletedMetaFileSchema = v.object({
   deleted: v.literal(true),
   deletedAt: TimestampSchema,
   deletedBy: DeviceIdSchema,
+  deletedContentVersion: v.optional(
+    v.union([
+      v.strictObject({
+        kind: v.literal('text'),
+        stateVectorBase64: NonEmptyBase64Schema,
+        contentSha256: Sha256HexSchema,
+      }),
+      v.strictObject({
+        kind: v.literal('binary'),
+        blobManifestHash: Sha256HexSchema,
+      }),
+    ]),
+  ),
 })
 
 export const ActiveMetaFileSchema = v.object({
   deleted: v.literal(false),
+  deletedContentVersion: v.optional(v.never()),
 })
 
 export const TextMetaFileSpecificSchema = v.object({
@@ -130,17 +145,34 @@ const BinaryMetaContentSchema = v.strictObject({
 /** Content group with binary manifest and chunk references kept as one object. */
 export const MetaContentSchema = v.union([TextMetaContentSchema, BinaryMetaContentSchema])
 
+/** Causal content witness captured when a deletion is chosen. */
+export const MetaDeletionBaseSchema = v.union([
+  v.strictObject({
+    kind: v.literal('text'),
+    stateVectorBase64: NonEmptyBase64Schema,
+    contentSha256: Sha256HexSchema,
+  }),
+  v.strictObject({
+    kind: v.literal('binary'),
+    blobManifestHash: Sha256HexSchema,
+  }),
+])
+
+export type MetaDeletionBase = v.InferInput<typeof MetaDeletionBaseSchema>
+
 /** Tombstone group. A live entry cannot carry deletion evidence. */
 export const MetaDeletionSchema = v.union([
   v.strictObject({
     deleted: v.literal(false),
     deletedAt: v.optional(v.never()),
     deletedBy: v.optional(v.never()),
+    deletedContentVersion: v.optional(v.never()),
   }),
   v.strictObject({
     deleted: v.literal(true),
     deletedAt: TimestampSchema,
     deletedBy: DeviceIdSchema,
+    deletedContentVersion: MetaDeletionBaseSchema,
   }),
 ])
 
@@ -166,6 +198,13 @@ export const MetaGroupedEntrySchema = v.pipe(
       value.content.blobChunks !== undefined
     )
   }, 'Identity and content type mismatch'),
+  v.check((value) => {
+    if (!value.deletion.deleted) return true
+    return (
+      value.deletion.deletedContentVersion !== undefined &&
+      value.deletion.deletedContentVersion.kind === value.identity.type
+    )
+  }, 'Deletion witness type mismatch'),
 )
 
 export type MetaIdentity = v.InferInput<typeof MetaIdentitySchema>
@@ -200,7 +239,12 @@ export function metaFileFromGroupedEntry(value: MetaGroupedEntry): MetaFile {
     updatedBy: location.updatedBy,
     mtime: location.mtime,
     ...(deletion.deleted
-      ? { deleted: true as const, deletedAt: deletion.deletedAt, deletedBy: deletion.deletedBy }
+      ? {
+          deleted: true as const,
+          deletedAt: deletion.deletedAt,
+          deletedBy: deletion.deletedBy,
+          deletedContentVersion: deletion.deletedContentVersion,
+        }
       : { deleted: false as const }),
   }
   if (
@@ -243,7 +287,14 @@ export function groupedEntryFromMetaFile(value: MetaFile): MetaGroupedEntry {
     mtime: value.mtime,
   }
   const deletion = value.deleted
-    ? { deleted: true as const, deletedAt: value.deletedAt, deletedBy: value.deletedBy }
+    ? {
+        deleted: true as const,
+        deletedAt: value.deletedAt,
+        deletedBy: value.deletedBy,
+        ...(value.deletedContentVersion === undefined
+          ? {}
+          : { deletedContentVersion: value.deletedContentVersion }),
+      }
     : { deleted: false as const }
   const content =
     value.type === 'text'

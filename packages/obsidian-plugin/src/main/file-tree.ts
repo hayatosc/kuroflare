@@ -1,5 +1,6 @@
 import {
   hashBytesSha256,
+  hashCanonicalText,
   canonicalizeVaultPath,
   makeDeviceId,
   makeFileId,
@@ -13,7 +14,7 @@ import {
   type DeviceId,
   type FileId,
 } from '@kuroflare/core'
-import { TFile } from 'obsidian'
+import { Notice, TFile } from 'obsidian'
 import * as v from 'valibot'
 import * as Y from 'yjs'
 
@@ -36,7 +37,7 @@ import {
   WORKER_ORIGIN,
 } from './constants'
 import { importFileTextIntoDoc, importFileTextIntoDocAndSend } from './editor'
-import { encodeBase64, binaryBlobCacheKey, requireOutboxPlanItemId } from './helpers'
+import { encodeBase64, binaryBlobCacheKey, requireOutboxPlanItemId, safeLogError } from './helpers'
 import {
   insertMetaFile,
   loadTextDoc,
@@ -118,9 +119,18 @@ export function registerFileTreeWatcher(plugin: KuroflareSpikePlugin): void {
   )
   plugin.registerEvent(
     plugin.app.vault.on('delete', (file) => {
+      if (file instanceof TFile && plugin.pendingFsDeletes.delete(file.path)) return
       if (!plugin.startupSideEffectGate.canRun()) return
       if (file instanceof TFile) {
-        handleVaultDelete(plugin, file)
+        void handleVaultDelete(plugin, file).catch((error: unknown) => {
+          console.error('[kuroflare] vault delete deferred because deletion evidence failed', {
+            path: file.path,
+            error: safeLogError(error),
+          })
+          new Notice(
+            `Kuroflare sync: delete evidence unavailable for ${file.path}; deletion was not recorded. Restore it, wait for sync, then delete it again.`,
+          )
+        })
       }
     }),
   )
@@ -162,16 +172,43 @@ function handleVaultRename(plugin: KuroflareSpikePlugin, file: TFile, oldPath: s
   }
 }
 
-function handleVaultDelete(plugin: KuroflareSpikePlugin, file: TFile): void {
+export async function handleVaultDelete(plugin: KuroflareSpikePlugin, file: TFile): Promise<void> {
   if (!plugin.startupSideEffectGate.canRun() || !canWriteMetadata(plugin)) return
+  const fileId = findActiveFileId(plugin, file.path)
+  if (fileId === undefined) return
+  const current = readMetaFile(metaMap(plugin), fileId)
+  if (current === undefined || current.deleted) return
+
+  const deletedContentVersion =
+    current.type === 'text'
+      ? await (async () => {
+          const loaded = await loadTextDoc(plugin, { kind: 'file', ydocId: current.ydocId })
+          return {
+            kind: 'text' as const,
+            stateVectorBase64: encodeBase64(Y.encodeStateVector(loaded.doc)),
+            contentSha256: makeSha256Hex(await hashCanonicalText(loaded.text.toJSON())),
+          }
+        })()
+      : { kind: 'binary' as const, blobManifestHash: current.blobManifestHash }
+
+  if (!plugin.startupSideEffectGate.canRun() || !canWriteMetadata(plugin)) return
+  if (plugin.app.vault.getAbstractFileByPath(file.path) !== null) return
+  if (findActiveFileId(plugin, file.path) !== fileId) return
   const result = applyFileDelete(metaMap(plugin), {
     path: file.path,
     deviceId: fileTreeDeviceId(plugin),
     now: Date.now(),
+    deletedContentVersion,
     origin: FILE_TREE_ORIGIN,
   })
   if (result.action === 'deleted') {
     plugin.materializedPaths.delete(result.fileId)
+  } else if (result.action === 'deferred') {
+    console.warn('[kuroflare] deferred vault delete until deletion evidence is available', {
+      fileId: result.fileId,
+      path: file.path,
+      reason: result.reason,
+    })
   }
 }
 

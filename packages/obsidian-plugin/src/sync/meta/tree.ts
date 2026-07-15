@@ -1,10 +1,13 @@
 import {
   canonicalizeVaultPath,
+  MetaDeletionBaseSchema,
   type DeviceId,
   type FileId,
   type MetaFile,
+  type MetaDeletionBase,
   type YDocId,
 } from '@kuroflare/core'
+import * as v from 'valibot'
 import * as Y from 'yjs'
 
 import { insertMetaFile, readMetaEntries, updateMetaGroup } from '../../main/meta'
@@ -33,6 +36,8 @@ export interface FilePathMutationInput {
   readonly deviceId: DeviceId
   /** Logical timestamp written into the entry. */
   readonly now: number
+  /** Causal witness observed at deletion time. Required for tombstone writes. */
+  readonly deletedContentVersion?: MetaDeletionBase
   /** Yjs transaction origin. */
   readonly origin?: unknown
 }
@@ -48,6 +53,11 @@ export interface FileRenameInput {
 
 export type FileTreeResult =
   | { readonly action: 'renamed' | 'deleted'; readonly fileId: FileId }
+  | {
+      readonly action: 'deferred'
+      readonly fileId: FileId
+      readonly reason: 'deletion-witness-required' | 'deletion-witness-invalid'
+    }
   | { readonly action: 'not-found' }
 
 /**
@@ -126,7 +136,25 @@ export function applyFileDelete(
     return { action: 'not-found' }
   }
 
-  const nextDeletion = { deleted: true as const, deletedAt: input.now, deletedBy: input.deviceId }
+  if (input.deletedContentVersion === undefined) {
+    return { action: 'deferred', fileId: found.fileId, reason: 'deletion-witness-required' }
+  }
+  const witness = input.deletedContentVersion
+  if (!v.is(MetaDeletionBaseSchema, witness) || witness.kind !== found.type) {
+    return { action: 'deferred', fileId: found.fileId, reason: 'deletion-witness-invalid' }
+  }
+  if (found.type === 'binary' && witness.kind === 'binary') {
+    if (witness.blobManifestHash !== found.blobManifestHash) {
+      return { action: 'deferred', fileId: found.fileId, reason: 'deletion-witness-invalid' }
+    }
+  }
+
+  const nextDeletion = {
+    deleted: true as const,
+    deletedAt: input.now,
+    deletedBy: input.deviceId,
+    deletedContentVersion: input.deletedContentVersion,
+  }
   transact(metaMap, input.origin, () => {
     ensureGroupedEntry(metaMap, found.fileId, found)
     updateMetaGroup(metaMap, found.fileId, 'deletion', nextDeletion)

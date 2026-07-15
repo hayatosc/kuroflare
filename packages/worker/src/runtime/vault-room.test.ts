@@ -2020,6 +2020,98 @@ test('VaultRoom requires explicit v2 evidence for metadata snapshot imports', as
   assert.equal(storage.sql.checkpointRuns.size, 0)
 })
 
+test('VaultRoom rejects snapshot imports that would convert a legacy deleted tombstone', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  room.vaultId = makeVaultId('vault-1')
+  const fileId = makeFileId('legacy-deleted-import')
+  const legacy = new Y.Doc()
+  legacy.getMap('meta').set(fileId, {
+    schemaVersion: 1,
+    fileId,
+    path: 'Notes/Deleted.md',
+    canonicalPath: 'notes/deleted.md',
+    type: 'text',
+    ydocId: makeYDocId('legacy-deleted-import-doc'),
+    deleted: true,
+    deletedAt: 2,
+    deletedBy: makeDeviceId('legacy-deleter'),
+    deletedContentVersion: {
+      kind: 'binary',
+      blobManifestHash: '0'.repeat(64),
+    },
+    createdAt: 1,
+    createdBy: makeDeviceId('legacy-creator'),
+    contentUpdatedAt: 1,
+    contentUpdatedBy: makeDeviceId('legacy-creator'),
+    updatedAt: 1,
+    updatedBy: makeDeviceId('legacy-creator'),
+    mtime: 1,
+  })
+  room.docs.set('meta', legacy)
+  room.hydratedDocs.add('meta')
+  const before = Y.encodeStateAsUpdate(legacy)
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 0,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    latestStateVector: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+
+  const candidate = new Y.Doc()
+  Y.applyUpdate(candidate, Y.encodeStateAsUpdate(legacy))
+  const active = {
+    schemaVersion: 1 as const,
+    fileId,
+    path: 'Notes/Deleted.md',
+    canonicalPath: 'notes/deleted.md',
+    type: 'text' as const,
+    ydocId: makeYDocId('legacy-deleted-import-doc'),
+    deleted: false as const,
+    createdAt: 1,
+    createdBy: makeDeviceId('legacy-creator'),
+    contentUpdatedAt: 1,
+    contentUpdatedBy: makeDeviceId('legacy-creator'),
+    updatedAt: 1,
+    updatedBy: makeDeviceId('legacy-creator'),
+    mtime: 1,
+  }
+  candidate.getMap('meta').set(fileId, groupedEntryFromMetaFile(active))
+  const update = Y.encodeStateAsUpdate(candidate, Y.encodeStateVector(legacy))
+  const response = await room.fetch(
+    new Request('https://worker.example/vaults/vault-1/meta/snapshot', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        updateBytesBase64: Buffer.from(update).toString('base64'),
+        metadataSchemaVersion: 2,
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 400)
+  assert.deepEqual(await response.json(), { error: 'invalid-snapshot-import-meta-schema' })
+  assert.deepEqual(bucket.puts, [])
+  assert.deepEqual(Y.encodeStateAsUpdate(legacy), before)
+  assert.equal(room.docs.get('meta'), legacy)
+  assert.equal(storage.sql.checkpointRuns.size, 0)
+  candidate.destroy()
+  legacy.destroy()
+})
+
 test('VaultRoom rejects unresolved snapshot-import deltas without advancing the sequence', async () => {
   const storage = new SqlOnlyStorage()
   const bucket = new FakeR2Bucket()

@@ -2,6 +2,7 @@ import { assert, test } from 'vitest'
 
 import {
   blobHeadHashBatches,
+  blobHeadEntryMatchesChunk,
   activeMarkdownBindingMatches,
   clearPendingFsRename,
   consumePendingFsRename,
@@ -29,6 +30,12 @@ test('blob head batches keep 513 hashes within the worker request bound', () => 
     [MAX_BLOB_HEAD_HASHES_PER_REQUEST, 1],
   )
   assert.deepEqual(batches.flat(), hashes)
+})
+
+test('blob head evidence without an exact size is not restorable evidence', () => {
+  assert.equal(blobHeadEntryMatchesChunk({ found: true }, 3), false)
+  assert.equal(blobHeadEntryMatchesChunk({ found: true, size: 2 }, 3), false)
+  assert.equal(blobHeadEntryMatchesChunk({ found: true, size: 3 }, 3), true)
 })
 
 test('remote rename guards are consumed and cleared after the operation settles', () => {

@@ -95,13 +95,15 @@ CRDT でも自動解決できない意味的衝突であり、ポリシーで決
 - 並行（concurrent）な「削除 vs 編集」では**編集を勝たせて復活**させ、ユーザーに通知する。根拠: ノートは「消える事故」より「残る事故」の方が圧倒的にマシだからである。
 
 ```
-if deleted=true and hasConcurrentEditAfterDelete(fileId):
-  if type == "text":
-    deleted=false + repair event "restored because concurrent edit exists"
-  if type == "binary":
-    verify manifest + chunks
-    complete   -> deleted=false + repair event
-    incomplete -> keep deleted=true + repair event "cannot restore: chunks missing"
+if deleted=true and deletedContentVersion.kind == "text":
+  require current file YDoc evidence and current state vector >= deletion base
+  equal canonical content hash -> keep deleted
+  different canonical content hash -> restore + repair event
+  missing/incomplete/ambiguous evidence -> defer and preserve content
+if deleted=true and deletedContentVersion.kind == "binary":
+  same manifest hash -> keep deleted
+  changed manifest + complete manifest/chunk evidence -> restore + repair event
+  changed manifest + missing evidence -> keep deleted + actionable repair event
 ```
 
 binary の復活前検証は「manifest を取得し、全 chunk の HEAD found と size 一致を確認する」で足りる。
@@ -110,10 +112,14 @@ size が不明な chunk は無条件 true にせず、復活させない側へ�
 chunk が欠けている場合は自動復活させず、repair log に「実体 GC 済みのため復元不可」と出して再アップロードか手動復元を促す。
 参照だけの壊れたファイルを materialize してはならない。
 
-`hasConcurrentEditAfterDelete` は本来 device clock / state vector で「削除を観測していない編集」を見るが、初期は `deletedAt < contentUpdatedAt` かつ `updatedBy != deletedBy` を conservative な近似としてよい。
-迷ったら消さずに復活、ただし binary は実体が揃っている場合だけ。
+The old `deletedAt < contentUpdatedAt` and device comparison is not a data
+preservation rule. Timestamps remain UI/audit evidence only. When the text YDoc
+cannot be loaded or does not dominate the deletion base, reconciliation defers
+the decision and keeps the content available for recovery.
 
-実装: `core/src/sync/reconcile.ts` の `planDeleteVsEditRepairs`（text は復活 plan、binary は restorable set に含まれる場合だけ復活、他は `keep-deleted`）と `applyMetaRepair`。
+Implementation: `core/src/sync/reconcile.ts` evaluates the causal witness and
+returns restore, keep-deleted, or defer plans; the Obsidian runtime supplies
+current loaded YDoc evidence and retries after required documents arrive.
 
 ## 6. 同一 path 衝突の決定論的修復
 

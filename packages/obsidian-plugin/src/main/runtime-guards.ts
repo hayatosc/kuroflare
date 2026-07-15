@@ -14,6 +14,14 @@ export function blobHeadHashBatches(hashes: readonly string[]): readonly (readon
   return batches
 }
 
+/** Requires both presence and an exact byte length for one remote blob chunk. */
+export function blobHeadEntryMatchesChunk(
+  entry: { readonly found?: boolean | undefined; readonly size?: number | undefined } | undefined,
+  chunkSize: number,
+): boolean {
+  return entry?.found === true && entry.size === chunkSize
+}
+
 /** Builds the vault-scoped IndexedDB name used for the persisted meta Y.Doc. */
 export function metaPersistenceDatabaseName(vaultId: string): string {
   return `${META_DOC_NAME}:${vaultId}`

@@ -44,6 +44,14 @@ fileId -> Y.Map {
     deleted: boolean
     deletedAt?: number
     deletedBy?: string
+    deletedContentVersion?: {
+      kind: "text"
+      stateVectorBase64: string
+      contentSha256: string
+    } | {
+      kind: "binary"
+      blobManifestHash: string
+    }
   }
 }
 ```
@@ -58,8 +66,13 @@ Validation is strict (`core/src/sync/meta.ts`): file IDs must match the root key
 paths must be vault-relative, canonical paths must equal `canonicalizeVaultPath(path)`,
 text entries require `ydocId` and forbid blob fields, binary entries require a valid
 manifest hash and at least one chunk and forbid `ydocId`, and an active entry cannot
-carry deletion evidence. A deleted entry remains a tombstone; its body YDoc or blob
-manifest is not removed ([sync-model.md](sync-model.md) §4).
+carry deletion evidence. A v2 deleted entry requires a witness whose `kind` matches
+the identity type. Legacy v1 deleted entries remain read-only for manual recovery
+regardless of whether an optional witness-shaped field is present. A deleted entry
+remains a tombstone; its body YDoc or blob manifest is not removed
+([sync-model.md](sync-model.md) §4).
+Grouped v2 tombstones written before the DR-006 witness contract are invalid and
+remain read-only; this release does not add a v3 compatibility path.
 
 Version-1 flat entries remain readable through the normalized decoder, but are
 read-only. After Hello grants metadata write access, a local document containing

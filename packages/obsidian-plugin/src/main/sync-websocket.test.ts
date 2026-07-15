@@ -17,10 +17,39 @@ import {
 import {
   openWorkerWebSocketRuntime,
   isLegacyMetadataCapabilityError,
+  requestDocFromWorker,
   routeWorkerInboundMessageForStartup,
   shouldRetryWithLegacyMetadataCapability,
   type WorkerWebSocketOpenRuntime,
 } from './sync-websocket'
+
+test('requestDocFromWorker reports a closed socket without leaving a pending request', async () => {
+  const plugin = {
+    startupSideEffectGate: { canSendNetwork: () => true },
+    workerHelloAccepted: true,
+    workerWebSocketSession: {
+      attach: () => {},
+      send: () => {},
+      close: () => {},
+      snapshot: () => ({ hasConnection: false, readyState: WebSocket.CLOSED }),
+    },
+    pendingSetupResponse: null,
+    trustedSetupMetadata: null,
+    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    pendingSyncRequestMessageIds: new Set<string>(),
+    workerMessageCounter: 0,
+  }
+
+  assert.equal(
+    await requestDocFromWorker(
+      plugin,
+      { kind: 'file', ydocId: makeYDocId('closed-request') },
+      new Uint8Array(),
+      'closed-request-test',
+    ),
+    false,
+  )
+})
 
 class FakeBrowserWebSocket {
   static readonly CONNECTING = 0

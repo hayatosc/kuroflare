@@ -45,15 +45,55 @@ test('reconcileMetaDoc restores text edited after a concurrent delete', () => {
     deleted: true as const,
     deletedAt: 5,
     deletedBy: DEVICE_A,
+    deletedContentVersion: textDeletionVersion(),
     contentUpdatedAt: 6,
     contentUpdatedBy: DEVICE_B,
   }
   const { map } = metaDocWith(file)
 
-  const result = reconcileMetaDoc(map, { updatedAt: 100, updatedBy: REPAIR })
+  const result = reconcileMetaDoc(map, {
+    updatedAt: 100,
+    updatedBy: REPAIR,
+    textDeletionEvidence: new Map([
+      [file.fileId, { stateVectorBase64: 'AA==', contentSha256: makeSha256Hex('b'.repeat(64)) }],
+    ]),
+  })
 
   assert.equal(getMeta(map, 'file-a').deleted, false)
   assert.equal(result.repairs.length, 1)
+})
+
+test('reconcileMetaDoc defers an unloaded text YDoc and converges after it arrives', () => {
+  const file = {
+    ...textMeta(makeFileId('file-late-text'), 'Late.md', 1),
+    deleted: true as const,
+    deletedAt: 5,
+    deletedBy: DEVICE_A,
+    deletedContentVersion: textDeletionVersion(),
+  }
+  const { map } = metaDocWith(file)
+
+  const deferred = reconcileMetaDoc(map, { updatedAt: 100, updatedBy: REPAIR })
+  assert.ok(deferred.repairs[0] && 'action' in deferred.repairs[0])
+  assert.equal(
+    deferred.repairs[0] && 'action' in deferred.repairs[0] ? deferred.repairs[0].action : undefined,
+    'defer-deletion',
+  )
+  assert.equal(getMeta(map, file.fileId).deleted, true)
+
+  const restored = reconcileMetaDoc(map, {
+    updatedAt: 101,
+    updatedBy: REPAIR,
+    textDeletionEvidence: new Map([
+      [file.fileId, { stateVectorBase64: 'AA==', contentSha256: makeSha256Hex('b'.repeat(64)) }],
+    ]),
+  })
+  assert.ok(restored.repairs[0] && 'action' in restored.repairs[0])
+  assert.equal(
+    restored.repairs[0] && 'action' in restored.repairs[0] ? restored.repairs[0].action : undefined,
+    'restore',
+  )
+  assert.equal(getMeta(map, file.fileId).deleted, false)
 })
 
 test('reconcileMetaDoc keeps an unverified binary deleted and reports it', () => {
@@ -62,6 +102,11 @@ test('reconcileMetaDoc keeps an unverified binary deleted and reports it', () =>
     deleted: true as const,
     deletedAt: 5,
     deletedBy: DEVICE_A,
+    deletedContentVersion: {
+      kind: 'binary' as const,
+      blobManifestHash: makeSha256Hex('a'.repeat(64)),
+    },
+    blobManifestHash: makeSha256Hex('c'.repeat(64)),
     contentUpdatedAt: 6,
     contentUpdatedBy: DEVICE_B,
   }
@@ -80,6 +125,11 @@ test('reconcileMetaDoc restores a binary once its content is verified', () => {
     deleted: true as const,
     deletedAt: 5,
     deletedBy: DEVICE_A,
+    deletedContentVersion: {
+      kind: 'binary' as const,
+      blobManifestHash: makeSha256Hex('a'.repeat(64)),
+    },
+    blobManifestHash: makeSha256Hex('c'.repeat(64)),
     contentUpdatedAt: 6,
     contentUpdatedBy: DEVICE_B,
   }
@@ -188,6 +238,18 @@ function textMeta(fileId: FileId, path: string, createdAt: number): MetaFile {
     updatedAt: createdAt,
     updatedBy: DEVICE_A,
     mtime: createdAt,
+  }
+}
+
+function textDeletionVersion(): {
+  readonly kind: 'text'
+  readonly stateVectorBase64: string
+  readonly contentSha256: ReturnType<typeof makeSha256Hex>
+} {
+  return {
+    kind: 'text',
+    stateVectorBase64: 'AA==',
+    contentSha256: makeSha256Hex('a'.repeat(64)),
   }
 }
 

@@ -448,7 +448,9 @@ export async function fileDocIdForPath(
   return { kind: 'file', ydocId: `file-${hash.slice(0, 32)}` }
 }
 
-export function nextWorkerMessageId(plugin: KuroflareSpikePlugin): string {
+export function nextWorkerMessageId(
+  plugin: Pick<KuroflareSpikePlugin, 'workerMessageCounter'>,
+): string {
   plugin.workerMessageCounter += 1
   return `msg-${Date.now().toString(36)}-${plugin.workerMessageCounter.toString(36)}`
 }

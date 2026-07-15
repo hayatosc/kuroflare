@@ -15,7 +15,7 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 | DR-003 | P0       | Large-update snapshot escape               | Closed narrowly: safe rejection + explicit repair; live escape remains unimplemented |
 | DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                                                   |
 | DR-005 | P1       | Meta entry merge granularity               | Closed: grouped schema v2, migration, and write admission implemented and tested     |
-| DR-006 | P1       | Delete-versus-edit causality               | Schema decision required                                                             |
+| DR-006 | P1       | Delete-versus-edit causality               | Closed: causal deletion witnesses and deferred reconciliation tested                 |
 | DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship                                    |
 | DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                                                      |
 | DR-009 | P1       | Quarantine and public error evidence       | HTTP envelope differs; guarded WS rejection implemented                              |
@@ -201,33 +201,41 @@ Acceptance evidence:
 - [x] Older clients remain metadata read-only without mutating legacy values.
 - [x] File-YDoc updates from metadata read-only sessions remain accepted.
 
-DR-006 (delete-versus-edit causality) remains open: the deletion group does not yet
-carry a content-version or state-vector witness. DR-012 (general capability
-negotiation) also remains open; this release only defines the metadata write gate.
+DR-006 is closed below. DR-012 (general capability negotiation) remains open; the
+metadata write gate is still intentionally narrow.
 
-### DR-006: Replace wall-clock delete detection with content-version evidence
+### DR-006: Replace wall-clock delete detection with content-version evidence — closed
 
 The current delete-versus-edit heuristic compares `deletedAt` and `contentUpdatedAt` from different devices.
 Clock skew can invert that comparison.
 Text content also lives in a separate file YDoc, so the meta YDoc does not provide a shared causal order across deletion and editing.
 
-Recommended contract:
+Implemented contract:
 
-- A text deletion records the file YDoc state vector and content hash observed when deletion was chosen.
-- A binary deletion records the observed `blobManifestHash`.
-- Reconciliation compares the converged content version with the deletion base.
-- If the required file YDoc is not loaded, deletion materialization waits instead of guessing.
-- Ambiguous text cases preserve content.
-- Binary restoration still requires manifest and chunk evidence.
+- A text deletion records `deletedContentVersion.kind = "text"`, the base64
+  `Y.encodeStateVector` bytes, and the SHA-256 of canonical Y.Text content.
+- A binary deletion records `deletedContentVersion.kind = "binary"` and the
+  observed `blobManifestHash`.
+- Reconciliation requires the current text YDoc state vector to dominate the base
+  vector. Equal content keeps the tombstone; changed content restores it.
+- Missing, incomplete, or invalid text evidence creates a defer repair and leaves
+  the tombstone/content untouched until the required YDoc is available.
+- A changed binary manifest restores only when the manifest and all chunks are
+  verified present; otherwise the tombstone remains with actionable repair evidence.
+- `deletedAt` and `deletedBy` are retained for audit/UI only and never decide data
+  preservation. Legacy v1 deleted tombstones remain read-only for manual recovery
+  regardless of any optional witness-shaped field.
 
 The timestamp heuristic may remain as UI evidence, but it must not be the data-preservation boundary.
 
 Acceptance evidence:
 
-- Tests use arbitrarily skewed device clocks and reach the same decision.
-- An edit made without observing the deletion is preserved.
-- An edit made before and observed by the deleter does not cause an unnecessary restore.
-- The decision is stable on every client after all required YDocs load.
+- [x] Tests use arbitrarily skewed device clocks and reach the same decision.
+- [x] An edit made without observing the deletion is preserved.
+- [x] An edit made before and observed by the deleter does not cause an unnecessary restore.
+- [x] Missing/unloaded/incomplete YDocs defer without materializing deletion.
+- [x] The decision converges on every client after required YDocs load.
+- [x] Binary changed-manifest restoration covers complete and missing evidence.
 
 ### DR-007: Separate authenticated device identity from Yjs actor identity
 

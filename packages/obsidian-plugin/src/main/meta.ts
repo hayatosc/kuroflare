@@ -81,6 +81,18 @@ export function metaDocLegacyOnly(doc: Y.Doc): boolean {
   return true
 }
 
+/** Returns true when a legacy v1 tombstone requires read-only/manual recovery. */
+export function hasLegacyDeletedTombstones(doc: Y.Doc): boolean {
+  const root = doc.getMap<unknown>('meta')
+  for (const [fileId, value] of root.entries()) {
+    const decoded = decodeMetaValue(value, fileId)
+    if (decoded.disposition === 'legacy-v1' && decoded.metaFile?.deleted === true) {
+      return true
+    }
+  }
+  return false
+}
+
 /** Allows remote-v2 adoption only when every local normalized entry is represented unchanged. */
 export function metaDocEntriesRepresented(local: Y.Doc, remote: Y.Doc): boolean {
   const localRoot = local.getMap<unknown>('meta')
@@ -179,6 +191,7 @@ export function migrateLegacyMetaDoc(doc: Y.Doc): boolean {
   for (const [fileId, value] of root.entries()) {
     const decoded = decodeMetaValue(value, fileId)
     if (decoded.disposition !== 'legacy-v1' || decoded.metaFile === undefined) return false
+    if (decoded.metaFile.deleted) return false
     entries.push([fileId, decoded.metaFile])
   }
   doc.transact(() => {

@@ -356,7 +356,7 @@ export function metaIdentityImmutable(current: Y.Doc, candidate: Y.Doc): boolean
     const currentIdentity =
       currentEntry.disposition === 'supported-v2'
         ? currentEntry.grouped?.identity
-        : currentEntry.metaFile === undefined
+        : currentEntry.metaFile === undefined || currentEntry.metaFile.deleted
           ? undefined
           : groupedEntryFromMetaFile(currentEntry.metaFile).identity
     if (currentIdentity === undefined) return false

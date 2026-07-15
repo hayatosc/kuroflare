@@ -16,6 +16,8 @@ import type { LoadedTextDoc } from '../main-types'
 import { flushYTextToDisk } from './editor'
 import {
   activateLoadedTextDoc,
+  hasLegacyDeletedTombstones,
+  migrateLegacyMetaDoc,
   insertMetaFile,
   metaDocWritable,
   metaDocEntriesRepresented,
@@ -199,6 +201,73 @@ test('metadata writes fail closed for pending persisted Yjs structs', () => {
   tombstone.destroy()
   client.destroy()
   parent.destroy()
+})
+
+test('legacy deleted tombstones are detected for read-only manual recovery', () => {
+  const doc = new Y.Doc()
+  const fileId = makeFileId('legacy-deleted')
+  const value = {
+    ...legacyText(fileId),
+    deleted: true as const,
+    deletedAt: 2,
+    deletedBy: makeDeviceId('legacy-deleter'),
+  }
+  doc.getMap('meta').set(fileId, value)
+
+  assert.equal(hasLegacyDeletedTombstones(doc), true)
+  doc.destroy()
+})
+
+test('legacy tombstone migration fails closed without replacing the v1 value', () => {
+  const doc = new Y.Doc()
+  const fileId = makeFileId('legacy-migration-tombstone')
+  const value = {
+    ...legacyText(fileId),
+    deleted: true as const,
+    deletedAt: 2,
+    deletedBy: makeDeviceId('legacy-migration-deleter'),
+  }
+  doc.getMap('meta').set(fileId, value)
+
+  assert.equal(migrateLegacyMetaDoc(doc), false)
+  assert.deepEqual(doc.getMap('meta').get(fileId), value)
+  doc.destroy()
+})
+
+test('legacy tombstones remain read-only even when a witness-shaped field is present', () => {
+  for (const [suffix, deletedContentVersion] of [
+    [
+      'text-witness',
+      {
+        kind: 'text' as const,
+        stateVectorBase64: 'AQ==',
+        contentSha256: '0'.repeat(64),
+      },
+    ],
+    [
+      'wrong-kind-witness',
+      {
+        kind: 'binary' as const,
+        blobManifestHash: '0'.repeat(64),
+      },
+    ],
+  ] as const) {
+    const doc = new Y.Doc()
+    const fileId = makeFileId(`legacy-migration-${suffix}`)
+    const value = {
+      ...legacyText(fileId),
+      deleted: true as const,
+      deletedAt: 2,
+      deletedBy: makeDeviceId('legacy-migration-deleter'),
+      deletedContentVersion,
+    }
+    doc.getMap('meta').set(fileId, value)
+
+    assert.equal(hasLegacyDeletedTombstones(doc), true)
+    assert.equal(migrateLegacyMetaDoc(doc), false)
+    assert.deepEqual(doc.getMap('meta').get(fileId), value)
+    doc.destroy()
+  }
 })
 
 function legacyText(fileId: string): MetaFile {

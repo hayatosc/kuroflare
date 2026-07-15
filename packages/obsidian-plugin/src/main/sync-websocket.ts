@@ -1,4 +1,4 @@
-import { makeSha256Hex, makeYDocId, type DocId } from '@kuroflare/core'
+import { makeSha256Hex, makeYDocId, type DocId, type MessageId } from '@kuroflare/core'
 import * as Y from 'yjs'
 
 import type { FileDocId } from '../main-types'
@@ -31,6 +31,7 @@ import {
   sha256Hex,
   readAccessToken,
 } from './auth'
+import type { SetupMetadataSource } from './auth'
 import { META_SYNC_DOC_ID, WORKER_ORIGIN } from './constants'
 import { safeLogError, encodeBase64, accessTokenSecretKeyForSetup } from './helpers'
 import { loadTextDoc, metaDocWritable, metadataWritesEnabled } from './meta'
@@ -125,18 +126,28 @@ export async function sendMetaDocToWorker(
   )
 }
 
+interface WorkerDocRequestPlugin extends SetupMetadataSource {
+  readonly startupSideEffectGate: {
+    readonly canSendNetwork: () => boolean
+  }
+  readonly workerHelloAccepted: boolean
+  readonly workerWebSocketSession: SyncRuntimeWebSocketSessionPort
+  readonly pendingSyncRequestMessageIds: Set<MessageId>
+  workerMessageCounter: number
+}
+
 export async function requestDocFromWorker(
-  plugin: KuroflareSpikePlugin,
+  plugin: WorkerDocRequestPlugin,
   docId: DocId,
   stateVector: Uint8Array,
   reason: string,
-): Promise<void> {
-  if (!plugin.startupSideEffectGate.canSendNetwork()) return
+): Promise<boolean> {
+  if (!plugin.startupSideEffectGate.canSendNetwork()) return false
   if (
     !plugin.workerHelloAccepted ||
     plugin.workerWebSocketSession.snapshot().readyState !== WebSocket.OPEN
   ) {
-    return
+    return false
   }
   const setup = requireSetupMetadata(plugin)
   const sender = createSyncRuntimeWebSocketSyncRequestSendPort({
@@ -155,6 +166,7 @@ export async function requestDocFromWorker(
     messageId: sent.message.messageId,
     docId,
   })
+  return true
 }
 
 export async function requestActiveFileFromWorker(

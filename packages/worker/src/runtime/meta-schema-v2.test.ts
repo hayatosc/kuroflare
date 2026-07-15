@@ -121,6 +121,27 @@ test('legacy metadata remains read-only without mutating the document', () => {
   assert.equal(decodeMetaValue(doc.getMap('meta').get(fileId), fileId).disposition, 'legacy-v1')
 })
 
+test('legacy deleted tombstones fail closed before grouped identity conversion', () => {
+  const legacy = new Y.Doc()
+  const fileId = makeFileId('legacy-deleted-identity')
+  legacy.getMap('meta').set(fileId, {
+    ...legacyText(fileId),
+    deleted: true,
+    deletedAt: 42,
+    deletedBy: DEVICE,
+    deletedContentVersion: {
+      kind: 'binary',
+      blobManifestHash: '0'.repeat(64),
+    },
+  })
+
+  const candidate = new Y.Doc()
+  assert.doesNotThrow(() => metaIdentityImmutable(legacy, candidate))
+  assert.equal(metaIdentityImmutable(legacy, candidate), false)
+  candidate.destroy()
+  legacy.destroy()
+})
+
 test('identity changes and removals are rejected while new entries are allowed', () => {
   const current = new Y.Doc()
   const fileId = makeFileId('file-a')

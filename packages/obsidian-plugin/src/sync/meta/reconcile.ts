@@ -7,6 +7,7 @@ import {
   type FileId,
   type MetaFile,
   type MetaRepair,
+  type TextDeletionEvidence,
 } from '@kuroflare/core'
 import type * as Y from 'yjs'
 
@@ -22,6 +23,8 @@ export interface MetaReconcileOptions {
   readonly updatedBy: DeviceId
   /** Binary file IDs whose manifest + chunks are verified present, hence restorable. */
   readonly restorableBinaryFileIds?: ReadonlySet<FileId>
+  /** Current loaded text YDoc evidence keyed by file ID. */
+  readonly textDeletionEvidence?: ReadonlyMap<FileId, TextDeletionEvidence>
   /** Yjs transaction origin so observers can tag repair-originated updates. */
   readonly origin?: unknown
 }
@@ -65,11 +68,12 @@ export function reconcileMetaDoc(
       options.restorableBinaryFileIds ?? NO_RESTORABLE_BINARIES,
       options.updatedAt,
       options.updatedBy,
+      options.textDeletionEvidence,
     ),
   ]
 
   // keep-deleted plans change no entry; they only drive repair-log/user notification.
-  const mutations = repairs.filter((repair) => !isKeepDeleted(repair))
+  const mutations = repairs.filter((repair) => !isNonMutatingRepair(repair))
   if (mutations.length > 0) {
     const apply = (): void => {
       for (const repair of mutations) {
@@ -97,6 +101,8 @@ export function reconcileMetaDoc(
   return { repairs, invalidFileIds }
 }
 
-function isKeepDeleted(repair: MetaRepair): boolean {
-  return 'action' in repair && repair.action === 'keep-deleted'
+function isNonMutatingRepair(repair: MetaRepair): boolean {
+  return (
+    'action' in repair && (repair.action === 'keep-deleted' || repair.action === 'defer-deletion')
+  )
 }
