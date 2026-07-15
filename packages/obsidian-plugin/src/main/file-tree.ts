@@ -51,7 +51,7 @@ import { writeBlobCacheBytes } from './outbox'
 import type KuroflareSpikePlugin from './plugin'
 import { consumePendingFsRename } from './runtime-guards'
 import { openLocalStoreDatabase, putOutboxRecords } from './store'
-import { sendMetaDocToWorker, requestDocFromWorker } from './sync-websocket'
+import { requestDocFromWorker } from './sync-websocket'
 
 export function fileTreeDeviceId(plugin: SetupMetadataSource): DeviceId {
   return makeDeviceId(currentSetupMetadata(plugin)?.deviceId ?? 'local-device')
@@ -252,7 +252,7 @@ export async function planBinaryMetaUpdate(
   const tempDoc = new Y.Doc()
   try {
     Y.applyUpdate(tempDoc, Y.encodeStateAsUpdate(plugin.metaDoc), WORKER_ORIGIN)
-    const before = Y.encodeStateVector(tempDoc)
+    const tempMeta = tempDoc.getMap<unknown>('meta')
     const entry: BinaryMetaFile = {
       schemaVersion: 1,
       fileId: input.fileId,
@@ -270,13 +270,36 @@ export async function planBinaryMetaUpdate(
       updatedBy: fileTreeDeviceId(plugin),
       mtime: input.now,
     }
-    const tempMeta = tempDoc.getMap<unknown>('meta')
-    if (input.previous !== undefined && updateMetaFile(tempMeta, entry)) {
-      // Updated content/location groups are emitted without replacing the root entry.
-    } else {
-      insertMetaFile(tempMeta, entry)
+    // Capture the mutation's own transaction update rather than diffing
+    // against a captured state vector: `Y.encodeStateAsUpdate(doc, vector)`
+    // always re-emits the delete-set for every struct the vector covers, so
+    // diffing since a snapshot taken right after importing the whole live
+    // doc would leak unrelated tombstones from other actors into this
+    // update. Those tombstones can reference content the server hasn't
+    // durably received yet (still queued in this device's own outbox),
+    // which fails the server's causal-application check and quarantines the
+    // update. The transaction's own update event only ever reports what
+    // this transaction actually changed.
+    let capturedUpdate: Uint8Array | undefined
+    const captureUpdate = (update: Uint8Array): void => {
+      capturedUpdate = update
     }
-    return Y.encodeStateAsUpdate(tempDoc, before)
+    tempDoc.on('update', captureUpdate)
+    try {
+      tempDoc.transact(() => {
+        if (input.previous !== undefined && updateMetaFile(tempMeta, entry)) {
+          // Updated content/location groups are emitted without replacing the root entry.
+        } else {
+          insertMetaFile(tempMeta, entry)
+        }
+      })
+    } finally {
+      tempDoc.off('update', captureUpdate)
+    }
+    if (capturedUpdate === undefined) {
+      throw new Error(`binary meta update produced no change for ${input.fileId}`)
+    }
+    return capturedUpdate
   } finally {
     tempDoc.destroy()
   }
@@ -356,9 +379,11 @@ export async function adoptLocalFilesAfterRemoteMeta(plugin: KuroflareSpikePlugi
     )
     adopted += 1
   }
-  if (adopted > 0) {
-    await sendMetaDocToWorker(plugin, 'startup:adopt-local-files-after-remote-meta')
-  }
+  // Each `applyFileCreate` above already synced incrementally through metaDoc's
+  // own `update` listener; resending the full doc here duplicated that update
+  // and could quarantine the sync-update on the server, because
+  // `Y.encodeStateAsUpdate(doc)` re-emits every delete this device has ever
+  // observed, not just what changed since the last send.
   console.info('[kuroflare] adopted local files after remote meta', { adopted })
 }
 

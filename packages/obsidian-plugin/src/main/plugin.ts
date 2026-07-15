@@ -2361,7 +2361,12 @@ export default class KuroflareSpikePlugin extends Plugin {
     if (this.workerWebSocketSession.snapshot().readyState !== WebSocket.OPEN) {
       await openWorkerWebSocket(this)
     }
-    await sendMetaDocToWorker(this, 'repair:path-conflict-retry')
+    // The rename that produced this entry already synced incrementally through
+    // metaDoc's own `update` listener; resending the full doc here duplicated
+    // that update and could quarantine the sync-update on the server, because
+    // `Y.encodeStateAsUpdate(doc)` re-emits every delete this device has ever
+    // observed (including ones from other actors this device hasn't durably
+    // synced yet), not just what changed since the last send.
     await waitForOutboundUpdates(this, 120_000)
     await this.removeRepairLogEntry(entry.id)
   }
@@ -2494,14 +2499,16 @@ export default class KuroflareSpikePlugin extends Plugin {
       await this.removeRepairLogEntry(entry.id)
       return
     }
+    // This transaction's own `update` event already syncs the deletion
+    // incrementally (see `attachMetaDocObservers`); resending the full doc
+    // here duplicated that update and could quarantine the sync-update on
+    // the server, because `Y.encodeStateAsUpdate(doc)` re-emits every delete
+    // this device has ever observed, not just what changed since the last send.
     this.metaDoc.transact(() => {
       metaMap(this).delete(entry.fileId)
     }, REPAIR_ORIGIN)
     if (this.invalidMetaIsolationDetail?.fileId === entry.fileId) {
       this.invalidMetaIsolationDetail = null
-    }
-    if (metadataWritesEnabled(this)) {
-      await sendMetaDocToWorker(this, 'repair:invalid-meta-discard')
     }
     await this.removeRepairLogEntry(entry.id)
   }
