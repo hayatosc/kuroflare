@@ -4,7 +4,11 @@ import * as Y from 'yjs'
 
 import type { LocalStoreOutboxRecord } from '../../sync/store/store'
 import { insertMetaFile, metaMap } from '../meta'
-import { schedulerItemsForMetadataAccess, shouldSendMetadataOutbox } from './tick'
+import {
+  hasRunnableOutboxWork,
+  schedulerItemsForMetadataAccess,
+  shouldSendMetadataOutbox,
+} from './tick'
 
 test('metadata outbox refuses flat-v1 records until migration completes', () => {
   const fileId = makeFileId('outbox-migration')
@@ -68,4 +72,138 @@ test('read-only scheduling blocks metadata starts without changing file lanes', 
   const filtered = schedulerItemsForMetadataAccess(records, 'read-only')
   assert.equal(filtered[0]?.status, 'blocked')
   assert.equal(filtered[1]?.status, 'pending')
+})
+
+test('follow-up scheduling sees only unleased runnable sync-control rows', () => {
+  const records: LocalStoreOutboxRecord[] = [
+    {
+      id: 'pending-y-update' as LocalStoreOutboxRecord['id'],
+      kind: 'y-update',
+      status: 'pending',
+      dependsOn: [],
+      nextAttemptAt: undefined,
+    },
+    {
+      id: 'leased-y-update' as LocalStoreOutboxRecord['id'],
+      kind: 'y-update',
+      status: 'retrying',
+      dependsOn: [],
+      nextAttemptAt: undefined,
+    },
+    {
+      id: 'paused-y-update' as LocalStoreOutboxRecord['id'],
+      kind: 'y-update',
+      status: 'paused',
+      dependsOn: [],
+      nextAttemptAt: undefined,
+    },
+    {
+      id: 'blocked-meta-ref' as LocalStoreOutboxRecord['id'],
+      kind: 'meta-ref-update',
+      status: 'pending',
+      dependsOn: ['pending-y-update' as LocalStoreOutboxRecord['id']],
+      nextAttemptAt: undefined,
+    },
+    {
+      id: 'future-y-update' as LocalStoreOutboxRecord['id'],
+      kind: 'y-update',
+      status: 'retrying',
+      dependsOn: [],
+      nextAttemptAt: 2_000,
+    },
+  ]
+  assert.equal(
+    hasRunnableOutboxWork(
+      records,
+      [
+        {
+          itemId: 'leased-y-update',
+          kind: 'y-update',
+          ownerId: 'worker',
+          leaseExpiresAt: 2_000,
+        },
+      ],
+      1_000,
+    ),
+    false,
+  )
+  assert.equal(
+    hasRunnableOutboxWork(
+      records.filter((record) => record.id !== 'pending-y-update'),
+      [
+        {
+          itemId: 'leased-y-update',
+          kind: 'y-update',
+          ownerId: 'worker',
+          leaseExpiresAt: 2_000,
+        },
+      ],
+      1_000,
+    ),
+    false,
+  )
+  assert.equal(hasRunnableOutboxWork(records, [], 1_000), true)
+  assert.equal(
+    hasRunnableOutboxWork(
+      records,
+      [
+        {
+          itemId: 'leased-y-update',
+          kind: 'y-update',
+          ownerId: 'worker',
+          leaseExpiresAt: 999,
+        },
+      ],
+      1_000,
+    ),
+    true,
+  )
+  assert.equal(
+    hasRunnableOutboxWork(
+      records,
+      [
+        {
+          itemId: 'leased-blob-put',
+          kind: 'blob-put',
+          ownerId: 'worker',
+          leaseExpiresAt: 2_000,
+        },
+      ],
+      1_000,
+    ),
+    true,
+  )
+})
+
+test('follow-up scheduling respects read-only metadata access', () => {
+  const records: LocalStoreOutboxRecord[] = [
+    {
+      id: 'meta-pending' as LocalStoreOutboxRecord['id'],
+      kind: 'y-update',
+      status: 'pending',
+      dependsOn: [],
+      nextAttemptAt: undefined,
+      docId: { kind: 'meta' },
+    },
+    {
+      id: 'file-pending' as LocalStoreOutboxRecord['id'],
+      kind: 'y-update',
+      status: 'pending',
+      dependsOn: [],
+      nextAttemptAt: undefined,
+      docId: { kind: 'file', ydocId: makeYDocId('outbox-file') },
+    },
+  ]
+  assert.equal(
+    hasRunnableOutboxWork(
+      schedulerItemsForMetadataAccess(records.slice(0, 1), 'read-only'),
+      [],
+      1_000,
+    ),
+    false,
+  )
+  assert.equal(
+    hasRunnableOutboxWork(schedulerItemsForMetadataAccess(records, 'read-only'), [], 1_000),
+    true,
+  )
 })

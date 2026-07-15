@@ -1,4 +1,8 @@
-import { type OutboxResumeEvent } from '@kuroflare/core'
+import {
+  outboxConcurrencyLane,
+  type OutboxResumeEvent,
+  type OutboxRunningLease,
+} from '@kuroflare/core'
 import type { Doc } from 'yjs'
 
 import { planOutboundQueueTick } from '../../sync/engine/queue'
@@ -69,6 +73,37 @@ export function shouldSendMetadataOutbox(
     metadataWritesEnabled(plugin) &&
     record.metadataSchemaVersion === 2
   )
+}
+
+/** Returns whether an unleased sync-control item can start in the next tick. */
+export function hasRunnableOutboxWork(
+  records: readonly LocalStoreOutboxRecord[],
+  leases: readonly OutboxRunningLease[],
+  now: number,
+): boolean {
+  const recordsById = new Map(records.map((record) => [record.id, record]))
+  const activeLeaseIds = new Set(
+    leases.filter((lease) => lease.leaseExpiresAt > now).map((lease) => lease.itemId),
+  )
+  const activeLanes = new Set(
+    leases
+      .filter((lease) => lease.leaseExpiresAt > now)
+      .map((lease) => outboxConcurrencyLane(lease.kind)),
+  )
+  return records.some((record) => {
+    if (
+      (record.kind !== 'y-update' && record.kind !== 'meta-ref-update') ||
+      (record.status !== 'pending' && record.status !== 'retrying') ||
+      activeLeaseIds.has(record.id) ||
+      (record.nextAttemptAt !== undefined && record.nextAttemptAt > now)
+    ) {
+      return false
+    }
+    if (activeLanes.has(outboxConcurrencyLane(record.kind))) return false
+    return record.dependsOn.every(
+      (dependencyId) => recordsById.get(dependencyId)?.status === 'done',
+    )
+  })
 }
 
 export function scheduleOutboxWorkerTick(
@@ -296,7 +331,16 @@ export async function runOutboxWorkerTick(
         await completeLeasedOutboxFailure(plugin, db, record, { kind: 'network' })
       }
     }
-    if (workerTick.starts.length > 0) {
+    const completionSnapshot = await readOutboxWorkerSnapshot(db)
+    if (
+      hasRunnableOutboxWork(
+        schedulerItemsForMetadataAccess(completionSnapshot.outboxRecords, plugin.metadataAccess),
+        completionSnapshot.leaseRows,
+        Date.now(),
+      )
+    ) {
+      scheduleOutboxWorkerTick(plugin, 250, 'runnable-follow-up')
+    } else if (workerTick.starts.length > 0) {
       scheduleOutboxWorkerTick(plugin, OUTBOX_WORKER_LEASE_DURATION_MS + 250, 'lease-expiry-retry')
     }
   } catch (error: unknown) {

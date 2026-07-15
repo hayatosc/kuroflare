@@ -206,6 +206,7 @@ export interface WorkerWebSocketOpenRuntime {
   readonly workerWebSocketSession: SyncRuntimeWebSocketSessionPort
   workerWebSocketStartupPort: SyncRuntimeWebSocketStartupStepPort | null
   workerHelloAccepted: boolean
+  metadataAccess: 'read-only' | 'read-write'
   readonly setup: LocalSetupMetadata
   readonly ensureUsableAccessToken: () => Promise<boolean>
   readonly createStartupPort: () => SyncRuntimeWebSocketStartupStepPort
@@ -254,7 +255,6 @@ export async function openWorkerWebSocket(
   sendHello: (plugin: KuroflareSpikePlugin) => Promise<void> = sendWorkerHello,
 ): Promise<void> {
   const setup = requireSetupMetadata(plugin)
-  plugin.metadataAccess = 'read-only'
   const runtime: WorkerWebSocketOpenRuntime = {
     startupSideEffectGate: plugin.startupSideEffectGate,
     get syncStoppedByAuth() {
@@ -278,6 +278,12 @@ export async function openWorkerWebSocket(
     },
     set workerHelloAccepted(value) {
       plugin.workerHelloAccepted = value
+    },
+    get metadataAccess() {
+      return plugin.metadataAccess
+    },
+    set metadataAccess(value) {
+      plugin.metadataAccess = value
     },
     setup,
     ensureUsableAccessToken: async () =>
@@ -304,6 +310,7 @@ async function openWorkerWebSocketOnce(
   if (runtime.syncStoppedByAuth !== null) return
   const snapshot = runtime.workerWebSocketSession.snapshot()
   if (snapshot.readyState === WebSocket.OPEN && runtime.workerHelloAccepted) return
+  runtime.metadataAccess = 'read-only'
   const usable = await runtime.ensureUsableAccessToken()
   if (!usable) {
     throw new Error('websocket-access-token-unusable')

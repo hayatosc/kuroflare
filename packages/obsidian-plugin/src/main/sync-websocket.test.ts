@@ -14,7 +14,9 @@ import {
   createSyncRuntimeWebSocketSession,
   createSyncRuntimeWebSocketStartupStepPort,
 } from '../sync/engine/websocket'
+import type KuroflareSpikePlugin from './plugin'
 import {
+  openWorkerWebSocket,
   openWorkerWebSocketRuntime,
   isLegacyMetadataCapabilityError,
   requestDocFromWorker,
@@ -22,6 +24,11 @@ import {
   shouldRetryWithLegacyMetadataCapability,
   type WorkerWebSocketOpenRuntime,
 } from './sync-websocket'
+
+function castForTest<T>(value: unknown): T {
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  return value as T
+}
 
 test('requestDocFromWorker reports a closed socket without leaving a pending request', async () => {
   const plugin = {
@@ -147,13 +154,14 @@ function createTestRuntime(
     tokenVersion: 1,
   } as const
   const session = createSyncRuntimeWebSocketSession()
-  const runtime = {
+  const runtime: WorkerWebSocketOpenRuntime = {
     startupSideEffectGate: { canSendNetwork: () => true },
     syncStoppedByAuth: null,
     workerWebSocketOpenPromise: null,
     workerWebSocketSession: session,
     workerWebSocketStartupPort: null,
     workerHelloAccepted: false,
+    metadataAccess: 'read-only',
     setup,
     ensureUsableAccessToken,
     createStartupPort: () => {
@@ -188,13 +196,14 @@ test('concurrent worker websocket opens share one session and preserve the hello
     tokenVersion: 1,
   } as const
   const session = createSyncRuntimeWebSocketSession()
-  const runtime = {
+  const runtime: WorkerWebSocketOpenRuntime = {
     startupSideEffectGate: { canSendNetwork: () => true },
     syncStoppedByAuth: null,
     workerWebSocketOpenPromise: null,
     workerWebSocketSession: session,
     workerWebSocketStartupPort: null,
     workerHelloAccepted: false,
+    metadataAccess: 'read-only',
     ensureUsableAccessToken: async () => true,
     setup,
     createStartupPort: () =>
@@ -231,6 +240,67 @@ test('concurrent worker websocket opens share one session and preserve the hello
   assert.equal(FakeBrowserWebSocket.instances[0]?.closeCalls, 0)
   assert.equal(runtime.workerWebSocketSession.snapshot().readyState, FakeBrowserWebSocket.OPEN)
   assert.equal(helloCalls, 1)
+})
+
+test('accepted open worker websocket reuse preserves negotiated metadata access', async () => {
+  FakeBrowserWebSocket.instances.length = 0
+  const setup = {
+    endpoint: 'https://worker.example.test',
+    vaultId: makeVaultId('accepted-open-vault'),
+    deviceId: makeDeviceId('accepted-open-device'),
+    protocolVersion: 1,
+    bootstrapMode: 'new-vault',
+    tokenVersion: 1,
+  } as const
+  const plugin = castForTest<KuroflareSpikePlugin>({
+    startupSideEffectGate: { canSendNetwork: () => true },
+    syncStoppedByAuth: null,
+    workerWebSocketOpenPromise: null,
+    workerWebSocketSession: {
+      snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+    },
+    workerWebSocketStartupPort: null,
+    workerHelloAccepted: true,
+    metadataAccess: 'read-write',
+    pendingSetupResponse: null,
+    trustedSetupMetadata: setup,
+    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    metadataCapabilityAdvertised: true,
+    metadataCapabilityFallbackAttempted: false,
+  })
+
+  await withFakeWebSocket(async () => {
+    await openWorkerWebSocket(plugin, async () => {
+      throw new Error('hello should not be sent for an accepted open session')
+    })
+  })
+
+  assert.equal(plugin.metadataAccess, 'read-write')
+})
+
+test('worker websocket reconnect fences metadata access until hello is accepted', async () => {
+  FakeBrowserWebSocket.instances.length = 0
+  const runtime = createTestRuntime(async () => true, [])
+  const metadataAccessBeforeHello: Array<'read-only' | 'read-write'> = []
+
+  await withFakeWebSocket(async () => {
+    await openWorkerWebSocketRuntime(runtime, async () => {
+      metadataAccessBeforeHello.push(runtime.metadataAccess)
+      runtime.metadataAccess = 'read-write'
+      runtime.workerHelloAccepted = true
+    })
+    runtime.workerWebSocketSession.close()
+
+    await openWorkerWebSocketRuntime(runtime, async () => {
+      metadataAccessBeforeHello.push(runtime.metadataAccess)
+      runtime.metadataAccess = 'read-write'
+      runtime.workerHelloAccepted = true
+    })
+  })
+
+  assert.deepEqual(metadataAccessBeforeHello, ['read-only', 'read-only'])
+  assert.equal(runtime.metadataAccess, 'read-write')
+  assert.equal(FakeBrowserWebSocket.instances.length, 2)
 })
 
 test('expired token refresh completes before startup port creation', async () => {
@@ -367,6 +437,7 @@ test('worker websocket open retries legacy metadata capability within the origin
     workerWebSocketSession: session,
     workerWebSocketStartupPort: null,
     workerHelloAccepted: false,
+    metadataAccess: 'read-only',
     setup,
     ensureUsableAccessToken: async () => true,
     createStartupPort: () =>
