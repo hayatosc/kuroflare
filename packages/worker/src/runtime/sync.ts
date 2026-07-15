@@ -306,6 +306,9 @@ async function handleSyncUpdateSerialized(
   }
   if (quarantine.action === 'quarantine') {
     await persistQuarantine(room, updateBytes, quarantine.row)
+    webSocket.send(
+      JSON.stringify(makeSyncUpdateRejected(update, updateSha256, quarantine.row.reason)),
+    )
     return { action: 'stop' }
   }
 

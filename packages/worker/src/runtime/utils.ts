@@ -10,6 +10,8 @@ import {
   makeDeviceId,
   type AdminOperation,
   type AdminOperationEffect,
+  type ApiError,
+  type ApiErrorCode,
   type DeviceId,
   type DocId,
   type Sha256Hex,
@@ -27,6 +29,21 @@ import { readSqlUpdateBytes } from '../db/helpers'
 import type { QuarantinedUpdateRecord } from '../quarantine'
 import { type SnapshotCandidate } from '../sync/snapshots'
 import { type SessionState, type WebSocketAttachment, PosIntSchema, NonNegIntSchema } from './types'
+
+const RETRYABLE_API_ERROR_CODES = new Set<ApiErrorCode>([
+  'rate-limited',
+  'server/degraded',
+  'server/error',
+])
+
+/** Builds the guarded `ApiError` envelope every public HTTP failure response uses. */
+export function apiErrorBody(code: ApiErrorCode, detail?: string): ApiError {
+  return {
+    code,
+    retryable: RETRYABLE_API_ERROR_CODES.has(code),
+    ...(detail === undefined ? {} : { detail }),
+  }
+}
 
 export function docKey(docId: DocId): string {
   return docId.kind === 'meta' ? 'meta' : `file:${docId.ydocId}`

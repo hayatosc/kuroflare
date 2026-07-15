@@ -145,6 +145,10 @@ test('validates guarded sync update rejection evidence', () => {
   assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, retryable: true }), false)
   assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, updateSha256: undefined }), false)
   assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, reason: 'unknown' }), false)
+  assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, reason: 'metadata-read-only' }), true)
+  assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, reason: 'hash-mismatch' }), true)
+  assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, reason: 'yjs-apply-failed' }), true)
+  assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, reason: 'meta-schema-invalid' }), true)
 })
 
 test('validates setup exchange request bodies', () => {
@@ -1035,6 +1039,17 @@ test('validates API errors', () => {
   assert.equal(v.is(RetryableApiErrorSchema, retryable), true)
   assert.equal(v.is(ApiErrorSchema, fatal), true)
   assert.equal(v.is(RetryableApiErrorSchema, fatal), false)
+
+  for (const code of [
+    'auth/rejected',
+    'server/error',
+    'request/invalid',
+    'request/not-found',
+    'request/conflict',
+  ]) {
+    assert.equal(v.is(ApiErrorSchema, { code, retryable: false, detail: 'x' }), true)
+  }
+  assert.equal(v.is(ApiErrorSchema, { code: 'unknown/code', retryable: false }), false)
 })
 
 test('rejects invalid branded IDs', () => {

@@ -1,4 +1,5 @@
 import {
+  ApiErrorSchema,
   CURRENT_PROTOCOL_VERSION,
   decodeBinaryFrame,
   encodeBinaryFrame,
@@ -286,7 +287,11 @@ test('VaultRoom rolls back setup exchange persistence failures', async () => {
   )
 
   assert.equal(response.status, 500)
-  assert.deepEqual(await response.json(), { error: 'setup-persist:transaction-failed' })
+  assert.deepEqual(await response.json(), {
+    code: 'server/error',
+    retryable: true,
+    detail: 'setup-persist:transaction-failed',
+  })
   assert(storage.sql.queries.includes('transaction begin'))
   assert(storage.sql.queries.includes('transaction rollback'))
   assert.equal(storage.sql.queries.at(-1), 'transaction rollback')
@@ -364,7 +369,9 @@ test('VaultRoom rolls back auth refresh rotation failures', async () => {
 
   assert.equal(response.status, 500)
   assert.deepEqual(await response.json(), {
-    error: 'auth-refresh-persist:transaction-failed',
+    code: 'server/error',
+    retryable: true,
+    detail: 'auth-refresh-persist:transaction-failed',
   })
   assert(storage.sql.queries.includes('transaction begin'))
   assert(storage.sql.queries.includes('transaction rollback'))
@@ -544,7 +551,7 @@ test('VaultRoom rejects blob uploads whose body hash does not match the addresse
   )
 
   assert.equal(response.status, 400)
-  assert.deepEqual(await response.json(), { error: 'blob/hash-mismatch' })
+  assert.deepEqual(await response.json(), { code: 'blob/hash-mismatch', retryable: false })
   assert.deepEqual(bucket.puts, [])
 })
 
@@ -569,7 +576,9 @@ test('VaultRoom rejects multipart-sized blob proxy uploads until multipart is im
 
   assert.equal(uploadUrlResponse.status, 413)
   assert.deepEqual(await uploadUrlResponse.json(), {
-    error: 'blob-upload-url:multipart-unimplemented',
+    code: 'request/invalid',
+    retryable: false,
+    detail: 'blob-upload-url:multipart-unimplemented',
   })
 })
 
@@ -683,7 +692,11 @@ test('VaultRoom rejects blob manifest uploads whose canonical body hash does not
   )
 
   assert.equal(response.status, 400)
-  assert.deepEqual(await response.json(), { error: 'blob-manifest/hash-mismatch' })
+  assert.deepEqual(await response.json(), {
+    code: 'blob/hash-mismatch',
+    retryable: false,
+    detail: 'blob-manifest/hash-mismatch',
+  })
   assert.deepEqual(bucket.puts, [])
 })
 
@@ -1543,7 +1556,18 @@ test('VaultRoom quarantines a live delta with a missing predecessor without appe
       false,
     )
     assert.equal(server.closeCode, undefined)
-    assert.equal(syncMessages(server.sent).length, 0)
+    assert.deepEqual(JSON.parse(stringMessageAt(server.sent, 0)), {
+      type: 'sync-update-rejected',
+      protocolVersion: update.protocolVersion,
+      vaultId: update.vaultId,
+      deviceId: update.deviceId,
+      messageId: update.messageId,
+      docId,
+      updateSha256: makeSha256Hex(await hashTestBytes(decodeTestBase64(update.update))),
+      reason: 'yjs-apply-failed',
+      retryable: false,
+    })
+    assert.equal(syncMessages(server.sent).length, 1)
     source.destroy()
   } finally {
     restoreResponse(previousResponse)
@@ -2264,7 +2288,11 @@ test('VaultRoom requires explicit v2 evidence for metadata snapshot imports', as
   )
 
   assert.equal(response.status, 400)
-  assert.deepEqual(await response.json(), { error: 'metadata-schema-v2-evidence-required' })
+  assert.deepEqual(await response.json(), {
+    code: 'request/invalid',
+    retryable: false,
+    detail: 'metadata-schema-v2-evidence-required',
+  })
   assert.deepEqual(bucket.puts, [])
   assert.equal(storage.sql.checkpointRuns.size, 0)
 })
@@ -2352,7 +2380,11 @@ test('VaultRoom rejects snapshot imports that would convert a legacy deleted tom
   )
 
   assert.equal(response.status, 400)
-  assert.deepEqual(await response.json(), { error: 'invalid-snapshot-import-meta-schema' })
+  assert.deepEqual(await response.json(), {
+    code: 'request/invalid',
+    retryable: false,
+    detail: 'invalid-snapshot-import-meta-schema',
+  })
   assert.deepEqual(bucket.puts, [])
   assert.deepEqual(Y.encodeStateAsUpdate(legacy), before)
   assert.equal(room.docs.get('meta'), legacy)
@@ -2429,7 +2461,11 @@ test('VaultRoom rejects unresolved snapshot-import deltas without advancing the 
   )
 
   assert.equal(response.status, 400)
-  assert.deepEqual(await response.json(), { error: 'invalid-snapshot-import-update' })
+  assert.deepEqual(await response.json(), {
+    code: 'request/invalid',
+    retryable: false,
+    detail: 'invalid-snapshot-import-update',
+  })
   assert.deepEqual(bucket.puts, [])
   assert.equal(storage.sql.docs.size, 0)
   source.destroy()
@@ -2476,7 +2512,11 @@ test('VaultRoom rejects metadata snapshot imports when the current document is p
   )
 
   assert.equal(response.status, 400)
-  assert.deepEqual(await response.json(), { error: 'invalid-snapshot-import-meta-schema' })
+  assert.deepEqual(await response.json(), {
+    code: 'request/invalid',
+    retryable: false,
+    detail: 'invalid-snapshot-import-meta-schema',
+  })
   assert.deepEqual(bucket.puts, [])
   assert.equal(storage.sql.checkpointRuns.size, 0)
   assert.equal(storage.sql.docs.get('meta')?.latestSeq, 1)
@@ -5439,7 +5479,11 @@ test('snapshot health verify rejects when quarantine commits during the pending 
   ])
   assert.equal(quarantineResponse.status, 200)
   assert.equal(verifyResponse.status, 409)
-  assert.deepEqual(await verifyResponse.json(), { error: 'snapshot-health-quarantined' })
+  assert.deepEqual(await verifyResponse.json(), {
+    code: 'request/conflict',
+    retryable: false,
+    detail: 'snapshot-health-quarantined',
+  })
   assert.equal(storage.sql.docs.has(`file:${ydocId}`), false)
   assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.logicalStatus, 'quarantined')
   assert.equal(
@@ -6222,15 +6266,24 @@ test('VaultRoom quarantines invalid Yjs updates without acking or broadcasting',
 
     await room.webSocketMessage(firstServer, JSON.stringify(makeHello()))
 
-    await room.webSocketMessage(
-      firstServer,
-      JSON.stringify({
-        ...makeSyncUpdate(makeMessageId('message-bad')),
-        update: 'AQID',
-      } satisfies SyncUpdate),
-    )
+    const update = {
+      ...makeSyncUpdate(makeMessageId('message-bad')),
+      update: 'AQID',
+    } satisfies SyncUpdate
+    await room.webSocketMessage(firstServer, JSON.stringify(update))
 
-    assert.deepEqual(syncMessages(firstServer.sent), [])
+    assert.deepEqual(JSON.parse(stringMessageAt(firstServer.sent, 0)), {
+      type: 'sync-update-rejected',
+      protocolVersion: update.protocolVersion,
+      vaultId: update.vaultId,
+      deviceId: update.deviceId,
+      messageId: update.messageId,
+      docId: update.docId,
+      updateSha256: makeSha256Hex(await hashTestBytes(decodeTestBase64(update.update))),
+      reason: 'yjs-apply-failed',
+      retryable: false,
+    })
+    assert.equal(syncMessages(firstServer.sent).length, 1)
     assert.deepEqual(syncMessages(secondServer.sent), [])
     const quarantined = storage.sql.quarantines.get('q-message-bad')
     assert(quarantined)
@@ -6271,7 +6324,18 @@ test('VaultRoom quarantines updates with mismatched wire hashes', async () => {
     } satisfies SyncUpdate
     await room.webSocketMessage(server, JSON.stringify(update))
 
-    assert.deepEqual(syncMessages(server.sent), [])
+    assert.deepEqual(JSON.parse(stringMessageAt(server.sent, 0)), {
+      type: 'sync-update-rejected',
+      protocolVersion: update.protocolVersion,
+      vaultId: update.vaultId,
+      deviceId: update.deviceId,
+      messageId: update.messageId,
+      docId: update.docId,
+      updateSha256: makeSha256Hex(await hashTestBytes(decodeTestBase64(update.update))),
+      reason: 'hash-mismatch',
+      retryable: false,
+    })
+    assert.equal(syncMessages(server.sent).length, 1)
     assert.equal(storage.sql.opLog.has('meta:message-hash-mismatch'), false)
     assert.equal(storage.sql.quarantines.get('q-message-hash-mismatch')?.reason, 'hash-mismatch')
   } finally {
@@ -6295,15 +6359,29 @@ test('VaultRoom treats repeated quarantine inserts as idempotent', async () => {
 
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
 
-    const invalidUpdate = JSON.stringify({
+    const update = {
       ...makeSyncUpdate(makeMessageId('message-repeat-bad')),
       update: 'AQID',
-    } satisfies SyncUpdate)
+    } satisfies SyncUpdate
+    const invalidUpdate = JSON.stringify(update)
 
     await room.webSocketMessage(server, invalidUpdate)
     await room.webSocketMessage(server, invalidUpdate)
 
-    assert.deepEqual(syncMessages(server.sent), [])
+    const expectedRejection = {
+      type: 'sync-update-rejected',
+      protocolVersion: update.protocolVersion,
+      vaultId: update.vaultId,
+      deviceId: update.deviceId,
+      messageId: update.messageId,
+      docId: update.docId,
+      updateSha256: makeSha256Hex(await hashTestBytes(decodeTestBase64(update.update))),
+      reason: 'yjs-apply-failed',
+      retryable: false,
+    }
+    assert.deepEqual(JSON.parse(stringMessageAt(server.sent, 0)), expectedRejection)
+    assert.deepEqual(JSON.parse(stringMessageAt(server.sent, 1)), expectedRejection)
+    assert.equal(syncMessages(server.sent).length, 2)
     assert.equal(server.closed, false)
     assert.equal(storage.sql.quarantines.get('q-message-repeat-bad')?.reason, 'yjs-apply-failed')
   } finally {
@@ -6330,15 +6408,24 @@ test('VaultRoom quarantines meta updates that fail MetaFile schema validation', 
 
     await room.webSocketMessage(firstServer, JSON.stringify(makeHello()))
 
-    await room.webSocketMessage(
-      firstServer,
-      JSON.stringify({
-        ...makeSyncUpdate(makeMessageId('message-bad-meta')),
-        update: makeInvalidMetaSchemaYjsUpdateBase64(),
-      } satisfies SyncUpdate),
-    )
+    const update = {
+      ...makeSyncUpdate(makeMessageId('message-bad-meta')),
+      update: makeInvalidMetaSchemaYjsUpdateBase64(),
+    } satisfies SyncUpdate
+    await room.webSocketMessage(firstServer, JSON.stringify(update))
 
-    assert.deepEqual(syncMessages(firstServer.sent), [])
+    assert.deepEqual(JSON.parse(stringMessageAt(firstServer.sent, 0)), {
+      type: 'sync-update-rejected',
+      protocolVersion: update.protocolVersion,
+      vaultId: update.vaultId,
+      deviceId: update.deviceId,
+      messageId: update.messageId,
+      docId: update.docId,
+      updateSha256: makeSha256Hex(await hashTestBytes(decodeTestBase64(update.update))),
+      reason: 'meta-schema-invalid',
+      retryable: false,
+    })
+    assert.equal(syncMessages(firstServer.sent).length, 1)
     assert.deepEqual(syncMessages(secondServer.sent), [])
     const quarantined = storage.sql.quarantines.get('q-message-bad-meta')
     assert(quarantined)
@@ -6424,7 +6511,11 @@ test('VaultRoom exposes authenticated quarantine list and detail inspection', as
     }),
   )
   assert.equal(missingResponse.status, 404)
-  assert.deepEqual(await missingResponse.json(), { error: 'unknown-quarantine' })
+  assert.deepEqual(await missingResponse.json(), {
+    code: 'request/not-found',
+    retryable: false,
+    detail: 'unknown-quarantine',
+  })
 })
 
 test('VaultRoom serves the latest meta snapshot from the production HTTP route', async () => {
@@ -6531,7 +6622,11 @@ test('VaultRoom rejects latest snapshot requests without a valid access token', 
   )
 
   assert.equal(response.status, 401)
-  assert.deepEqual(await response.json(), { error: 'auth-reject:invalid-token' })
+  assert.deepEqual(await response.json(), {
+    code: 'auth/rejected',
+    retryable: false,
+    detail: 'auth-reject:invalid-token',
+  })
 })
 
 test('VaultRoom rejects latest snapshot requests missing the sync:read scope', async () => {
@@ -6552,7 +6647,11 @@ test('VaultRoom rejects latest snapshot requests missing the sync:read scope', a
   )
 
   assert.equal(response.status, 403)
-  assert.deepEqual(await response.json(), { error: 'auth-reject:missing-scope' })
+  assert.deepEqual(await response.json(), {
+    code: 'auth/rejected',
+    retryable: false,
+    detail: 'auth-reject:missing-scope',
+  })
 })
 
 test('VaultRoom returns doc-not-found for a latest snapshot request on an unknown doc', async () => {
@@ -6575,7 +6674,11 @@ test('VaultRoom returns doc-not-found for a latest snapshot request on an unknow
   )
 
   assert.equal(response.status, 404)
-  assert.deepEqual(await response.json(), { error: 'doc-not-found' })
+  assert.deepEqual(await response.json(), {
+    code: 'snapshot/not-found',
+    retryable: false,
+    detail: 'doc-not-found',
+  })
 })
 
 test('VaultRoom logs a structured event when a checkpoint fails', async () => {
@@ -6853,4 +6956,56 @@ test('authoritative health evidence without a document uses the full recovery pa
     ),
     true,
   )
+})
+
+test('every public HTTP failure across auth, blob, and snapshot routes uses the guarded ApiError envelope', async () => {
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(new SqlOnlyStorage()),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+  )
+  const token = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, { tokenVersion: 1 })
+
+  const unauthenticated = await room.fetch(new Request('https://worker.example/admin/retention'))
+  assert.equal(unauthenticated.status, 401)
+  assert.equal(v.is(ApiErrorSchema, await unauthenticated.json()), true)
+
+  const malformedSetup = await room.fetch(
+    new Request('https://worker.example/setup/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+  )
+  assert.equal(malformedSetup.status, 400)
+  assert.equal(v.is(ApiErrorSchema, await malformedSetup.json()), true)
+
+  const missingDoc = await room.fetch(
+    new Request(
+      `https://worker.example/vaults/vault-1/files/${makeYDocId('ydoc-contract-missing')}/latest`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    ),
+  )
+  assert.equal(missingDoc.status, 404)
+  assert.equal(v.is(ApiErrorSchema, await missingDoc.json()), true)
+
+  const blobToken = await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+    tokenVersion: 1,
+    scope: ['sync:read', 'sync:write', 'blob:read', 'blob:write'],
+  })
+  const missingBlob = await room.fetch(
+    new Request(`https://worker.example/blobs/${makeSha256Hex('d'.repeat(64))}`, {
+      headers: { Authorization: `Bearer ${blobToken}` },
+    }),
+  )
+  assert.equal(missingBlob.status, 404)
+  assert.equal(v.is(ApiErrorSchema, await missingBlob.json()), true)
+
+  const unknownQuarantine = await room.fetch(
+    new Request('https://worker.example/admin/quarantine/does-not-exist', {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  )
+  assert.equal(unknownQuarantine.status, 404)
+  assert.equal(v.is(ApiErrorSchema, await unknownQuarantine.json()), true)
 })

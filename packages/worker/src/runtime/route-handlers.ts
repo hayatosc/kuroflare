@@ -99,6 +99,7 @@ import {
 import type { RuntimeWebSocketPairConstructor, WebSocketResponseInit } from './types'
 import { E2eSetupTokenSeedRequestSchema, E2eSnapshotSeedRequestSchema } from './types'
 import {
+  apiErrorBody,
   docKey,
   canApplyYjsUpdate,
   canApplyYjsUpdateToDoc,
@@ -123,14 +124,15 @@ declare const WebSocketPair: RuntimeWebSocketPairConstructor | undefined
 
 export async function handleE2eSetupTokenSeed(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
-  if (db === undefined) return c.text('E2E setup token seed unavailable', 503)
+  if (db === undefined)
+    return c.json(apiErrorBody('server/degraded', 'e2e-setup-token-seed-unavailable'), 503)
   await ensureSchema(room)
 
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(E2eSetupTokenSeedRequestSchema, body))
-    return c.json({ error: 'invalid-e2e-setup-token-seed-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-setup-token-seed-request'), 400)
   if (room.vaultId !== undefined && body.vaultId !== room.vaultId)
-    return c.json({ error: 'vault-mismatch' }, 400)
+    return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   room.vaultId = body.vaultId
 
   const now = Date.now()
@@ -152,19 +154,20 @@ export async function handleE2eSetupTokenSeed(room: VaultRoom, c: Context): Prom
 export async function handleE2eSnapshotSeed(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const bucket = room.env.SNAPSHOT_BUCKET
-  if (db === undefined || bucket === undefined) return c.text('E2E snapshot seed unavailable', 503)
+  if (db === undefined || bucket === undefined)
+    return c.json(apiErrorBody('server/degraded', 'e2e-snapshot-seed-unavailable'), 503)
   await ensureSchema(room)
 
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(E2eSnapshotSeedRequestSchema, body))
-    return c.json({ error: 'invalid-e2e-snapshot-seed-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-snapshot-seed-request'), 400)
   if (room.vaultId !== undefined && body.vaultId !== room.vaultId)
-    return c.json({ error: 'vault-mismatch' }, 400)
+    return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   room.vaultId = body.vaultId
 
   const update = decodeBase64(body.update)
   if (update === null || !canApplyYjsUpdate(update))
-    return c.json({ error: 'invalid-e2e-snapshot-update' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-snapshot-update'), 400)
   const doc = new Y.Doc()
   Y.applyUpdate(doc, update)
   const stateVector = Y.encodeStateVector(doc)
@@ -224,14 +227,15 @@ export async function handleE2eSnapshotSeed(room: VaultRoom, c: Context): Promis
 export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET
-  if (db === undefined || secret === undefined) return c.text('Setup exchange unavailable', 503)
+  if (db === undefined || secret === undefined)
+    return c.json(apiErrorBody('server/degraded', 'setup-exchange-unavailable'), 503)
   await ensureSchema(room)
 
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(SetupExchangeRequestSchema, body))
-    return c.json({ error: 'invalid-setup-exchange-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-setup-exchange-request'), 400)
   if (room.vaultId !== undefined && body.vaultId !== room.vaultId)
-    return c.json({ error: 'vault-mismatch' }, 400)
+    return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   room.vaultId = body.vaultId
 
   const now = Date.now()
@@ -242,7 +246,7 @@ export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<
     now,
   })
   if (tokenDecision.action === 'reject')
-    return c.json({ error: `setup-token:${tokenDecision.reason}` }, 403)
+    return c.json(apiErrorBody('auth/rejected', `setup-token:${tokenDecision.reason}`), 403)
 
   const existingDevice =
     body.existingDeviceId === undefined
@@ -253,7 +257,7 @@ export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<
     registry: { existingDevice },
   })
   if (setupDecision.action === 'reject')
-    return c.json({ error: `setup-exchange:${setupDecision.reason}` }, 403)
+    return c.json(apiErrorBody('auth/rejected', `setup-exchange:${setupDecision.reason}`), 403)
 
   const deviceId = body.existingDeviceId ?? makeGeneratedDeviceId()
   const refreshToken = makeOpaqueToken()
@@ -266,7 +270,7 @@ export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<
     refreshTokenExpiresAt: now + SETUP_REFRESH_TOKEN_TTL_MS,
   })
   if (credentialPlan.action === 'reject')
-    return c.json({ error: `setup-credentials:${credentialPlan.reason}` }, 500)
+    return c.json(apiErrorBody('server/error', `setup-credentials:${credentialPlan.reason}`), 500)
 
   const claims: DeviceTokenClaims = {
     iss: 'kuroflare-worker',
@@ -290,7 +294,7 @@ export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<
     bootstrapMode: (await hasAnyPersistedDocs(room)) ? 'join-existing' : 'new-vault',
   })
   if (responsePlan.action === 'reject')
-    return c.json({ error: `setup-response:${responsePlan.reason}` }, 500)
+    return c.json(apiErrorBody('server/error', `setup-response:${responsePlan.reason}`), 500)
 
   try {
     await withSqlTransaction(room, async () => {
@@ -306,7 +310,7 @@ export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<
     })
   } catch (error) {
     console.error('[kuroflare] setup exchange persist failed', error)
-    return c.json({ error: 'setup-persist:transaction-failed' }, 500)
+    return c.json(apiErrorBody('server/error', 'setup-persist:transaction-failed'), 500)
   }
 
   return c.json(responsePlan.response, 200)
@@ -315,14 +319,15 @@ export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<
 export async function handleAuthRefresh(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET
-  if (db === undefined || secret === undefined) return c.text('Auth refresh unavailable', 503)
+  if (db === undefined || secret === undefined)
+    return c.json(apiErrorBody('server/degraded', 'auth-refresh-unavailable'), 503)
   await ensureSchema(room)
 
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(DeviceTokenRefreshRequestSchema, body))
-    return c.json({ error: 'invalid-auth-refresh-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-auth-refresh-request'), 400)
   if (room.vaultId !== undefined && body.vaultId !== room.vaultId)
-    return c.json({ error: 'vault-mismatch' }, 400)
+    return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   room.vaultId = body.vaultId
 
   const now = Date.now()
@@ -335,7 +340,7 @@ export async function handleAuthRefresh(room: VaultRoom, c: Context): Promise<Re
     now,
   })
   if (refreshDecision.action === 'reject')
-    return c.json({ error: `auth-refresh:${refreshDecision.reason}` }, 403)
+    return c.json(apiErrorBody('auth/rejected', `auth-refresh:${refreshDecision.reason}`), 403)
 
   const nextRefreshToken = makeOpaqueToken()
   const nextRefreshTokenHash = makeSha256Hex(await sha256Text(nextRefreshToken))
@@ -348,7 +353,7 @@ export async function handleAuthRefresh(room: VaultRoom, c: Context): Promise<Re
     nextExpiresAt: now + REFRESH_TOKEN_TTL_MS,
   })
   if (rotationPlan.action === 'reject')
-    return c.json({ error: `auth-refresh-rotation:${rotationPlan.reason}` }, 500)
+    return c.json(apiErrorBody('server/error', `auth-refresh-rotation:${rotationPlan.reason}`), 500)
 
   const claims: DeviceTokenClaims = {
     iss: 'kuroflare-worker',
@@ -371,7 +376,7 @@ export async function handleAuthRefresh(room: VaultRoom, c: Context): Promise<Re
     protocolVersion: CURRENT_PROTOCOL_VERSION,
   })
   if (responsePlan.action === 'reject')
-    return c.json({ error: `auth-refresh-response:${responsePlan.reason}` }, 500)
+    return c.json(apiErrorBody('server/error', `auth-refresh-response:${responsePlan.reason}`), 500)
 
   try {
     await withSqlTransaction(room, async () => {
@@ -385,7 +390,7 @@ export async function handleAuthRefresh(room: VaultRoom, c: Context): Promise<Re
       )
     })
   } catch {
-    return c.json({ error: 'auth-refresh-persist:transaction-failed' }, 500)
+    return c.json(apiErrorBody('server/error', 'auth-refresh-persist:transaction-failed'), 500)
   }
 
   return c.json(responsePlan.response, 200)
@@ -394,15 +399,17 @@ export async function handleAuthRefresh(room: VaultRoom, c: Context): Promise<Re
 export async function handleDeviceRevoke(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET
-  if (db === undefined || secret === undefined) return c.text('Device revoke unavailable', 503)
+  if (db === undefined || secret === undefined)
+    return c.json(apiErrorBody('server/degraded', 'device-revoke-unavailable'), 503)
   await ensureSchema(room)
 
   const rawDeviceId = c.req.param('deviceId')
   const targetDeviceId = v.is(DeviceIdSchema, rawDeviceId) ? rawDeviceId : undefined
-  if (targetDeviceId === undefined) return c.json({ error: 'invalid-device-id' }, 400)
+  if (targetDeviceId === undefined)
+    return c.json(apiErrorBody('request/invalid', 'invalid-device-id'), 400)
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(RevokeDeviceRequestSchema, body))
-    return c.json({ error: 'invalid-revoke-device-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-revoke-device-request'), 400)
 
   const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
   if (rejection !== undefined) return rejection
@@ -410,11 +417,14 @@ export async function handleDeviceRevoke(room: VaultRoom, c: Context): Promise<R
   const targetDevice = await readDeviceRegistryEntry(room, targetDeviceId)
   const revokeDecision = decideRevokeDevice({ device: targetDevice, revokedAt: Date.now() })
   if (revokeDecision.action === 'reject')
-    return c.json({ error: `revoke-device:${revokeDecision.reason}` }, 404)
+    return c.json(apiErrorBody('request/not-found', `revoke-device:${revokeDecision.reason}`), 404)
 
   const responsePlan = planRevokeDeviceHttpResponse({ revokeDecision, deviceId: targetDeviceId })
   if (responsePlan.action === 'reject')
-    return c.json({ error: `revoke-device-response:${responsePlan.reason}` }, 500)
+    return c.json(
+      apiErrorBody('server/error', `revoke-device-response:${responsePlan.reason}`),
+      500,
+    )
 
   if (revokeDecision.action === 'revoke-device') {
     await persistDeviceRevocation(
@@ -431,7 +441,8 @@ export async function handleDeviceRevoke(room: VaultRoom, c: Context): Promise<R
 export async function handleQuarantineList(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET
-  if (db === undefined || secret === undefined) return c.text('Quarantine inspect unavailable', 503)
+  if (db === undefined || secret === undefined)
+    return c.json(apiErrorBody('server/degraded', 'quarantine-inspect-unavailable'), 503)
   await ensureSchema(room)
 
   const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
@@ -443,7 +454,8 @@ export async function handleQuarantineList(room: VaultRoom, c: Context): Promise
 export async function handleQuarantineDetail(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET
-  if (db === undefined || secret === undefined) return c.text('Quarantine inspect unavailable', 503)
+  if (db === undefined || secret === undefined)
+    return c.json(apiErrorBody('server/degraded', 'quarantine-inspect-unavailable'), 503)
   await ensureSchema(room)
 
   const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
@@ -451,7 +463,8 @@ export async function handleQuarantineDetail(room: VaultRoom, c: Context): Promi
 
   const quarantineId = c.req.param('id') ?? ''
   const record = await readQuarantinedUpdate(room, quarantineId)
-  if (record === undefined) return c.json({ error: 'unknown-quarantine' }, 404)
+  if (record === undefined)
+    return c.json(apiErrorBody('request/not-found', 'unknown-quarantine'), 404)
 
   return c.json(
     buildQuarantinedUpdateDetailResponse(
@@ -465,7 +478,8 @@ export async function handleQuarantineDetail(room: VaultRoom, c: Context): Promi
 export async function handleRetentionInspect(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET
-  if (db === undefined || secret === undefined) return c.text('Retention inspect unavailable', 503)
+  if (db === undefined || secret === undefined)
+    return c.json(apiErrorBody('server/degraded', 'retention-inspect-unavailable'), 503)
   await ensureSchema(room)
 
   const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
@@ -480,7 +494,8 @@ export async function handleRetentionInspect(room: VaultRoom, c: Context): Promi
 export async function handleMetaLatest(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET
-  if (db === undefined || secret === undefined) return c.text('Snapshot fetch unavailable', 503)
+  if (db === undefined || secret === undefined)
+    return c.json(apiErrorBody('server/degraded', 'snapshot-fetch-unavailable'), 503)
   await ensureSchema(room)
 
   const rejection = await authorizeHttpRequest(room, c, ['sync:read'])
@@ -492,11 +507,13 @@ export async function handleMetaLatest(room: VaultRoom, c: Context): Promise<Res
 export async function handleFileLatest(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET
-  if (db === undefined || secret === undefined) return c.text('Snapshot fetch unavailable', 503)
+  if (db === undefined || secret === undefined)
+    return c.json(apiErrorBody('server/degraded', 'snapshot-fetch-unavailable'), 503)
   await ensureSchema(room)
 
   const rawYDocId = c.req.param('ydocId')
-  if (!v.is(YDocIdSchema, rawYDocId)) return c.json({ error: 'invalid-ydoc-id' }, 400)
+  if (!v.is(YDocIdSchema, rawYDocId))
+    return c.json(apiErrorBody('request/invalid', 'invalid-ydoc-id'), 400)
 
   const rejection = await authorizeHttpRequest(room, c, ['sync:read'])
   if (rejection !== undefined) return rejection
@@ -507,7 +524,8 @@ export async function handleFileLatest(room: VaultRoom, c: Context): Promise<Res
 export async function handleMetaSnapshotImport(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const bucket = room.env.SNAPSHOT_BUCKET
-  if (db === undefined || bucket === undefined) return c.text('Snapshot import unavailable', 503)
+  if (db === undefined || bucket === undefined)
+    return c.json(apiErrorBody('server/degraded', 'snapshot-import-unavailable'), 503)
   await ensureSchema(room)
 
   const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
@@ -519,11 +537,13 @@ export async function handleMetaSnapshotImport(room: VaultRoom, c: Context): Pro
 export async function handleFileSnapshotImport(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const bucket = room.env.SNAPSHOT_BUCKET
-  if (db === undefined || bucket === undefined) return c.text('Snapshot import unavailable', 503)
+  if (db === undefined || bucket === undefined)
+    return c.json(apiErrorBody('server/degraded', 'snapshot-import-unavailable'), 503)
   await ensureSchema(room)
 
   const rawYDocId = c.req.param('ydocId')
-  if (!v.is(YDocIdSchema, rawYDocId)) return c.json({ error: 'invalid-ydoc-id' }, 400)
+  if (!v.is(YDocIdSchema, rawYDocId))
+    return c.json(apiErrorBody('request/invalid', 'invalid-ydoc-id'), 400)
 
   const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
   if (rejection !== undefined) return rejection
@@ -537,7 +557,7 @@ async function handleLatestSnapshotRequest(
   docId: DocId,
 ): Promise<Response> {
   const clock = await readDocClock(room, docId)
-  if (clock === undefined) return c.json({ error: 'doc-not-found' }, 404)
+  if (clock === undefined) return c.json(apiErrorBody('snapshot/not-found', 'doc-not-found'), 404)
 
   try {
     await ensureDocHydrated(room, docId)
@@ -547,12 +567,13 @@ async function handleLatestSnapshotRequest(
       docId,
       error: retentionErrorMessage(error),
     })
-    return c.json({ error: 'snapshot-hydrate-failed' }, 500)
+    return c.json(apiErrorBody('server/error', 'snapshot-hydrate-failed'), 500)
   }
 
   const doc = room.docs.get(docKey(docId))
   const vaultId = room.vaultId
-  if (doc === undefined || vaultId === undefined) return c.json({ error: 'doc-not-found' }, 404)
+  if (doc === undefined || vaultId === undefined)
+    return c.json(apiErrorBody('snapshot/not-found', 'doc-not-found'), 404)
 
   const updateBytes = Y.encodeStateAsUpdate(doc)
   const stateVectorBytes = Y.encodeStateVector(doc)
@@ -578,43 +599,52 @@ async function handleSnapshotImportRequest(
   const bucket = room.env.SNAPSHOT_BUCKET
   const vaultId = room.vaultId
   if (db === undefined || bucket === undefined || vaultId === undefined)
-    return c.json({ error: 'vault-unavailable' }, 500)
+    return c.json(apiErrorBody('server/error', 'vault-unavailable'), 500)
 
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(SnapshotImportRequestSchema, body))
-    return c.json({ error: 'invalid-snapshot-import-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-import-request'), 400)
   if (docId.kind === 'meta' && body.metadataSchemaVersion !== 2) {
-    return c.json({ error: 'metadata-schema-v2-evidence-required' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'metadata-schema-v2-evidence-required'), 400)
   }
 
   const update = decodeBase64(body.updateBytesBase64)
   if (update === null || !canApplyYjsUpdate(update))
-    return c.json({ error: 'invalid-snapshot-import-update' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-import-update'), 400)
 
   return await withDocWriteQueue(room, docId, async () => {
     let existingLatestSeq: number
     try {
       existingLatestSeq = (await readDocClock(room, docId))?.latestSeq ?? 0
     } catch {
-      return c.json({ error: 'snapshot-import-hydrate-failed' }, 500)
+      return c.json(apiErrorBody('server/error', 'snapshot-import-hydrate-failed'), 500)
     }
     if (existingLatestSeq > 0 && body.latestSeq === undefined) {
       return c.json(
-        { error: 'snapshot-import-latest-seq-required', latestSeq: existingLatestSeq },
+        {
+          ...apiErrorBody('request/conflict', 'snapshot-import-latest-seq-required'),
+          latestSeq: existingLatestSeq,
+        },
         409,
       )
     }
     if (body.latestSeq !== undefined && body.latestSeq !== existingLatestSeq) {
-      return c.json({ error: 'snapshot-import-stale-seq', latestSeq: existingLatestSeq }, 409)
+      return c.json(
+        {
+          ...apiErrorBody('request/conflict', 'snapshot-import-stale-seq'),
+          latestSeq: existingLatestSeq,
+        },
+        409,
+      )
     }
     const initialSnapshotKey = makeSnapshotObjectKey(vaultId, docId, existingLatestSeq + 1)
     if ((await bucket.head(initialSnapshotKey)) !== null) {
-      return c.json({ error: 'snapshot-import-target-exists' }, 409)
+      return c.json(apiErrorBody('request/conflict', 'snapshot-import-target-exists'), 409)
     }
     try {
       await ensureDocHydrated(room, docId)
     } catch {
-      return c.json({ error: 'snapshot-import-hydrate-failed' }, 500)
+      return c.json(apiErrorBody('server/error', 'snapshot-import-hydrate-failed'), 500)
     }
 
     const key = docKey(docId)
@@ -626,11 +656,11 @@ async function handleSnapshotImportRequest(
       !['supported-v2', 'legacy-v1'].includes(metaYDocSchemaDisposition(existingDoc))
     ) {
       importedDoc.destroy()
-      return c.json({ error: 'invalid-snapshot-import-meta-schema' }, 400)
+      return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-import-meta-schema'), 400)
     }
     if (!canApplyYjsUpdateToDoc(existingDoc ?? importedDoc, update)) {
       importedDoc.destroy()
-      return c.json({ error: 'invalid-snapshot-import-update' }, 400)
+      return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-import-update'), 400)
     }
     if (existingDoc !== undefined) Y.applyUpdate(importedDoc, Y.encodeStateAsUpdate(existingDoc))
     Y.applyUpdate(importedDoc, update)
@@ -642,7 +672,7 @@ async function handleSnapshotImportRequest(
             !metaRootMutationAllowed(existingDoc, update, true))))
     ) {
       importedDoc.destroy()
-      return c.json({ error: 'invalid-snapshot-import-meta-schema' }, 400)
+      return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-import-meta-schema'), 400)
     }
     const mergedBytes = Y.encodeStateAsUpdate(importedDoc)
     const stateVector = Y.encodeStateVector(importedDoc)
@@ -652,7 +682,7 @@ async function handleSnapshotImportRequest(
     const snapshotKey = makeSnapshotObjectKey(vaultId, docId, snapshotSeq)
     if ((await bucket.head(snapshotKey)) !== null) {
       importedDoc.destroy()
-      return c.json({ error: 'snapshot-import-target-exists' }, 409)
+      return c.json(apiErrorBody('request/conflict', 'snapshot-import-target-exists'), 409)
     }
     const runId = `checkpoint:import:${snapshotKey}:${now}`
     let pointerPersisted = false
@@ -734,7 +764,7 @@ async function handleSnapshotImportRequest(
       })
       if (pointerInvalidated) {
         importedDoc.destroy()
-        return c.json({ error: 'snapshot-import-target-changed' }, 409)
+        return c.json(apiErrorBody('request/conflict', 'snapshot-import-target-changed'), 409)
       }
       await updateCheckpointPointerUpdated(db, runId, now)
       await appendSnapshotVerificationEventPreservingLogical(
@@ -817,18 +847,19 @@ export async function handleSnapshotHealthList(room: VaultRoom, c: Context): Pro
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET
   if (db === undefined || secret === undefined)
-    return c.text('Snapshot health inspect unavailable', 503)
+    return c.json(apiErrorBody('server/degraded', 'snapshot-health-inspect-unavailable'), 503)
   await ensureSchema(room)
 
   const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
   if (rejection !== undefined) return rejection
 
   const docId = parseSnapshotHealthDocId(c.req.query('docId'))
-  if (docId === undefined) return c.json({ error: 'invalid-snapshot-health-doc-id' }, 400)
+  if (docId === undefined)
+    return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-doc-id'), 400)
   const limit = parseSnapshotHealthLimit(c.req.query('limit'))
   const cursor = parseSnapshotHealthCursor(c.req.query('cursor'))
   if (limit === undefined || (c.req.query('cursor') !== undefined && cursor === undefined)) {
-    return c.json({ error: 'invalid-snapshot-health-pagination' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-pagination'), 400)
   }
 
   const latestRows = await collectSnapshotHealthRows(room, db, docId)
@@ -848,7 +879,7 @@ export async function handleSnapshotHealthList(room: VaultRoom, c: Context): Pro
       : {}),
   }
   if (!v.is(SnapshotHealthListResponseSchema, response)) {
-    return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+    return c.json(apiErrorBody('server/error', 'invalid-snapshot-health-response'), 500)
   }
   return c.json(response, 200)
 }
@@ -857,10 +888,10 @@ export async function handleSnapshotHealthList(room: VaultRoom, c: Context): Pro
 export async function handleSnapshotHealthVerify(room: VaultRoom, c: Context): Promise<Response> {
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(SnapshotHealthVerifyRequestSchema, body)) {
-    return c.json({ error: 'invalid-snapshot-health-verify-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-verify-request'), 400)
   }
   if (!snapshotHealthRouteDocMatches(c.req.param('docId'), body.docId)) {
-    return c.json({ error: 'snapshot-health-doc-mismatch' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'snapshot-health-doc-mismatch'), 400)
   }
   const admission = await admitSnapshotHealthMutation(
     room,
@@ -877,7 +908,7 @@ export async function handleSnapshotHealthVerify(room: VaultRoom, c: Context): P
     !recoverMissingDoc &&
     (candidate.upperSeq < persisted.minRetainedSeq || candidate.upperSeq > persisted.latestSeq)
   ) {
-    return c.json({ error: 'snapshot-health-approval-out-of-range' }, 409)
+    return c.json(apiErrorBody('request/conflict', 'snapshot-health-approval-out-of-range'), 409)
   }
   const pointer = await readSnapshotPointer(room, body.docId)
   const pointerMatches =
@@ -891,7 +922,10 @@ export async function handleSnapshotHealthVerify(room: VaultRoom, c: Context): P
       run.status === 'pointer-updated' || run.status === 'compacted' || run.status === 'completed',
   )
   if (!recoverMissingDoc && !pointerMatches && !hasCompletedRun) {
-    return c.json({ error: 'snapshot-health-approval-not-authoritative' }, 409)
+    return c.json(
+      apiErrorBody('request/conflict', 'snapshot-health-approval-not-authoritative'),
+      409,
+    )
   }
   const existingLatest = await getLatestSnapshotHealthEvent(db, docKey(body.docId), candidate.key)
   if (
@@ -921,7 +955,7 @@ export async function handleSnapshotHealthVerify(room: VaultRoom, c: Context): P
           entry: snapshotHealthEntryFromRow(existingLatest, actionContext),
         }
         if (!v.is(SnapshotHealthMutationResponseSchema, response)) {
-          return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+          return c.json(apiErrorBody('server/error', 'invalid-snapshot-health-response'), 500)
         }
         return c.json(response, 200)
       }
@@ -932,7 +966,7 @@ export async function handleSnapshotHealthVerify(room: VaultRoom, c: Context): P
         entry: snapshotHealthEntryFromRow(existingLatest, actionContext),
       }
       if (!v.is(SnapshotHealthMutationResponseSchema, response)) {
-        return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+        return c.json(apiErrorBody('server/error', 'invalid-snapshot-health-response'), 500)
       }
       return c.json(response, 200)
     }
@@ -1014,10 +1048,13 @@ export async function handleSnapshotHealthVerify(room: VaultRoom, c: Context): P
     })
   })
   if (pendingRejectedByQuarantine) {
-    return c.json({ error: 'snapshot-health-quarantined' }, 409)
+    return c.json(apiErrorBody('request/conflict', 'snapshot-health-quarantined'), 409)
   }
   if (pendingRejectedByAuthority || pendingEventId === undefined) {
-    return c.json({ error: 'snapshot-health-approval-not-authoritative' }, 409)
+    return c.json(
+      apiErrorBody('request/conflict', 'snapshot-health-approval-not-authoritative'),
+      409,
+    )
   }
   const verificationRunId = `checkpoint:verify:${pendingEventId}`
 
@@ -1207,14 +1244,20 @@ export async function handleSnapshotHealthVerify(room: VaultRoom, c: Context): P
     })
   })
   if (approvalRejectedByQuarantine) {
-    return c.json({ error: 'snapshot-health-quarantined' }, 409)
+    return c.json(apiErrorBody('request/conflict', 'snapshot-health-quarantined'), 409)
   }
   if (approvalRejectedByAuthority) {
-    return c.json({ error: 'snapshot-health-approval-not-authoritative' }, 409)
+    return c.json(
+      apiErrorBody('request/conflict', 'snapshot-health-approval-not-authoritative'),
+      409,
+    )
   }
   if (!approvalRecorded) {
     return c.json(
-      { error: 'snapshot-health-verification-failed', reasons: verification.reasons },
+      apiErrorBody(
+        'request/conflict',
+        `snapshot-health-verification-failed:${verification.reasons.join(',')}`,
+      ),
       409,
     )
   }
@@ -1222,14 +1265,14 @@ export async function handleSnapshotHealthVerify(room: VaultRoom, c: Context): P
     try {
       await rehydrateAfterDocPointer(room, body.docId)
     } catch {
-      return c.json({ error: 'snapshot-health-recovery-failed' }, 500)
+      return c.json(apiErrorBody('server/error', 'snapshot-health-recovery-failed'), 500)
     }
   }
   const row = await getLatestSnapshotHealthEventForEntry(db, body.docId, candidate.key)
   const actionContext = await readSnapshotHealthActionContext(room, db, body.docId)
   const response = { ok: true as const, entry: snapshotHealthEntryFromRow(row, actionContext) }
   if (!v.is(SnapshotHealthMutationResponseSchema, response)) {
-    return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+    return c.json(apiErrorBody('server/error', 'invalid-snapshot-health-response'), 500)
   }
   return c.json(response, 200)
 }
@@ -1241,10 +1284,13 @@ export async function handleSnapshotHealthQuarantine(
 ): Promise<Response> {
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(SnapshotHealthQuarantineRequestSchema, body)) {
-    return c.json({ error: 'invalid-snapshot-health-quarantine-request' }, 400)
+    return c.json(
+      apiErrorBody('request/invalid', 'invalid-snapshot-health-quarantine-request'),
+      400,
+    )
   }
   if (!snapshotHealthRouteDocMatches(c.req.param('docId'), body.docId)) {
-    return c.json({ error: 'snapshot-health-doc-mismatch' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'snapshot-health-doc-mismatch'), 400)
   }
   const admission = await admitSnapshotHealthMutation(
     room,
@@ -1290,13 +1336,16 @@ export async function handleSnapshotHealthQuarantine(
     })
   })
   if (quarantineBlocked) {
-    return c.json({ error: 'snapshot-health-quarantine-would-break-floor' }, 409)
+    return c.json(
+      apiErrorBody('request/conflict', 'snapshot-health-quarantine-would-break-floor'),
+      409,
+    )
   }
   const row = await getLatestSnapshotHealthEventForEntry(db, body.docId, candidate.key)
   const actionContext = await readSnapshotHealthActionContext(room, db, body.docId)
   const response = { ok: true as const, entry: snapshotHealthEntryFromRow(row, actionContext) }
   if (!v.is(SnapshotHealthMutationResponseSchema, response)) {
-    return c.json({ error: 'invalid-snapshot-health-response' }, 500)
+    return c.json(apiErrorBody('server/error', 'invalid-snapshot-health-response'), 500)
   }
   return c.json(response, 200)
 }
@@ -1305,10 +1354,10 @@ export async function handleSnapshotHealthQuarantine(
 export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promise<Response> {
   const body: unknown = await c.req.json().catch(() => undefined)
   if (!v.is(SnapshotRollbackRequestSchema, body)) {
-    return c.json({ error: 'invalid-snapshot-rollback-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-rollback-request'), 400)
   }
   if (!snapshotHealthRouteDocMatches(c.req.param('docId'), body.docId)) {
-    return c.json({ error: 'snapshot-health-doc-mismatch' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'snapshot-health-doc-mismatch'), 400)
   }
   const admission = await admitSnapshotHealthMutation(
     room,
@@ -1333,7 +1382,7 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
         currentLatestSeq < candidate.upperSeq ||
         (persisted !== undefined && candidate.upperSeq < persisted.minRetainedSeq)
       ) {
-        return c.json({ error: 'snapshot-rollback-stale-source' }, 409)
+        return c.json(apiErrorBody('request/conflict', 'snapshot-rollback-stale-source'), 409)
       }
 
       const latest = await getLatestSnapshotHealthEvent(db, docKey(body.docId), candidate.key)
@@ -1343,7 +1392,7 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
         latest?.logicalStatus !== 'healthy' ||
         expected === undefined
       ) {
-        return c.json({ error: 'snapshot-rollback-unhealthy-source' }, 409)
+        return c.json(apiErrorBody('request/conflict', 'snapshot-rollback-unhealthy-source'), 409)
       }
       const pointer = await readSnapshotPointer(room, body.docId)
       const pointerMatches =
@@ -1359,7 +1408,7 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
           run.status === 'completed',
       )
       if (matchingRuns.length > 0 && !hasCompletedRun && !pointerMatches) {
-        return c.json({ error: 'snapshot-rollback-unhealthy-source' }, 409)
+        return c.json(apiErrorBody('request/conflict', 'snapshot-rollback-unhealthy-source'), 409)
       }
       const verification = await verifySnapshotObject(bucket, candidate.key, body.docId, expected)
       const logicalStatus = await appendSnapshotVerificationEventPreservingLogical(
@@ -1382,13 +1431,17 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
         latestAfterVerification?.logicalStatus === 'quarantined'
       ) {
         return c.json(
-          { error: 'snapshot-rollback-unhealthy-source', reasons: verification.reasons },
+          apiErrorBody(
+            'request/conflict',
+            `snapshot-rollback-unhealthy-source:${verification.reasons.join(',')}`,
+          ),
           409,
         )
       }
 
       const source = await bucket.get(candidate.key)
-      if (source === null) return c.json({ error: 'snapshot-rollback-source-missing' }, 404)
+      if (source === null)
+        return c.json(apiErrorBody('snapshot/not-found', 'snapshot-rollback-source-missing'), 404)
       const sourceBytes = new Uint8Array(await source.arrayBuffer())
       rollbackDoc = new Y.Doc()
       Y.applyUpdate(rollbackDoc, sourceBytes)
@@ -1417,7 +1470,10 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
       ) {
         rollbackDoc.destroy()
         rollbackDoc = undefined
-        return c.json({ error: 'snapshot-rollback-meta-schema-invalid' }, 409)
+        return c.json(
+          apiErrorBody('request/conflict', 'snapshot-rollback-meta-schema-invalid'),
+          409,
+        )
       }
 
       const mergedBytes = Y.encodeStateAsUpdate(rollbackDoc)
@@ -1427,13 +1483,13 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
       if (vaultId === undefined) {
         rollbackDoc.destroy()
         rollbackDoc = undefined
-        return c.json({ error: 'vault-unavailable' }, 500)
+        return c.json(apiErrorBody('server/error', 'vault-unavailable'), 500)
       }
       snapshotKey = makeSnapshotObjectKey(vaultId, body.docId, snapshotSeq)
       if ((await bucket.head(snapshotKey)) !== null) {
         rollbackDoc.destroy()
         rollbackDoc = undefined
-        return c.json({ error: 'snapshot-rollback-target-exists' }, 409)
+        return c.json(apiErrorBody('request/conflict', 'snapshot-rollback-target-exists'), 409)
       }
       const expectedUpdateSha256 = makeSha256Hex(await hashBytesSha256(mergedBytes))
       const expectedStateVectorSha256 = makeSha256Hex(await hashBytesSha256(rollbackStateVector))
@@ -1453,7 +1509,7 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
       if (!v.is(SnapshotRollbackResponseSchema, response)) {
         rollbackDoc.destroy()
         rollbackDoc = undefined
-        return c.json({ error: 'invalid-snapshot-rollback-response' }, 500)
+        return c.json(apiErrorBody('server/error', 'invalid-snapshot-rollback-response'), 500)
       }
       await insertCheckpointRun(
         db,
@@ -1500,7 +1556,10 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
         await updateCheckpointFailed(db, runId)
         rollbackDoc.destroy()
         rollbackDoc = undefined
-        return c.json({ error: 'snapshot-rollback-verification-failed' }, 409)
+        return c.json(
+          apiErrorBody('request/conflict', 'snapshot-rollback-verification-failed'),
+          409,
+        )
       }
       await updateCheckpointR2Written(db, runId, now)
       let sourceInvalidated = false
@@ -1559,7 +1618,7 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
         await updateCheckpointFailed(db, runId)
         rollbackDoc.destroy()
         rollbackDoc = undefined
-        return c.json({ error: 'snapshot-rollback-source-changed' }, 409)
+        return c.json(apiErrorBody('request/conflict', 'snapshot-rollback-source-changed'), 409)
       }
       rollbackDoc.destroy()
       rollbackDoc = undefined
@@ -1574,7 +1633,7 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
         snapshotKey,
         error: retentionErrorMessage(error),
       })
-      return c.json({ error: 'snapshot-rollback-failed' }, 500)
+      return c.json(apiErrorBody('server/error', 'snapshot-rollback-failed'), 500)
     }
   })
 }
@@ -1604,21 +1663,29 @@ async function admitSnapshotHealthMutation(
   const bucket = room.env.SNAPSHOT_BUCKET
   const secret = room.env.DEVICE_TOKEN_SECRET
   if (db === undefined || bucket === undefined || secret === undefined) {
-    return { response: c.text('Snapshot health mutation unavailable', 503) }
+    return {
+      response: c.json(
+        apiErrorBody('server/degraded', 'snapshot-health-mutation-unavailable'),
+        503,
+      ),
+    }
   }
   await ensureSchema(room)
   const authorization = await authorizeHttpRequestWithClaims(room, c, ['sync:write'])
   if (authorization.action === 'reject') return { response: authorization.response }
   const actor = authorization.claims.sub
   if (!v.is(DeviceIdSchema, actor)) {
-    return { response: c.json({ error: 'auth-reject:missing-actor' }, 403) }
+    return { response: c.json(apiErrorBody('auth/rejected', 'auth-reject:missing-actor'), 403) }
   }
   const vaultId = room.vaultId
-  if (vaultId === undefined) return { response: c.json({ error: 'vault-unavailable' }, 500) }
+  if (vaultId === undefined)
+    return { response: c.json(apiErrorBody('server/error', 'vault-unavailable'), 500) }
   const prefix = makeSnapshotListPrefix(vaultId, docId)
   const candidate = snapshotCandidateFromKeyForHealth(prefix, snapshotKey)
   if (candidate === undefined || candidate.upperSeq !== upperSeq) {
-    return { response: c.json({ error: 'snapshot-health-target-mismatch' }, 400) }
+    return {
+      response: c.json(apiErrorBody('request/invalid', 'snapshot-health-target-mismatch'), 400),
+    }
   }
   return { db, bucket, candidate, actor }
 }
@@ -2029,8 +2096,9 @@ function safeSha256(value: string | null): string | undefined {
 
 export async function handleWebSocketUpgrade(room: VaultRoom, c: Context): Promise<Response> {
   if (c.req.header('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE)
-    return c.text('Expected WebSocket upgrade', 426)
-  if (typeof WebSocketPair === 'undefined') return c.text('WebSocketPair is not available', 500)
+    return c.json(apiErrorBody('request/invalid', 'expected-websocket-upgrade'), 426)
+  if (typeof WebSocketPair === 'undefined')
+    return c.json(apiErrorBody('server/error', 'websocket-pair-unavailable'), 500)
 
   const pair = new WebSocketPair()
   const client = pair[0]

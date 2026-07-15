@@ -2,6 +2,7 @@ import {
   CURRENT_PROTOCOL_VERSION,
   VaultIdSchema,
   verifyHs256DeviceToken,
+  type ApiErrorCode,
   type ClientHello,
   type DeviceTokenClaims,
   type DeviceTokenScope,
@@ -10,10 +11,10 @@ import { type Context } from 'hono'
 import * as v from 'valibot'
 
 import { decideClientHelloRegistry, type DeviceRegistryEntry } from '../devices'
-import { decideAuthAdmission } from '../http/auth'
+import { decideAuthAdmission, type AuthAdmissionDecision } from '../http/auth'
 import { readDeviceRegistryEntry, persistVaultId } from './storage'
 import type { RuntimeWebSocket, SessionState, WebSocketAttachment } from './types'
-import { logEvent, extractBearerToken, isWebSocketAttachment } from './utils'
+import { apiErrorBody, logEvent, extractBearerToken, isWebSocketAttachment } from './utils'
 import type { VaultRoom } from './vault-room'
 
 export async function acceptHello(
@@ -132,10 +133,16 @@ export async function authorizeHttpRequestWithClaims(
   const claims = await verifyRequestClaims(room, c)
   if (claims === undefined) {
     logEvent('auth-reject', { vaultId: room.vaultId, reason: 'invalid-token' })
-    return { action: 'reject', response: c.json({ error: 'auth-reject:invalid-token' }, 401) }
+    return {
+      action: 'reject',
+      response: c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401),
+    }
   }
   if (room.vaultId !== undefined && claims.aud !== room.vaultId) {
-    return { action: 'reject', response: c.json({ error: 'vault-mismatch' }, 400) }
+    return {
+      action: 'reject',
+      response: c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400),
+    }
   }
   room.vaultId = claims.aud
 
@@ -151,10 +158,31 @@ export async function authorizeHttpRequestWithClaims(
     logEvent('auth-reject', { vaultId: claims.aud, reason: admission.reason })
     return {
       action: 'reject',
-      response: c.json({ error: `auth-reject:${admission.reason}` }, 403),
+      response: c.json(
+        apiErrorBody(
+          apiErrorCodeForAuthAdmission(admission.reason),
+          `auth-reject:${admission.reason}`,
+        ),
+        403,
+      ),
     }
   }
   return { action: 'accept', claims }
+}
+
+/** Maps a device-token admission rejection to its guarded `ApiError` code. */
+function apiErrorCodeForAuthAdmission(
+  reason: Extract<AuthAdmissionDecision, { readonly action: 'reject' }>['reason'],
+): ApiErrorCode {
+  switch (reason) {
+    case 'token-expired':
+      return 'auth/expired'
+    case 'device-revoked':
+    case 'stale-token':
+      return 'auth/revoked'
+    default:
+      return 'auth/rejected'
+  }
 }
 
 export function messageMatchesSession(

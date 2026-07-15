@@ -90,6 +90,9 @@ export type NeedFullSnapshot = v.InferInput<typeof NeedFullSnapshotSchema>
 export const SyncUpdateRejectedReasonSchema = v.union([
   v.literal('large-update-requires-snapshot-import'),
   v.literal('metadata-read-only'),
+  v.literal('hash-mismatch'),
+  v.literal('yjs-apply-failed'),
+  v.literal('meta-schema-invalid'),
 ])
 export type SyncUpdateRejectedReason = v.InferInput<typeof SyncUpdateRejectedReasonSchema>
 

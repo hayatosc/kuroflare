@@ -25,7 +25,7 @@ import {
   E2eSetupTokenSeedRequestSchema,
   E2eSnapshotSeedRequestSchema,
 } from './types'
-import { extractBearerToken } from './utils'
+import { apiErrorBody, extractBearerToken } from './utils'
 
 const WEBSOCKET_UPGRADE = 'websocket'
 const E2E_SETUP_TOKEN_PATH = '/__e2e/setup-token'
@@ -49,7 +49,8 @@ function routeVaultRoom(request: Request, env: WorkerEnv, vaultId: VaultId): Pro
 
 async function routeAuthorizedVaultRoom(c: Context<{ Bindings: WorkerEnv }>): Promise<Response> {
   const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  if (claims === undefined)
+    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
   return routeVaultRoom(c.req.raw, c.env, claims.aud)
 }
 
@@ -68,14 +69,14 @@ workerApp.post(E2E_SETUP_TOKEN_PATH, async (c) => {
   const secret = c.env.E2E_SETUP_TOKEN_SECRET
   if (secret === undefined) return c.notFound()
   if (c.req.header('x-kuroflare-e2e-secret') !== secret) {
-    return c.json({ error: 'e2e-seed-forbidden' }, 403)
+    return c.json(apiErrorBody('auth/rejected', 'e2e-seed-forbidden'), 403)
   }
   const body: unknown = await c.req.raw
     .clone()
     .json()
     .catch(() => undefined)
   if (!v.is(E2eSetupTokenSeedRequestSchema, body)) {
-    return c.json({ error: 'invalid-e2e-setup-token-seed-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-setup-token-seed-request'), 400)
   }
   return routeVaultRoom(c.req.raw, c.env, body.vaultId)
 })
@@ -84,14 +85,14 @@ workerApp.post(E2E_SNAPSHOT_PATH, async (c) => {
   const secret = c.env.E2E_SETUP_TOKEN_SECRET
   if (secret === undefined) return c.notFound()
   if (c.req.header('x-kuroflare-e2e-secret') !== secret) {
-    return c.json({ error: 'e2e-seed-forbidden' }, 403)
+    return c.json(apiErrorBody('auth/rejected', 'e2e-seed-forbidden'), 403)
   }
   const body: unknown = await c.req.raw
     .clone()
     .json()
     .catch(() => undefined)
   if (!v.is(E2eSnapshotSeedRequestSchema, body)) {
-    return c.json({ error: 'invalid-e2e-snapshot-seed-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-snapshot-seed-request'), 400)
   }
   return routeVaultRoom(c.req.raw, c.env, body.vaultId)
 })
@@ -102,14 +103,15 @@ workerApp.post('/setup/exchange', async (c) => {
     .json()
     .catch(() => undefined)
   if (!v.is(SetupExchangeRequestSchema, body)) {
-    return c.json({ error: 'invalid-setup-exchange-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-setup-exchange-request'), 400)
   }
   return routeVaultRoom(c.req.raw, c.env, body.vaultId)
 })
 
 workerApp.get('/auth/verify', async (c) => {
   const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
+  if (claims === undefined)
+    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
   return c.json(claims)
 })
 
@@ -119,7 +121,7 @@ workerApp.post('/auth/refresh', async (c) => {
     .json()
     .catch(() => undefined)
   if (!v.is(DeviceTokenRefreshRequestSchema, body)) {
-    return c.json({ error: 'invalid-auth-refresh-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-auth-refresh-request'), 400)
   }
   return routeVaultRoom(c.req.raw, c.env, body.vaultId)
 })
@@ -127,14 +129,14 @@ workerApp.post('/auth/refresh', async (c) => {
 workerApp.post('/devices/:deviceId/revoke', async (c) => {
   const rawDeviceId = c.req.param('deviceId')
   if (!v.is(DeviceIdSchema, rawDeviceId)) {
-    return c.json({ error: 'invalid-device-id' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-device-id'), 400)
   }
   const body: unknown = await c.req.raw
     .clone()
     .json()
     .catch(() => undefined)
   if (!v.is(RevokeDeviceRequestSchema, body)) {
-    return c.json({ error: 'invalid-revoke-device-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-revoke-device-request'), 400)
   }
   return routeAuthorizedVaultRoom(c)
 })
@@ -154,7 +156,8 @@ for (const [path, schema] of [
       .clone()
       .json()
       .catch(() => undefined)
-    if (!v.is(schema, body)) return c.json({ error: 'invalid-snapshot-health-request' }, 400)
+    if (!v.is(schema, body))
+      return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-request'), 400)
     return routeAuthorizedVaultRoom(c)
   })
 }
@@ -170,7 +173,7 @@ for (const [action, schema] of [
       .json()
       .catch(() => undefined)
     if (!v.is(schema, body) || !snapshotHealthRouteDocMatches(c.req.param('docId'), body.docId)) {
-      return c.json({ error: 'invalid-snapshot-health-request' }, 400)
+      return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-request'), 400)
     }
     return routeAuthorizedVaultRoom(c)
   })
@@ -190,7 +193,7 @@ for (const operation of ['gc', 'force-local', 'force-remote', 'rebuild'] as cons
       .json()
       .catch(() => undefined)
     if (!v.is(AdminOperationRequestSchema, body) || body.operation !== operation) {
-      return c.json({ error: 'invalid-admin-operation-request' }, 400)
+      return c.json(apiErrorBody('request/invalid', 'invalid-admin-operation-request'), 400)
     }
     return routeAuthorizedVaultRoom(c)
   })
@@ -203,7 +206,7 @@ for (const action of ['discard', 'force-apply'] as const) {
       .json()
       .catch(() => undefined)
     if (!v.is(QuarantinedUpdateActionHttpRequestSchema, body)) {
-      return c.json({ error: 'invalid-quarantine-action-request' }, 400)
+      return c.json(apiErrorBody('request/invalid', 'invalid-quarantine-action-request'), 400)
     }
     return routeAuthorizedVaultRoom(c)
   })
@@ -215,62 +218,75 @@ workerApp.post('/repair/local-outbox/evidence', async (c) => {
     .json()
     .catch(() => undefined)
   if (!v.is(LocalOutboxRepairEvidenceRequestSchema, body)) {
-    return c.json({ error: 'invalid-local-outbox-repair-evidence-request' }, 400)
+    return c.json(
+      apiErrorBody('request/invalid', 'invalid-local-outbox-repair-evidence-request'),
+      400,
+    )
   }
   return routeAuthorizedVaultRoom(c)
 })
 
 workerApp.get('/vaults/:vaultId/meta/latest', async (c) => {
   const vaultId = c.req.param('vaultId')
-  if (!v.is(VaultIdSchema, vaultId)) return c.json({ error: 'invalid-vault-id' }, 400)
+  if (!v.is(VaultIdSchema, vaultId))
+    return c.json(apiErrorBody('request/invalid', 'invalid-vault-id'), 400)
   const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  if (claims.aud !== vaultId) return c.json({ error: 'vault-mismatch' }, 400)
+  if (claims === undefined)
+    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
+  if (claims.aud !== vaultId) return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   return routeVaultRoom(c.req.raw, c.env, claims.aud)
 })
 
 workerApp.get('/vaults/:vaultId/files/:ydocId/latest', async (c) => {
   const vaultId = c.req.param('vaultId')
   const ydocId = c.req.param('ydocId')
-  if (!v.is(VaultIdSchema, vaultId)) return c.json({ error: 'invalid-vault-id' }, 400)
-  if (!v.is(YDocIdSchema, ydocId)) return c.json({ error: 'invalid-ydoc-id' }, 400)
+  if (!v.is(VaultIdSchema, vaultId))
+    return c.json(apiErrorBody('request/invalid', 'invalid-vault-id'), 400)
+  if (!v.is(YDocIdSchema, ydocId))
+    return c.json(apiErrorBody('request/invalid', 'invalid-ydoc-id'), 400)
   const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  if (claims.aud !== vaultId) return c.json({ error: 'vault-mismatch' }, 400)
+  if (claims === undefined)
+    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
+  if (claims.aud !== vaultId) return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   return routeVaultRoom(c.req.raw, c.env, claims.aud)
 })
 
 workerApp.put('/vaults/:vaultId/meta/snapshot', async (c) => {
   const vaultId = c.req.param('vaultId')
-  if (!v.is(VaultIdSchema, vaultId)) return c.json({ error: 'invalid-vault-id' }, 400)
+  if (!v.is(VaultIdSchema, vaultId))
+    return c.json(apiErrorBody('request/invalid', 'invalid-vault-id'), 400)
   const body: unknown = await c.req.raw
     .clone()
     .json()
     .catch(() => undefined)
   if (!v.is(SnapshotImportRequestSchema, body)) {
-    return c.json({ error: 'invalid-snapshot-import-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-import-request'), 400)
   }
   const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  if (claims.aud !== vaultId) return c.json({ error: 'vault-mismatch' }, 400)
+  if (claims === undefined)
+    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
+  if (claims.aud !== vaultId) return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   return routeVaultRoom(c.req.raw, c.env, claims.aud)
 })
 
 workerApp.put('/vaults/:vaultId/files/:ydocId/snapshot', async (c) => {
   const vaultId = c.req.param('vaultId')
   const ydocId = c.req.param('ydocId')
-  if (!v.is(VaultIdSchema, vaultId)) return c.json({ error: 'invalid-vault-id' }, 400)
-  if (!v.is(YDocIdSchema, ydocId)) return c.json({ error: 'invalid-ydoc-id' }, 400)
+  if (!v.is(VaultIdSchema, vaultId))
+    return c.json(apiErrorBody('request/invalid', 'invalid-vault-id'), 400)
+  if (!v.is(YDocIdSchema, ydocId))
+    return c.json(apiErrorBody('request/invalid', 'invalid-ydoc-id'), 400)
   const body: unknown = await c.req.raw
     .clone()
     .json()
     .catch(() => undefined)
   if (!v.is(SnapshotImportRequestSchema, body)) {
-    return c.json({ error: 'invalid-snapshot-import-request' }, 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-import-request'), 400)
   }
   const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined) return c.json({ error: 'auth-reject:invalid-token' }, 401)
-  if (claims.aud !== vaultId) return c.json({ error: 'vault-mismatch' }, 400)
+  if (claims === undefined)
+    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
+  if (claims.aud !== vaultId) return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   return routeVaultRoom(c.req.raw, c.env, claims.aud)
 })
 
@@ -282,10 +298,10 @@ workerApp.on(['GET', 'PUT'], '/blob-manifests/*', routeAuthorizedVaultRoom)
 workerApp.get('/ws/:vaultId', async (c) => {
   const vaultId = c.req.param('vaultId')
   if (!v.is(VaultIdSchema, vaultId)) {
-    return c.text('Invalid vaultId', 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-vault-id'), 400)
   }
   if (c.req.header('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE) {
-    return c.text('Expected WebSocket upgrade', 426)
+    return c.json(apiErrorBody('request/invalid', 'expected-websocket-upgrade'), 426)
   }
   return routeVaultRoom(c.req.raw, c.env, vaultId)
 })
