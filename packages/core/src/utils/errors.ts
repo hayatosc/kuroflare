@@ -17,7 +17,8 @@ export const ApiErrorCodeSchema = v.union([
   v.literal('server/error'),
   // Malformed or out-of-policy request body, params, or payload size.
   v.literal('request/invalid'),
-  // Requested resource does not exist, outside the blob/snapshot domains above.
+  // Requested resource does not exist; used for everything except the
+  // snapshot-generation lookups covered by the more specific snapshot/not-found.
   v.literal('request/not-found'),
   // Request conflicts with the server's current authoritative state.
   v.literal('request/conflict'),

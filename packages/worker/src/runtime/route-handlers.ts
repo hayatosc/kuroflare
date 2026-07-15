@@ -17,6 +17,7 @@ import {
   type SnapshotHealthEntry,
   YDocIdSchema,
   signHs256DeviceToken,
+  type ApiErrorCode,
   type DeviceTokenClaims,
   type DocId,
 } from '@kuroflare/core'
@@ -40,8 +41,14 @@ import { insertDoc, updateDocSnapshotPointer } from '../db/docRepo'
 import { getOpLogUpdatesBetween } from '../db/docRepo'
 import { readSqlUpdateBytes } from '../db/helpers'
 import { upsertSetupToken } from '../db/setupRepo'
-import { decideSetupExchange, decideRevokeDevice, planSetupExchangeCredentials } from '../devices'
-import { decideDeviceTokenRefresh, planDeviceRefreshTokenRotation } from '../devices'
+import {
+  decideSetupExchange,
+  decideRevokeDevice,
+  planSetupExchangeCredentials,
+  decideDeviceTokenRefresh,
+  planDeviceRefreshTokenRotation,
+  type DeviceTokenRefreshDecision,
+} from '../devices'
 import { decideSetupTokenConsume } from '../devices/tokens'
 import { planDeviceTokenRefreshHttpResponse } from '../http/authRefresh'
 import { planRevokeDeviceHttpResponse } from '../http/device'
@@ -340,7 +347,13 @@ export async function handleAuthRefresh(room: VaultRoom, c: Context): Promise<Re
     now,
   })
   if (refreshDecision.action === 'reject')
-    return c.json(apiErrorBody('auth/rejected', `auth-refresh:${refreshDecision.reason}`), 403)
+    return c.json(
+      apiErrorBody(
+        apiErrorCodeForDeviceTokenRefresh(refreshDecision.reason),
+        `auth-refresh:${refreshDecision.reason}`,
+      ),
+      403,
+    )
 
   const nextRefreshToken = makeOpaqueToken()
   const nextRefreshTokenHash = makeSha256Hex(await sha256Text(nextRefreshToken))
@@ -394,6 +407,22 @@ export async function handleAuthRefresh(room: VaultRoom, c: Context): Promise<Re
   }
 
   return c.json(responsePlan.response, 200)
+}
+
+/** Maps a device-token refresh rejection to its guarded `ApiError` code. */
+function apiErrorCodeForDeviceTokenRefresh(
+  reason: Extract<DeviceTokenRefreshDecision, { readonly action: 'reject' }>['reason'],
+): ApiErrorCode {
+  switch (reason) {
+    case 'refresh-token-expired':
+      return 'auth/expired'
+    case 'device-revoked':
+    case 'stale-token':
+    case 'refresh-token-revoked':
+      return 'auth/revoked'
+    default:
+      return 'auth/rejected'
+  }
 }
 
 export async function handleDeviceRevoke(room: VaultRoom, c: Context): Promise<Response> {

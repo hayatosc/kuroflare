@@ -51,7 +51,8 @@ type SyncUpdateRejected = {
   messageId: string;
   docId: DocId;
   updateSha256: string;
-  reason: "large-update-requires-snapshot-import";
+  reason: "large-update-requires-snapshot-import" | "metadata-read-only"
+      | "hash-mismatch" | "yjs-apply-failed" | "meta-schema-invalid";
   retryable: false;
 };
 ```
@@ -174,8 +175,9 @@ response: { status: "ok" | "degraded", protocolVersion, checkedAt,
 
 ```
 type ApiError = {
-  code: "auth/revoked" | "auth/expired" | "protocol/upgrade-required"
-      | "rate-limited" | "blob/hash-mismatch" | "snapshot/not-found" | "server/degraded";
+  code: "auth/revoked" | "auth/expired" | "auth/rejected" | "protocol/upgrade-required"
+      | "rate-limited" | "blob/hash-mismatch" | "snapshot/not-found" | "server/degraded"
+      | "server/error" | "request/invalid" | "request/not-found" | "request/conflict";
   retryable: boolean;
   retryAfterMs?: number;
   detail?: string;

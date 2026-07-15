@@ -341,6 +341,44 @@ test('VaultRoom refreshes device access tokens and rotates refresh tokens', asyn
   assert(storage.sql.queries.includes('transaction commit'))
 })
 
+test('VaultRoom maps a revoked device refresh rejection to the auth/revoked ApiError code', async () => {
+  const storage = new SqlOnlyStorage()
+  const refreshToken = 'refresh-token-revoked-device'
+  const refreshTokenHash = await hashTestText(refreshToken)
+  storage.sql.refreshTokens.set(refreshTokenHash, {
+    tokenHash: refreshTokenHash,
+    deviceId: 'device-1',
+    issuedAt: 1,
+    expiresAt: Date.now() + 60_000,
+    revokedAt: undefined,
+  })
+  storage.sql.devices.set('device-1', {
+    deviceId: 'device-1',
+    tokenVersion: 1,
+    revokedAt: Date.now(),
+  })
+  const room = new VaultRoom(new FakeState(storage), makeEnvWithDeviceTokenSecret('secret'))
+
+  const response = await room.fetch(
+    new Request('https://worker.example/auth/refresh', {
+      method: 'POST',
+      body: JSON.stringify({
+        vaultId: 'vault-1',
+        deviceId: 'device-1',
+        refreshToken,
+        previousTokenVersion: 1,
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 403)
+  assert.deepEqual(await response.json(), {
+    code: 'auth/revoked',
+    retryable: false,
+    detail: 'auth-refresh:device-revoked',
+  })
+})
+
 test('VaultRoom rolls back auth refresh rotation failures', async () => {
   const storage = new SqlOnlyStorage()
   const refreshToken = 'refresh-token-rollback'
