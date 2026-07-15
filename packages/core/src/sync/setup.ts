@@ -15,8 +15,6 @@ const MAX_DEVICE_NAME_LENGTH = 128
 const MAX_ACCESS_TOKEN_LENGTH = 16_384
 const MAX_REFRESH_TOKEN_LENGTH = 4096
 
-export const WireYClientIdSchema = PositiveSafeIntegerSchema
-
 export const SetupExchangeRequestSchema = v.object({
   vaultId: VaultIdSchema,
   setupToken: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_SETUP_TOKEN_LENGTH)),
@@ -109,11 +107,10 @@ export function parseSetupUri(setupUri: string): ParsedSetupUri | undefined {
   }
 }
 
-export const SetupExchangeResponseSchema = v.object({
+export const SetupExchangeResponseSchema = v.strictObject({
   endpoint: HttpEndpointSchema,
   vaultId: VaultIdSchema,
   deviceId: DeviceIdSchema,
-  yClientId: WireYClientIdSchema,
   accessToken: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_ACCESS_TOKEN_LENGTH)),
   refreshToken: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_REFRESH_TOKEN_LENGTH)),
   tokenVersion: PositiveSafeIntegerSchema,

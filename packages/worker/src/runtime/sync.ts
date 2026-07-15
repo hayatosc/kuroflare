@@ -18,7 +18,6 @@ import type { SnapshotHealthEventRow } from '../db/checkpointRepo'
 import { getOpLogUpdatesBetween, getOpLogUpdatesSince } from '../db/docRepo'
 import { insertOpLog, upsertDocClock, upsertMessageDedup } from '../db/docRepo'
 import { readSqlUpdateBytes } from '../db/helpers'
-import type { YClientId } from '../devices'
 import { decideSyncRequest, type SyncRequestDocState } from '../sync/request'
 import {
   verifySnapshotObject,
@@ -51,7 +50,6 @@ import type {
   R2BucketBinding,
   R2ObjectBinding,
   RuntimeWebSocket,
-  SessionState,
   RuntimeDocClockRecord,
 } from './types'
 import {
@@ -193,7 +191,7 @@ export async function handleSyncUpdate(
   }
 
   return await withDocWriteQueue(room, update.docId, async () => {
-    return await handleSyncUpdateSerialized(room, webSocket, update, updateBytes, session)
+    return await handleSyncUpdateSerialized(room, webSocket, update, updateBytes)
   })
 }
 
@@ -202,7 +200,6 @@ async function handleSyncUpdateSerialized(
   webSocket: RuntimeWebSocket,
   update: SyncUpdate,
   updateBytes: Uint8Array,
-  session: SessionState,
 ): Promise<
   { readonly action: 'broadcast'; readonly durableSeq: number } | { readonly action: 'stop' }
 > {
@@ -246,7 +243,6 @@ async function handleSyncUpdateSerialized(
       duplicate,
       updateBytesLength: updateBytes.byteLength,
       updateSha256,
-      yClientId: session.yClientId,
       now,
       largeUpdateThresholdBytes: LARGE_UPDATE_THRESHOLD_BYTES,
     })
@@ -264,7 +260,6 @@ async function handleSyncUpdateSerialized(
     duplicate: undefined,
     updateBytesLength: updateBytes.byteLength,
     updateSha256,
-    yClientId: session.yClientId,
     now,
     largeUpdateThresholdBytes: LARGE_UPDATE_THRESHOLD_BYTES,
   })
@@ -320,7 +315,6 @@ async function handleSyncUpdateSerialized(
     duplicate: undefined,
     updateBytesLength: quarantine.updateBytesLength,
     updateSha256: quarantine.updateSha256,
-    yClientId: session.yClientId,
     now,
     largeUpdateThresholdBytes: LARGE_UPDATE_THRESHOLD_BYTES,
   })
@@ -339,7 +333,6 @@ async function handleSyncUpdateSerialized(
     updateBytes,
     append.opLogAppend.seq,
     { latestSeq: append.docPatch.latestSeq, updatedAt: append.docPatch.updatedAt },
-    session.yClientId,
     quarantine.updateSha256,
     now,
   )
@@ -451,7 +444,6 @@ async function persistAppend(
   updateBytes: Uint8Array,
   seq: number,
   docPatch: RuntimeDocClockRecord,
-  yClientId: YClientId,
   updateSha256: string,
   now: number,
 ): Promise<void> {
@@ -466,7 +458,6 @@ async function persistAppend(
       seq,
       update.messageId,
       update.deviceId,
-      yClientId,
       updateBytes,
       updateSha256,
       now,

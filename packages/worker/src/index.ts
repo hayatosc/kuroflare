@@ -152,7 +152,6 @@ export {
   decideDeviceTokenRefresh,
   decideRevokeDevice,
   decideSetupExchange,
-  isValidYClientId,
   planDeviceRefreshTokenRotation,
   planSetupExchangeCredentials,
   type ClientHelloRegistryDecision,
@@ -172,6 +171,4 @@ export {
   type SetupExchangeDecision,
   type SetupExchangeDecisionInput,
   type SetupExchangeRegistryState,
-  type YClientId,
-  type YClientIdRange,
 } from './devices'

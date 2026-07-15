@@ -53,7 +53,6 @@ const setupResponse = {
   endpoint: 'https://sync.example.test',
   vaultId,
   deviceId,
-  yClientId: 1,
   accessToken: 'signed-access-token',
   refreshToken: 'opaque-refresh-token',
   tokenVersion: 3,

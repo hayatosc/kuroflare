@@ -38,7 +38,6 @@ interface SetupExchangeResponse {
   readonly endpoint: string
   readonly vaultId: string
   readonly deviceId: string
-  readonly yClientId: number
   readonly accessToken: string
 }
 
@@ -325,7 +324,6 @@ function isSetupExchangeResponse(value: unknown): value is SetupExchangeResponse
     typeof value.endpoint === 'string' &&
     typeof value.vaultId === 'string' &&
     typeof value.deviceId === 'string' &&
-    typeof value.yClientId === 'number' &&
     typeof value.accessToken === 'string'
   )
 }

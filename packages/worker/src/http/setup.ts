@@ -86,7 +86,6 @@ export function planSetupExchangeHttpResponse(
     endpoint: input.endpoint,
     vaultId: input.vaultId,
     deviceId: input.credentialPlan.deviceId,
-    yClientId: input.credentialPlan.yClientId,
     accessToken: input.accessToken,
     refreshToken: input.refreshToken,
     tokenVersion: input.credentialPlan.tokenVersion,

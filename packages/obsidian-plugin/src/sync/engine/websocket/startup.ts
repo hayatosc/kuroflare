@@ -222,7 +222,6 @@ function clientHelloFromStartupEffect(input: {
     protocolVersion: CURRENT_PROTOCOL_VERSION,
     vaultId: input.metadata.vaultId,
     deviceId: input.metadata.deviceId,
-    yClientId: input.metadata.yClientId,
     capabilities: [...(input.capabilities ?? ['binary-v1'])],
   }
 }

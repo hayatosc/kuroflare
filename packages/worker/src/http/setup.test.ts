@@ -9,7 +9,6 @@ const deviceId = makeDeviceId('device-a')
 const credentialPlan = {
   action: 'issue-credentials',
   deviceId,
-  yClientId: 12,
   tokenVersion: 3,
   insertRefreshToken: {
     tokenHash: 'refresh-hash',
@@ -47,7 +46,6 @@ test('setup exchange HTTP response plan builds claims and guarded response', () 
         endpoint: 'https://sync.example.test',
         vaultId,
         deviceId,
-        yClientId: 12,
         accessToken: 'signed-access-token',
         refreshToken: 'refresh-token',
         tokenVersion: 3,

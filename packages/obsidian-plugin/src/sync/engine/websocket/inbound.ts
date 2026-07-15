@@ -100,9 +100,6 @@ export function planSyncRuntimeWebSocketHelloAdmission(
   if (message.deviceId !== input.metadata.deviceId) {
     return { action: 'reject', reason: 'device-mismatch' }
   }
-  if (message.yClientId !== input.metadata.yClientId) {
-    return { action: 'reject', reason: 'y-client-id-mismatch' }
-  }
   return { action: 'accepted', message }
 }
 

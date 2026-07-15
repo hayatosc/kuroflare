@@ -65,7 +65,6 @@ export interface SyncUpdateAppendDecisionInput {
   readonly duplicate: SyncUpdateDuplicateEvidence | undefined
   readonly updateBytesLength: number
   readonly updateSha256: Sha256Hex
-  readonly yClientId: number
   readonly now: number
   readonly largeUpdateThresholdBytes: number
 }
@@ -76,7 +75,6 @@ export interface SyncUpdateOpLogAppend {
   readonly messageId: SyncUpdate['messageId']
   readonly deviceId: SyncUpdate['deviceId']
   readonly docId: SyncUpdate['docId']
-  readonly yClientId: number
   readonly updateSha256: Sha256Hex
   readonly createdAt: number
 }
@@ -104,7 +102,6 @@ export type SyncUpdateAppendDecision =
       readonly reason:
         | 'invalid-clock'
         | 'invalid-update-size'
-        | 'invalid-y-client-id'
         | 'invalid-now'
         | 'duplicate-ahead-of-doc'
         | 'large-update-requires-snapshot-import'

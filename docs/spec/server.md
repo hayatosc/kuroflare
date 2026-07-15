@@ -54,7 +54,6 @@ create index if not exists idx_setup_tokens_vault_expires on setup_tokens (vault
 
 create table if not exists devices (
   device_id text primary key,
-  y_client_id integer not null unique,
   token_version integer not null default 1,
   revoked_at integer,
   created_at integer not null,
@@ -87,8 +86,7 @@ create table if not exists op_log (
   doc_id text not null,
   seq integer not null,
   message_id text not null,
-  device_id text not null,
-  y_client_id integer not null,
+  device_id text not null,             -- authenticated setup/JWT device audit identity
   update_bytes blob not null,
   update_sha256 text not null,
   created_at integer not null,
@@ -122,7 +120,6 @@ create table if not exists checkpoint_runs (
 
 create table if not exists connected_devices (
   device_id text primary key,
-  y_client_id integer,
   last_seen_at integer not null,
   user_agent text,
   protocol_version integer not null
@@ -328,7 +325,7 @@ admin repair は 3 種に絞る。
 | `force-apply` | confirmation に加え、現在の snapshot / residual から作った temporary YDoc への再適用と schema validation が通った場合だけ `latestSeq + 1` として op_log / docs に移す。admin による server state 修復であり、ack を送る操作ではない。後から同じ messageId が再送されたら通常の duplicate path が ack する |
 
 confirmation token は `quarantine:<action>:<id>` という subject に bind し、missing / mismatch / expired を区別して拒否する。
-admin endpoint は actor の Bearer JWT と `sync:write` scope を要求する。
+admin endpoint は authenticated device の Bearer JWT と `sync:write` scope を要求し、監査 actor はその JWT の `deviceId` に固定する。
 
 これで「通常は最新へ進む」「壊れたら古い健全な世代へ戻る」「怪しい update は証拠として残る」を満たす。
 

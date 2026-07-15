@@ -41,7 +41,6 @@ test('Obsidian startup settings trust durable setup metadata after a setup crash
       endpoint: 'https://sync.example.test',
       vaultId: 'settings-vault-1',
       deviceId: 'settings-device-1',
-      yClientId: 1,
       protocolVersion: 1,
       bootstrapMode: 'join-existing',
       tokenVersion: 1,

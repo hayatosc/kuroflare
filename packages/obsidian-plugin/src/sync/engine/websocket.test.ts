@@ -66,7 +66,6 @@ const setup = {
   endpoint: 'https://worker.example/base/path',
   vaultId,
   deviceId,
-  yClientId: 12,
   protocolVersion: 1,
   bootstrapMode: 'new-vault',
   tokenVersion: 3,
@@ -134,7 +133,6 @@ test('websocket runtime opens socket before sending client hello', async () => {
     protocolVersion: 1,
     vaultId,
     deviceId,
-    yClientId: 12,
     capabilities: ['binary-v1', 'awareness'],
   })
   assert.deepEqual(port.snapshot().hello, sent)
@@ -151,7 +149,6 @@ test('websocket runtime opens socket before sending client hello', async () => {
       protocolVersion: CURRENT_PROTOCOL_VERSION,
       vaultId,
       deviceId,
-      yClientId: 12,
     }),
   )
   await helloAdmission
@@ -252,7 +249,6 @@ test('websocket runtime waits for server hello admission before completing hello
       protocolVersion: CURRENT_PROTOCOL_VERSION,
       vaultId,
       deviceId,
-      yClientId: 12,
     }),
   )
 
@@ -296,7 +292,6 @@ test('websocket runtime reports a post-admission close to the host for outbox re
       protocolVersion: CURRENT_PROTOCOL_VERSION,
       vaultId,
       deviceId,
-      yClientId: 12,
     }),
   )
   await admitted
@@ -347,7 +342,6 @@ test('websocket runtime waits for inbound handlers before reporting connection i
       protocolVersion: CURRENT_PROTOCOL_VERSION,
       vaultId,
       deviceId,
-      yClientId: 12,
     }),
   )
   await admitted
@@ -382,7 +376,6 @@ test('websocket runtime rejects hello admission close and identity mismatch', as
       protocolVersion: CURRENT_PROTOCOL_VERSION,
       vaultId,
       deviceId: peerDeviceId,
-      yClientId: 12,
     },
   } as const
   assert.deepEqual(
@@ -607,7 +600,6 @@ test('websocket runtime drops unsafe inbound control messages before local side 
     protocolVersion: 1,
     vaultId,
     deviceId,
-    yClientId: 12,
     capabilities: ['binary-v1'],
   }
 
@@ -681,7 +673,6 @@ test('websocket runtime drops unsafe inbound control messages before local side 
           protocolVersion: 1,
           vaultId,
           deviceId,
-          yClientId: 12,
         },
       },
       vaultId,

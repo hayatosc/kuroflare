@@ -68,14 +68,12 @@ import {
   SETUP_REFRESH_TOKEN_TTL_MS,
   SNAPSHOT_RETENTION_EVENT_LIMIT,
   WEBSOCKET_UPGRADE,
-  Y_CLIENT_ID_RANGE,
 } from './constants'
 import {
   getDb,
   ensureSchema,
   readDeviceRegistryEntry,
   readSetupToken,
-  readUsedYClientIds,
   readRefreshToken,
   readQuarantinedUpdates,
   readQuarantinedUpdate,
@@ -252,8 +250,7 @@ export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<
       : await readDeviceRegistryEntry(room, body.existingDeviceId)
   const setupDecision = decideSetupExchange({
     requestedDeviceId: body.existingDeviceId,
-    registry: { existingDevice, usedYClientIds: await readUsedYClientIds(room) },
-    yClientIdRange: Y_CLIENT_ID_RANGE,
+    registry: { existingDevice },
   })
   if (setupDecision.action === 'reject')
     return c.json({ error: `setup-exchange:${setupDecision.reason}` }, 403)
@@ -298,7 +295,7 @@ export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<
   try {
     await withSqlTransaction(room, async () => {
       await consumeSetupToken(room, setupTokenHash, tokenDecision.consumedAt)
-      await persistSetupDevice(room, credentialPlan.deviceId, credentialPlan.yClientId, now)
+      await persistSetupDevice(room, credentialPlan.deviceId, now)
       await persistRefreshToken(
         room,
         credentialPlan.insertRefreshToken.tokenHash,

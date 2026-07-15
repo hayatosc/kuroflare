@@ -24,7 +24,6 @@ import * as Y from 'yjs'
 import { type CheckpointRunStatus } from '../checkpoint/checkpoint'
 import { type QuarantinedUpdateRow } from '../db/checkpointRepo'
 import { readSqlUpdateBytes } from '../db/helpers'
-import { isValidYClientId } from '../devices'
 import type { QuarantinedUpdateRecord } from '../quarantine'
 import { type SnapshotCandidate } from '../sync/snapshots'
 import { type SessionState, type WebSocketAttachment, PosIntSchema, NonNegIntSchema } from './types'
@@ -526,10 +525,12 @@ export function isSessionState(value: unknown): value is SessionState {
   if (!isRecord(value)) {
     return false
   }
+  if ('yClientId' in value || 'y_client_id' in value) {
+    return false
+  }
   return (
     v.is(VaultIdSchema, value.vaultId) &&
     v.is(DeviceIdSchema, value.deviceId) &&
-    isValidYClientId(value.yClientId) &&
     (value.metadataAccess === undefined || v.is(MetadataAccessSchema, value.metadataAccess)) &&
     (value.metadataCapabilityAdvertised === undefined ||
       typeof value.metadataCapabilityAdvertised === 'boolean')

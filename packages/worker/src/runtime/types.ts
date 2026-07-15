@@ -3,7 +3,6 @@ import { VaultIdSchema, DocIdSchema } from '@kuroflare/core'
 import * as v from 'valibot'
 
 import { type CheckpointRunStatus } from '../checkpoint/checkpoint'
-import { type YClientId } from '../devices'
 
 /** Environment bindings required by the Worker entrypoint. */
 export interface WorkerEnv {
@@ -112,7 +111,6 @@ export interface RuntimeWebSocketPairConstructor {
 export interface SessionState {
   readonly vaultId: VaultId
   readonly deviceId: ClientHello['deviceId']
-  readonly yClientId: YClientId
   readonly metadataAccess?: MetadataAccess
   readonly metadataCapabilityAdvertised?: boolean
 }

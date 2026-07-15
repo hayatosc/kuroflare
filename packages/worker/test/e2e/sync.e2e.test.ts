@@ -38,12 +38,11 @@ const ACCESS_SCOPES: readonly DeviceTokenScope[] = [
 
 interface SeededDevice {
   readonly deviceId: string
-  readonly yClientId: number
 }
 
-const DEVICE_A: SeededDevice = { deviceId: 'device-a', yClientId: 1 }
-const DEVICE_B: SeededDevice = { deviceId: 'device-b', yClientId: 2 }
-const DEVICE_C: SeededDevice = { deviceId: 'device-c', yClientId: 3 }
+const DEVICE_A: SeededDevice = { deviceId: 'device-a' }
+const DEVICE_B: SeededDevice = { deviceId: 'device-b' }
+const DEVICE_C: SeededDevice = { deviceId: 'device-c' }
 
 function toBase64(bytes: Uint8Array): string {
   let binary = ''
@@ -151,9 +150,8 @@ async function seedDevices(devices: readonly SeededDevice[]): Promise<void> {
     const now = Date.now()
     for (const device of devices) {
       sql.exec(
-        'insert or replace into devices (device_id, y_client_id, token_version, created_at) values (?, ?, ?, ?)',
+        'insert or replace into devices (device_id, token_version, created_at) values (?, ?, ?)',
         device.deviceId,
-        device.yClientId,
         1,
         now,
       )
@@ -201,7 +199,6 @@ class TestClient {
 
   private constructor(
     readonly deviceId: string,
-    readonly yClientId: number,
     private readonly socket: WebSocket,
   ) {
     socket.addEventListener('message', (event: MessageEvent) => {
@@ -240,14 +237,13 @@ class TestClient {
       throw new Error(`expected websocket upgrade, got status ${response.status}`)
     }
     socket.accept()
-    const client = new TestClient(device.deviceId, device.yClientId, socket)
+    const client = new TestClient(device.deviceId, socket)
     socket.send(
       JSON.stringify({
         type: 'hello',
         protocolVersion: CURRENT_PROTOCOL_VERSION,
         vaultId: VAULT_ID,
         deviceId: device.deviceId,
-        yClientId: device.yClientId,
         capabilities: ['metadata-schema-v2'],
       }),
     )

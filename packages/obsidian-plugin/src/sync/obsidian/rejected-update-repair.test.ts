@@ -26,7 +26,6 @@ const setup: LocalSetupMetadata = {
   endpoint: 'https://sync.example.test/base',
   vaultId,
   deviceId: makeDeviceId('repair-device'),
-  yClientId: 1,
   protocolVersion: CURRENT_PROTOCOL_VERSION,
   bootstrapMode: 'join-existing',
   tokenVersion: 1,

@@ -81,7 +81,6 @@ export type SyncRuntimeWebSocketHelloAdmissionPlan =
         | 'unexpected-message'
         | 'vault-mismatch'
         | 'device-mismatch'
-        | 'y-client-id-mismatch'
     }
 
 /** Ports that own local side effects for routed inbound WebSocket messages. */

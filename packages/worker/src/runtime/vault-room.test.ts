@@ -24,6 +24,7 @@ import { assert, expect, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { VaultRoom } from '../runtime'
+import { ensureSchema } from '../runtime/storage'
 import { ensureDocHydrated } from '../runtime/sync'
 import {
   metaIdentityImmutable,
@@ -238,7 +239,6 @@ test('VaultRoom exchanges setup tokens for device credentials', async () => {
     readonly endpoint?: unknown
     readonly vaultId?: unknown
     readonly deviceId?: unknown
-    readonly yClientId?: unknown
     readonly accessToken?: unknown
     readonly refreshToken?: unknown
     readonly tokenVersion?: unknown
@@ -246,7 +246,6 @@ test('VaultRoom exchanges setup tokens for device credentials', async () => {
   }
   assert.equal(body.endpoint, 'https://worker.example')
   assert.equal(body.vaultId, 'vault-1')
-  assert.equal(body.yClientId, 2)
   assert.equal(body.tokenVersion, 1)
   assert.equal(body.bootstrapMode, 'new-vault')
   assert.equal(typeof body.deviceId, 'string')
@@ -290,7 +289,7 @@ test('VaultRoom rolls back setup exchange persistence failures', async () => {
   assert.deepEqual(await response.json(), { error: 'setup-persist:transaction-failed' })
   assert(storage.sql.queries.includes('transaction begin'))
   assert(storage.sql.queries.includes('transaction rollback'))
-  assert.equal(storage.sql.queries.includes('transaction commit'), false)
+  assert.equal(storage.sql.queries.at(-1), 'transaction rollback')
 })
 
 test('VaultRoom refreshes device access tokens and rotates refresh tokens', async () => {
@@ -369,7 +368,7 @@ test('VaultRoom rolls back auth refresh rotation failures', async () => {
   })
   assert(storage.sql.queries.includes('transaction begin'))
   assert(storage.sql.queries.includes('transaction rollback'))
-  assert.equal(storage.sql.queries.includes('transaction commit'), false)
+  assert.equal(storage.sql.queries.at(-1), 'transaction rollback')
 })
 
 test('VaultRoom revokes devices through authenticated HTTP requests', async () => {
@@ -377,7 +376,6 @@ test('VaultRoom revokes devices through authenticated HTTP requests', async () =
   const storage = new SqlOnlyStorage()
   storage.sql.devices.set('device-2', {
     deviceId: 'device-2',
-    yClientId: 2,
     tokenVersion: 3,
     revokedAt: undefined,
   })
@@ -407,7 +405,6 @@ test('VaultRoom device revoke is idempotent for already revoked devices', async 
   const storage = new SqlOnlyStorage()
   storage.sql.devices.set('device-2', {
     deviceId: 'device-2',
-    yClientId: 2,
     tokenVersion: 4,
     revokedAt: 123,
   })
@@ -582,7 +579,6 @@ test('VaultRoom stores blob objects under a vault-scoped R2 prefix', async () =>
   const storage = new SqlOnlyStorage()
   storage.sql.devices.set('device-2', {
     deviceId: 'device-2',
-    yClientId: 2,
     tokenVersion: 1,
     revokedAt: undefined,
   })
@@ -788,13 +784,14 @@ test('VaultRoom persists JSON sync updates through Durable Object SQL storage', 
     }
 
     const update = makeSyncUpdate(makeMessageId('message-sql'))
-    const updateJson = JSON.stringify(update)
+    const updateJson = JSON.stringify({ ...update, actor: 'spoofed-audit-device' })
 
     await room.webSocketMessage(firstServer, updateJson)
 
     assert.equal(storage.sql.docs.get('meta')?.latestSeq, 1)
     assert.equal(storage.sql.docs.get('meta')?.kind, 'meta')
     assert.equal(storage.sql.opLog.get('meta:message-sql')?.seq, 1)
+    assert.equal(storage.sql.opLog.get('meta:message-sql')?.deviceId, 'device-1')
     assert.equal(storage.sql.messageDedup.has('meta:message-sql'), true)
     assert.deepEqual(syncMessages(secondServer.sent), [
       JSON.stringify({ ...update, durableSeq: 1 }),
@@ -1066,7 +1063,7 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
       query.includes('create table if not exists devices'),
     )
     assert.equal(created.length, 1)
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
 
     await room.webSocketMessage(
       server,
@@ -1076,11 +1073,266 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
     const insertedVersions = storage.sql.queries.filter((query) =>
       query.includes('insert into schema_migrations'),
     )
-    assert.equal(insertedVersions.length, 3)
+    assert.equal(insertedVersions.length, 4)
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
   }
+})
+
+test('ensureSchema coalesces concurrent cold-start migrations', async () => {
+  const storage = new SqlOnlyStorage()
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+
+  await Promise.all([ensureSchema(room), ensureSchema(room)])
+
+  assert.equal(room.schemaReady, true)
+  assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
+  assert.equal(
+    storage.sql.queries.filter((query) => query.includes('create table if not exists devices'))
+      .length,
+    1,
+  )
+})
+
+test('schema fault injection fires after the fake DDL mutation', () => {
+  const storage = new SqlOnlyStorage()
+  storage.sql.failAfterQueryIncludes = 'drop table devices'
+
+  expect(() => storage.sql.exec('drop table devices')).toThrow(/injected SQL failure after query/)
+  assert.equal(storage.sql.tableColumns.has('devices'), false)
+  assert.equal(storage.sql.tableRowCounts.has('devices'), false)
+})
+
+test('ensureSchema rolls back every device identity DDL boundary before retrying', async () => {
+  const ddlBoundaries = [
+    'create table devices__dr007',
+    'insert into devices__dr007',
+    'drop table devices',
+    'alter table devices__dr007 rename to devices',
+    'create table op_log__dr007',
+    'insert into op_log__dr007',
+    'drop table op_log',
+    'alter table op_log__dr007 rename to op_log',
+    'create index if not exists idx_op_log_doc_seq',
+    'create table connected_devices__dr007',
+    'insert into connected_devices__dr007',
+    'drop table connected_devices',
+    'alter table connected_devices__dr007 rename to connected_devices',
+    'insert into schema_migrations',
+  ] as const
+  const legacyColumns = {
+    devices: [
+      'device_id',
+      'y_client_id',
+      'token_version',
+      'revoked_at',
+      'created_at',
+      'last_seen_at',
+    ],
+    op_log: [
+      'doc_id',
+      'seq',
+      'message_id',
+      'device_id',
+      'y_client_id',
+      'update_bytes',
+      'update_sha256',
+      'created_at',
+    ],
+    connected_devices: [
+      'device_id',
+      'y_client_id',
+      'last_seen_at',
+      'user_agent',
+      'protocol_version',
+    ],
+  } as const
+  const legacyColumnDetails = {
+    devices: [
+      { cid: 0, name: 'device_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
+      { cid: 1, name: 'y_client_id', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 2, name: 'token_version', type: 'INTEGER', notnull: 1, dflt_value: '1', pk: 0 },
+      { cid: 3, name: 'revoked_at', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 4, name: 'created_at', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 5, name: 'last_seen_at', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+    ],
+    op_log: [
+      { cid: 0, name: 'doc_id', type: 'TEXT', notnull: 1, dflt_value: null, pk: 1 },
+      { cid: 1, name: 'seq', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 2 },
+      { cid: 2, name: 'message_id', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 3, name: 'device_id', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 4, name: 'y_client_id', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 5, name: 'update_bytes', type: 'BLOB', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 6, name: 'update_sha256', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 7, name: 'created_at', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+    ],
+    connected_devices: [
+      { cid: 0, name: 'device_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
+      { cid: 1, name: 'y_client_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 2, name: 'last_seen_at', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 3, name: 'user_agent', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 4, name: 'protocol_version', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+    ],
+  } as const
+
+  for (const boundary of ddlBoundaries) {
+    const storage = new SqlOnlyStorage()
+    storage.sql.migrationVersions.add(1)
+    storage.sql.migrationVersions.add(2)
+    storage.sql.migrationVersions.add(3)
+    for (const [table, columns] of Object.entries(legacyColumns)) {
+      storage.sql.tableColumns.set(table, columns)
+      storage.sql.tableColumnDetails.set(
+        table,
+        legacyColumnDetails[table as keyof typeof legacyColumnDetails],
+      )
+      storage.sql.tableRowCounts.set(table, table === 'op_log' ? 2 : 1)
+    }
+    storage.sql.tableIndexes.set('devices', [
+      { name: 'sqlite_autoindex_devices_1', unique: true, columns: ['device_id'] },
+      { name: 'sqlite_autoindex_devices_2', unique: true, columns: ['y_client_id'] },
+    ])
+    storage.sql.tableRows.set('devices', [['device-1', 7, 1, null, 10, 11]])
+    storage.sql.tableRows.set('op_log', [
+      ['meta', 2, 'message-2', 'device-1', 7, new Uint8Array([2]), 'sha-2', 2],
+      ['meta', 1, 'message-1', 'device-1', 7, new Uint8Array([1]), 'sha-1', 1],
+    ])
+    storage.sql.tableRowCounts.set('op_log', 2)
+    storage.sql.tableRows.set('connected_devices', [['device-1', 7, 11, 'ua', 1]])
+    const beforeRows = new Map(storage.sql.tableRows)
+    const beforeColumns = new Map(storage.sql.tableColumns)
+    const beforeColumnDetails = new Map(storage.sql.tableColumnDetails)
+    const beforeRowCounts = new Map(storage.sql.tableRowCounts)
+    const beforeIndexes = new Map(storage.sql.tableIndexes)
+    const beforeForeignKeys = new Map(storage.sql.tableForeignKeys)
+    const room = new VaultRoom(
+      new FakeState(storage),
+      makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+    )
+    storage.sql.failAfterQueryIncludes = boundary
+
+    await expect(ensureSchema(room)).rejects.toThrow(/injected SQL failure/)
+    assert.equal(room.schemaReady, false)
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3])
+    assert.deepEqual(storage.sql.tableColumns, beforeColumns)
+    assert.deepEqual(storage.sql.tableColumnDetails, beforeColumnDetails)
+    assert.deepEqual(storage.sql.tableRowCounts, beforeRowCounts)
+    assert.deepEqual(storage.sql.tableRows, beforeRows)
+    assert.deepEqual(storage.sql.tableIndexes, beforeIndexes)
+    assert.deepEqual(storage.sql.tableForeignKeys, beforeForeignKeys)
+
+    storage.sql.failAfterQueryIncludes = undefined
+    await ensureSchema(room)
+    assert.equal(room.schemaReady, true)
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
+    assert.deepEqual(storage.sql.tableColumns.get('devices'), [
+      'device_id',
+      'token_version',
+      'revoked_at',
+      'created_at',
+      'last_seen_at',
+    ])
+    assert.deepEqual(
+      [...storage.sql.exec('pragma table_info(devices)')],
+      [
+        { cid: 0, name: 'device_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
+        { cid: 1, name: 'token_version', type: 'INTEGER', notnull: 1, dflt_value: '1', pk: 0 },
+        { cid: 2, name: 'revoked_at', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 3, name: 'created_at', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 4, name: 'last_seen_at', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+      ],
+    )
+    assert.deepEqual(
+      [...storage.sql.exec('pragma table_info(op_log)')],
+      [
+        { cid: 0, name: 'doc_id', type: 'TEXT', notnull: 1, dflt_value: null, pk: 1 },
+        { cid: 1, name: 'seq', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 2 },
+        { cid: 2, name: 'message_id', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 3, name: 'device_id', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 4, name: 'update_bytes', type: 'BLOB', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 5, name: 'update_sha256', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 6, name: 'created_at', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+      ],
+    )
+    assert.deepEqual(
+      [...storage.sql.exec('pragma table_info(connected_devices)')],
+      [
+        { cid: 0, name: 'device_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
+        { cid: 1, name: 'last_seen_at', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 2, name: 'user_agent', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 3, name: 'protocol_version', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+      ],
+    )
+    assert.deepEqual(
+      storage.sql.tableRowCounts,
+      new Map([
+        ['devices', 1],
+        ['op_log', 2],
+        ['connected_devices', 1],
+        ['schema_migrations', 0],
+      ]),
+    )
+    assert.deepEqual(storage.sql.tableRows.get('devices'), [['device-1', 1, null, 10, 11]])
+    assert.deepEqual(storage.sql.tableRows.get('op_log'), [
+      ['meta', 1, 'message-1', 'device-1', new Uint8Array([1]), 'sha-1', 1],
+      ['meta', 2, 'message-2', 'device-1', new Uint8Array([2]), 'sha-2', 2],
+    ])
+    assert.deepEqual(storage.sql.tableRows.get('connected_devices'), [['device-1', 11, 'ua', 1]])
+    assert.deepEqual(storage.sql.tableForeignKeys.get('device_refresh_tokens'), [
+      { table: 'devices', from: 'device_id', to: 'device_id' },
+    ])
+    assert.equal(
+      storage.sql.tableIndexes.get('op_log')?.some((index) => index.name === 'idx_op_log_doc_seq'),
+      true,
+    )
+    assert.deepEqual(storage.sql.tableIndexes.get('devices'), [
+      { name: 'sqlite_autoindex_devices_1', unique: true, columns: ['device_id'] },
+    ])
+    assert.deepEqual(storage.sql.tableIndexes.get('op_log'), [
+      { name: 'sqlite_autoindex_op_log_1', unique: true, columns: ['doc_id', 'seq'] },
+      { name: 'sqlite_autoindex_op_log_2', unique: true, columns: ['doc_id', 'message_id'] },
+      { name: 'idx_op_log_doc_seq', unique: false, columns: ['doc_id', 'seq'] },
+    ])
+    assert.deepEqual(storage.sql.tableIndexes.get('connected_devices'), [
+      { name: 'sqlite_autoindex_connected_devices_1', unique: true, columns: ['device_id'] },
+    ])
+  }
+})
+
+test('ensureSchema rejects a malformed temp table even when its row count matches', async () => {
+  const storage = new SqlOnlyStorage()
+  storage.sql.migrationVersions.add(1)
+  storage.sql.migrationVersions.add(2)
+  storage.sql.migrationVersions.add(3)
+  storage.sql.tableColumns.set('devices', [
+    'device_id',
+    'y_client_id',
+    'token_version',
+    'revoked_at',
+    'created_at',
+    'last_seen_at',
+  ])
+  storage.sql.tableRowCounts.set('devices', 1)
+  storage.sql.tableColumns.set('devices__dr007', ['device_id', 'unexpected_column'])
+  storage.sql.tableRowCounts.set('devices__dr007', 1)
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+
+  await expect(ensureSchema(room)).rejects.toThrow(
+    'schema-migration:devices__dr007-unexpected-columns',
+  )
+  assert.equal(room.schemaReady, false)
+  assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3])
+  assert.deepEqual(storage.sql.tableColumns.get('devices__dr007'), [
+    'device_id',
+    'unexpected_column',
+  ])
 })
 
 test('VaultRoom upgrades an existing v1 schema before serving SQL traffic', async () => {
@@ -1097,7 +1349,7 @@ test('VaultRoom upgrades an existing v1 schema before serving SQL traffic', asyn
     assert(server instanceof FakeSocket)
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
 
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
     assert.equal(
       storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
       1,
@@ -1129,15 +1381,15 @@ test('VaultRoom retries v2 schema migration after ALTER succeeds before recordin
     }
     assert(firstFailure instanceof Error)
     assert.deepEqual([...storage.sql.migrationVersions], [1])
-    assert.deepEqual([...storage.sql.messageDedupColumns], ['update_sha256'])
+    assert.deepEqual([...storage.sql.messageDedupColumns], [])
 
     storage.sql.failOnQueryIncludes = undefined
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
 
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
     assert.equal(
       storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
-      1,
+      2,
     )
   } finally {
     restoreResponse(previousResponse)
@@ -1639,14 +1891,12 @@ test('VaultRoom fails closed after complete SQLite loss even when R2 retains a c
     recoveredRoom.sessionStates.set(recoveredSocket, {
       vaultId: makeVaultId('vault-1'),
       deviceId: makeDeviceId('device-1'),
-      yClientId: 1,
       metadataAccess: 'read-write',
       metadataCapabilityAdvertised: true,
     })
     recoveredRoom.sessionStates.set(recoveredPeer, {
       vaultId: makeVaultId('vault-1'),
       deviceId: makeDeviceId('device-1'),
-      yClientId: 1,
       metadataAccess: 'read-write',
       metadataCapabilityAdvertised: true,
     })
@@ -1825,7 +2075,6 @@ test('VaultRoom fails closed when a checkpoint target key already exists', async
     seq: 1,
     messageId: 'checkpoint-target-conflict',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes,
     updateSha256: await hashTestBytes(updateBytes),
     createdAt: 1,
@@ -2999,7 +3248,6 @@ test('VaultRoom schedules an immediate checkpoint alarm after the op threshold',
         seq,
         messageId: `threshold-seq-${seq}`,
         deviceId: 'device-1',
-        yClientId: 1,
         updateBytes: makeYjsUpdateBytes(makeMessageId(`threshold-seq-${seq}`)),
         updateSha256: 'a'.repeat(64),
         createdAt: seq,
@@ -3100,7 +3348,6 @@ test('VaultRoom alarm advances and compacts recovered checkpoint pointers', asyn
     seq: 1,
     messageId: 'message-before-snapshot',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: makeYjsUpdateBytes(makeMessageId('message-before-snapshot')),
     updateSha256: 'sha',
     createdAt: 1,
@@ -3290,7 +3537,6 @@ test('VaultRoom blocks orphan recovery when snapshot key sequence mismatches the
     seq: 1,
     messageId: 'message-orphan-key-row',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: snapshot2,
     updateSha256: 'sha',
     createdAt: 1,
@@ -3346,7 +3592,6 @@ test('VaultRoom applies the retained snapshot floor while recovering orphaned ch
         seq,
         messageId: `message-orphan-retention-${seq}`,
         deviceId: 'device-1',
-        yClientId: 1,
         updateBytes,
         updateSha256: 'sha',
         createdAt: seq,
@@ -3624,7 +3869,6 @@ test('VaultRoom hydrates active Y.Doc from R2 snapshot plus residual SQL op_log'
       seq: 2,
       messageId: 'message-residual',
       deviceId: 'device-1',
-      yClientId: 1,
       updateBytes: makeYjsUpdateBytes(makeMessageId('message-residual')),
       updateSha256: 'a'.repeat(64),
       createdAt: 2,
@@ -3678,7 +3922,6 @@ test('VaultRoom fails closed when residual op_log sequences contain a gap', asyn
     seq: 3,
     messageId: 'oplog-gap-seq3',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: seq3,
     updateSha256: await hashTestBytes(seq3),
     createdAt: 3,
@@ -3724,7 +3967,6 @@ test('VaultRoom fails closed when residual op_log rows stop before the durable t
     seq: 2,
     messageId: 'oplog-tail-seq2',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: seq2,
     updateSha256: await hashTestBytes(seq2),
     createdAt: 2,
@@ -3876,7 +4118,6 @@ test('VaultRoom skips a corrupt newest generation and replays residual op_log fr
     seq: 2,
     messageId: 'health-fallback-residual',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: residual,
     updateSha256: await hashTestBytes(residual),
     createdAt: 2,
@@ -3887,7 +4128,6 @@ test('VaultRoom skips a corrupt newest generation and replays residual op_log fr
     seq: 3,
     messageId: 'health-fallback-tail',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: tail,
     updateSha256: await hashTestBytes(tail),
     createdAt: 3,
@@ -4033,7 +4273,6 @@ test('rollback writes a new audited generation and preserves the source object',
     seq: 2,
     messageId: 'rollback-current',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: currentBytes,
     updateSha256: await hashTestBytes(currentBytes),
     createdAt: 2,
@@ -4115,7 +4354,6 @@ test('rollback accepts and preserves grouped metadata generations', async () => 
     seq: 2,
     messageId: 'rollback-meta-current',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: currentBytes,
     updateSha256: await hashTestBytes(currentBytes),
     createdAt: 2,
@@ -4925,7 +5163,6 @@ test('snapshot health verify preserves live op-log state for an untracked legacy
     seq: 1,
     messageId: 'verify-legacy-oplog-live',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: liveUpdate,
     updateSha256: await hashTestBytes(liveUpdate),
     createdAt: 1,
@@ -5241,7 +5478,6 @@ test('hydration ignores R2-only candidate evidence without durable authority', a
     seq: 1,
     messageId: 'durable-op',
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: durableUpdate,
     updateSha256: await hashTestBytes(durableUpdate),
     createdAt: 1,
@@ -5737,7 +5973,7 @@ test('metadata read-only sessions still append file YDoc updates', async () => {
   }
 })
 
-test('VaultRoom blocks reinstalled and revoked devices before normal sync', async () => {
+test('VaultRoom blocks revoked devices before normal sync', async () => {
   const previousPair = installFakeWebSocketPair()
   const previousResponse = installFakeUpgradeResponse()
   try {
@@ -5751,17 +5987,14 @@ test('VaultRoom blocks reinstalled and revoked devices before normal sync', asyn
     assert(reinstalled instanceof FakeSocket)
     assert(revoked instanceof FakeSocket)
 
-    await room.webSocketMessage(reinstalled, JSON.stringify({ ...makeHello(), yClientId: 2 }))
+    await room.webSocketMessage(reinstalled, JSON.stringify(makeHello()))
     storage.sql.devices.set('device-1', {
       deviceId: 'device-1',
-      yClientId: 1,
       tokenVersion: 1,
       revokedAt: 50,
     })
     await room.webSocketMessage(revoked, JSON.stringify(makeHello()))
 
-    assert.equal(reinstalled.closeCode, 1008)
-    assert.equal(reinstalled.closeReason, 'hello-requires-full-snapshot:device-reinstalled')
     assert.equal(revoked.closeCode, 1008)
     assert.equal(revoked.closeReason, 'auth-reject:device-revoked')
   } finally {
@@ -5908,7 +6141,6 @@ test('VaultRoom applies signed token scopes and tokenVersion to hello admission'
     const storage = new SqlOnlyStorage()
     storage.sql.devices.set('device-1', {
       deviceId: 'device-1',
-      yClientId: 1,
       tokenVersion: 2,
       revokedAt: undefined,
     })
@@ -6212,7 +6444,6 @@ test('VaultRoom serves the latest meta snapshot from the production HTTP route',
     seq: 1,
     messageId,
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: makeYjsUpdateBytes(messageId),
     updateSha256: 'a'.repeat(64),
     createdAt: 1,
@@ -6263,7 +6494,6 @@ test('VaultRoom serves the latest file snapshot from the production HTTP route',
     seq: 1,
     messageId,
     deviceId: 'device-1',
-    yClientId: 1,
     updateBytes: makeYjsUpdateBytes(messageId),
     updateSha256: 'a'.repeat(64),
     createdAt: 1,
@@ -6438,7 +6668,6 @@ test('hydration replays only the op-log through its captured document clock', as
       seq,
       messageId: `captured-clock-${seq}`,
       deviceId: 'device-1',
-      yClientId: 1,
       updateBytes,
       updateSha256: await hashTestBytes(updateBytes),
       createdAt: seq,
@@ -6454,7 +6683,6 @@ test('hydration replays only the op-log through its captured document clock', as
         seq: 4,
         messageId: 'captured-clock-4',
         deviceId: 'device-1',
-        yClientId: 1,
         updateBytes,
         updateSha256: await hashTestBytes(updateBytes),
         createdAt: 4,

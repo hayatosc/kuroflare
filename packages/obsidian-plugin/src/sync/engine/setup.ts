@@ -5,7 +5,6 @@ import {
   planClientAuthMetadataFromSetupResponse,
   SetupBootstrapModeSchema,
   VaultIdSchema,
-  WireYClientIdSchema,
   type ClientAuthMetadata,
   type ClientAuthMetadataSetupPersistDecision,
   type SetupExchangeResponse,
@@ -23,7 +22,6 @@ export interface LocalSetupMetadata {
   readonly endpoint: string
   readonly vaultId: SetupExchangeResponse['vaultId']
   readonly deviceId: SetupExchangeResponse['deviceId']
-  readonly yClientId: SetupExchangeResponse['yClientId']
   readonly protocolVersion: SetupExchangeResponse['protocolVersion']
   readonly bootstrapMode: SetupExchangeResponse['bootstrapMode']
   readonly tokenVersion: SetupExchangeResponse['tokenVersion']
@@ -186,7 +184,6 @@ export function planLocalSetupPersist(input: LocalSetupPersistPlanInput): LocalS
           endpoint: input.response.endpoint,
           vaultId: input.response.vaultId,
           deviceId: input.response.deviceId,
-          yClientId: input.response.yClientId,
           protocolVersion: input.response.protocolVersion,
           bootstrapMode: input.response.bootstrapMode,
           tokenVersion: input.response.tokenVersion,
@@ -212,11 +209,13 @@ export function isLocalSetupMetadata(value: unknown): value is LocalSetupMetadat
   if (!isRecord(value)) {
     return false
   }
+  if ('yClientId' in value || 'y_client_id' in value) {
+    return false
+  }
   return (
     v.is(HttpEndpointSchema, value.endpoint) &&
     v.is(VaultIdSchema, value.vaultId) &&
     v.is(DeviceIdSchema, value.deviceId) &&
-    v.is(WireYClientIdSchema, value.yClientId) &&
     v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), value.protocolVersion) &&
     v.is(SetupBootstrapModeSchema, value.bootstrapMode) &&
     v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), value.tokenVersion)

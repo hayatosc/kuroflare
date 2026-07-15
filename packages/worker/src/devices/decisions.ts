@@ -1,10 +1,8 @@
 import * as v from 'valibot'
 
 import type {
-  YClientId,
   SetupExchangeDecisionInput,
   SetupExchangeDecision,
-  YClientIdRange,
   SetupExchangeCredentialPlanInput,
   SetupExchangeCredentialPlan,
   ClientHelloRegistryDecisionInput,
@@ -18,7 +16,7 @@ import type {
 } from './types'
 
 /**
- * Decides how setup exchange should bind a device to a Yjs clientID.
+ * Decides how setup exchange should bind credentials to an authenticated device.
  */
 export function decideSetupExchange(input: SetupExchangeDecisionInput): SetupExchangeDecision {
   if (input.requestedDeviceId && input.registry.existingDevice) {
@@ -29,10 +27,7 @@ export function decideSetupExchange(input: SetupExchangeDecisionInput): SetupExc
     return { action: 'reuse-device', device: input.registry.existingDevice }
   }
 
-  const yClientId = allocateYClientId(input.registry.usedYClientIds, input.yClientIdRange)
-  return yClientId === null
-    ? { action: 'reject', reason: 'no-y-client-id-available' }
-    : { action: 'register-device', yClientId }
+  return { action: 'register-device' }
 }
 
 /**
@@ -61,12 +56,10 @@ export function planSetupExchangeCredentials(
     input.setupDecision.action === 'reuse-device'
       ? {
           deviceId: input.setupDecision.device.deviceId,
-          yClientId: input.setupDecision.device.yClientId,
           tokenVersion: input.setupDecision.device.tokenVersion,
         }
       : {
           deviceId: input.deviceId,
-          yClientId: input.setupDecision.yClientId,
           tokenVersion: 1,
         }
 
@@ -77,7 +70,6 @@ export function planSetupExchangeCredentials(
   return {
     action: 'issue-credentials',
     deviceId: credential.deviceId,
-    yClientId: credential.yClientId,
     tokenVersion: credential.tokenVersion,
     insertRefreshToken: {
       tokenHash: input.refreshTokenHash,
@@ -104,14 +96,6 @@ export function decideClientHelloRegistry(
 
   if (input.tokenVersion < input.device.tokenVersion) {
     return { action: 'reject', reason: 'stale-token' }
-  }
-
-  if (!isValidYClientId(input.claimedYClientId)) {
-    return { action: 'reject', reason: 'y-client-id-mismatch' }
-  }
-
-  if (input.claimedYClientId !== input.device.yClientId) {
-    return { action: 'require-full-snapshot', reason: 'device-reinstalled' }
   }
 
   return { action: 'accept' }
@@ -241,28 +225,4 @@ export function decideRevokeDevice(input: RevokeDeviceDecisionInput): RevokeDevi
     tokenVersion: input.device.tokenVersion + 1,
     revokedAt: input.revokedAt,
   }
-}
-
-/**
- * Returns true when a number can safely be used as a Yjs clientID.
- */
-export function isValidYClientId(value: unknown): value is YClientId {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-}
-
-function allocateYClientId(
-  usedYClientIds: ReadonlySet<YClientId>,
-  range: YClientIdRange,
-): YClientId | null {
-  if (!isValidYClientId(range.min) || !isValidYClientId(range.max) || range.min > range.max) {
-    return null
-  }
-
-  for (let candidate = range.min; candidate <= range.max; candidate += 1) {
-    if (!usedYClientIds.has(candidate)) {
-      return candidate
-    }
-  }
-
-  return null
 }

@@ -23,7 +23,6 @@ const claims: DeviceTokenClaims = {
 }
 const device: DeviceRegistryEntry = {
   deviceId,
-  yClientId: 10,
   tokenVersion: 3,
   revokedAt: undefined,
 }

@@ -96,10 +96,6 @@ export function decideSyncUpdateAppend(
     return { action: 'reject', reason: 'invalid-now' }
   }
 
-  if (!v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), input.yClientId)) {
-    return { action: 'reject', reason: 'invalid-y-client-id' }
-  }
-
   if (
     !Number.isSafeInteger(input.updateBytesLength) ||
     input.updateBytesLength <= 0 ||
@@ -160,7 +156,6 @@ function makeNewUpdateDecision(
       messageId: input.update.messageId,
       deviceId: input.update.deviceId,
       docId: input.update.docId,
-      yClientId: input.yClientId,
       updateSha256: input.updateSha256,
       createdAt: input.now,
     },

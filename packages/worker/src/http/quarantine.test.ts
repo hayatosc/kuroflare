@@ -101,7 +101,6 @@ test('quarantine action HTTP plan assembles discard response effects', () => {
       tokenHashMatches: true,
     },
     latestSeq: undefined,
-    yClientId: undefined,
     yjsApplySucceeded: undefined,
     metaSchemaValid: undefined,
   })
@@ -127,7 +126,6 @@ test('quarantine action HTTP plan assembles force apply response effects', () =>
       tokenHashMatches: true,
     },
     latestSeq: 10,
-    yClientId: 42,
     yjsApplySucceeded: true,
     metaSchemaValid: true,
   })
@@ -150,7 +148,6 @@ test('quarantine action HTTP plan rejects invalid confirmation and revalidation'
       now: 150,
       confirmation: undefined,
       latestSeq: undefined,
-      yClientId: undefined,
       yjsApplySucceeded: undefined,
       metaSchemaValid: undefined,
     }),
@@ -168,7 +165,6 @@ test('quarantine action HTTP plan rejects invalid confirmation and revalidation'
         tokenHashMatches: true,
       },
       latestSeq: 10,
-      yClientId: 42,
       yjsApplySucceeded: true,
       metaSchemaValid: false,
     }),

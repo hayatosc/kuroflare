@@ -17,7 +17,6 @@ export interface RecordedOpLogRow {
   readonly seq: number
   readonly messageId: string
   readonly deviceId: string
-  readonly yClientId: number
   readonly updateBytes: Uint8Array
   readonly updateSha256: string
   readonly createdAt: number
@@ -49,7 +48,6 @@ export interface RecordedCheckpointRunRow {
 
 export interface RecordedDeviceRow {
   readonly deviceId: string
-  readonly yClientId: number
   readonly tokenVersion: number
   readonly revokedAt: number | undefined
 }
@@ -68,6 +66,26 @@ export interface RecordedRefreshTokenRow {
   readonly issuedAt: number
   readonly expiresAt: number
   readonly revokedAt: number | undefined
+}
+
+export interface RecordedColumnInfo {
+  readonly name: string
+  readonly type: string
+  readonly notnull: number
+  readonly dflt_value: string | null
+  readonly pk: number
+}
+
+export interface RecordedIndex {
+  readonly name: string
+  readonly unique: boolean
+  readonly columns: readonly string[]
+}
+
+export interface RecordedForeignKey {
+  readonly table: string
+  readonly from: string
+  readonly to: string
 }
 
 export interface RecordedMessageDedupRow {
@@ -121,7 +139,6 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       'device-1',
       {
         deviceId: 'device-1',
-        yClientId: 1,
         tokenVersion: 1,
         revokedAt: undefined,
       },
@@ -129,6 +146,43 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
   ])
   readonly migrationVersions = new Set<number>()
   readonly messageDedupColumns = new Set<string>()
+  readonly tableColumns = new Map<string, readonly string[]>([
+    ['devices', ['device_id', 'token_version', 'revoked_at', 'created_at', 'last_seen_at']],
+    [
+      'op_log',
+      ['doc_id', 'seq', 'message_id', 'device_id', 'update_bytes', 'update_sha256', 'created_at'],
+    ],
+    ['connected_devices', ['device_id', 'last_seen_at', 'user_agent', 'protocol_version']],
+  ])
+  readonly tableRowCounts = new Map<string, number>([
+    ['devices', 0],
+    ['op_log', 0],
+    ['connected_devices', 0],
+  ])
+  readonly tableRows = new Map<string, readonly (readonly unknown[])[]>([
+    ['devices', []],
+    ['op_log', []],
+    ['connected_devices', []],
+  ])
+  readonly tableColumnDetails = new Map<string, readonly RecordedColumnInfo[]>()
+  readonly tableIndexes = new Map<string, readonly RecordedIndex[]>([
+    ['devices', [{ name: 'sqlite_autoindex_devices_1', unique: true, columns: ['device_id'] }]],
+    [
+      'op_log',
+      [
+        { name: 'sqlite_autoindex_op_log_1', unique: true, columns: ['doc_id', 'seq'] },
+        { name: 'sqlite_autoindex_op_log_2', unique: true, columns: ['doc_id', 'message_id'] },
+        { name: 'idx_op_log_doc_seq', unique: false, columns: ['doc_id', 'seq'] },
+      ],
+    ],
+    [
+      'connected_devices',
+      [{ name: 'sqlite_autoindex_connected_devices_1', unique: true, columns: ['device_id'] }],
+    ],
+  ])
+  readonly tableForeignKeys = new Map<string, readonly RecordedForeignKey[]>([
+    ['device_refresh_tokens', [{ table: 'devices', from: 'device_id', to: 'device_id' }]],
+  ])
   readonly queries: string[] = []
   failOnQueryIncludes: string | undefined
   failAfterQueryIncludes: string | undefined
@@ -145,24 +199,207 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
     if (this.failOnQueryIncludes !== undefined && normalized.includes(this.failOnQueryIncludes)) {
       throw new Error(`injected SQL failure: ${this.failOnQueryIncludes}`)
     }
-    if (normalized.startsWith('create table') || normalized.startsWith('create index')) {
+    const trimmed = normalized.trim()
+    if (trimmed.startsWith('create table')) {
+      const match = trimmed.match(/^create table(?: if not exists)? ([a-z0-9_]+)/)
+      const table = match?.[1]
+      if (table !== undefined) {
+        const columns = this.expectedTableColumns(table)
+        if (columns !== undefined) this.tableColumns.set(table, columns)
+        if (!this.tableRowCounts.has(table)) this.tableRowCounts.set(table, 0)
+        if (!this.tableRows.has(table)) this.tableRows.set(table, [])
+        if (columns !== undefined) {
+          this.tableIndexes.set(table, this.expectedTableIndexes(table))
+          this.tableForeignKeys.set(table, [])
+        }
+      }
+      this.maybeFailAfterQuery(normalized)
       return []
     }
-    if (normalized.startsWith('pragma table_info(message_dedup)')) {
+    if (trimmed.startsWith('create index')) {
+      const match = trimmed.match(
+        /^create index(?: if not exists)? ([a-z0-9_]+) on ([a-z0-9_]+)\s*\(([^)]+)\)/,
+      )
+      if (match !== null) {
+        const [, name, table, columns] = match
+        if (name !== undefined && table !== undefined && columns !== undefined) {
+          const existing = this.tableIndexes.get(table) ?? []
+          if (!existing.some((index) => index.name === name)) {
+            this.tableIndexes.set(table, [
+              ...existing,
+              { name, unique: false, columns: columns.split(',').map((column) => column.trim()) },
+            ])
+          }
+        }
+      }
+      this.maybeFailAfterQuery(normalized)
+      return []
+    }
+    if (trimmed.startsWith('pragma table_info(message_dedup)')) {
       return [...this.messageDedupColumns].map((name) => ({ name })) as Iterable<T>
     }
+    if (trimmed.startsWith('pragma table_info(devices)')) {
+      return this.tableInfoRows('devices') as Iterable<T>
+    }
+    if (trimmed.startsWith('pragma table_info(op_log)')) {
+      return this.tableInfoRows('op_log') as Iterable<T>
+    }
+    if (trimmed.startsWith('pragma table_info(connected_devices)')) {
+      return this.tableInfoRows('connected_devices') as Iterable<T>
+    }
+    if (trimmed.startsWith('pragma table_info(devices__dr007)')) {
+      return this.tableInfoRows('devices__dr007') as Iterable<T>
+    }
+    if (trimmed.startsWith('pragma table_info(op_log__dr007)')) {
+      return this.tableInfoRows('op_log__dr007') as Iterable<T>
+    }
+    if (trimmed.startsWith('pragma table_info(connected_devices__dr007)')) {
+      return this.tableInfoRows('connected_devices__dr007') as Iterable<T>
+    }
+    if (trimmed.startsWith('pragma index_list(')) {
+      const match = trimmed.match(/^pragma index_list\(([a-z0-9_]+)\)/)
+      const table = match?.[1]
+      return (
+        table === undefined
+          ? []
+          : (this.tableIndexes.get(table) ?? []).map((index, seq) => ({
+              seq,
+              name: index.name,
+              unique: index.unique ? 1 : 0,
+              origin: index.name.startsWith('sqlite_autoindex') ? 'pk' : 'c',
+              partial: 0,
+            }))
+      ) as Iterable<T>
+    }
+    if (trimmed.startsWith('pragma index_info(')) {
+      const match = trimmed.match(/^pragma index_info\(([a-z0-9_]+)\)/)
+      const name = match?.[1]
+      const index =
+        name === undefined
+          ? undefined
+          : [...this.tableIndexes.values()].flat().find((candidate) => candidate.name === name)
+      return (index?.columns ?? []).map((column, seqno) => ({
+        seqno,
+        cid: seqno,
+        name: column,
+      })) as Iterable<T>
+    }
+    if (trimmed.startsWith('pragma foreign_key_list(')) {
+      const match = trimmed.match(/^pragma foreign_key_list\(([a-z0-9_]+)\)/)
+      const table = match?.[1]
+      return (
+        table === undefined
+          ? []
+          : (this.tableForeignKeys.get(table) ?? []).map((foreignKey, id) => ({
+              id,
+              seq: 0,
+              table: foreignKey.table,
+              from: foreignKey.from,
+              to: foreignKey.to,
+              on_update: 'NO ACTION',
+              on_delete: 'NO ACTION',
+              match: 'NONE',
+            }))
+      ) as Iterable<T>
+    }
+    if (trimmed.startsWith('pragma foreign_keys')) return []
     if (normalized.includes('alter table message_dedup') && normalized.includes('update_sha256')) {
       this.messageDedupColumns.add('update_sha256')
       return []
     }
-    if (normalized.startsWith('alter table')) {
+    if (trimmed.startsWith('alter table')) {
+      const match = trimmed.match(/^alter table ([a-z0-9_]+) rename to ([a-z0-9_]+)/)
+      if (match !== null) {
+        const [, source, target] = match
+        if (source !== undefined && target !== undefined) {
+          const columns = this.tableColumns.get(source)
+          if (columns !== undefined) this.tableColumns.set(target, columns)
+          const rowCount = this.tableRowCounts.get(source)
+          if (rowCount !== undefined) this.tableRowCounts.set(target, rowCount)
+          const rows = this.tableRows.get(source)
+          if (rows !== undefined) this.tableRows.set(target, rows)
+          const indexes = this.tableIndexes.get(source)
+          if (indexes !== undefined) {
+            this.tableIndexes.set(
+              target,
+              indexes.map((index) => ({
+                ...index,
+                name: index.name.startsWith('sqlite_autoindex')
+                  ? index.name.replace(source, target)
+                  : index.name,
+              })),
+            )
+          }
+          const foreignKeys = this.tableForeignKeys.get(source)
+          if (foreignKeys !== undefined) this.tableForeignKeys.set(target, foreignKeys)
+          const columnDetails = this.tableColumnDetails.get(source)
+          if (columnDetails !== undefined) this.tableColumnDetails.set(target, columnDetails)
+          this.tableColumns.delete(source)
+          this.tableRowCounts.delete(source)
+          this.tableRows.delete(source)
+          this.tableIndexes.delete(source)
+          this.tableForeignKeys.delete(source)
+          this.tableColumnDetails.delete(source)
+        }
+      }
+      this.maybeFailAfterQuery(normalized)
       return []
+    }
+    if (trimmed.startsWith('drop table')) {
+      const match = trimmed.match(/^drop table(?: if exists)? ([a-z0-9_]+)/)
+      const table = match?.[1]
+      if (table !== undefined) {
+        this.tableColumns.delete(table)
+        this.tableRowCounts.delete(table)
+        this.tableRows.delete(table)
+        this.tableIndexes.delete(table)
+        this.tableForeignKeys.delete(table)
+        this.tableColumnDetails.delete(table)
+      }
+      this.maybeFailAfterQuery(normalized)
+      return []
+    }
+    if (trimmed.startsWith('select count(*) as count from')) {
+      const match = trimmed.match(/from ([a-z0-9_]+)/)
+      const table = match?.[1]
+      if (table === undefined) throw new Error(`missing count table: ${query}`)
+      return [{ count: this.tableRowCounts.get(table) ?? 0 }] as Iterable<T>
+    }
+    if (trimmed.startsWith('insert into ') && normalized.includes('__dr007')) {
+      const match = trimmed.match(/^insert into ([a-z0-9_]+)__dr007\s*\(/)
+      const target = match?.[1]
+      if (target !== undefined) {
+        this.tableRowCounts.set(`${target}__dr007`, this.tableRowCounts.get(target) ?? 0)
+        const rows = this.tableRows.get(target)
+        if (rows !== undefined) {
+          const sourceColumns = this.tableColumns.get(target) ?? []
+          const legacyIndex = sourceColumns.indexOf('y_client_id')
+          const sortedRows = [...rows].sort((left, right) => {
+            if (target !== 'op_log') return 0
+            const docIndex = sourceColumns.indexOf('doc_id')
+            const seqIndex = sourceColumns.indexOf('seq')
+            return (
+              String(left[docIndex]).localeCompare(String(right[docIndex])) ||
+              Number(left[seqIndex]) - Number(right[seqIndex])
+            )
+          })
+          this.tableRows.set(
+            `${target}__dr007`,
+            sortedRows.map((row) =>
+              legacyIndex < 0 ? row : row.filter((_value, index) => index !== legacyIndex),
+            ),
+          )
+        }
+        this.maybeFailAfterQuery(normalized)
+        return []
+      }
     }
     if (normalized.includes('from schema_migrations')) {
       return [...this.migrationVersions].map((version) => ({ version })) as Iterable<T>
     }
     if (normalized.includes('insert into schema_migrations')) {
       this.migrationVersions.add(expectNumber(bindings[0]))
+      this.maybeFailAfterQuery(normalized)
       return []
     }
     if (normalized.includes('from setup_tokens')) {
@@ -197,11 +434,6 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       return rows as Iterable<T>
     }
     if (normalized.includes('from devices')) {
-      if (!normalized.includes('where device_id')) {
-        return [...this.devices.values()].map((device) => ({
-          yClientId: device.yClientId,
-        })) as Iterable<T>
-      }
       const deviceId = expectString(bindings[0])
       const device = this.devices.get(deviceId)
       const rows =
@@ -209,7 +441,6 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
           ? []
           : [
               {
-                yClientId: device.yClientId,
                 tokenVersion: device.tokenVersion,
                 revokedAt: device.revokedAt,
               },
@@ -241,8 +472,7 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       const existing = this.devices.get(deviceId)
       this.devices.set(deviceId, {
         deviceId,
-        yClientId: existing?.yClientId ?? expectNumber(bindings[1]),
-        tokenVersion: existing?.tokenVersion ?? expectNumber(bindings[2]),
+        tokenVersion: existing?.tokenVersion ?? expectNumber(bindings[1]),
         revokedAt: existing?.revokedAt,
       })
       return []
@@ -519,10 +749,9 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
         seq,
         messageId,
         deviceId: expectString(bindings[3]),
-        yClientId: expectNumber(bindings[4]),
-        updateBytes: expectUint8Array(bindings[5]),
-        updateSha256: expectString(bindings[6]),
-        createdAt: expectNumber(bindings[7]),
+        updateBytes: expectUint8Array(bindings[4]),
+        updateSha256: expectString(bindings[5]),
+        createdAt: expectNumber(bindings[6]),
       })
       this.maybeFailAfterQuery(normalized)
       return []
@@ -718,6 +947,73 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       throw new Error(`injected SQL failure after query: ${this.failAfterQueryIncludes}`)
     }
   }
+
+  private expectedTableColumns(table: string): readonly string[] | undefined {
+    if (!table.endsWith('__dr007')) return undefined
+    const base = table.slice(0, -'__dr007'.length)
+    return {
+      devices: ['device_id', 'token_version', 'revoked_at', 'created_at', 'last_seen_at'],
+      op_log: [
+        'doc_id',
+        'seq',
+        'message_id',
+        'device_id',
+        'update_bytes',
+        'update_sha256',
+        'created_at',
+      ],
+      connected_devices: ['device_id', 'last_seen_at', 'user_agent', 'protocol_version'],
+    }[base]
+  }
+
+  private tableInfoRows(table: string): readonly Record<string, unknown>[] {
+    const details = this.tableColumnDetails.get(table)
+    if (details !== undefined) return details as unknown as readonly Record<string, unknown>[]
+    return (this.tableColumns.get(table) ?? []).map((name, index) => {
+      const base = table.replace('__dr007', '')
+      const type = [
+        'token_version',
+        'revoked_at',
+        'created_at',
+        'last_seen_at',
+        'protocol_version',
+        'seq',
+      ].includes(name)
+        ? 'INTEGER'
+        : ['update_bytes'].includes(name)
+          ? 'BLOB'
+          : 'TEXT'
+      const notnull =
+        (base === 'devices' && ['token_version', 'created_at'].includes(name)) ||
+        (base === 'op_log' && name !== 'y_client_id') ||
+        name === 'y_client_id' ||
+        (base === 'connected_devices' && ['last_seen_at', 'protocol_version'].includes(name))
+          ? 1
+          : 0
+      const pk =
+        base === 'op_log' ? (name === 'doc_id' ? 1 : name === 'seq' ? 2 : 0) : index === 0 ? 1 : 0
+      const defaultValue = name === 'token_version' ? '1' : null
+      return { cid: index, name, type, notnull, dflt_value: defaultValue, pk }
+    })
+  }
+
+  private expectedTableIndexes(table: string): readonly RecordedIndex[] {
+    const base = table.replace('__dr007', '')
+    const indexes = {
+      devices: [{ name: 'sqlite_autoindex_devices_1', unique: true, columns: ['device_id'] }],
+      op_log: [
+        { name: 'sqlite_autoindex_op_log_1', unique: true, columns: ['doc_id', 'seq'] },
+        { name: 'sqlite_autoindex_op_log_2', unique: true, columns: ['doc_id', 'message_id'] },
+      ],
+      connected_devices: [
+        { name: 'sqlite_autoindex_connected_devices_1', unique: true, columns: ['device_id'] },
+      ],
+    }[base]
+    return (indexes ?? []).map((index) => ({
+      ...index,
+      name: index.name.replace(base, table),
+    }))
+  }
 }
 
 export interface RecordingSqlSnapshot {
@@ -731,5 +1027,11 @@ export interface RecordingSqlSnapshot {
   readonly devices: Map<string, RecordedDeviceRow>
   readonly migrationVersions: Set<number>
   readonly messageDedupColumns: Set<string>
+  readonly tableColumns: Map<string, readonly string[]>
+  readonly tableRowCounts: Map<string, number>
+  readonly tableRows: Map<string, readonly (readonly unknown[])[]>
+  readonly tableColumnDetails: Map<string, readonly RecordedColumnInfo[]>
+  readonly tableIndexes: Map<string, readonly RecordedIndex[]>
+  readonly tableForeignKeys: Map<string, readonly RecordedForeignKey[]>
   readonly snapshotHealthEvents: RecordedSnapshotHealthEventRow[]
 }

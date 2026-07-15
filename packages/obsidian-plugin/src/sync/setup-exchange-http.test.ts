@@ -28,7 +28,6 @@ const response = {
   endpoint: 'https://sync.example.test',
   vaultId,
   deviceId,
-  yClientId: 1,
   accessToken: 'access-token',
   refreshToken: 'refresh-token',
   tokenVersion: 1,

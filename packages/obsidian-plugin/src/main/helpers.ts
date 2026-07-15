@@ -211,7 +211,6 @@ export function localSetupMetadataFromSetupResponse(
     endpoint: response.endpoint,
     vaultId: response.vaultId,
     deviceId: response.deviceId,
-    yClientId: response.yClientId,
     protocolVersion: response.protocolVersion,
     bootstrapMode: response.bootstrapMode,
     tokenVersion: response.tokenVersion,

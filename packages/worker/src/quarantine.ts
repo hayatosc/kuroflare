@@ -1,7 +1,6 @@
 import type { DeviceId, DocId, MessageId, Sha256Hex } from '@kuroflare/core'
 import * as v from 'valibot'
 
-import type { YClientId } from './devices'
 import type { SyncUpdateQuarantineReason } from './sync/update'
 
 /** Quarantined update data available for repair. */
@@ -26,7 +25,6 @@ export interface QuarantinedUpdateAdminDecisionInput {
   readonly now: number
   readonly confirmationTokenValid: boolean
   readonly latestSeq: number | undefined
-  readonly yClientId: YClientId | undefined
   readonly yjsApplySucceeded: boolean | undefined
   readonly metaSchemaValid: boolean | undefined
 }
@@ -44,7 +42,6 @@ export interface QuarantinedUpdateForceApplyOpLogAppend {
   readonly docId: DocId
   readonly messageId: MessageId
   readonly deviceId: DeviceId
-  readonly yClientId: YClientId
   readonly updateSha256: Sha256Hex
   readonly createdAt: number
 }
@@ -78,7 +75,6 @@ export type QuarantinedUpdateAdminDecision =
         | 'invalid-now'
         | 'confirmation-required'
         | 'invalid-clock'
-        | 'missing-y-client-id'
         | 'revalidation-required'
         | 'revalidation-failed'
     }
@@ -116,10 +112,6 @@ export function decideQuarantinedUpdateAdmin(
     return { action: 'reject', reason: 'invalid-clock' }
   }
 
-  if (!v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), input.yClientId)) {
-    return { action: 'reject', reason: 'missing-y-client-id' }
-  }
-
   if (input.yjsApplySucceeded === undefined || input.metaSchemaValid === undefined) {
     return { action: 'reject', reason: 'revalidation-required' }
   }
@@ -136,7 +128,6 @@ export function decideQuarantinedUpdateAdmin(
       docId: input.record.docId,
       messageId: input.record.messageId,
       deviceId: input.record.deviceId,
-      yClientId: input.yClientId,
       updateSha256: input.record.updateSha256,
       createdAt: input.now,
     },

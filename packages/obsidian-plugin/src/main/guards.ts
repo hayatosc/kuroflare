@@ -67,7 +67,6 @@ export function sameLocalSetupMetadata(
     left.endpoint === right.endpoint &&
     left.vaultId === right.vaultId &&
     left.deviceId === right.deviceId &&
-    left.yClientId === right.yClientId &&
     left.protocolVersion === right.protocolVersion &&
     left.bootstrapMode === right.bootstrapMode &&
     left.tokenVersion === right.tokenVersion

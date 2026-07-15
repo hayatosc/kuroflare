@@ -13,7 +13,7 @@ test('bundled schema migrations are accepted by the migration decision', () => {
     {
       action: 'apply-migrations',
       fromVersion: 0,
-      toVersion: 3,
+      toVersion: 4,
       migrations: SCHEMA_MIGRATIONS,
     },
   )
@@ -27,14 +27,14 @@ test('bundled schema migrations are accepted by the migration decision', () => {
     {
       action: 'apply-migrations',
       fromVersion: 1,
-      toVersion: 3,
+      toVersion: 4,
       migrations: SCHEMA_MIGRATIONS.slice(1),
     },
   )
 })
 
 test('initial schema migration has correct metadata', () => {
-  assert.equal(SCHEMA_MIGRATIONS.length, 3)
+  assert.equal(SCHEMA_MIGRATIONS.length, 4)
 
   const [initialMigration] = SCHEMA_MIGRATIONS
   assert.ok(initialMigration)
@@ -53,4 +53,10 @@ test('initial schema migration has correct metadata', () => {
   assert.equal(snapshotHealthMigration.version, 3)
   assert.equal(snapshotHealthMigration.name, 'snapshot-health-evidence')
   assert.equal(typeof snapshotHealthMigration.migrate, 'function')
+
+  const deviceIdentityMigration = SCHEMA_MIGRATIONS[3]
+  if (deviceIdentityMigration === undefined) throw new Error('missing device identity migration')
+  assert.equal(deviceIdentityMigration.version, 4)
+  assert.equal(deviceIdentityMigration.name, 'device-audit-identity')
+  assert.equal(typeof deviceIdentityMigration.migrate, 'function')
 })

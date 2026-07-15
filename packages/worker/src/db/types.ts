@@ -30,7 +30,6 @@ export interface SetupTokenTable {
 
 export interface DeviceTable {
   device_id: string
-  y_client_id: number
   token_version: Generated<number>
   revoked_at: number | null
   created_at: number
@@ -62,7 +61,6 @@ export interface OpLogTable {
   seq: number
   message_id: string
   device_id: string
-  y_client_id: number
   update_bytes: ArrayBuffer
   update_sha256: string
   created_at: number
@@ -101,7 +99,6 @@ export interface SnapshotRetentionEventTable {
 
 export interface ConnectedDeviceTable {
   device_id: string
-  y_client_id: number | null
   last_seen_at: number
   user_agent: string | null
   protocol_version: number

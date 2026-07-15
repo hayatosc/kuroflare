@@ -239,28 +239,24 @@ Acceptance evidence:
 
 ### DR-007: Separate authenticated device identity from Yjs actor identity
 
-Setup assigns one `yClientId` per device, and hello checks it against the device registry.
-The plugin creates each meta and file document with `new Y.Doc()` and does not bind the assigned value to `Y.Doc.clientID`.
-The server records the hello value beside an update but does not verify the client IDs encoded inside the update bytes.
-
-The current registry therefore proves session metadata, not Yjs actor uniqueness or authorship.
-It also models one actor per device while one device owns many independently created YDocs.
+The previous design assigned one `yClientId` per device and carried it through setup and
+hello. That value was not cryptographically bound to the Yjs actor IDs encoded in update
+bytes, so it could not prove authorship.
+The Obsidian plugin creates each meta and file document with `new Y.Doc()`, allowing Yjs
+to generate the implementation-level actor ID independently for each document.
 
 Recommended simpler contract:
 
 - Use `deviceId` for authentication and audit identity.
 - Let Yjs generate a fresh actor ID for each YDoc instance.
-- Never reuse a Yjs actor ID after losing the corresponding persisted clock state.
-- Treat IndexedDB loss as a new document epoch and use full-snapshot merge.
-- Remove `yClientId` from security claims unless the server can decode and verify every actor ID in the update.
-
-If deterministic allocation is retained, the registry key must include `(deviceId, docId, epoch)`, and admission must verify update-internal actor IDs.
+- Keep actor IDs out of setup, hello, session, and SQL audit contracts.
+- Treat IndexedDB loss as a later document-epoch recovery slice.
 
 Acceptance evidence:
 
 - The specification identifies the exact component that sets each real `Y.Doc.clientID`.
-- Restart and IndexedDB-loss tests prove that an actor ID is never reused with a reset clock.
-- Spoofing the envelope `yClientId` cannot misattribute update authorship.
+- Operation-log tests prove that a spoofed client actor field cannot change the authenticated `deviceId` audit attribution.
+- Epoch recovery and actor-ID reuse tests remain open for the follow-up slice.
 
 ### DR-008: Define snapshot health as evidence, not a key shape — closed
 

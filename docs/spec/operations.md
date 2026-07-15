@@ -200,7 +200,7 @@ checkpoint モデルの不変条件:
 - pointer が stale / 欠落でも prefix list で最大 seq を拾える。large update が snapshot 経路に逃げる。
 - `writing` のまま残った cold start から安全に復旧できる。最新 snapshot の論理破損時に旧世代へ rollback できる。
 - 不正 update が `quarantined_updates` に残り本 YDoc / op_log に入らない。
-- revoked device token が WS / HTTP の両方で拒否される。`y_client_id` の詐称が接続拒否される。
+- revoked device token が WS / HTTP の両方で拒否される。監査 identity は JWT/setup-derived `deviceId` に固定され、client-provided actor fields are ignored or rejected.
 - migration 失敗時に degraded になり op を受けない。
 - blob GC が `gcRetentionWindow < maxOfflineWindow` 設定では有効化されない。
 
@@ -224,7 +224,7 @@ checkpoint モデルの不変条件:
 
 1. CM6 ⇄ Yjs ⇄ ディスクの単体疎通（スパイク済み）。ハードコード 1 ファイルで反響しない往復。
 2. 1 ファイルのリアルタイム Yjs 同期を DO 上で。
-3. clientID / device registry。衝突拒否、再採番、full snapshot merge。
+3. deviceId authentication and audit attribution. Yjs actor IDs remain document-local implementation details; epoch recovery is a later DR-007 slice.
 4. DO ライフサイクル（checkpoint、compact、retention、quarantine、cold start。model test 済み）。
 5. 起動時 reconciliation（state vector 交換）。
 6. メタ YDoc によるファイルツリー同期（リネーム、tombstone）。

@@ -195,6 +195,12 @@ export class SqlOnlyStorage implements DurableObjectStorageBinding {
       devices: new Map(this.sql.devices),
       migrationVersions: new Set(this.sql.migrationVersions),
       messageDedupColumns: new Set(this.sql.messageDedupColumns),
+      tableColumns: new Map(this.sql.tableColumns),
+      tableRowCounts: new Map(this.sql.tableRowCounts),
+      tableRows: new Map(this.sql.tableRows),
+      tableColumnDetails: new Map(this.sql.tableColumnDetails),
+      tableIndexes: new Map(this.sql.tableIndexes),
+      tableForeignKeys: new Map(this.sql.tableForeignKeys),
     }
   }
 
@@ -214,6 +220,12 @@ export class SqlOnlyStorage implements DurableObjectStorageBinding {
     replaceMap(this.sql.devices, snapshot.devices)
     replaceSet(this.sql.migrationVersions, snapshot.migrationVersions)
     replaceSet(this.sql.messageDedupColumns, snapshot.messageDedupColumns)
+    replaceMap(this.sql.tableColumns, snapshot.tableColumns)
+    replaceMap(this.sql.tableRowCounts, snapshot.tableRowCounts)
+    replaceMap(this.sql.tableRows, snapshot.tableRows)
+    replaceMap(this.sql.tableColumnDetails, snapshot.tableColumnDetails)
+    replaceMap(this.sql.tableIndexes, snapshot.tableIndexes)
+    replaceMap(this.sql.tableForeignKeys, snapshot.tableForeignKeys)
   }
 }
 

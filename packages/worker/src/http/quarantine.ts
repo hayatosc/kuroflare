@@ -8,7 +8,6 @@ import type {
 } from '@kuroflare/core'
 import * as v from 'valibot'
 
-import type { YClientId } from '../devices'
 import {
   decideQuarantinedUpdateAdmin,
   type QuarantinedUpdateAdminDecision,
@@ -55,7 +54,6 @@ export interface QuarantinedUpdateActionHttpPlanInput {
   readonly now: number
   readonly confirmation: QuarantineConfirmationEvidence | undefined
   readonly latestSeq: number | undefined
-  readonly yClientId: YClientId | undefined
   readonly yjsApplySucceeded: boolean | undefined
   readonly metaSchemaValid: boolean | undefined
 }
@@ -180,7 +178,6 @@ export function planQuarantinedUpdateActionHttp(
     now: input.now,
     confirmationTokenValid: true,
     latestSeq: input.latestSeq,
-    yClientId: input.yClientId,
     yjsApplySucceeded: input.yjsApplySucceeded,
     metaSchemaValid: input.metaSchemaValid,
   })

@@ -109,7 +109,6 @@ const setup = {
   endpoint: 'https://sync.example.test/base',
   vaultId: makeVaultId('vault-1'),
   deviceId: makeDeviceId('device-1'),
-  yClientId: 1,
   protocolVersion: 1,
   bootstrapMode: 'join-existing',
   tokenVersion: 1,

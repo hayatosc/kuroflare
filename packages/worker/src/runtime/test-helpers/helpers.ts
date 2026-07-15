@@ -95,7 +95,6 @@ export function makeHello(): ClientHello {
     protocolVersion: CURRENT_PROTOCOL_VERSION,
     vaultId: makeVaultId('vault-1'),
     deviceId: makeDeviceId('device-1'),
-    yClientId: 1,
     capabilities: ['metadata-schema-v2'],
   }
 }

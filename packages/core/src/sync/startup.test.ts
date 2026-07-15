@@ -23,7 +23,6 @@ const newVaultSetupResponse = {
   endpoint: 'https://example.com',
   vaultId,
   deviceId,
-  yClientId: 1,
   accessToken: 'token',
   refreshToken: 'refresh-token',
   tokenVersion: 1,

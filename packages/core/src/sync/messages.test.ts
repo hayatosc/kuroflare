@@ -76,7 +76,6 @@ test('validates client hello', () => {
     protocolVersion: 1,
     vaultId: makeVaultId('vault-1'),
     deviceId: makeDeviceId('device-1'),
-    yClientId: 42,
     capabilities: ['awareness', 'binary-v1'],
   }
 
@@ -92,7 +91,6 @@ test('validates hello accepted', () => {
     protocolVersion: 1,
     vaultId: makeVaultId('vault-1'),
     deviceId: makeDeviceId('device-1'),
-    yClientId: 42,
     metadataAccess: 'read-write',
   }
 
@@ -106,7 +104,6 @@ test('validates hello accepted', () => {
       protocolVersion: accepted.protocolVersion,
       vaultId: accepted.vaultId,
       deviceId: accepted.deviceId,
-      yClientId: accepted.yClientId,
     }),
     true,
   )
@@ -169,7 +166,6 @@ test('validates setup exchange response bodies', () => {
     endpoint: 'https://sync.example.test',
     vaultId: makeVaultId('vault-1'),
     deviceId: makeDeviceId('device-1'),
-    yClientId: 1,
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     tokenVersion: 1,

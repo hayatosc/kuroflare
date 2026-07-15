@@ -24,7 +24,6 @@ const setupResponse = {
   endpoint: 'https://sync.example.test',
   vaultId,
   deviceId,
-  yClientId: 1,
   accessToken: 'signed-access-token',
   refreshToken: 'opaque-refresh-token',
   tokenVersion: 3,
@@ -62,7 +61,6 @@ test('local setup persist writes secrets before non-secret metadata records', ()
           endpoint: 'https://sync.example.test',
           vaultId,
           deviceId,
-          yClientId: 1,
           protocolVersion: 1,
           bootstrapMode: 'new-vault',
           tokenVersion: 3,
@@ -149,6 +147,7 @@ test('local setup metadata guard validates persisted setup/auth snapshot', () =>
   const auth = plan.metadataPuts[1]?.value
 
   assert.equal(isLocalSetupMetadata(setup), true)
+  assert.equal(isLocalSetupMetadata({ ...setup, yClientId: 7 }), false)
   if (!isLocalSetupMetadata(setup) || !isClientAuthMetadata(auth)) {
     throw new Error('setup plan did not include valid setup/auth metadata')
   }

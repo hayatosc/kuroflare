@@ -107,7 +107,6 @@ export function applySyncUpdateModelMessage(
     duplicate: duplicate ? { durableSeq: duplicate.durableSeq } : undefined,
     updateBytesLength: message.updateBytesLength,
     updateSha256: message.updateSha256,
-    yClientId: 42,
     now: state.now,
     largeUpdateThresholdBytes: state.largeUpdateThresholdBytes,
   })

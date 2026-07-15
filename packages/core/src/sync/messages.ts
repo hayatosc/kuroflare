@@ -1,7 +1,6 @@
 import * as v from 'valibot'
 
 import { Sha256HexSchema } from '../sync/meta'
-import { WireYClientIdSchema } from '../sync/setup'
 import { DeviceIdSchema, DocIdSchema, MessageIdSchema, VaultIdSchema } from '../utils/ids'
 import { NonEmptyBase64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
 import { ProtocolVersionSchema } from '../utils/version'
@@ -13,22 +12,20 @@ export const ClientCapabilitySchema = v.union([
 ])
 export type ClientCapability = v.InferInput<typeof ClientCapabilitySchema>
 
-export const ClientHelloSchema = v.object({
+export const ClientHelloSchema = v.strictObject({
   type: v.literal('hello'),
   protocolVersion: ProtocolVersionSchema,
   vaultId: VaultIdSchema,
   deviceId: DeviceIdSchema,
-  yClientId: WireYClientIdSchema,
   capabilities: v.array(ClientCapabilitySchema),
 })
 export type ClientHello = v.InferInput<typeof ClientHelloSchema>
 
-export const HelloAcceptedSchema = v.object({
+export const HelloAcceptedSchema = v.strictObject({
   type: v.literal('hello-accepted'),
   protocolVersion: ProtocolVersionSchema,
   vaultId: VaultIdSchema,
   deviceId: DeviceIdSchema,
-  yClientId: WireYClientIdSchema,
   metadataAccess: v.optional(v.union([v.literal('read-only'), v.literal('read-write')])),
 })
 export type HelloAccepted = v.InferInput<typeof HelloAcceptedSchema>

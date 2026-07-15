@@ -1,12 +1,8 @@
 import type { DeviceId } from '@kuroflare/core'
 
-/** Yjs clientID assigned by the Worker and persisted per device. */
-export type YClientId = number
-
 /** Existing device registry row from the Durable Object database. */
 export interface DeviceRegistryEntry {
   readonly deviceId: DeviceId
-  readonly yClientId: YClientId
   readonly tokenVersion: number
   readonly revokedAt: number | undefined
 }
@@ -36,27 +32,19 @@ export interface DeviceRefreshTokenInsertPatch {
 /** Registry state needed while exchanging a setup token for a device token. */
 export interface SetupExchangeRegistryState {
   readonly existingDevice: DeviceRegistryEntry | undefined
-  readonly usedYClientIds: ReadonlySet<YClientId>
 }
 
 /** Input for setup exchange registry decision. */
 export interface SetupExchangeDecisionInput {
   readonly requestedDeviceId: DeviceId | undefined
   readonly registry: SetupExchangeRegistryState
-  readonly yClientIdRange: YClientIdRange
-}
-
-/** Inclusive yClientId allocation range reserved for this vault. */
-export interface YClientIdRange {
-  readonly min: YClientId
-  readonly max: YClientId
 }
 
 /** Setup exchange decision before the caller writes DB rows or mints JWTs. */
 export type SetupExchangeDecision =
   | { readonly action: 'reuse-device'; readonly device: DeviceRegistryEntry }
-  | { readonly action: 'register-device'; readonly yClientId: YClientId }
-  | { readonly action: 'reject'; readonly reason: 'device-revoked' | 'no-y-client-id-available' }
+  | { readonly action: 'register-device' }
+  | { readonly action: 'reject'; readonly reason: 'device-revoked' }
 
 /** Input for issuing setup exchange credentials after the registry decision was accepted. */
 export interface SetupExchangeCredentialPlanInput {
@@ -72,7 +60,6 @@ export type SetupExchangeCredentialPlan =
   | {
       readonly action: 'issue-credentials'
       readonly deviceId: DeviceId
-      readonly yClientId: YClientId
       readonly tokenVersion: number
       readonly insertRefreshToken: DeviceRefreshTokenInsertPatch
     }
@@ -89,7 +76,6 @@ export type SetupExchangeCredentialPlan =
 /** Input for checking a client hello against the device registry. */
 export interface ClientHelloRegistryDecisionInput {
   readonly device: DeviceRegistryEntry | undefined
-  readonly claimedYClientId: YClientId
   readonly tokenVersion: number
 }
 
@@ -98,9 +84,8 @@ export type ClientHelloRegistryDecision =
   | { readonly action: 'accept' }
   | {
       readonly action: 'reject'
-      readonly reason: 'unknown-device' | 'device-revoked' | 'stale-token' | 'y-client-id-mismatch'
+      readonly reason: 'unknown-device' | 'device-revoked' | 'stale-token'
     }
-  | { readonly action: 'require-full-snapshot'; readonly reason: 'device-reinstalled' }
 
 /** Input for deciding whether a refresh token may mint a new device access token. */
 export interface DeviceTokenRefreshDecisionInput {

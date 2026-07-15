@@ -417,7 +417,6 @@ async function connectRemoteDevice(setup: SetupExchangeResponse): Promise<Remote
       protocolVersion: 1,
       vaultId: setup.vaultId,
       deviceId: setup.deviceId,
-      yClientId: setup.yClientId,
       capabilities: [],
     }),
   )
@@ -425,8 +424,7 @@ async function connectRemoteDevice(setup: SetupExchangeResponse): Promise<Remote
     (message) =>
       message.type === 'hello-accepted' &&
       message.vaultId === setup.vaultId &&
-      message.deviceId === setup.deviceId &&
-      message.yClientId === setup.yClientId,
+      message.deviceId === setup.deviceId,
     'remote hello',
   )
 

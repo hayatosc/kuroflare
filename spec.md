@@ -10,7 +10,7 @@ remotely-save が抱える「同期失敗 → ロールバック（データ消�
 | ---------------------------------------------- | ------------------------------------------------------------------------------------- |
 | [data-model.md](docs/spec/data-model.md)       | fileId、メタ YDoc、本文 YDoc、CDC チャンクと manifest、path 正規化                    |
 | [sync-model.md](docs/spec/sync-model.md)       | state vector 合流、full snapshot merge、バイナリ参照同期、削除、決定論的修復、blob GC |
-| [protocol.md](docs/spec/protocol.md)           | WebSocket / binary frame / HTTP API、認証、デバイス管理、yClientId                    |
+| [protocol.md](docs/spec/protocol.md)           | WebSocket / binary frame / HTTP API、認証、デバイス管理、device identity              |
 | [server.md](docs/spec/server.md)               | VaultRoom DO、SQLite schema、checkpoint / compact、retention、quarantine              |
 | [client.md](docs/spec/client.md)               | 起動シーケンス、状態モデル、IndexedDB、outbox、full snapshot 適用、初回同期           |
 | [editor.md](docs/spec/editor.md)               | CM6 バインディング、ハッシュゲート、materialize CAS                                   |

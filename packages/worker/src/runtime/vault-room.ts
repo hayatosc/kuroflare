@@ -64,6 +64,7 @@ export class VaultRoom {
   readonly docWriteQueues = new Map<string, Promise<void>>()
   vaultId: VaultId | undefined
   schemaReady = false
+  schemaEnsurePromise: Promise<void> | undefined
   private readonly doRouter: Hono
 
   constructor(

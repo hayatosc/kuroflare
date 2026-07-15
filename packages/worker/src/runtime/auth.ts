@@ -9,7 +9,7 @@ import {
 import { type Context } from 'hono'
 import * as v from 'valibot'
 
-import { decideClientHelloRegistry, isValidYClientId, type DeviceRegistryEntry } from '../devices'
+import { decideClientHelloRegistry, type DeviceRegistryEntry } from '../devices'
 import { decideAuthAdmission } from '../http/auth'
 import { readDeviceRegistryEntry, persistVaultId } from './storage'
 import type { RuntimeWebSocket, SessionState, WebSocketAttachment } from './types'
@@ -25,32 +25,20 @@ export async function acceptHello(
     webSocket.close(1008, 'vault-mismatch')
     return
   }
-  if (!isValidYClientId(hello.yClientId)) {
-    webSocket.close(1003, 'invalid-y-client-id')
-    return
-  }
-
   const device = await readDeviceRegistryEntry(room, hello.deviceId)
   const tokenVersion = await authorizeHello(room, webSocket, hello, device)
   if (tokenVersion === undefined) return
   const registry = decideClientHelloRegistry({
     device,
-    claimedYClientId: hello.yClientId,
     tokenVersion,
   })
   if (registry.action === 'reject') {
     webSocket.close(1008, `hello-reject:${registry.reason}`)
     return
   }
-  if (registry.action === 'require-full-snapshot') {
-    webSocket.close(1008, `hello-requires-full-snapshot:${registry.reason}`)
-    return
-  }
-
   rememberSession(room, webSocket, {
     vaultId: hello.vaultId,
     deviceId: hello.deviceId,
-    yClientId: hello.yClientId,
     metadataAccess: hello.capabilities.includes('metadata-schema-v2') ? 'read-write' : 'read-only',
     metadataCapabilityAdvertised: hello.capabilities.includes('metadata-schema-v2'),
   })
@@ -61,7 +49,6 @@ export async function acceptHello(
       protocolVersion: CURRENT_PROTOCOL_VERSION,
       vaultId: hello.vaultId,
       deviceId: hello.deviceId,
-      yClientId: hello.yClientId,
       metadataAccess: hello.capabilities.includes('metadata-schema-v2')
         ? 'read-write'
         : 'read-only',

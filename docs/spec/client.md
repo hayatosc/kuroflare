@@ -110,7 +110,7 @@ degraded は同期停止ではなく、未処理 queue や repair event があ�
 
 ```
 db: kuroflare:<vaultId>
-  metadata          # schemaVersion, vaultId, deviceId, yClientId, endpoint, auth metadata
+  metadata          # schemaVersion, vaultId, deviceId, endpoint, auth metadata
   meta-ydoc / file-ydocs
   remote-cursors    # docId -> 最後に durable ack された seq / stateVector
   last-materialized # fileId/path -> diskHash, ydocHash, writeId（editor.md §2）

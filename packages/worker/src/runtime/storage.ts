@@ -17,7 +17,6 @@ import {
 import { createDb } from '../db/db'
 import {
   getDevice,
-  getAllDeviceYClientIds,
   upsertDevice,
   updateDeviceRevoked,
   getRefreshToken,
@@ -42,12 +41,7 @@ import {
 } from '../db/schemaRepo'
 import { getSetupToken, consumeSetupToken as consumeSetupTokenDb } from '../db/setupRepo'
 import type { Database } from '../db/types'
-import {
-  isValidYClientId,
-  type DeviceRegistryEntry,
-  type YClientId,
-  type DeviceRefreshTokenEvidence,
-} from '../devices'
+import { type DeviceRegistryEntry, type DeviceRefreshTokenEvidence } from '../devices'
 import type { SetupTokenEntry } from '../devices/tokens'
 import type { QuarantinedUpdateRecord } from '../quarantine'
 import type { SyncRequestDocState } from '../sync/request'
@@ -64,30 +58,54 @@ export function getDb(room: VaultRoom): Kysely<Database> | undefined {
 
 export async function ensureSchema(room: VaultRoom): Promise<void> {
   if (room.schemaReady) return
+  const inFlight = room.schemaEnsurePromise
+  if (inFlight !== undefined) return inFlight
+
+  const promise = ensureSchemaOnce(room)
+  room.schemaEnsurePromise = promise
+  try {
+    await promise
+  } finally {
+    if (room.schemaEnsurePromise === promise) room.schemaEnsurePromise = undefined
+  }
+}
+
+async function ensureSchemaOnce(room: VaultRoom): Promise<void> {
   const sql = room.state.storage.sql
   const db = getDb(room)
   if (sql === undefined || db === undefined) return
 
-  await createSchemaMigrationsTable(db)
-  const appliedVersions = new Set<number>()
-  for (const row of await getAppliedMigrations(db)) {
-    if (v.is(PosIntSchema, row.version)) appliedVersions.add(row.version)
-  }
+  // SQLite does not allow changing foreign_keys inside a transaction. The
+  // device table rebuild temporarily removes a referenced table, so disable
+  // enforcement before entering the Durable Object transaction and restore it
+  // on every exit path.
+  try {
+    sql.exec('pragma foreign_keys = off')
+    await room.state.storage.transaction(async () => {
+      await createSchemaMigrationsTable(db)
+      const appliedVersions = new Set<number>()
+      for (const row of await getAppliedMigrations(db)) {
+        if (v.is(PosIntSchema, row.version)) appliedVersions.add(row.version)
+      }
 
-  const decision = decideSchemaMigration({
-    appliedVersions,
-    availableMigrations: SCHEMA_MIGRATIONS,
-    failedMigration: undefined,
-  })
-  if (decision.action === 'degraded') {
-    throw new Error(`schema-degraded:${decision.reason}`)
-  }
-  if (decision.action === 'apply-migrations') {
-    const now = Date.now()
-    for (const migration of decision.migrations) {
-      await migration.migrate(db)
-      await insertMigration(db, migration.version, now)
-    }
+      const decision = decideSchemaMigration({
+        appliedVersions,
+        availableMigrations: SCHEMA_MIGRATIONS,
+        failedMigration: undefined,
+      })
+      if (decision.action === 'degraded') {
+        throw new Error(`schema-degraded:${decision.reason}`)
+      }
+      if (decision.action === 'apply-migrations') {
+        const now = Date.now()
+        for (const migration of decision.migrations) {
+          await migration.migrate(db)
+          await insertMigration(db, migration.version, now)
+        }
+      }
+    })
+  } finally {
+    sql.exec('pragma foreign_keys = on')
   }
   room.schemaReady = true
 }
@@ -174,11 +192,10 @@ export async function readDeviceRegistryEntry(
   const db = getDb(room)
   if (db === undefined) return undefined
   const row = await getDevice(db, deviceId)
-  const yClientId = row?.yClientId
   const tokenVersion = row?.tokenVersion
   const revokedAt = row?.revokedAt ?? undefined
-  if (!isValidYClientId(yClientId) || !v.is(PosIntSchema, tokenVersion)) return undefined
-  return { deviceId, yClientId, tokenVersion, revokedAt }
+  if (!v.is(PosIntSchema, tokenVersion)) return undefined
+  return { deviceId, tokenVersion, revokedAt }
 }
 
 export async function readSetupToken(
@@ -198,16 +215,6 @@ export async function readSetupToken(
   const consumedAt = row.consumedAt ?? undefined
   if (consumedAt !== undefined && !v.is(NonNegIntSchema, consumedAt)) return undefined
   return { vaultId: row.vaultId, issuedAt: row.issuedAt, expiresAt: row.expiresAt, consumedAt }
-}
-
-export async function readUsedYClientIds(room: VaultRoom): Promise<ReadonlySet<YClientId>> {
-  const db = getDb(room)
-  const used = new Set<YClientId>()
-  if (db === undefined) return used
-  for (const row of await getAllDeviceYClientIds(db)) {
-    if (isValidYClientId(row.yClientId)) used.add(row.yClientId)
-  }
-  return used
 }
 
 export async function readRefreshToken(
@@ -274,11 +281,10 @@ export async function consumeSetupToken(
 export async function persistSetupDevice(
   room: VaultRoom,
   deviceId: string,
-  yClientId: YClientId,
   now: number,
 ): Promise<void> {
   const db = getDb(room)
-  if (db !== undefined) await upsertDevice(db, deviceId, yClientId, now)
+  if (db !== undefined) await upsertDevice(db, deviceId, now)
 }
 
 export async function persistRefreshToken(
