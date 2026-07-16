@@ -113,11 +113,10 @@ export function planBlobHeadHttpResponse(
     seenEvidence.add(object.sha256)
 
     if (object.found) {
-      if (object.size !== undefined && (!Number.isSafeInteger(object.size) || object.size < 0)) {
+      if (object.size === undefined || !Number.isSafeInteger(object.size) || object.size < 0) {
         return { action: 'reject', reason: 'invalid-blob-size' }
       }
-      exists[object.sha256] =
-        object.size === undefined ? { found: true } : { found: true, size: object.size }
+      exists[object.sha256] = { found: true, size: object.size }
       continue
     }
 

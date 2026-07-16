@@ -69,7 +69,7 @@ async function runBlobPutLocalSideEffect(
   }
   const entry = head.body.exists[plan.blob.sha256]
   if (entry?.found === true) {
-    if (entry.size !== undefined && entry.size !== plan.blob.size) {
+    if (entry.size !== plan.blob.size) {
       return { kind: 'invalid-payload', code: 'blob-head-size-mismatch' }
     }
     return { kind: 'success' }

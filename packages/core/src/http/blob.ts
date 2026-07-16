@@ -15,10 +15,7 @@ export const BlobHeadEntrySchema = v.pipe(
     found: v.boolean(),
     size: v.optional(NonNegativeSafeIntegerSchema),
   }),
-  v.check((val) => {
-    if (!val.found) return val.size === undefined
-    return true
-  }, 'Invalid blob head entry'),
+  v.check((val) => val.found === (val.size !== undefined), 'Invalid blob head entry'),
 )
 export type BlobHeadEntry = v.InferInput<typeof BlobHeadEntrySchema>
 

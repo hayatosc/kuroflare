@@ -82,7 +82,7 @@ export async function runBlobPutSideEffect(
   }
   const entry = head.body.exists[sideEffect.blob.sha256]
   if (entry?.found === true) {
-    if (entry.size !== undefined && entry.size !== sideEffect.blob.size) {
+    if (entry.size !== sideEffect.blob.size) {
       return { kind: 'invalid-payload', code: 'blob-head-size-mismatch' }
     }
     return { kind: 'success' }

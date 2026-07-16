@@ -46,7 +46,7 @@ test('blob head HTTP response rejects incomplete or unrelated evidence', () => {
   assert.deepEqual(
     planBlobHeadHttpResponse({
       request,
-      objects: [{ sha256: firstHash, found: true }],
+      objects: [{ sha256: firstHash, found: true, size: 123 }],
     }),
     { action: 'reject', reason: 'missing-evidence' },
   )
@@ -55,7 +55,7 @@ test('blob head HTTP response rejects incomplete or unrelated evidence', () => {
     planBlobHeadHttpResponse({
       request,
       objects: [
-        { sha256: firstHash, found: true },
+        { sha256: firstHash, found: true, size: 123 },
         { sha256: thirdHash, found: false },
       ],
     }),
@@ -67,7 +67,7 @@ test('blob head HTTP response rejects duplicate evidence', () => {
   assert.deepEqual(
     planBlobHeadHttpResponse({
       request: { hashes: [firstHash, firstHash] },
-      objects: [{ sha256: firstHash, found: true }],
+      objects: [{ sha256: firstHash, found: true, size: 123 }],
     }),
     { action: 'reject', reason: 'duplicate-request-hash' },
   )
@@ -76,8 +76,8 @@ test('blob head HTTP response rejects duplicate evidence', () => {
     planBlobHeadHttpResponse({
       request: { hashes: [firstHash] },
       objects: [
-        { sha256: firstHash, found: true },
-        { sha256: firstHash, found: true },
+        { sha256: firstHash, found: true, size: 123 },
+        { sha256: firstHash, found: true, size: 123 },
       ],
     }),
     { action: 'reject', reason: 'duplicate-evidence' },
@@ -97,6 +97,14 @@ test('blob head HTTP response rejects invalid size evidence', () => {
     planBlobHeadHttpResponse({
       request: { hashes: [firstHash] },
       objects: [{ sha256: firstHash, found: false, size: 0 }],
+    }),
+    { action: 'reject', reason: 'invalid-blob-size' },
+  )
+
+  assert.deepEqual(
+    planBlobHeadHttpResponse({
+      request: { hashes: [firstHash] },
+      objects: [{ sha256: firstHash, found: true }],
     }),
     { action: 'reject', reason: 'invalid-blob-size' },
   )
