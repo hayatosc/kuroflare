@@ -121,7 +121,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 - snapshot retention は checkpoint 後に実行され、`snapshot_retention_events` に記録される。残りは retention policy の運用設定、event pagination、alerting。
 - quarantine admin は Worker HTTP と plugin settings panel の両方にある。残りは force-apply 後の user-facing audit summary と大量 quarantine 向け pagination。
 - Auth refresh / revoke runtime and plugin lifecycle wiring (foreground/resume, pre-expiry refresh, and revoked-device local shutdown) are active at HEAD `122d2a0`; distribution still requires the surrounding settings UX, migration policy, and operator documentation.
-- presence / awareness は型とテスト片のみで editor binding 未接続。
+- presence / awareness はローカル側の接続まで実装済み: plugin インスタンスごとに 1 つの `LocalAwareness`（`obsidian/awareness.ts`）を生成し、全ての (再)bind 経路（`bindActiveMarkdownView`、`activateLoadedTextDoc`）で `createYTextEditorExtension` に注入する。ローカルカーソルの追跡のみで、リモート awareness の broadcast/receive の WS ワイヤ契約は未定義のまま（[operations.md](spec/operations.md) §4）。transport が入るまでリモート presence 表示は no-op。
 - 配布前に settings UI、Setup URI/QR、ログの secret redaction、migration / backward-incompatible policy、手動エスケープハッチの UI を整える。
 - Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）は `logEvent` 経由で実装済み（quarantine イベントは `quarantineId` 付き）。残りは next tier（connection count、op append latency、checkpoint duration、cold start restore source、duplicate ignored）。
 - `BlobHeadEntrySchema` の size 必須化（[sync-model.md](spec/sync-model.md) §5 の「size 不明なら復活させない」を schema 側でも強制する）が実装課題として残る。
