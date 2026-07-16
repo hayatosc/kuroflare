@@ -949,36 +949,16 @@ async function discardInvalidMetaEntry(fileId: string): Promise<InvalidMetaDisca
         repairLogContainsEntry: false,
       });
     }
-    map.set(${JSON.stringify(fileId)}, { invalid: true, path: 'invalid-meta.bin' });
-    // Let this raw insert's own outbox item durably sync before discarding
-    // (deleting) the same key below: deleting it immediately would send a
-    // delete for content this device has not yet synced, which the server
-    // rejects as causally invalid (quarantined) until the insert lands.
-    // The listener that enqueues the insert's outbox row runs asynchronously
-    // (unawaited) after \`map.set\` returns, so an empty read here can be seen
-    // before that row even exists; only trust "empty" once it stays empty
-    // across a follow-up read, the same guard \`drainStartupOutbox\` uses.
-    {
-      const db = plugin.localStoreDb;
-      const deadline = Date.now() + 30000;
-      let emptySince = null;
-      while (db && Date.now() < deadline) {
-        const outbox = await new Promise((resolve, reject) => {
-          const request = db.transaction(['outbox'], 'readonly').objectStore('outbox').getAll();
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error ?? new Error('outbox read failed'));
-        });
-        const pending = outbox.some((row) => row?.kind === 'y-update' && row?.docId?.kind === 'meta' && (row.status === 'pending' || row.status === 'retrying'));
-        if (!pending) {
-          emptySince ??= Date.now();
-          if (Date.now() - emptySince >= 500) break;
-        } else {
-          emptySince = null;
-          await plugin.runOutboxWorkerTick('e2e-invalid-meta-settle');
-        }
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-    }
+    // A real invalid entry is only ever observed from a remote broadcast, applied
+    // under the worker origin, which \`attachMetaDocObservers\` never auto-sends back
+    // out. Tagging this simulated insert the same way keeps it from attempting (and
+    // having to silently drop, since an invalid entry makes the doc temporarily
+    // unwritable) an outbound send of its own: that dropped send would otherwise
+    // leave the discard below referencing content the server never received,
+    // which fails the server's causal-application check and quarantines the update.
+    map.doc.transact(() => {
+      map.set(${JSON.stringify(fileId)}, { invalid: true, path: 'invalid-meta.bin' });
+    }, 'kuroflare:worker');
     const repairEntry = {
       id: 'invalid-meta:' + ${JSON.stringify(fileId)},
       kind: 'invalid-meta',
