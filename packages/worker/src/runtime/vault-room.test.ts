@@ -1623,8 +1623,19 @@ test('VaultRoom quarantines a live delta with a missing predecessor without appe
       update: Buffer.from(delta).toString('base64'),
     } satisfies SyncUpdate
 
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     await room.webSocketMessage(server, JSON.stringify(update))
+    const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+    logSpy.mockRestore()
 
+    assert(
+      events.some(
+        (event) =>
+          event.event === 'quarantine' &&
+          event.reason === 'yjs-apply-failed' &&
+          typeof event.quarantineId === 'string',
+      ),
+    )
     assert.equal(storage.sql.opLog.has('file:causal-live-file:message-causal-live-delta'), false)
     assert.equal(
       storage.sql.messageDedup.has('file:causal-live-file:message-causal-live-delta'),

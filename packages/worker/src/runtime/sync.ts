@@ -452,7 +452,12 @@ async function persistQuarantine(
     updateBytes,
     row.createdAt,
   )
-  logEvent('quarantine', { vaultId: room.vaultId, docId: row.docId, reason: row.reason })
+  logEvent('quarantine', {
+    vaultId: room.vaultId,
+    docId: row.docId,
+    quarantineId: row.id,
+    reason: row.reason,
+  })
 }
 
 async function persistAppend(
