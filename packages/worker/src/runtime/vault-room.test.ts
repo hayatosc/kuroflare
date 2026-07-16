@@ -55,6 +55,7 @@ import {
   makeInvalidMetaSchemaYjsUpdateBase64,
   makeYjsUpdateBase64,
   makeAuthenticatedWebSocketRequest,
+  makeAwarenessUpdate,
   makeSyncRequest,
   makeLargeFileYjsUpdateBase64,
   makeYjsUpdateBytes,
@@ -803,6 +804,97 @@ test('VaultRoom appends JSON sync updates, acks the sender, and broadcasts to pe
       JSON.stringify({ ...update, durableSeq: 1 }),
     ])
     assert.deepEqual(syncMessages(unauthenticatedServer.sent), [])
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom broadcasts awareness updates to other vault peers without persisting them', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+
+    const sender = state.accepted[0]
+    const peer = state.accepted[1]
+    assert(sender instanceof FakeSocket)
+    assert(peer instanceof FakeSocket)
+    await room.webSocketMessage(sender, JSON.stringify(makeHello()))
+    await room.webSocketMessage(peer, JSON.stringify(makeHello()))
+
+    const update = makeAwarenessUpdate(1, { cursor: { anchor: 0, head: 0 } })
+    await room.webSocketMessage(sender, JSON.stringify(update))
+
+    assert.deepEqual(syncMessages(sender.sent), [])
+    assert.deepEqual(syncMessages(peer.sent), [JSON.stringify(update)])
+    assert.equal(storage.sql.docs.size, 0)
+    assert.equal(storage.sql.opLog.size, 0)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom broadcasts a removal when a socket advertising awareness disconnects', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+
+    const sender = state.accepted[0]
+    const peer = state.accepted[1]
+    assert(sender instanceof FakeSocket)
+    assert(peer instanceof FakeSocket)
+    await room.webSocketMessage(sender, JSON.stringify(makeHello()))
+    await room.webSocketMessage(peer, JSON.stringify(makeHello()))
+
+    const update = makeAwarenessUpdate(1, { cursor: { anchor: 0, head: 0 } })
+    await room.webSocketMessage(sender, JSON.stringify(update))
+    peer.sent.length = 0
+
+    room.webSocketClose(sender)
+
+    assert.deepEqual(syncMessages(peer.sent), [JSON.stringify({ ...update, state: null })])
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom silently drops an oversized awareness update without closing the session', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+
+    const sender = state.accepted[0]
+    const peer = state.accepted[1]
+    assert(sender instanceof FakeSocket)
+    assert(peer instanceof FakeSocket)
+    await room.webSocketMessage(sender, JSON.stringify(makeHello()))
+    await room.webSocketMessage(peer, JSON.stringify(makeHello()))
+
+    const oversized = makeAwarenessUpdate(1, { blob: 'x'.repeat(5_000) })
+    await room.webSocketMessage(sender, JSON.stringify(oversized))
+
+    assert.equal(sender.closed, false)
+    assert.deepEqual(syncMessages(peer.sent), [])
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)

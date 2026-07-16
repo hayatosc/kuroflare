@@ -55,6 +55,15 @@ type SyncUpdateRejected = {
       | "hash-mismatch" | "yjs-apply-failed" | "meta-schema-invalid";
   retryable: false;
 };
+
+type AwarenessUpdate = {
+  type: "awareness-update";
+  vaultId: string;
+  deviceId: string;
+  docId: DocId;
+  clientId: number;         // the sender's local Y.Doc-shaped clientID (§8), not an authenticated actor
+  state: object | null;     // null means the clientId left; a few KB size cap, no messageId/durableSeq
+};
 ```
 
 メッセージ意味論:
@@ -66,6 +75,7 @@ type SyncUpdateRejected = {
 - `durableSeq` は client → server では未設定。Worker が append 後に確定した値を peer broadcast と `sync-request` 応答に付与する。
 - server が `sync-request` に応答する `sync-update` には、requester 自身の `deviceId` と `updateSha256` を載せる。client は送信中 sync-request の `messageId` を追跡し、一致する応答を self-broadcast 判定（[client.md](client.md) §6）から除外する。
 - ack がなければ client は同じ update を再送する。永続 op log の重複は `messageId` unique 制約で弾く（[server.md](server.md) §3）。
+- `AwarenessUpdate` is a same-vault broadcast of ephemeral presence (cursor position, open-file hint), not a durable sync message: it carries no `messageId`/`durableSeq`, is never acked, and the DO never persists it or writes quarantine/evidence for it. `y-protocols` is not an installed dependency, so `state` is a plain JSON object rather than a binary-encoded awareness update. The DO fans the frame out unchanged to every other authenticated socket in the vault (sender excluded); it does not filter by `docId`, matching `sync-update`'s existing vault-wide broadcast. `state` is capped at a few KB; oversized or otherwise malformed awareness frames are dropped silently (no quarantine, no evidence, and the session is not closed, since presence loss is tolerable). When a connection that has sent at least one `AwarenessUpdate` disconnects, the DO broadcasts one synthetic `state: null` for the `docId`/`clientId` it last advertised, so peers drop the stale remote cursor; the connection→clientId mapping is kept in the WebSocket attachment (`serializeAttachment`/`deserializeAttachment`) so it survives Hibernation like session state does (§6).
 
 ## 2. binary frame
 

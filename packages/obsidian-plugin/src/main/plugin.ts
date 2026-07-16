@@ -217,6 +217,7 @@ import {
   sendMetaDocToWorker,
   sendWorkerHello,
   waitForOutboundUpdates,
+  wireLocalAwarenessBroadcast,
 } from './sync-websocket'
 import { sendDocUpdateToWorker } from './sync-websocket'
 
@@ -233,7 +234,7 @@ export async function recoverDocumentEpochsAtStartup(
 export default class KuroflareSpikePlugin extends Plugin {
   ydoc = new Y.Doc()
   ytext = this.ydoc.getText(SPIKE_TEXT_NAME)
-  /** Local-only presence tracked for the active editor binding (see docs/spec/operations.md §4). */
+  /** Presence for the active editor binding, broadcast to peers (see docs/spec/operations.md §4). */
   readonly awareness = new LocalAwareness()
   readonly cmCompartment = new Compartment()
   readonly lastMaterialized = new Map<string, LastMaterializedRecord>()
@@ -315,6 +316,7 @@ export default class KuroflareSpikePlugin extends Plugin {
     this.registerEditorExtension(this.cmCompartment.of([]))
 
     this.attachMetaDocObservers()
+    wireLocalAwarenessBroadcast(this)
     this.syncRuntime = this.createSyncRuntime()
 
     registerCommands(this)

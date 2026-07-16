@@ -55,6 +55,10 @@ export type SyncRuntimeWebSocketInboundRoute =
       readonly message: Extract<ControlMessage, { readonly type: 'sync-request' }>
     }
   | {
+      readonly action: 'apply-remote-awareness'
+      readonly message: Extract<ControlMessage, { readonly type: 'awareness-update' }>
+    }
+  | {
       readonly action: 'drop'
       readonly reason:
         | SyncRuntimeWebSocketInboundRejectionReason
@@ -99,6 +103,10 @@ export interface SyncRuntimeWebSocketInboundRoutePorts {
   /** Answers a peer state-vector request with a local update or full-snapshot response. */
   answerSyncRequest(
     message: Extract<ControlMessage, { readonly type: 'sync-request' }>,
+  ): Promise<void>
+  /** Applies a peer's broadcast presence state to the local awareness instance. */
+  applyRemoteAwareness(
+    message: Extract<ControlMessage, { readonly type: 'awareness-update' }>,
   ): Promise<void>
   /** Observes dropped inbound messages without receiving token material or raw payloads. */
   drop(route: Extract<SyncRuntimeWebSocketInboundRoute, { readonly action: 'drop' }>): Promise<void>

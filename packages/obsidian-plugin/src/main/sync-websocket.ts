@@ -6,6 +6,8 @@ import type { LocalSetupMetadata } from '../sync/engine/setup'
 import {
   createSyncRuntimeWebSocketStartupStepPort,
   createBrowserSyncRuntimeWebSocketFactory,
+  createSyncRuntimeWebSocketAwarenessApplyPort,
+  createSyncRuntimeWebSocketAwarenessSendPort,
   createSyncRuntimeWebSocketSyncRequestSendPort,
   createSyncRuntimeWebSocketOutboxCompletionPort,
   createSyncRuntimeWebSocketRemoteUpdateApplyPort,
@@ -124,6 +126,48 @@ export async function sendMetaDocToWorker(
     Y.encodeStateAsUpdate(plugin.metaDoc),
     reason,
   )
+}
+
+/**
+ * Broadcasts one local awareness state change over the worker WebSocket.
+ *
+ * Silently does nothing without an accepted hello or open connection: presence is
+ * loss-tolerant ephemeral data, so a missed broadcast is never queued for retry.
+ */
+export function sendLocalAwarenessUpdate(
+  plugin: KuroflareSpikePlugin,
+  docId: DocId,
+  clientId: number,
+  state: Record<string, unknown> | null,
+): void {
+  if (!plugin.startupSideEffectGate.canSendNetwork() || !plugin.workerHelloAccepted) return
+  const setup = currentSetupMetadata(plugin)
+  if (setup === undefined) return
+  createSyncRuntimeWebSocketAwarenessSendPort({
+    session: plugin.workerWebSocketSession,
+  }).sendAwarenessUpdate({ vaultId: setup.vaultId, deviceId: setup.deviceId, docId, clientId, state })
+}
+
+/**
+ * Connects local awareness changes to the worker WebSocket for the plugin's lifetime.
+ *
+ * Presence is scoped to whichever document is active when the local state changes;
+ * changes with no active file (e.g. before any editor is open) are dropped.
+ */
+export function wireLocalAwarenessBroadcast(plugin: KuroflareSpikePlugin): void {
+  plugin.awareness.on('change', (change) => {
+    const localId = plugin.awareness.doc.clientID
+    if (
+      !change.added.includes(localId) &&
+      !change.updated.includes(localId) &&
+      !change.removed.includes(localId)
+    ) {
+      return
+    }
+    const docId = plugin.activeTextDoc?.docId
+    if (docId === undefined) return
+    sendLocalAwarenessUpdate(plugin, docId, localId, plugin.awareness.getLocalState())
+  })
 }
 
 interface WorkerDocRequestPlugin extends SetupMetadataSource {
@@ -434,6 +478,9 @@ export async function handleWorkerInboundMessage(
         registry,
         session: plugin.workerWebSocketSession,
       }).answerSyncRequest,
+      applyRemoteAwareness: createSyncRuntimeWebSocketAwarenessApplyPort({
+        awareness: plugin.awareness,
+      }).applyRemoteAwareness,
       drop: async (route) => {
         if (route.reason === 'self-broadcast') return
         console.warn('[kuroflare] dropped worker ws message', route)

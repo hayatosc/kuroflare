@@ -51,3 +51,44 @@ test('each instance gets a distinct clientID', () => {
   const b = new LocalAwareness()
   assert.notEqual(a.doc.clientID, b.doc.clientID)
 })
+
+test('applyRemoteState adds, updates, and removes a remote clientId', () => {
+  const awareness = new LocalAwareness()
+  const events: unknown[] = []
+  awareness.on('change', (change) => events.push(change))
+
+  awareness.applyRemoteState(999, { cursor: { anchor: 1, head: 1 } })
+  assert.deepEqual(awareness.getStates().get(999), { cursor: { anchor: 1, head: 1 } })
+
+  awareness.applyRemoteState(999, { cursor: { anchor: 2, head: 2 } })
+  assert.deepEqual(awareness.getStates().get(999), { cursor: { anchor: 2, head: 2 } })
+
+  awareness.applyRemoteState(999, null)
+  assert.equal(awareness.getStates().has(999), false)
+
+  assert.deepEqual(events, [
+    { added: [999], updated: [], removed: [] },
+    { added: [], updated: [999], removed: [] },
+    { added: [], updated: [], removed: [999] },
+  ])
+})
+
+test('applyRemoteState ignores a remote update claiming the local clientID', () => {
+  const awareness = new LocalAwareness()
+  const localState = awareness.getLocalState()
+
+  awareness.applyRemoteState(awareness.doc.clientID, null)
+
+  assert.deepEqual(awareness.getLocalState(), localState)
+  assert.equal(awareness.getStates().size, 1)
+})
+
+test('applyRemoteState no-ops removing a clientId that was never added', () => {
+  const awareness = new LocalAwareness()
+  const events: unknown[] = []
+  awareness.on('change', (change) => events.push(change))
+
+  awareness.applyRemoteState(999, null)
+
+  assert.equal(events.length, 0)
+})

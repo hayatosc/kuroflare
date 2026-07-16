@@ -1,6 +1,7 @@
 import {
   decodeBinaryFrame,
   encodeBinaryFrame,
+  isMalformedAwarenessUpdate,
   parseControlMessage,
   type DocId,
   type VaultId,
@@ -9,6 +10,7 @@ import { Hono } from 'hono'
 import * as Y from 'yjs'
 
 import { acceptHello, broadcast, rememberVaultId } from './auth'
+import { broadcastAwarenessLeave, handleAwarenessUpdate } from './awareness'
 import {
   handleBlobHead,
   handleBlobUploadUrl,
@@ -51,6 +53,7 @@ import type {
   RuntimeWebSocket,
   SessionState,
   RuntimeCheckpointResult,
+  WebSocketAwarenessAttachment,
 } from './types'
 import { makeArrayBuffer, encodeBase64 } from './utils'
 
@@ -59,6 +62,7 @@ export class VaultRoom {
   readonly sessions = new Set<RuntimeWebSocket>()
   readonly sessionStates = new Map<RuntimeWebSocket, SessionState>()
   readonly socketTokens = new Map<RuntimeWebSocket, string | undefined>()
+  readonly awarenessByWebSocket = new Map<RuntimeWebSocket, WebSocketAwarenessAttachment>()
   readonly docs = new Map<string, Y.Doc>()
   readonly hydratedDocs = new Set<string>()
   readonly hydrationInFlight = new Map<string, Promise<void>>()
@@ -136,6 +140,7 @@ export class VaultRoom {
 
     const control = parseControlMessage(message)
     if (control === null) {
+      if (isMalformedAwarenessUpdate(message)) return
       webSocket.close(1003, 'invalid-control-message')
       return
     }
@@ -146,6 +151,10 @@ export class VaultRoom {
     }
     if (control.type === 'sync-request') {
       await handleSyncRequest(this, webSocket, control)
+      return
+    }
+    if (control.type === 'awareness-update') {
+      handleAwarenessUpdate(this, webSocket, control)
       return
     }
     if (control.type !== 'sync-update') {
@@ -160,12 +169,14 @@ export class VaultRoom {
   }
 
   webSocketClose(webSocket: RuntimeWebSocket): void {
+    broadcastAwarenessLeave(this, webSocket)
     this.sessions.delete(webSocket)
     this.sessionStates.delete(webSocket)
     this.socketTokens.delete(webSocket)
   }
 
   webSocketError(webSocket: RuntimeWebSocket): void {
+    broadcastAwarenessLeave(this, webSocket)
     this.sessions.delete(webSocket)
     this.sessionStates.delete(webSocket)
     this.socketTokens.delete(webSocket)

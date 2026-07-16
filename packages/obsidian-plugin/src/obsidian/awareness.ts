@@ -1,14 +1,15 @@
 /**
- * Minimal local-only Yjs awareness implementation.
+ * Local Yjs-shaped awareness, broadcast to peers over the sync WebSocket
+ * (see docs/spec/protocol.md §1 `awareness-update`).
  *
  * `y-codemirror.next`'s `yCollab` binding expects an object shaped like
  * `y-protocols/awareness`'s `Awareness` (`doc.clientID`, `getLocalState`,
  * `setLocalStateField`, `getStates`, `on`/`off("change")`). `y-protocols` is
- * not an installed dependency, and there is no wire transport yet to
- * broadcast state to peers (see docs/spec/operations.md §4), so this only
- * tracks the local client's own state (e.g. cursor position) well enough to
- * satisfy that surface. Remote presence rendering starts working once a
- * provider/transport ships and feeds remote states into an equivalent object.
+ * not an installed dependency, so this implements just enough of that surface:
+ * `setLocalState*` tracks this client's own presence, and `applyRemoteState`
+ * feeds in the peer state received over the wire (see
+ * `main/sync-websocket.ts`), both funneled through the same `states` map and
+ * `change` event `y-codemirror.next`'s remote-selections plugin renders from.
  *
  * The local state starts as an empty object rather than `null`: y-codemirror.next
  * only starts writing the local cursor position once a local state already
@@ -28,7 +29,12 @@ interface AwarenessChange {
 // event y-codemirror.next's remote-selections plugin listens for locally.
 type AwarenessChangeListener = (change: AwarenessChange) => void
 
-let nextLocalClientId = 1
+// Real Yjs clientIDs are random 32-bit ints so independent devices don't collide
+// (see Y.Doc's own `generateNewClientId`). A per-process incrementing counter
+// would always start at 1, guaranteeing a collision with every other device's
+// first awareness instance once state is broadcast, so seed it randomly and
+// only increment from there to keep same-process instances distinct too.
+let nextLocalClientId = Math.floor(Math.random() * 0xffffffff)
 
 export class LocalAwareness {
   readonly doc: { readonly clientID: number }
@@ -69,6 +75,32 @@ export class LocalAwareness {
 
   getStates(): ReadonlyMap<number, AwarenessState> {
     return this.states
+  }
+
+  /**
+   * Applies a peer's awareness state received over the sync WebSocket.
+   *
+   * Ignores updates that claim this instance's own `clientID`: those can only be a
+   * stale self-broadcast, and must never overwrite the true local state.
+   *
+   * @param clientId Remote Yjs client id the state belongs to.
+   * @param state Remote presence state, or `null` when the peer left.
+   */
+  applyRemoteState(clientId: number, state: AwarenessState | null): void {
+    if (clientId === this.doc.clientID) return
+    const hadState = this.states.has(clientId)
+    if (state === null) {
+      if (!hadState) return
+      this.states.delete(clientId)
+      this.emitChange({ added: [], updated: [], removed: [clientId] })
+      return
+    }
+    this.states.set(clientId, state)
+    this.emitChange(
+      hadState
+        ? { added: [], updated: [clientId], removed: [] }
+        : { added: [clientId], updated: [], removed: [] },
+    )
   }
 
   on(event: 'change', listener: AwarenessChangeListener): void {

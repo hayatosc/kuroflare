@@ -8,6 +8,7 @@ import {
   makeVaultId,
   makeYDocId,
   type Ack,
+  type AwarenessUpdate,
   type ClientHello,
   type DeviceTokenClaims,
   type DeviceTokenScope,
@@ -123,6 +124,20 @@ export function makeSyncRequest(
     messageId,
     docId: { kind: 'meta' },
     stateVector,
+  }
+}
+
+export function makeAwarenessUpdate(
+  clientId: number,
+  state: Record<string, unknown> | null,
+): AwarenessUpdate {
+  return {
+    type: 'awareness-update',
+    vaultId: makeVaultId('vault-1'),
+    deviceId: makeDeviceId('device-1'),
+    docId: { kind: 'meta' },
+    clientId,
+    state,
   }
 }
 

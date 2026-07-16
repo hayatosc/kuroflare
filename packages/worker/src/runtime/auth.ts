@@ -13,7 +13,12 @@ import * as v from 'valibot'
 import { decideClientHelloRegistry, type DeviceRegistryEntry } from '../devices'
 import { decideAuthAdmission, type AuthAdmissionDecision } from '../http/auth'
 import { readDeviceRegistryEntry, persistVaultId } from './storage'
-import type { RuntimeWebSocket, SessionState, WebSocketAttachment } from './types'
+import type {
+  RuntimeWebSocket,
+  SessionState,
+  WebSocketAttachment,
+  WebSocketAwarenessAttachment,
+} from './types'
 import { apiErrorBody, logEvent, extractBearerToken, isWebSocketAttachment } from './utils'
 import type { VaultRoom } from './vault-room'
 
@@ -236,6 +241,27 @@ export function readSession(
     room.sessionStates.set(webSocket, attachmentSession)
   }
   return attachmentSession
+}
+
+export function rememberAwarenessAttachment(
+  room: VaultRoom,
+  webSocket: RuntimeWebSocket,
+  awareness: WebSocketAwarenessAttachment,
+): void {
+  room.awarenessByWebSocket.set(webSocket, awareness)
+  writeSocketAttachment(webSocket, { ...readSocketAttachment(webSocket), awareness })
+}
+
+export function readAwarenessAttachment(
+  room: VaultRoom,
+  webSocket: RuntimeWebSocket,
+): WebSocketAwarenessAttachment | undefined {
+  const remembered = room.awarenessByWebSocket.get(webSocket)
+  if (remembered !== undefined) return remembered
+
+  const attachmentAwareness = readSocketAttachment(webSocket).awareness
+  if (attachmentAwareness !== undefined) room.awarenessByWebSocket.set(webSocket, attachmentAwareness)
+  return attachmentAwareness
 }
 
 export function readSocketAttachment(webSocket: RuntimeWebSocket): WebSocketAttachment {

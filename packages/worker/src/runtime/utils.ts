@@ -1,6 +1,7 @@
 import {
   DeviceIdSchema,
   decodeMetaValue,
+  DocIdSchema,
   FileIdSchema,
   groupedEntryFromMetaFile,
   MetadataAccessSchema,
@@ -28,7 +29,13 @@ import { type QuarantinedUpdateRow } from '../db/checkpointRepo'
 import { readSqlUpdateBytes } from '../db/helpers'
 import type { QuarantinedUpdateRecord } from '../quarantine'
 import { type SnapshotCandidate } from '../sync/snapshots'
-import { type SessionState, type WebSocketAttachment, PosIntSchema, NonNegIntSchema } from './types'
+import {
+  type SessionState,
+  type WebSocketAttachment,
+  type WebSocketAwarenessAttachment,
+  PosIntSchema,
+  NonNegIntSchema,
+} from './types'
 
 const RETRYABLE_API_ERROR_CODES = new Set<ApiErrorCode>([
   'rate-limited',
@@ -532,10 +539,21 @@ export function isWebSocketAttachment(value: unknown): value is WebSocketAttachm
   }
   const authToken = value.authToken
   const session = value.session
+  const awareness = value.awareness
   return (
     (authToken === undefined || typeof authToken === 'string') &&
-    (session === undefined || isSessionState(session))
+    (session === undefined || isSessionState(session)) &&
+    (awareness === undefined || isWebSocketAwarenessAttachment(awareness))
   )
+}
+
+export function isWebSocketAwarenessAttachment(
+  value: unknown,
+): value is WebSocketAwarenessAttachment {
+  if (!isRecord(value)) {
+    return false
+  }
+  return v.is(DocIdSchema, value.docId) && v.is(NonNegIntSchema, value.clientId)
 }
 
 export function isSessionState(value: unknown): value is SessionState {

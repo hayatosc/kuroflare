@@ -36,7 +36,7 @@ export function getEditorView(markdownView: MarkdownView): EditorView | null {
  * Builds the editor extension that binds one Y.Text to CodeMirror.
  *
  * @param ytext Shared text document for the active markdown file.
- * @param awareness Local presence instance; remote propagation is not wired yet.
+ * @param awareness Local presence instance, broadcast to peers over the sync WebSocket.
  * @returns CodeMirror extension installed through a compartment.
  */
 export function createYTextEditorExtension(

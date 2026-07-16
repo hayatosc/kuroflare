@@ -13,6 +13,7 @@ import {
   LOCAL_OUTBOX_REPAIR_EXPORT_FORMAT,
   LOCAL_OUTBOX_REPAIR_EXPORT_VERSION,
   isMetaFile,
+  isMalformedAwarenessUpdate,
   makeFileId,
   makeSha256Hex,
   makeDeviceId,
@@ -26,6 +27,7 @@ import {
   type BlobManifest,
   type BinaryMetaFile,
   type BinaryFrameHeader,
+  AwarenessUpdateSchema,
   ClientHelloSchema,
   ControlMessageSchema,
   HelloAcceptedSchema,
@@ -149,6 +151,47 @@ test('validates guarded sync update rejection evidence', () => {
   assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, reason: 'hash-mismatch' }), true)
   assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, reason: 'yjs-apply-failed' }), true)
   assert.equal(v.is(SyncUpdateRejectedSchema, { ...message, reason: 'meta-schema-invalid' }), true)
+})
+
+test('validates awareness update frames', () => {
+  const message = {
+    type: 'awareness-update',
+    vaultId: makeVaultId('vault-1'),
+    deviceId: makeDeviceId('device-1'),
+    docId: { kind: 'file', ydocId: makeYDocId('doc-1') },
+    clientId: 1,
+    state: { cursor: { anchor: 0, head: 0 } },
+  }
+
+  assert.equal(v.is(AwarenessUpdateSchema, message), true)
+  assert.equal(v.is(ControlMessageSchema, message), true)
+  assert.equal(v.is(AwarenessUpdateSchema, { ...message, state: null }), true)
+  assert.equal(v.is(AwarenessUpdateSchema, { ...message, clientId: -1 }), false)
+  assert.equal(v.is(AwarenessUpdateSchema, { ...message, clientId: 1.5 }), false)
+  assert.equal(v.is(AwarenessUpdateSchema, { ...message, state: 'not-an-object' }), false)
+  assert.equal(
+    v.is(AwarenessUpdateSchema, { ...message, state: { blob: 'x'.repeat(5_000) } }),
+    false,
+  )
+  assert.equal(parseControlMessage(JSON.stringify(message))?.type, 'awareness-update')
+})
+
+test('drops malformed awareness-update frames without closing the session', () => {
+  const oversized = {
+    type: 'awareness-update',
+    vaultId: makeVaultId('vault-1'),
+    deviceId: makeDeviceId('device-1'),
+    docId: { kind: 'meta' },
+    clientId: 1,
+    state: { blob: 'x'.repeat(5_000) },
+  }
+
+  assert.equal(parseControlMessage(oversized), null)
+  assert.equal(isMalformedAwarenessUpdate(oversized), true)
+  assert.equal(isMalformedAwarenessUpdate(JSON.stringify(oversized)), true)
+  assert.equal(isMalformedAwarenessUpdate({ type: 'sync-request' }), false)
+  assert.equal(isMalformedAwarenessUpdate('not json'), false)
+  assert.equal(isMalformedAwarenessUpdate({ ...oversized, state: null }), false)
 })
 
 test('validates setup exchange request bodies', () => {

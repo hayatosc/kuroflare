@@ -109,6 +109,27 @@ export const SyncUpdateRejectedSchema = v.object({
 })
 export type SyncUpdateRejected = v.InferInput<typeof SyncUpdateRejectedSchema>
 
+/** Presence is loss-tolerant ephemeral data, so `state` only carries a byte-size cap. */
+export const MAX_AWARENESS_STATE_BYTES = 4096
+
+const AwarenessStateSchema = v.pipe(
+  v.record(v.string(), v.unknown()),
+  v.check(
+    (state) => new TextEncoder().encode(JSON.stringify(state)).length <= MAX_AWARENESS_STATE_BYTES,
+    'awareness state exceeds size limit',
+  ),
+)
+
+export const AwarenessUpdateSchema = v.strictObject({
+  type: v.literal('awareness-update'),
+  vaultId: VaultIdSchema,
+  deviceId: DeviceIdSchema,
+  docId: DocIdSchema,
+  clientId: NonNegativeSafeIntegerSchema,
+  state: v.union([AwarenessStateSchema, v.null()]),
+})
+export type AwarenessUpdate = v.InferInput<typeof AwarenessUpdateSchema>
+
 export const ControlMessageSchema = v.union([
   ClientHelloSchema,
   HelloAcceptedSchema,
@@ -117,6 +138,7 @@ export const ControlMessageSchema = v.union([
   AckSchema,
   NeedFullSnapshotSchema,
   SyncUpdateRejectedSchema,
+  AwarenessUpdateSchema,
 ])
 export type ControlMessage = v.InferInput<typeof ControlMessageSchema>
 
@@ -143,4 +165,25 @@ export function parseControlMessage(value: unknown): ControlMessage | null {
 
   const result = v.safeParse(ControlMessageSchema, value)
   return result.success ? result.output : null
+}
+
+const AwarenessUpdateEnvelopeSchema = v.looseObject({ type: v.literal('awareness-update') })
+
+/**
+ * True when a raw WS message declares itself as an awareness-update frame but fails
+ * full {@link AwarenessUpdateSchema} validation (e.g. an oversized `state`). Presence
+ * is loss-tolerant ephemeral data, so callers use this to drop the malformed frame
+ * silently instead of closing the whole sync session over it.
+ */
+export function isMalformedAwarenessUpdate(value: unknown): boolean {
+  const parsed = typeof value === 'string' ? tryParseJson(value) : value
+  return v.is(AwarenessUpdateEnvelopeSchema, parsed) && !v.is(AwarenessUpdateSchema, parsed)
+}
+
+function tryParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
 }

@@ -20,6 +20,8 @@ import {
   attachSyncRuntimeWebSocketInboundMessageHandler,
   buildSyncRuntimeWebSocketProtocols,
   buildSyncRuntimeWebSocketUrl,
+  createSyncRuntimeWebSocketAwarenessApplyPort,
+  createSyncRuntimeWebSocketAwarenessSendPort,
   createSyncRuntimeWebSocketOutboxCompletionPort,
   createSyncRuntimeWebSocketOutboxSendPort,
   createSyncRuntimeWebSocketRemoteUpdateApplyPort,
@@ -36,6 +38,7 @@ import {
   planSyncRuntimeWebSocketOutboxCompletion,
   planSyncRuntimeWebSocketOutboxSend,
   planSyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction,
+  planSyncRuntimeWebSocketAwarenessSend,
   planSyncRuntimeWebSocketSyncRequestAnswer,
   planSyncRuntimeWebSocketSyncRequestSend,
   type SyncRuntimeWebSocketAccessTokenReaderPort,
@@ -553,6 +556,14 @@ test('websocket runtime routes peer sync messages to local sync handlers', () =>
     docId: fileDocId,
     stateVector: 'BAUG',
   } as const
+  const awarenessUpdate = {
+    type: 'awareness-update',
+    vaultId,
+    deviceId: peerDeviceId,
+    docId: fileDocId,
+    clientId: 1,
+    state: { cursor: { anchor: 0, head: 0 } },
+  } as const
 
   assert.deepEqual(
     planSyncRuntimeWebSocketInboundRoute({
@@ -569,6 +580,14 @@ test('websocket runtime routes peer sync messages to local sync handlers', () =>
       deviceId,
     }),
     { action: 'answer-sync-request', message: syncRequest },
+  )
+  assert.deepEqual(
+    planSyncRuntimeWebSocketInboundRoute({
+      inbound: { ok: true, message: awarenessUpdate },
+      vaultId,
+      deviceId,
+    }),
+    { action: 'apply-remote-awareness', message: awarenessUpdate },
   )
 })
 
@@ -711,6 +730,14 @@ test('websocket runtime dispatches inbound routes to exactly one runtime port', 
     docId: fileDocId,
     stateVector: 'BAUG',
   } as const
+  const awarenessUpdate = {
+    type: 'awareness-update',
+    vaultId,
+    deviceId: peerDeviceId,
+    docId: fileDocId,
+    clientId: 1,
+    state: null,
+  } as const
 
   assert.deepEqual(
     await dispatchSyncRuntimeWebSocketInboundMessage({
@@ -739,11 +766,21 @@ test('websocket runtime dispatches inbound routes to exactly one runtime port', 
     }),
     { route: { action: 'answer-sync-request', message: request } },
   )
+  assert.deepEqual(
+    await dispatchSyncRuntimeWebSocketInboundMessage({
+      inbound: { ok: true, message: awarenessUpdate },
+      vaultId,
+      deviceId,
+      ports,
+    }),
+    { route: { action: 'apply-remote-awareness', message: awarenessUpdate } },
+  )
 
   assert.deepEqual(ports.calls, [
     { action: 'outbox-completion', type: 'ack' },
     { action: 'apply-remote-update', type: 'sync-update' },
     { action: 'answer-sync-request', type: 'sync-request' },
+    { action: 'apply-remote-awareness', type: 'awareness-update' },
   ])
 })
 
@@ -1106,6 +1143,71 @@ test('websocket runtime sends sync requests through the active session', async (
   assert.deepEqual(parseControlMessage(connection.sent[0] ?? ''), plan.message)
 })
 
+test('websocket runtime sends local awareness updates through the active session', () => {
+  const plan = planSyncRuntimeWebSocketAwarenessSend({
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    clientId: 7,
+    state: { cursor: { anchor: 1, head: 1 } },
+  })
+  assert.deepEqual(plan.message, {
+    type: 'awareness-update',
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    clientId: 7,
+    state: { cursor: { anchor: 1, head: 1 } },
+  })
+
+  const connection = new FakeWebSocketConnection('wss://worker.example/ws/vault')
+  const session = createSyncRuntimeWebSocketSession()
+  session.attach(connection)
+  connection.open()
+  const port = createSyncRuntimeWebSocketAwarenessSendPort({ session })
+
+  port.sendAwarenessUpdate({
+    vaultId,
+    deviceId,
+    docId: fileDocId,
+    clientId: 7,
+    state: { cursor: { anchor: 1, head: 1 } },
+  })
+
+  assert.deepEqual(parseControlMessage(connection.sent[0] ?? ''), plan.message)
+})
+
+test('websocket runtime silently drops a local awareness update without an open session', () => {
+  const session = createSyncRuntimeWebSocketSession()
+  const port = createSyncRuntimeWebSocketAwarenessSendPort({ session })
+
+  port.sendAwarenessUpdate({ vaultId, deviceId, docId: fileDocId, clientId: 7, state: null })
+
+  assert.deepEqual(session.snapshot(), { hasConnection: false, readyState: undefined })
+})
+
+test('websocket runtime applies inbound peer awareness updates to local presence', async () => {
+  const applied: Array<{ clientId: number; state: Record<string, unknown> | null }> = []
+  const port = createSyncRuntimeWebSocketAwarenessApplyPort({
+    awareness: {
+      applyRemoteState(clientId, state) {
+        applied.push({ clientId, state })
+      },
+    },
+  })
+
+  await port.applyRemoteAwareness({
+    type: 'awareness-update',
+    vaultId,
+    deviceId: peerDeviceId,
+    docId: fileDocId,
+    clientId: 42,
+    state: { cursor: { anchor: 2, head: 2 } },
+  })
+
+  assert.deepEqual(applied, [{ clientId: 42, state: { cursor: { anchor: 2, head: 2 } } }])
+})
+
 test('websocket runtime verifies and applies peer remote updates before durable commit', async () => {
   const updateSha256 = makeSha256Hex(await hashBytesSha256(Uint8Array.from([1, 2, 3])))
   const message = {
@@ -1447,6 +1549,7 @@ class FakeInboundRoutePorts implements SyncRuntimeWebSocketInboundRoutePorts {
       }
     | { readonly action: 'apply-remote-update'; readonly type: 'sync-update' }
     | { readonly action: 'answer-sync-request'; readonly type: 'sync-request' }
+    | { readonly action: 'apply-remote-awareness'; readonly type: 'awareness-update' }
     | { readonly action: 'drop'; readonly reason: string }
   )[] = []
 
@@ -1466,6 +1569,12 @@ class FakeInboundRoutePorts implements SyncRuntimeWebSocketInboundRoutePorts {
     message: Parameters<SyncRuntimeWebSocketInboundRoutePorts['answerSyncRequest']>[0],
   ): Promise<void> {
     this.calls.push({ action: 'answer-sync-request', type: message.type })
+  }
+
+  async applyRemoteAwareness(
+    message: Parameters<SyncRuntimeWebSocketInboundRoutePorts['applyRemoteAwareness']>[0],
+  ): Promise<void> {
+    this.calls.push({ action: 'apply-remote-awareness', type: message.type })
   }
 
   async drop(route: Parameters<SyncRuntimeWebSocketInboundRoutePorts['drop']>[0]): Promise<void> {

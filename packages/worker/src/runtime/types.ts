@@ -115,9 +115,16 @@ export interface SessionState {
   readonly metadataCapabilityAdvertised?: boolean
 }
 
+/** Last awareness state a connection advertised, kept to broadcast its removal on close. */
+export interface WebSocketAwarenessAttachment {
+  readonly docId: DocId
+  readonly clientId: number
+}
+
 export interface WebSocketAttachment {
   readonly authToken?: string
   readonly session?: SessionState
+  readonly awareness?: WebSocketAwarenessAttachment
 }
 
 export interface WebSocketResponseInit extends ResponseInit {

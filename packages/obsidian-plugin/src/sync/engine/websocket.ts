@@ -1,4 +1,5 @@
 export * from './websocket.types'
+export * from './websocket/awareness'
 export * from './websocket/inbound'
 export * from './websocket/outbox-completion'
 export * from './websocket/outbox-send'

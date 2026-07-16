@@ -301,6 +301,19 @@ class TestClient {
     )
   }
 
+  sendAwareness(clientId: number, docId: unknown, state: Record<string, unknown> | null): void {
+    this.socket.send(
+      JSON.stringify({
+        type: 'awareness-update',
+        vaultId: VAULT_ID,
+        deviceId: this.deviceId,
+        docId,
+        clientId,
+        state,
+      }),
+    )
+  }
+
   sendSyncRequest(messageId: string, docId: unknown, stateVector: Uint8Array): void {
     this.socket.send(
       JSON.stringify({
@@ -389,6 +402,28 @@ test('two clients editing the same paragraph concurrently both survive', async (
   alice.close()
   bob.close()
   carol.close()
+})
+
+test('awareness updates broadcast to vault peers and a disconnect clears remote presence', async () => {
+  await seedDevices([DEVICE_A, DEVICE_B])
+  const alice = await TestClient.connect(DEVICE_A)
+  const bob = await TestClient.connect(DEVICE_B)
+
+  alice.sendAwareness(7, SINGLE_DOC_ID, { cursor: { anchor: 0, head: 0 } })
+  const presence = await bob.waitFor((message) => message.type === 'awareness-update')
+  expect(presence).toMatchObject({
+    deviceId: DEVICE_A.deviceId,
+    clientId: 7,
+    state: { cursor: { anchor: 0, head: 0 } },
+  })
+
+  alice.close()
+  const leave = await bob.waitFor(
+    (message) => message.type === 'awareness-update' && message.state === null,
+  )
+  expect(leave).toMatchObject({ deviceId: DEVICE_A.deviceId, clientId: 7, state: null })
+
+  bob.close()
 })
 
 test('meta YDoc updates broadcast across clients and late joiners reconstruct the tree', async () => {

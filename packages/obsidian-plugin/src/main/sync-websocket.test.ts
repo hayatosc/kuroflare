@@ -9,6 +9,7 @@ import {
 } from '@kuroflare/core'
 import { assert, expect, test } from 'vitest'
 
+import { LocalAwareness } from '../obsidian/awareness'
 import {
   createBrowserSyncRuntimeWebSocketFactory,
   createSyncRuntimeWebSocketSession,
@@ -21,7 +22,9 @@ import {
   isLegacyMetadataCapabilityError,
   requestDocFromWorker,
   routeWorkerInboundMessageForStartup,
+  sendLocalAwarenessUpdate,
   shouldRetryWithLegacyMetadataCapability,
+  wireLocalAwarenessBroadcast,
   type WorkerWebSocketOpenRuntime,
 } from './sync-websocket'
 
@@ -56,6 +59,103 @@ test('requestDocFromWorker reports a closed socket without leaving a pending req
     ),
     false,
   )
+})
+
+const awarenessSetup = {
+  endpoint: 'https://worker.example.test',
+  vaultId: makeVaultId('awareness-vault-1'),
+  deviceId: makeDeviceId('awareness-device-1'),
+  protocolVersion: CURRENT_PROTOCOL_VERSION,
+  bootstrapMode: 'new-vault',
+  tokenVersion: 1,
+} as const
+
+test('sendLocalAwarenessUpdate drops silently before hello is accepted', () => {
+  const sent: string[] = []
+  const plugin = castForTest<KuroflareSpikePlugin>({
+    startupSideEffectGate: { canSendNetwork: () => true },
+    workerHelloAccepted: false,
+    workerWebSocketSession: {
+      send: (data: string) => sent.push(data),
+      snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+    },
+    pendingSetupResponse: null,
+    trustedSetupMetadata: awarenessSetup,
+    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+  })
+
+  sendLocalAwarenessUpdate(plugin, { kind: 'file', ydocId: makeYDocId('awareness-doc-1') }, 1, {})
+
+  assert.deepEqual(sent, [])
+})
+
+test('sendLocalAwarenessUpdate broadcasts the local presence state over an open session', () => {
+  const sent: string[] = []
+  const plugin = castForTest<KuroflareSpikePlugin>({
+    startupSideEffectGate: { canSendNetwork: () => true },
+    workerHelloAccepted: true,
+    workerWebSocketSession: {
+      send: (data: string) => sent.push(data),
+      snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+    },
+    pendingSetupResponse: null,
+    trustedSetupMetadata: awarenessSetup,
+    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+  })
+  const docId = { kind: 'file', ydocId: makeYDocId('awareness-doc-2') } as const
+
+  sendLocalAwarenessUpdate(plugin, docId, 7, { cursor: { anchor: 1, head: 1 } })
+
+  assert.equal(sent.length, 1)
+  assert.deepEqual(JSON.parse(sent[0] ?? '{}'), {
+    type: 'awareness-update',
+    vaultId: awarenessSetup.vaultId,
+    deviceId: awarenessSetup.deviceId,
+    docId,
+    clientId: 7,
+    state: { cursor: { anchor: 1, head: 1 } },
+  })
+})
+
+test('wireLocalAwarenessBroadcast sends only local presence changes tied to the active document', () => {
+  const sent: string[] = []
+  const awareness = new LocalAwareness()
+  const docId = { kind: 'file', ydocId: makeYDocId('awareness-doc-3') } as const
+  const plugin = castForTest<KuroflareSpikePlugin>({
+    awareness,
+    activeTextDoc: null,
+    startupSideEffectGate: { canSendNetwork: () => true },
+    workerHelloAccepted: true,
+    workerWebSocketSession: {
+      send: (data: string) => sent.push(data),
+      snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+    },
+    pendingSetupResponse: null,
+    trustedSetupMetadata: awarenessSetup,
+    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+  })
+
+  wireLocalAwarenessBroadcast(plugin)
+
+  awareness.setLocalStateField('cursor', { anchor: 1, head: 1 })
+  assert.deepEqual(sent, [])
+
+  plugin.activeTextDoc = castForTest<KuroflareSpikePlugin['activeTextDoc']>({ docId })
+  awareness.setLocalStateField('cursor', { anchor: 2, head: 2 })
+
+  assert.equal(sent.length, 1)
+  assert.deepEqual(JSON.parse(sent[0] ?? '{}'), {
+    type: 'awareness-update',
+    vaultId: awarenessSetup.vaultId,
+    deviceId: awarenessSetup.deviceId,
+    docId,
+    clientId: awareness.doc.clientID,
+    state: { cursor: { anchor: 2, head: 2 } },
+  })
+
+  // A remote-origin state application must not re-trigger a local broadcast.
+  awareness.applyRemoteState(999, { cursor: null })
+  assert.equal(sent.length, 1)
 })
 
 class FakeBrowserWebSocket {

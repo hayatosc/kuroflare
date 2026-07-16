@@ -1,3 +1,4 @@
+export * from './websocket-types/awareness'
 export * from './websocket-types/connection'
 export * from './websocket-types/outbox-completion'
 export * from './websocket-types/outbox-send'

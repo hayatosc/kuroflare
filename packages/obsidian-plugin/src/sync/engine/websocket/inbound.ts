@@ -71,6 +71,8 @@ export function planSyncRuntimeWebSocketInboundRoute(
         return { action: 'drop', reason: 'self-broadcast' }
       }
       return { action: 'answer-sync-request', message }
+    case 'awareness-update':
+      return { action: 'apply-remote-awareness', message }
     case 'hello':
       return { action: 'drop', reason: 'unexpected-server-hello' }
     case 'hello-accepted':
@@ -122,6 +124,9 @@ export async function dispatchSyncRuntimeWebSocketInboundMessage(
       break
     case 'answer-sync-request':
       await input.ports.answerSyncRequest(route.message)
+      break
+    case 'apply-remote-awareness':
+      await input.ports.applyRemoteAwareness(route.message)
       break
     case 'drop':
       await input.ports.drop(route)

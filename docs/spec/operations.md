@@ -29,7 +29,7 @@ IndexedDB directory API の可否は未検証のスパイク項目（§8、[clie
 ## 4. 同期対象の除外と awareness
 
 - `.obsidian` 配下（プラグイン設定、ワークスペース）は端末固有なので、同期対象から除外または opt-in の選択的同期にする。
-- Yjs Awareness（「今誰がどのファイルを開いているか」）は同時編集事故を UX レベルで減らす。MVP では editor binding への optional injection だけ用意し、transport / provider は後続実装。
+- Yjs Awareness（「今誰がどのファイルを開いているか」）は同時編集事故を UX レベルで減らす。editor binding への optional injection に加え、`awareness-update` control frame（WebSocket、[protocol.md](protocol.md) §1）で peer へ broadcast する。DO は awareness を永続化せず、その場の中継と切断時の removal 通知だけを行う。
 
 ## 5. 観測性
 
