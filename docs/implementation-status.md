@@ -5,9 +5,9 @@
 設計レビュー（2026-07-03）で見つかった項目は spec 本文へ反映済みで、記録は git 履歴にある。
 The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-review.md](spec/design-review.md).
 
-## Current summary (2026-07-15)
+## Current summary (2026-07-16)
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 196 件、worker 257 件、model-tests 17 件、Obsidian 467 件、worker e2e 7 件。
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 196 件、worker 267 件、model-tests 17 件、Obsidian 477 件、worker e2e 7 件。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
 - Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are committed at `122d2a0`. The rejection-evidence work described below builds on that baseline. The remaining P0/P1/P2 items and design-review release gates are still authoritative.
@@ -21,10 +21,22 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
   bounded snapshot CAS conflicts, and atomically commits candidate YDoc/cursor state,
   exact outbox completions, and a ready epoch after a fresh provider persistence barrier.
   Malformed, dependency-missing, wrong-document, or unavailable-directory evidence fails
-  closed without dropping rows. DR-007 closure remains gated on the full crash-boundary
-  and Worker E2E acceptance run. The checked-in tests use fake-indexeddb for actual
-  y-indexeddb provider and local-store transactions; real Obsidian process-restart
-  coverage remains outstanding. DR-009 and DR-012 are not claimed.
+  closed without dropping rows. Real Obsidian process-restart coverage is now green
+  (2026-07-16): the `:app` E2E kills and restarts the actual Obsidian process
+  (/proc-based identification) mid-edit and drives epoch recovery through both the
+  sync-request and need-full-snapshot paths, passing 6 consecutive runs. Getting there
+  surfaced and fixed a delete-set leak in outbound meta updates (vector-diffing a temp
+  doc re-emitted unrelated, not-yet-durable tombstones and intermittently quarantined
+  binary meta updates server-side) and three redundant full-doc meta resends.
+- DR-009 is implemented: all public HTTP errors use the unified `ApiError` envelope
+  (`{code, retryable, detail}`, 12 codes) and WebSocket reject evidence is generalized
+  beyond oversized-update to the quarantine paths (`hash-mismatch`, `yjs-apply-failed`,
+  `meta-schema-invalid`) plus `metadata-read-only`, covered by worker contract tests.
+  A quarantined live update now sends `sync-update-rejected` without closing the
+  session, and the client pauses the matching outbox item instead of retrying forever.
+  `/auth/refresh` rejections distinguish `auth/expired` / `auth/revoked` /
+  `auth/rejected`; the plugin detects device revocation via `code === 'auth/revoked'`.
+  DR-012 (general capability negotiation) is not claimed.
 
 ### MVP チェックリスト（[operations.md](spec/operations.md) §8 対応）
 
@@ -99,10 +111,10 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ### P1
 
-- **binary の常用化**: multipart upload（create/part/complete/abort + R2 lifecycle）は未実装で、16MiB 以上は拒否される。大きい添付を扱うなら実装する。binary conflict / repair UI の追加 regression も残る。
+- **binary の常用化**: multipart upload（create/part/complete/abort + R2 lifecycle）は未実装で、16MiB 以上は拒否される。[protocol.md](spec/protocol.md) は `multipart` レスポンス型を予約するのみで part-upload / complete / abort のワイヤ契約が未定義のため、実装前に契約決定（spec 追記）が必要。binary conflict / repair UI の追加 regression も残る。
 - **meta materialize の残り**: 欠損 Markdown 作成、親フォルダ作成、invalid path の repair log、active file の remote rename/delete 追従は実装済み。settings panel の各 repair action（invalid-meta inspect/discard、path-conflict resolve/retry、keep-deleted retry、remote-materialize-blocked resolve/retry/clear）も実機 e2e で固定済み。
 - **local store degraded / repair flow**: schema gate、degraded、export、discard/rebuild、import staging、manual resume は settings panel から実行できる。
-- **DO multi-doc eviction の degraded 判定**（メモリ圧迫時に新規 doc load を拒否する規則、[server.md](spec/server.md) §11）は未実装。
+- **DO multi-doc eviction の degraded 判定**（[server.md](spec/server.md) §11）は実装済み。`decideDocLoadAdmission`（`eviction.ts`）が resident file doc 数の上限 `MAX_HYDRATED_FILE_DOCS` 到達時に新規 load を WS/HTTP 全チョークポイントで拒否する（`server/degraded`、retryable）。checkpoint alarm 末尾の `evictIdleDocs` が checkpointed かつ idle な file doc を実際に evict するため degraded は自動復帰する。残ギャップ: per-doc の socket tracking が無く `activeSocketCount` は常に 0 扱い（active doc の evict は再 hydrate コストのみで無損失。churn が問題になれば追加する）。
 
 ### P2: 運用と配布
 
@@ -111,7 +123,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 - Auth refresh / revoke runtime and plugin lifecycle wiring (foreground/resume, pre-expiry refresh, and revoked-device local shutdown) are active at HEAD `122d2a0`; distribution still requires the surrounding settings UX, migration policy, and operator documentation.
 - presence / awareness は型とテスト片のみで editor binding 未接続。
 - 配布前に settings UI、Setup URI/QR、ログの secret redaction、migration / backward-incompatible policy、手動エスケープハッチの UI を整える。
-- Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）はほぼ未実装。
+- Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）は `logEvent` 経由で実装済み（quarantine イベントは `quarantineId` 付き）。残りは next tier（connection count、op append latency、checkpoint duration、cold start restore source、duplicate ignored）。
 - `BlobHeadEntrySchema` の size 必須化（[sync-model.md](spec/sync-model.md) §5 の「size 不明なら復活させない」を schema 側でも強制する）が実装課題として残る。
 
 ## モジュール対応表
