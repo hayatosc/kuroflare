@@ -1,4 +1,9 @@
-import { canonicalizeVaultPath, type MetaFile } from '../sync/meta'
+import {
+  canonicalizeVaultPath,
+  portablePath,
+  type MetaFile,
+  type PortablePathRepairReason,
+} from '../sync/meta'
 import { type DeviceId, type FileId } from '../utils/ids'
 
 export interface PathConflictRepair {
@@ -6,6 +11,17 @@ export interface PathConflictRepair {
   readonly fromPath: string
   readonly toPath: string
   readonly toCanonicalPath: string
+  readonly updatedAt: number
+  readonly updatedBy: DeviceId
+}
+
+/** Deterministic cross-platform path repair planned by {@link planPortablePathRepairs} (DR-011). */
+export interface PortablePathRepair {
+  readonly fileId: FileId
+  readonly fromPath: string
+  readonly toPath: string
+  readonly toCanonicalPath: string
+  readonly reason: PortablePathRepairReason
   readonly updatedAt: number
   readonly updatedBy: DeviceId
 }
@@ -40,7 +56,7 @@ export type DeleteVsEditRepair =
       readonly updatedBy: DeviceId
     }
 
-export type MetaRepair = PathConflictRepair | DeleteVsEditRepair
+export type MetaRepair = PathConflictRepair | PortablePathRepair | DeleteVsEditRepair
 
 /** Current text YDoc evidence used to evaluate one deletion-base witness. */
 export interface TextDeletionEvidence {
@@ -89,6 +105,49 @@ export function planPathConflictRepairs(
         updatedBy,
       })
     }
+  }
+
+  return repairs
+}
+
+/**
+ * Plans deterministic repairs for active files whose path violates a portable, cross-platform
+ * naming constraint (Windows reserved device names, control/forbidden characters, trailing
+ * spaces or periods, or overlong segments). Every client computes the same sanitized alias
+ * from {@link portablePath} regardless of the local OS, so a path created on one platform
+ * materializes identically everywhere instead of oscillating between OS-specific fixes (DR-011).
+ *
+ * Any canonical-path collision this sanitization introduces is left to
+ * {@link planPathConflictRepairs}, which already resolves it deterministically; callers should
+ * apply these repairs first and re-run path-conflict planning over the result.
+ */
+export function planPortablePathRepairs(
+  entries: readonly MetaFile[],
+  updatedAt: number,
+  updatedBy: DeviceId,
+): readonly PortablePathRepair[] {
+  if (!Number.isSafeInteger(updatedAt) || updatedAt < 0) {
+    throw new Error(`Invalid repair timestamp: ${updatedAt}`)
+  }
+
+  const repairs: PortablePathRepair[] = []
+  for (const entry of entries) {
+    if (entry.deleted) {
+      continue
+    }
+    const sanitized = portablePath(entry.path)
+    if (sanitized.reason === undefined) {
+      continue
+    }
+    repairs.push({
+      fileId: entry.fileId,
+      fromPath: entry.path,
+      toPath: sanitized.path,
+      toCanonicalPath: canonicalizeVaultPath(sanitized.path),
+      reason: sanitized.reason,
+      updatedAt,
+      updatedBy,
+    })
   }
 
   return repairs
@@ -185,7 +244,7 @@ export function applyMetaRepair(entry: MetaFile, repair: MetaRepair): MetaFile {
     return entry
   }
 
-  if (isPathConflictRepair(repair)) {
+  if (isPathRepair(repair)) {
     return {
       ...entry,
       path: repair.toPath,
@@ -352,7 +411,7 @@ function readVarUint(bytes: Uint8Array, advance: () => number): number | undefin
   return undefined
 }
 
-function isPathConflictRepair(repair: MetaRepair): repair is PathConflictRepair {
+function isPathRepair(repair: MetaRepair): repair is PathConflictRepair | PortablePathRepair {
   return 'toPath' in repair
 }
 

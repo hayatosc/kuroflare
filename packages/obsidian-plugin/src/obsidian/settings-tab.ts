@@ -428,7 +428,7 @@ export class KuroflareSettingTab extends PluginSettingTab {
               new Notice('Kuroflare: repair actions under refactoring')
             })
           })
-      } else if (entry.kind === 'path-conflict') {
+      } else if (entry.kind === 'path-conflict' || entry.kind === 'portable-path') {
         setting
           .addButton((button) => {
             button.setButtonText('Resolve to conflict path').onClick(() => {

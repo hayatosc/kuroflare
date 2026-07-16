@@ -91,13 +91,16 @@ export function planRemoteMaterializeBlockedAutoResolve(
 /**
  * Plans a safe alternate meta path for a failed path materialization.
  *
+ * Also covers `portable-path` entries (DR-011): both kinds are a plain meta-path rename that
+ * can collide locally, and both resolve through the same conflict-suffix mechanism.
+ *
  * @param input Repair entry, current meta value, and a path-availability predicate.
  * @returns A concrete meta-path rename plan or a non-mutating reason.
  */
 export function planPathConflictAutoResolve(
   input: PathConflictAutoResolveInput,
 ): PathConflictAutoResolvePlan {
-  if (input.entry.kind !== 'path-conflict') {
+  if (input.entry.kind !== 'path-conflict' && input.entry.kind !== 'portable-path') {
     return { action: 'ignored-kind' }
   }
   if (!isMetaFile(input.current, input.entry.fileId) || input.current.deleted) {

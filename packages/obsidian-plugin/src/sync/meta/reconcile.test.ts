@@ -39,6 +39,33 @@ test('reconcileMetaDoc converges concurrent same-path creates to identical entri
   assert.equal(getMeta(a.map, 'file-b').path, 'Note (conflict file-b).md')
 })
 
+test('reconcileMetaDoc sanitizes a Windows reserved device name and is a no-op on rescan', () => {
+  const file = textMeta(makeFileId('file-a'), 'Notes/CON.md', 1)
+  const { map } = metaDocWith(file)
+
+  const result = reconcileMetaDoc(map, { updatedAt: 100, updatedBy: REPAIR })
+
+  assert.equal(result.repairs.length, 1)
+  assert.equal(getMeta(map, 'file-a').path, 'Notes/CON_.md')
+
+  const rescanned = reconcileMetaDoc(map, { updatedAt: 101, updatedBy: REPAIR })
+  assert.equal(rescanned.repairs.length, 0)
+  assert.equal(getMeta(map, 'file-a').path, 'Notes/CON_.md')
+})
+
+test('reconcileMetaDoc resolves a portable-path collision through the existing path-conflict repair', () => {
+  // Two devices independently create files whose paths only collide after portable sanitization.
+  const fileA = textMeta(makeFileId('file-a'), 'CON.md', 1)
+  const fileB = textMeta(makeFileId('file-b'), 'CON_.md', 2)
+  const { map } = metaDocWith(fileA, fileB)
+
+  const result = reconcileMetaDoc(map, { updatedAt: 100, updatedBy: REPAIR })
+
+  assert.equal(result.repairs.length, 2)
+  assert.equal(getMeta(map, 'file-a').path, 'CON_.md')
+  assert.equal(getMeta(map, 'file-b').path, 'CON_ (conflict file-b).md')
+})
+
 test('reconcileMetaDoc restores text edited after a concurrent delete', () => {
   const file = {
     ...textMeta(makeFileId('file-a'), 'Note.md', 1),

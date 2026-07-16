@@ -3,6 +3,7 @@ import {
   decodeMetaValue,
   planDeleteVsEditRepairs,
   planPathConflictRepairs,
+  planPortablePathRepairs,
   type DeviceId,
   type FileId,
   type MetaFile,
@@ -61,10 +62,16 @@ export function reconcileMetaDoc(
     else if (decoded.disposition === 'invalid') invalidFileIds.push(fileId)
   }
 
+  // Sanitize portable-path violations first, then re-run path-conflict planning over the
+  // sanitized paths so any collision it introduces converges through the existing mechanism.
+  const portableRepairs = planPortablePathRepairs(entries, options.updatedAt, options.updatedBy)
+  const sanitizedEntries = withPortablePathRepairs(entries, portableRepairs)
+
   const repairs: readonly MetaRepair[] = [
-    ...planPathConflictRepairs(entries, options.updatedAt, options.updatedBy),
+    ...portableRepairs,
+    ...planPathConflictRepairs(sanitizedEntries, options.updatedAt, options.updatedBy),
     ...planDeleteVsEditRepairs(
-      entries,
+      sanitizedEntries,
       options.restorableBinaryFileIds ?? NO_RESTORABLE_BINARIES,
       options.updatedAt,
       options.updatedBy,
@@ -105,4 +112,19 @@ function isNonMutatingRepair(repair: MetaRepair): boolean {
   return (
     'action' in repair && (repair.action === 'keep-deleted' || repair.action === 'defer-deletion')
   )
+}
+
+/** Applies planned portable-path repairs to a plain entry list for downstream planning. */
+function withPortablePathRepairs(
+  entries: readonly MetaFile[],
+  repairs: readonly MetaRepair[],
+): readonly MetaFile[] {
+  if (repairs.length === 0) {
+    return entries
+  }
+  const byFileId = new Map(repairs.map((repair) => [repair.fileId, repair]))
+  return entries.map((entry) => {
+    const repair = byFileId.get(entry.fileId)
+    return repair === undefined ? entry : applyMetaRepair(entry, repair)
+  })
 }

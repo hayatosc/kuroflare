@@ -13,7 +13,12 @@ import * as v from 'valibot'
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { applyMetaRepair, planDeleteVsEditRepairs, planPathConflictRepairs } from '../index'
+import {
+  applyMetaRepair,
+  planDeleteVsEditRepairs,
+  planPathConflictRepairs,
+  planPortablePathRepairs,
+} from '../index'
 
 const DEVICE_ID = makeDeviceId('repair')
 const OTHER_DEVICE_ID = makeDeviceId('other-device')
@@ -64,6 +69,34 @@ test('planPathConflictRepairs ignores deleted entries', () => {
   }
 
   assert.deepEqual(planPathConflictRepairs([active, deleted], 10, DEVICE_ID), [])
+})
+
+test('planPortablePathRepairs renames a Windows reserved device name', () => {
+  const file = textMeta(makeFileId('file-a'), 'Notes/CON.md', 1)
+
+  assert.deepEqual(planPortablePathRepairs([file], 10, DEVICE_ID), [
+    {
+      fileId: file.fileId,
+      fromPath: 'Notes/CON.md',
+      toPath: 'Notes/CON_.md',
+      toCanonicalPath: 'notes/con_.md',
+      reason: 'windows-reserved-name',
+      updatedAt: 10,
+      updatedBy: DEVICE_ID,
+    },
+  ])
+})
+
+test('planPortablePathRepairs ignores deleted entries and already-portable paths', () => {
+  const active = textMeta(makeFileId('file-a'), 'Note.md', 1)
+  const deleted = {
+    ...textMeta(makeFileId('file-b'), 'CON.md', 2),
+    deleted: true as const,
+    deletedAt: 5,
+    deletedBy: DEVICE_ID,
+  }
+
+  assert.deepEqual(planPortablePathRepairs([active, deleted], 10, DEVICE_ID), [])
 })
 
 test('planDeleteVsEditRepairs restores text edited after delete', () => {

@@ -17,7 +17,12 @@ export interface KuroflareSettings {
 
 export interface KuroflareRepairLogEntry {
   readonly id: string
-  readonly kind: 'path-conflict' | 'delete-vs-edit' | 'invalid-meta' | 'remote-materialize-blocked'
+  readonly kind:
+    | 'path-conflict'
+    | 'portable-path'
+    | 'delete-vs-edit'
+    | 'invalid-meta'
+    | 'remote-materialize-blocked'
   readonly fileId: string
   readonly path?: string | undefined
   readonly reason: string

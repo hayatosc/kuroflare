@@ -438,6 +438,147 @@ export function canonicalizeVaultPath(path: string): string {
   return path.normalize('NFC').replace(/\/+/g, '/').toLowerCase()
 }
 
+/** Why {@link portablePath} changed a path segment. */
+export type PortablePathRepairReason =
+  | 'forbidden-character'
+  | 'windows-reserved-name'
+  | 'trailing-space-or-dot'
+  | 'segment-too-long'
+
+/** Result of sanitizing a path with {@link portablePath}. */
+export interface PortablePathResult {
+  readonly path: string
+  /** First violation found, in priority order; `undefined` when no segment changed. */
+  readonly reason: PortablePathRepairReason | undefined
+}
+
+const PORTABLE_PATH_REASON_PRIORITY: readonly PortablePathRepairReason[] = [
+  'forbidden-character',
+  'windows-reserved-name',
+  'trailing-space-or-dot',
+  'segment-too-long',
+]
+
+// Windows-forbidden filename punctuation. Control characters are rejected by code point below.
+const FORBIDDEN_SEGMENT_PUNCTUATION = new Set(['<', '>', ':', '"', '|', '?', '*'])
+const MAX_CONTROL_CHAR_CODE = 31
+
+const WINDOWS_RESERVED_SEGMENT_NAMES = new Set([
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  'com1',
+  'com2',
+  'com3',
+  'com4',
+  'com5',
+  'com6',
+  'com7',
+  'com8',
+  'com9',
+  'lpt1',
+  'lpt2',
+  'lpt3',
+  'lpt4',
+  'lpt5',
+  'lpt6',
+  'lpt7',
+  'lpt8',
+  'lpt9',
+])
+
+// Conservative common-vector ceiling shared by ext4/NTFS/APFS component name limits.
+const MAX_PORTABLE_SEGMENT_BYTES = 255
+
+/**
+ * Sanitizes a vault path into a deterministic, cross-platform-safe alias (DR-011).
+ *
+ * Every client applies the same rules regardless of the local OS, so a path that is only
+ * invalid on some platforms (Windows reserved device names, trailing spaces or periods,
+ * control/forbidden characters, or overlong segments) converges to the identical repaired
+ * path everywhere, instead of each device inventing a different OS-specific fix.
+ * `portablePath(portablePath(path).path).path === portablePath(path).path` always holds.
+ *
+ * @param path Vault-relative path to sanitize.
+ * @returns The sanitized path and the highest-priority violation reason found, if any.
+ */
+export function portablePath(path: string): PortablePathResult {
+  const reasons = new Set<PortablePathRepairReason>()
+  const sanitized = path
+    .split('/')
+    .map((segment) => sanitizePortablePathSegment(segment, reasons))
+    .join('/')
+  const reason = PORTABLE_PATH_REASON_PRIORITY.find((candidate) => reasons.has(candidate))
+  return { path: sanitized, reason }
+}
+
+function sanitizePortablePathSegment(
+  segment: string,
+  reasons: Set<PortablePathRepairReason>,
+): string {
+  const withoutForbidden = replaceForbiddenChars(segment, reasons)
+
+  const dotIndex = withoutForbidden.lastIndexOf('.')
+  const extension = dotIndex <= 0 ? '' : withoutForbidden.slice(dotIndex)
+  let base = dotIndex <= 0 ? withoutForbidden : withoutForbidden.slice(0, dotIndex)
+
+  // Windows strips trailing spaces/dots before comparing against reserved device names.
+  const trimmedBase = base.replace(/[ .]+$/, '')
+  if (WINDOWS_RESERVED_SEGMENT_NAMES.has(trimmedBase.toLowerCase())) {
+    reasons.add('windows-reserved-name')
+    base = `${trimmedBase}_`
+  }
+
+  const maxBaseBytes = Math.max(0, MAX_PORTABLE_SEGMENT_BYTES - utf8ByteLength(extension))
+  const truncatedBase = truncateToUtf8ByteLimit(base, maxBaseBytes)
+  if (truncatedBase !== base) {
+    reasons.add('segment-too-long')
+    base = truncatedBase
+  }
+
+  let result = `${base}${extension}`
+  const trailingMatch = /[ .]+$/.exec(result)
+  if (trailingMatch) {
+    reasons.add('trailing-space-or-dot')
+    result = result.slice(0, trailingMatch.index) + '_'.repeat(trailingMatch[0].length)
+  }
+
+  return result
+}
+
+function replaceForbiddenChars(segment: string, reasons: Set<PortablePathRepairReason>): string {
+  let result = ''
+  let changed = false
+  for (const char of segment) {
+    const isForbidden =
+      (char.codePointAt(0) ?? 0) <= MAX_CONTROL_CHAR_CODE || FORBIDDEN_SEGMENT_PUNCTUATION.has(char)
+    result += isForbidden ? '_' : char
+    changed ||= isForbidden
+  }
+  if (changed) {
+    reasons.add('forbidden-character')
+  }
+  return result
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length
+}
+
+function truncateToUtf8ByteLimit(value: string, maxBytes: number): string {
+  if (utf8ByteLength(value) <= maxBytes) {
+    return value
+  }
+  let result = ''
+  for (const codePoint of value) {
+    const candidate = result + codePoint
+    if (utf8ByteLength(candidate) > maxBytes) break
+    result = candidate
+  }
+  return result
+}
+
 /**
  * Parses a SHA-256 hex digest into the protocol branded type.
  *

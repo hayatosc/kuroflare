@@ -1964,8 +1964,15 @@ export default class KuroflareSpikePlugin extends Plugin {
           id:
             'action' in repair
               ? `delete-vs-edit:${repair.fileId}:${repair.action}`
-              : `path-conflict:${repair.fileId}`,
-          kind: 'action' in repair ? 'delete-vs-edit' : 'path-conflict',
+              : 'reason' in repair
+                ? `portable-path:${repair.fileId}`
+                : `path-conflict:${repair.fileId}`,
+          kind:
+            'action' in repair
+              ? 'delete-vs-edit'
+              : 'reason' in repair
+                ? 'portable-path'
+                : 'path-conflict',
           fileId: repair.fileId,
           path: 'toPath' in repair ? repair.toPath : undefined,
           reason:
@@ -1975,7 +1982,9 @@ export default class KuroflareSpikePlugin extends Plugin {
                 : repair.action === 'defer-deletion'
                   ? repair.reason
                   : 'concurrent-edit-after-delete'
-              : 'path-conflict-renamed',
+              : 'reason' in repair
+                ? repair.reason
+                : 'path-conflict-renamed',
           createdAt,
         }),
       ),
@@ -2358,7 +2367,7 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   async retryPathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    if (entry.kind !== 'path-conflict') return
+    if (entry.kind !== 'path-conflict' && entry.kind !== 'portable-path') return
     if (!metadataWritesEnabled(this)) return
     await this.materializeMetaRenames()
     if (this.workerWebSocketSession.snapshot().readyState !== WebSocket.OPEN) {
@@ -2391,7 +2400,7 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   async resolvePathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    if (entry.kind !== 'path-conflict') return
+    if (entry.kind !== 'path-conflict' && entry.kind !== 'portable-path') return
     if (!metadataWritesEnabled(this)) return
     const current = readMetaFile(metaMap(this), entry.fileId)
     const plan = planPathConflictAutoResolve({

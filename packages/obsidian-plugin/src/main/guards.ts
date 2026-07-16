@@ -26,6 +26,7 @@ export function isKuroflareRepairLogEntry(value: unknown): value is KuroflareRep
   return (
     typeof id === 'string' &&
     (kind === 'path-conflict' ||
+      kind === 'portable-path' ||
       kind === 'delete-vs-edit' ||
       kind === 'invalid-meta' ||
       kind === 'remote-materialize-blocked') &&
