@@ -4,6 +4,7 @@ import { EditorView } from '@codemirror/view'
 import { afterEach, assert, test } from 'vitest'
 import * as Y from 'yjs'
 
+import { LocalAwareness } from './awareness'
 import {
   createYTextEditorExtension,
   dispatchFullDocumentReplace,
@@ -25,13 +26,18 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
-function mountEditor(ytext: Y.Text): EditorView {
+function castForTest<T>(value: unknown): T {
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  return value as T
+}
+
+function mountEditor(ytext: Y.Text, awareness: LocalAwareness | null = null): EditorView {
   const parent = document.createElement('div')
   document.body.appendChild(parent)
   const view = new EditorView({
     state: EditorState.create({
       doc: ytext.toJSON(),
-      extensions: [createYTextEditorExtension(ytext)],
+      extensions: [createYTextEditorExtension(ytext, awareness)],
     }),
     parent,
   })
@@ -94,6 +100,27 @@ test('two editors bound to merged Y.Docs converge on the same text', () => {
   assert.equal(aliceText.toJSON(), bobText.toJSON())
   assert.equal(aliceView.state.doc.toString(), aliceText.toJSON())
   assert.equal(bobView.state.doc.toString(), bobText.toJSON())
+})
+
+test('binding with a LocalAwareness keeps text sync working and tracks the local cursor', () => {
+  const ydoc = new Y.Doc()
+  const ytext = ydoc.getText('content')
+  const awareness = new LocalAwareness()
+  const view = mountEditor(ytext, awareness)
+
+  view.dispatch({ changes: { from: 0, insert: 'hello world' } })
+  assert.equal(ytext.toJSON(), 'hello world')
+
+  view.focus()
+  view.dispatch({ selection: { anchor: 5, head: 11 } })
+
+  const cursor = castForTest<{ anchor: Y.RelativePosition; head: Y.RelativePosition } | undefined>(
+    awareness.getLocalState()?.cursor,
+  )
+  if (cursor === undefined) throw new Error('expected yCollab to have set a local cursor')
+
+  assert.equal(Y.createAbsolutePositionFromRelativePosition(cursor.anchor, ydoc)?.index, 5)
+  assert.equal(Y.createAbsolutePositionFromRelativePosition(cursor.head, ydoc)?.index, 11)
 })
 
 test('dispatchFullDocumentReplace swaps the whole editor buffer', () => {

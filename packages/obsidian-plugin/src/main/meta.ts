@@ -10,6 +10,7 @@ import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
 import type { FileDocId, LoadedTextDoc } from '../main-types'
+import type { LocalAwareness } from '../obsidian/awareness'
 import { createYTextEditorExtension, dispatchFullDocumentReplace } from '../obsidian/editor-binding'
 import { DISK_ORIGIN, REMOTE_ORIGIN, WORKER_ORIGIN, SPIKE_TEXT_NAME } from './constants'
 import {
@@ -220,6 +221,7 @@ export interface ActiveTextDocPlugin {
   activeTextDoc: LoadedTextDoc | null
   ydoc: Y.Doc
   ytext: Y.Text
+  readonly awareness: LocalAwareness
   readonly activeView: EditorView | null
   readonly cmCompartment: Compartment
   readonly yCollabBoundViews: WeakSet<EditorView>
@@ -406,7 +408,9 @@ export function activateLoadedTextDoc(plugin: ActiveTextDocPlugin, loaded: Loade
     dispatchFullDocumentReplace(editorView, replacementText)
   }
   editorView.dispatch({
-    effects: plugin.cmCompartment.reconfigure(createYTextEditorExtension(loaded.text)),
+    effects: plugin.cmCompartment.reconfigure(
+      createYTextEditorExtension(loaded.text, plugin.awareness),
+    ),
   })
   plugin.yCollabBoundViews.add(editorView)
 }

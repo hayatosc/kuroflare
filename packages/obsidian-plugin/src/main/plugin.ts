@@ -46,6 +46,7 @@ import type {
   LoadedTextDoc,
   KuroflareRepairLogEntry,
 } from '../main-types'
+import { LocalAwareness } from '../obsidian/awareness'
 import { replaceYText } from '../obsidian/editor-binding'
 import { KuroflareSettingTab } from '../obsidian/settings-tab'
 import {
@@ -232,6 +233,8 @@ export async function recoverDocumentEpochsAtStartup(
 export default class KuroflareSpikePlugin extends Plugin {
   ydoc = new Y.Doc()
   ytext = this.ydoc.getText(SPIKE_TEXT_NAME)
+  /** Local-only presence tracked for the active editor binding (see docs/spec/operations.md §4). */
+  readonly awareness = new LocalAwareness()
   readonly cmCompartment = new Compartment()
   readonly lastMaterialized = new Map<string, LastMaterializedRecord>()
   readonly loadedTextDocs = new Map<string, LoadedTextDoc>()

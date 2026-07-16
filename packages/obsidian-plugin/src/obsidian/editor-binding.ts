@@ -5,6 +5,8 @@ import type { MarkdownView } from 'obsidian'
 import { yCollab } from 'y-codemirror.next'
 import type * as Y from 'yjs'
 
+import type { LocalAwareness } from './awareness'
+
 interface MaybeCodeMirrorEditor {
   readonly editor?: {
     readonly cm?: unknown
@@ -34,10 +36,13 @@ export function getEditorView(markdownView: MarkdownView): EditorView | null {
  * Builds the editor extension that binds one Y.Text to CodeMirror.
  *
  * @param ytext Shared text document for the active markdown file.
- * @param awareness Optional provider awareness instance for remote selections.
+ * @param awareness Local presence instance; remote propagation is not wired yet.
  * @returns CodeMirror extension installed through a compartment.
  */
-export function createYTextEditorExtension(ytext: Y.Text, awareness: unknown = null): Extension {
+export function createYTextEditorExtension(
+  ytext: Y.Text,
+  awareness: LocalAwareness | null = null,
+): Extension {
   return yCollab(ytext, awareness, { undoManager: false })
 }
 

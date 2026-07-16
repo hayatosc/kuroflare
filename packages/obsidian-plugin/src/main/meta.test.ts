@@ -13,6 +13,7 @@ import { assert, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import type { LoadedTextDoc } from '../main-types'
+import { LocalAwareness } from '../obsidian/awareness'
 import { flushYTextToDisk } from './editor'
 import { createReadyDocumentEpoch, documentEpochMetadataKey } from './epoch-recovery'
 import {
@@ -101,6 +102,7 @@ test('active full-snapshot replacement rebinds editor, active doc, and disk to r
     activeTextDoc: oldLoaded,
     ydoc: oldDoc,
     ytext: oldText,
+    awareness: new LocalAwareness(),
     activeView: editorView,
     cmCompartment: compartment,
     yCollabBoundViews: new WeakSet<EditorView>([editorView]),

@@ -254,7 +254,9 @@ export async function bindActiveMarkdownView(
   if (generation !== plugin.bindGeneration) return
 
   editorView.dispatch({
-    effects: plugin.cmCompartment.reconfigure(createYTextEditorExtension(plugin.ytext)),
+    effects: plugin.cmCompartment.reconfigure(
+      createYTextEditorExtension(plugin.ytext, plugin.awareness),
+    ),
   })
   plugin.yCollabBoundViews.add(editorView)
   await requestActiveFileFromWorker(plugin, `bind:${reason}`)
