@@ -7,7 +7,8 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ## Current summary (2026-07-16)
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 196 件、worker 267 件、model-tests 17 件、Obsidian 477 件、worker e2e 7 件。
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 211 件、worker 273 件、model-tests 17 件、Obsidian 493 件、worker e2e 10 件（multipart upload の実 R2 e2e を含む）。
+- DR-010 と DR-011 は実装済み。DR-010: `blobChunks: []` をスキーマで許可し（`blobManifestHash` は必須のまま）、manifest 側の既存不変条件（size=0 ⇔ chunks=[]）と突合で空バイナリの整合性を保証。plugin の「空ファイルを黙ってスキップ」も撤去。DR-011: OS 分岐なしの純粋関数 `portablePath()`（`core/src/sync/meta.ts`）が Windows 予約名・禁止文字・末尾 space/dot・255 byte 超過を決定論的に修復し、sanitizer が生む衝突は既存の path-conflict 機構（conflict suffix / repair log / retry・resolve UI）に合流する。design-review.md の正式クローズ（acceptance evidence 記載）は未反映。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
 - Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are committed at `122d2a0`. The rejection-evidence work described below builds on that baseline. The remaining P0/P1/P2 items and design-review release gates are still authoritative.
@@ -111,7 +112,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ### P1
 
-- **binary の常用化**: multipart upload（create/part/complete/abort + R2 lifecycle）は未実装で、16MiB 以上は拒否される。[protocol.md](spec/protocol.md) は `multipart` レスポンス型を予約するのみで part-upload / complete / abort のワイヤ契約が未定義のため、実装前に契約決定（spec 追記）が必要。binary conflict / repair UI の追加 regression も残る。
+- **binary の常用化**: multipart upload（create/part/complete/abort）は worker + client で実装済み（[protocol.md](spec/protocol.md) §3 に契約を明文化、DO SQLite の pending テーブルで再起動を跨いで安全、complete 時は ETag 突合 + 全体 sha256 の streaming 再検証に合格するまで blob を公開しない、期限切れセッションは alarm でベストエフォート abort）。実 R2（miniflare）e2e で完走・abort を検証済み。注意: 現行の chunking 設定（max 1MiB）では 16MiB しきい値に到達しないため client 側 multipart 分岐は実トラフィックでは未使用。R2 bucket 側の lifecycle rule（AbortIncompleteMultipartUpload）は `wrangler r2 bucket lifecycle add` の実行が別途必要（wrangler.toml にコメントで記載）。binary conflict / repair UI の追加 regression も残る。
 - **meta materialize の残り**: 欠損 Markdown 作成、親フォルダ作成、invalid path の repair log、active file の remote rename/delete 追従は実装済み。settings panel の各 repair action（invalid-meta inspect/discard、path-conflict resolve/retry、keep-deleted retry、remote-materialize-blocked resolve/retry/clear）も実機 e2e で固定済み。
 - **local store degraded / repair flow**: schema gate、degraded、export、discard/rebuild、import staging、manual resume は settings panel から実行できる。
 - **DO multi-doc eviction の degraded 判定**（[server.md](spec/server.md) §11）は実装済み。`decideDocLoadAdmission`（`eviction.ts`）が resident file doc 数の上限 `MAX_HYDRATED_FILE_DOCS` 到達時に新規 load を WS/HTTP 全チョークポイントで拒否する（`server/degraded`、retryable）。checkpoint alarm 末尾の `evictIdleDocs` が checkpointed かつ idle な file doc を実際に evict するため degraded は自動復帰する。残ギャップ: per-doc の socket tracking が無く `activeSocketCount` は常に 0 扱い（active doc の evict は再 hydrate コストのみで無損失。churn が問題になれば追加する）。
@@ -121,10 +122,10 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 - snapshot retention は checkpoint 後に実行され、`snapshot_retention_events` に記録される。残りは retention policy の運用設定、event pagination、alerting。
 - quarantine admin は Worker HTTP と plugin settings panel の両方にある。残りは force-apply 後の user-facing audit summary と大量 quarantine 向け pagination。
 - Auth refresh / revoke runtime and plugin lifecycle wiring (foreground/resume, pre-expiry refresh, and revoked-device local shutdown) are active at HEAD `122d2a0`; distribution still requires the surrounding settings UX, migration policy, and operator documentation.
-- presence / awareness はローカル側の接続まで実装済み: plugin インスタンスごとに 1 つの `LocalAwareness`（`obsidian/awareness.ts`）を生成し、全ての (再)bind 経路（`bindActiveMarkdownView`、`activateLoadedTextDoc`）で `createYTextEditorExtension` に注入する。ローカルカーソルの追跡のみで、リモート awareness の broadcast/receive の WS ワイヤ契約は未定義のまま（[operations.md](spec/operations.md) §4）。transport が入るまでリモート presence 表示は no-op。
+- presence / awareness は WS 伝搬まで実装済み: `awareness-update` control frame（[protocol.md](spec/protocol.md) §1）を DO が永続化なしで vault 内 fan-out し、切断時は最後に広告された presence の `state: null` を合成 broadcast する。クライアントは接続中のみローカル state 変更を送信（オフライン時は黙って捨て、outbox に積まない）、受信した peer state を `LocalAwareness` に反映して y-codemirror.next がリモートカーソルを描画する。worker unit + 実 workerd e2e + plugin unit でカバー。実 Obsidian 複数端末での目視確認は未実施。
 - 配布前に settings UI、Setup URI/QR、ログの secret redaction、migration / backward-incompatible policy、手動エスケープハッチの UI を整える。
 - Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）は `logEvent` 経由で実装済み（quarantine イベントは `quarantineId` 付き）。残りは next tier（connection count、op append latency、checkpoint duration、cold start restore source、duplicate ignored）。
-- `BlobHeadEntrySchema` の size 必須化（[sync-model.md](spec/sync-model.md) §5 の「size 不明なら復活させない」を schema 側でも強制する）が実装課題として残る。
+- `BlobHeadEntrySchema` の size 必須化（[sync-model.md](spec/sync-model.md) §5 の「size 不明なら復活させない」）は schema 側でも強制済み（`found === (size !== undefined)` の双方向チェック、worker の head 応答計画も size 欠如を reject）。
 
 ## モジュール対応表
 
