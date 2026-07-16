@@ -3,8 +3,10 @@ import type {
   DurableObjectStorageBinding,
   R2BucketBinding,
   R2ListOptionsBinding,
+  R2MultipartUploadBinding,
   R2ObjectBodyBinding,
   R2ObjectsBinding,
+  R2UploadedPartBinding,
   RuntimeWebSocket,
 } from '..'
 import { RecordingSqlStorage, type RecordingSqlSnapshot } from './sql-storage'
@@ -86,6 +88,27 @@ export class FakeR2Object implements R2ObjectBodyBinding {
   }
 }
 
+/** In-memory R2 multipart upload session backing `FakeR2Bucket`. */
+export class FakeR2MultipartUpload implements R2MultipartUploadBinding {
+  constructor(
+    private readonly bucket: FakeR2Bucket,
+    private readonly key: string,
+    readonly uploadId: string,
+  ) {}
+
+  async uploadPart(partNumber: number, value: Uint8Array): Promise<R2UploadedPartBinding> {
+    return this.bucket.recordUploadedPart(this.uploadId, partNumber, value)
+  }
+
+  async complete(uploadedParts: readonly R2UploadedPartBinding[]): Promise<void> {
+    this.bucket.completeMultipartUpload(this.key, this.uploadId, uploadedParts)
+  }
+
+  async abort(): Promise<void> {
+    this.bucket.abortMultipartUpload(this.uploadId)
+  }
+}
+
 export class FakeR2Bucket implements R2BucketBinding {
   readonly gets: string[] = []
   readonly heads: string[] = []
@@ -99,6 +122,8 @@ export class FakeR2Bucket implements R2BucketBinding {
     | undefined
   listPageSize: number | undefined
   private readonly values = new Map<string, Uint8Array>()
+  private readonly multipartUploads = new Map<string, Map<number, Uint8Array>>()
+  private nextMultipartUploadId = 1
 
   set(key: string, bytes: Uint8Array): void {
     this.values.set(key, bytes)
@@ -149,6 +174,59 @@ export class FakeR2Bucket implements R2BucketBinding {
     this.deletes.push(key)
     this.values.delete(key)
   }
+
+  async createMultipartUpload(key: string): Promise<R2MultipartUploadBinding> {
+    const uploadId = `fake-upload-${this.nextMultipartUploadId}`
+    this.nextMultipartUploadId += 1
+    this.multipartUploads.set(uploadId, new Map())
+    return new FakeR2MultipartUpload(this, key, uploadId)
+  }
+
+  resumeMultipartUpload(key: string, uploadId: string): R2MultipartUploadBinding {
+    return new FakeR2MultipartUpload(this, key, uploadId)
+  }
+
+  recordUploadedPart(
+    uploadId: string,
+    partNumber: number,
+    value: Uint8Array,
+  ): R2UploadedPartBinding {
+    const parts = this.multipartUploads.get(uploadId)
+    if (parts === undefined) throw new Error(`unknown multipart upload: ${uploadId}`)
+    parts.set(partNumber, value)
+    return { partNumber, etag: `etag-${uploadId}-${partNumber}` }
+  }
+
+  completeMultipartUpload(
+    key: string,
+    uploadId: string,
+    uploadedParts: readonly R2UploadedPartBinding[],
+  ): void {
+    const parts = this.multipartUploads.get(uploadId)
+    if (parts === undefined) throw new Error(`unknown multipart upload: ${uploadId}`)
+    const orderedParts = [...uploadedParts].sort((left, right) => left.partNumber - right.partNumber)
+    const partBytes: Uint8Array[] = []
+    let totalLength = 0
+    for (const part of orderedParts) {
+      const bytes = parts.get(part.partNumber)
+      if (bytes === undefined) throw new Error(`missing uploaded part: ${part.partNumber}`)
+      partBytes.push(bytes)
+      totalLength += bytes.byteLength
+    }
+    const combined = new Uint8Array(totalLength)
+    let offset = 0
+    for (const bytes of partBytes) {
+      combined.set(bytes, offset)
+      offset += bytes.byteLength
+    }
+    this.set(key, combined)
+    this.multipartUploads.delete(uploadId)
+  }
+
+  abortMultipartUpload(uploadId: string): void {
+    if (!this.multipartUploads.has(uploadId)) throw new Error(`unknown multipart upload: ${uploadId}`)
+    this.multipartUploads.delete(uploadId)
+  }
 }
 
 export class SqlOnlyStorage implements DurableObjectStorageBinding {
@@ -192,6 +270,8 @@ export class SqlOnlyStorage implements DurableObjectStorageBinding {
       snapshotHealthEvents: [...this.sql.snapshotHealthEvents],
       setupTokens: new Map(this.sql.setupTokens),
       refreshTokens: new Map(this.sql.refreshTokens),
+      blobMultipartUploads: new Map(this.sql.blobMultipartUploads),
+      blobMultipartParts: new Map(this.sql.blobMultipartParts),
       devices: new Map(this.sql.devices),
       migrationVersions: new Set(this.sql.migrationVersions),
       messageDedupColumns: new Set(this.sql.messageDedupColumns),
@@ -217,6 +297,8 @@ export class SqlOnlyStorage implements DurableObjectStorageBinding {
     )
     replaceMap(this.sql.setupTokens, snapshot.setupTokens)
     replaceMap(this.sql.refreshTokens, snapshot.refreshTokens)
+    replaceMap(this.sql.blobMultipartUploads, snapshot.blobMultipartUploads)
+    replaceMap(this.sql.blobMultipartParts, snapshot.blobMultipartParts)
     replaceMap(this.sql.devices, snapshot.devices)
     replaceSet(this.sql.migrationVersions, snapshot.migrationVersions)
     replaceSet(this.sql.messageDedupColumns, snapshot.messageDedupColumns)

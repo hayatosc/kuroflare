@@ -124,6 +124,22 @@ export interface RecordedSnapshotHealthEventRow {
   readonly observedAt: number
 }
 
+export interface RecordedBlobMultipartUploadRow {
+  readonly uploadId: string
+  readonly sha256: string
+  readonly size: number
+  readonly createdAt: number
+  readonly expiresAt: number
+}
+
+export interface RecordedBlobMultipartPartRow {
+  readonly uploadId: string
+  readonly partNumber: number
+  readonly etag: string
+  readonly size: number
+  readonly sha256: string
+}
+
 export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
   readonly docs = new Map<string, RecordedDocRow>()
   readonly opLog = new Map<string, RecordedOpLogRow>()
@@ -134,6 +150,8 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
   readonly snapshotHealthEvents: RecordedSnapshotHealthEventRow[] = []
   readonly setupTokens = new Map<string, RecordedSetupTokenRow>()
   readonly refreshTokens = new Map<string, RecordedRefreshTokenRow>()
+  readonly blobMultipartUploads = new Map<string, RecordedBlobMultipartUploadRow>()
+  readonly blobMultipartParts = new Map<string, RecordedBlobMultipartPartRow>()
   readonly devices = new Map<string, RecordedDeviceRow>([
     [
       'device-1',
@@ -936,6 +954,78 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       this.checkpointRuns.set(runId, { ...existing, status, compactedAt })
       return []
     }
+    if (normalized.includes('insert into blob_multipart_uploads')) {
+      const uploadId = expectString(bindings[0])
+      this.blobMultipartUploads.set(uploadId, {
+        uploadId,
+        sha256: expectString(bindings[1]),
+        size: expectNumber(bindings[2]),
+        createdAt: expectNumber(bindings[3]),
+        expiresAt: expectNumber(bindings[4]),
+      })
+      return []
+    }
+    if (normalized.includes('from blob_multipart_uploads') && normalized.includes('expires_at <=')) {
+      const now = expectNumber(bindings[0])
+      const limit = expectNumber(bindings[1])
+      const rows = [...this.blobMultipartUploads.values()]
+        .filter((row) => row.expiresAt <= now)
+        .slice(0, limit)
+        .map((row) => ({ uploadId: row.uploadId, sha256: row.sha256 }))
+      return rows as Iterable<T>
+    }
+    if (normalized.includes('from blob_multipart_uploads')) {
+      const uploadId = expectString(bindings[0])
+      const row = this.blobMultipartUploads.get(uploadId)
+      const rows =
+        row === undefined
+          ? []
+          : [
+              {
+                sha256: row.sha256,
+                size: row.size,
+                createdAt: row.createdAt,
+                expiresAt: row.expiresAt,
+              },
+            ]
+      return rows as Iterable<T>
+    }
+    if (normalized.includes('delete from blob_multipart_uploads')) {
+      this.blobMultipartUploads.delete(expectString(bindings[0]))
+      return []
+    }
+    if (normalized.includes('insert into blob_multipart_parts')) {
+      const uploadId = expectString(bindings[0])
+      const partNumber = expectNumber(bindings[1])
+      this.blobMultipartParts.set(`${uploadId}:${partNumber}`, {
+        uploadId,
+        partNumber,
+        etag: expectString(bindings[2]),
+        size: expectNumber(bindings[3]),
+        sha256: expectString(bindings[4]),
+      })
+      return []
+    }
+    if (normalized.includes('from blob_multipart_parts')) {
+      const uploadId = expectString(bindings[0])
+      const rows = [...this.blobMultipartParts.values()]
+        .filter((row) => row.uploadId === uploadId)
+        .sort((left, right) => left.partNumber - right.partNumber)
+        .map((row) => ({
+          partNumber: row.partNumber,
+          etag: row.etag,
+          size: row.size,
+          sha256: row.sha256,
+        }))
+      return rows as Iterable<T>
+    }
+    if (normalized.includes('delete from blob_multipart_parts')) {
+      const uploadId = expectString(bindings[0])
+      for (const [key, row] of this.blobMultipartParts) {
+        if (row.uploadId === uploadId) this.blobMultipartParts.delete(key)
+      }
+      return []
+    }
     throw new Error(`unexpected SQL query: ${query}`)
   }
 
@@ -1024,6 +1114,8 @@ export interface RecordingSqlSnapshot {
   readonly checkpointRuns: Map<string, RecordedCheckpointRunRow>
   readonly setupTokens: Map<string, RecordedSetupTokenRow>
   readonly refreshTokens: Map<string, RecordedRefreshTokenRow>
+  readonly blobMultipartUploads: Map<string, RecordedBlobMultipartUploadRow>
+  readonly blobMultipartParts: Map<string, RecordedBlobMultipartPartRow>
   readonly devices: Map<string, RecordedDeviceRow>
   readonly migrationVersions: Set<number>
   readonly messageDedupColumns: Set<string>

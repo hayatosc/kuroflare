@@ -13,7 +13,7 @@ test('bundled schema migrations are accepted by the migration decision', () => {
     {
       action: 'apply-migrations',
       fromVersion: 0,
-      toVersion: 4,
+      toVersion: 5,
       migrations: SCHEMA_MIGRATIONS,
     },
   )
@@ -27,14 +27,14 @@ test('bundled schema migrations are accepted by the migration decision', () => {
     {
       action: 'apply-migrations',
       fromVersion: 1,
-      toVersion: 4,
+      toVersion: 5,
       migrations: SCHEMA_MIGRATIONS.slice(1),
     },
   )
 })
 
 test('initial schema migration has correct metadata', () => {
-  assert.equal(SCHEMA_MIGRATIONS.length, 4)
+  assert.equal(SCHEMA_MIGRATIONS.length, 5)
 
   const [initialMigration] = SCHEMA_MIGRATIONS
   assert.ok(initialMigration)
@@ -59,4 +59,10 @@ test('initial schema migration has correct metadata', () => {
   assert.equal(deviceIdentityMigration.version, 4)
   assert.equal(deviceIdentityMigration.name, 'device-audit-identity')
   assert.equal(typeof deviceIdentityMigration.migrate, 'function')
+
+  const blobMultipartMigration = SCHEMA_MIGRATIONS[4]
+  if (blobMultipartMigration === undefined) throw new Error('missing blob multipart migration')
+  assert.equal(blobMultipartMigration.version, 5)
+  assert.equal(blobMultipartMigration.name, 'blob-multipart-uploads')
+  assert.equal(typeof blobMultipartMigration.migrate, 'function')
 })

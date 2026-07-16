@@ -129,6 +129,12 @@ test('legacy snapshots remain unverified until expected evidence is supplied', a
       },
       async put() {},
       async delete() {},
+      async createMultipartUpload() {
+        throw new Error('not implemented')
+      },
+      resumeMultipartUpload() {
+        throw new Error('not implemented')
+      },
     } satisfies R2BucketBinding,
     'snapshots/vault/files/ydoc/1.yupdate',
     docId,

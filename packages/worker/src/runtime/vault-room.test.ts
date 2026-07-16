@@ -595,7 +595,7 @@ test('VaultRoom rejects blob uploads whose body hash does not match the addresse
   assert.deepEqual(bucket.puts, [])
 })
 
-test('VaultRoom rejects multipart-sized blob proxy uploads until multipart is implemented', async () => {
+test('VaultRoom requires explicit multipart opt-in for at-or-above-threshold blob sizes', async () => {
   const secret = TEST_DEVICE_TOKEN_SECRET
   const bucket = new FakeR2Bucket()
   const room = new VaultRoom(
@@ -618,8 +618,175 @@ test('VaultRoom rejects multipart-sized blob proxy uploads until multipart is im
   assert.deepEqual(await uploadUrlResponse.json(), {
     code: 'request/invalid',
     retryable: false,
-    detail: 'blob-upload-url:multipart-unimplemented',
+    detail: 'blob-upload-url:multipart-required',
   })
+})
+
+test('VaultRoom completes an opt-in multipart blob upload and verifies content hash', async () => {
+  const secret = TEST_DEVICE_TOKEN_SECRET
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(new SqlOnlyStorage()),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, secret),
+  )
+  const bytes = new TextEncoder().encode('multipart upload payload')
+  const hash = makeSha256Hex(await hashTestBytes(bytes))
+  const writeToken = `Bearer ${await makeDeviceToken(secret, { scope: ['blob:write'], tokenVersion: 1 })}`
+
+  const uploadUrlResponse = await room.fetch(
+    new Request('https://worker.example/blobs/upload-url', {
+      method: 'POST',
+      headers: { Authorization: writeToken },
+      body: JSON.stringify({ sha256: hash, size: bytes.byteLength, multipart: true }),
+    }),
+  )
+  assert.equal(uploadUrlResponse.status, 200)
+  const uploadUrlBody = (await uploadUrlResponse.json()) as {
+    readonly kind?: unknown
+    readonly uploadId?: unknown
+    readonly parts?: readonly { readonly partNumber: number; readonly url: string }[]
+  }
+  assert.equal(uploadUrlBody.kind, 'multipart')
+  assert.equal(typeof uploadUrlBody.uploadId, 'string')
+  assert.equal(uploadUrlBody.parts?.length, 1)
+  const part = uploadUrlBody.parts?.[0]
+  assert(part !== undefined)
+
+  const partPutResponse = await room.fetch(
+    new Request(part.url, {
+      method: 'PUT',
+      headers: { Authorization: writeToken, 'content-length': String(bytes.byteLength) },
+      body: bytes,
+    }),
+  )
+  assert.equal(partPutResponse.status, 200)
+  const partPutBody = (await partPutResponse.json()) as { readonly etag?: unknown }
+  assert.equal(typeof partPutBody.etag, 'string')
+
+  const completeResponse = await room.fetch(
+    new Request(`https://worker.example/blobs/${hash}/complete`, {
+      method: 'POST',
+      headers: { Authorization: writeToken, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        uploadId: uploadUrlBody.uploadId,
+        parts: [{ partNumber: 1, etag: partPutBody.etag }],
+      }),
+    }),
+  )
+  assert.equal(completeResponse.status, 200)
+  assert.deepEqual(await completeResponse.json(), {
+    status: 'stored',
+    sha256: hash,
+    size: bytes.byteLength,
+  })
+
+  const getResponse = await room.fetch(
+    new Request(`https://worker.example/blobs/${hash}`, {
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(secret, { scope: ['blob:read'], tokenVersion: 1 })}`,
+      },
+    }),
+  )
+  assert.equal(getResponse.status, 200)
+  assert.deepEqual(new Uint8Array(await getResponse.arrayBuffer()), bytes)
+})
+
+test('VaultRoom aborts a multipart blob upload and clears its pending session', async () => {
+  const secret = TEST_DEVICE_TOKEN_SECRET
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(new SqlOnlyStorage()),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, secret),
+  )
+  const hash = makeSha256Hex('d'.repeat(64))
+  const writeToken = `Bearer ${await makeDeviceToken(secret, { scope: ['blob:write'], tokenVersion: 1 })}`
+
+  const uploadUrlResponse = await room.fetch(
+    new Request('https://worker.example/blobs/upload-url', {
+      method: 'POST',
+      headers: { Authorization: writeToken },
+      body: JSON.stringify({ sha256: hash, size: 10, multipart: true }),
+    }),
+  )
+  const uploadUrlBody = (await uploadUrlResponse.json()) as { readonly uploadId?: unknown }
+
+  const abortResponse = await room.fetch(
+    new Request(`https://worker.example/blobs/${hash}/abort`, {
+      method: 'POST',
+      headers: { Authorization: writeToken, 'content-type': 'application/json' },
+      body: JSON.stringify({ uploadId: uploadUrlBody.uploadId }),
+    }),
+  )
+  assert.equal(abortResponse.status, 200)
+  assert.deepEqual(await abortResponse.json(), { status: 'aborted', sha256: hash })
+
+  // Idempotent: a retried abort against an already-cleared session still reports success.
+  const secondAbortResponse = await room.fetch(
+    new Request(`https://worker.example/blobs/${hash}/abort`, {
+      method: 'POST',
+      headers: { Authorization: writeToken, 'content-type': 'application/json' },
+      body: JSON.stringify({ uploadId: uploadUrlBody.uploadId }),
+    }),
+  )
+  assert.equal(secondAbortResponse.status, 200)
+})
+
+test('VaultRoom rejects a multipart completion whose assembled content does not match the addressed hash', async () => {
+  const secret = TEST_DEVICE_TOKEN_SECRET
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(
+    new FakeState(new SqlOnlyStorage()),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, secret),
+  )
+  const declaredBytes = new TextEncoder().encode('declared-content-under-hash')
+  const uploadedBytes = new Uint8Array(declaredBytes.byteLength).fill(7)
+  const hash = makeSha256Hex(await hashTestBytes(declaredBytes))
+  const writeToken = `Bearer ${await makeDeviceToken(secret, { scope: ['blob:write'], tokenVersion: 1 })}`
+
+  const uploadUrlResponse = await room.fetch(
+    new Request('https://worker.example/blobs/upload-url', {
+      method: 'POST',
+      headers: { Authorization: writeToken },
+      body: JSON.stringify({ sha256: hash, size: declaredBytes.byteLength, multipart: true }),
+    }),
+  )
+  const uploadUrlBody = (await uploadUrlResponse.json()) as {
+    readonly uploadId?: unknown
+    readonly parts?: readonly { readonly partNumber: number; readonly url: string }[]
+  }
+  const part = uploadUrlBody.parts?.[0]
+  assert(part !== undefined)
+
+  const partPutResponse = await room.fetch(
+    new Request(part.url, {
+      method: 'PUT',
+      headers: { Authorization: writeToken, 'content-length': String(uploadedBytes.byteLength) },
+      body: uploadedBytes,
+    }),
+  )
+  const partPutBody = (await partPutResponse.json()) as { readonly etag?: unknown }
+
+  const completeResponse = await room.fetch(
+    new Request(`https://worker.example/blobs/${hash}/complete`, {
+      method: 'POST',
+      headers: { Authorization: writeToken, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        uploadId: uploadUrlBody.uploadId,
+        parts: [{ partNumber: 1, etag: partPutBody.etag }],
+      }),
+    }),
+  )
+  assert.equal(completeResponse.status, 400)
+  assert.deepEqual(await completeResponse.json(), { code: 'blob/hash-mismatch', retryable: false })
+
+  const getResponse = await room.fetch(
+    new Request(`https://worker.example/blobs/${hash}`, {
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(secret, { scope: ['blob:read'], tokenVersion: 1 })}`,
+      },
+    }),
+  )
+  assert.equal(getResponse.status, 404)
 })
 
 test('VaultRoom stores blob objects under a vault-scoped R2 prefix', async () => {
@@ -1207,7 +1374,7 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
       query.includes('create table if not exists devices'),
     )
     assert.equal(created.length, 1)
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
 
     await room.webSocketMessage(
       server,
@@ -1217,7 +1384,7 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
     const insertedVersions = storage.sql.queries.filter((query) =>
       query.includes('insert into schema_migrations'),
     )
-    assert.equal(insertedVersions.length, 4)
+    assert.equal(insertedVersions.length, 5)
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
@@ -1234,7 +1401,7 @@ test('ensureSchema coalesces concurrent cold-start migrations', async () => {
   await Promise.all([ensureSchema(room), ensureSchema(room)])
 
   assert.equal(room.schemaReady, true)
-  assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
+  assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
   assert.equal(
     storage.sql.queries.filter((query) => query.includes('create table if not exists devices'))
       .length,
@@ -1372,7 +1539,7 @@ test('ensureSchema rolls back every device identity DDL boundary before retrying
     storage.sql.failAfterQueryIncludes = undefined
     await ensureSchema(room)
     assert.equal(room.schemaReady, true)
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
     assert.deepEqual(storage.sql.tableColumns.get('devices'), [
       'device_id',
       'token_version',
@@ -1418,6 +1585,8 @@ test('ensureSchema rolls back every device identity DDL boundary before retrying
         ['op_log', 2],
         ['connected_devices', 1],
         ['schema_migrations', 0],
+        ['blob_multipart_uploads', 0],
+        ['blob_multipart_parts', 0],
       ]),
     )
     assert.deepEqual(storage.sql.tableRows.get('devices'), [['device-1', 1, null, 10, 11]])
@@ -1493,7 +1662,7 @@ test('VaultRoom upgrades an existing v1 schema before serving SQL traffic', asyn
     assert(server instanceof FakeSocket)
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
 
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
     assert.equal(
       storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
       1,
@@ -1530,7 +1699,7 @@ test('VaultRoom retries v2 schema migration after ALTER succeeds before recordin
     storage.sql.failOnQueryIncludes = undefined
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
 
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
     assert.equal(
       storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
       2,

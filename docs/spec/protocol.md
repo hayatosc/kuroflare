@@ -115,8 +115,11 @@ PUT  /vaults/:vaultId/meta/snapshot           # bootstrap 時の snapshot direct
 PUT  /vaults/:vaultId/files/:ydocId/snapshot
 POST /blobs/head                  # chunk hashes -> exists[]
 POST /blobs/upload-url
-PUT  /blobs/:sha256?size=N        # 認証付き upload proxy
+PUT  /blobs/:sha256?size=N        # 認証付き upload proxy（single-put）
 GET  /blobs/:sha256
+PUT  /blobs/:sha256/parts/:uploadId/:partNumber   # 認証付き upload proxy（multipart 1 part）
+POST /blobs/:sha256/complete
+POST /blobs/:sha256/abort
 PUT  /blob-manifests/:sha256.json
 GET  /blob-manifests/:sha256.json
 POST /devices/:deviceId/revoke
@@ -132,9 +135,16 @@ R2 の public URL を直接配らず、初期実装は Worker 経由で認証を
 
 - `/blobs/upload-url` の single-put URL は同一 Worker origin の `PUT /blobs/:sha256?size=N`。`expiresAt` は再取得のための advisory TTL で、認可条件にしない。防御境界は device token scope、body size、Content-Length、streaming read limit、path の SHA-256、vault-scoped R2 key に置く（署名なし query param は改ざんできる）。
 - PUT は body size と SHA-256 が URL と一致する場合だけ R2 へ書く。GET も読んだ bytes の SHA-256 を照合してから返す。manifest PUT は schema 検証 → canonical bytes 化 → path hash 一致の時だけ保存する。
-- MVP は single PUT のみ。16 MiB 以上または `multipart=true` は `multipart-unimplemented` として拒否（multipart response 型は予約 contract）。
 - `/blobs/head` は 1 request 最大 512 hashes、超過は client がページング。応答は blob 本体を読まず R2 metadata だけで組み立てる。
 - R2 key の vault prefix により、別 vault が hash を知っていても token の vault 外 object は読めない。
+
+**multipart upload**（`size >= BLOB_MULTIPART_THRESHOLD_BYTES`（16 MiB）または request の `multipart: true`）:
+
+- `/blobs/upload-url` は `{ kind: "multipart", uploadId, parts: [{ partNumber, url, headers }], expiresAt }` を返す。`parts` は DO が R2 `createMultipartUpload` で開始したセッションを固定長 `BLOB_MULTIPART_PART_SIZE_BYTES`（8 MiB。R2/S3 の非最終 part 最小要件 5 MiB に対して余裕を持たせた値）で分割した計画で、各 `url` は `PUT /blobs/:sha256/parts/:uploadId/:partNumber` を指す。part 数は `MAX_BLOB_MULTIPART_PARTS`（10,000、R2/S3 の上限）を超えたら計画せず `request/invalid` で拒否する。閾値未満でも `multipart: true` を明示すれば multipart 経路を使える。
+- `PUT /blobs/:sha256/parts/:uploadId/:partNumber` は single-put と同じ認証付き proxy。DO は R2 `uploadPart` を呼び、返る ETag と実際の受信バイト数・part 単位 SHA-256 を DO の SQLite（pending テーブル）に永続化する。DO 再起動を跨いでも安全。partNumber は計画された part 数の範囲外だと拒否し、受信サイズは計画上の期待サイズ（最終 part 以外は固定サイズ、最終 part だけ端数）と一致しない場合 `blob/size-mismatch` で拒否する。
+- `POST /blobs/:sha256/complete`：`{ uploadId, parts: [{ partNumber, etag }] }`。DO は自分が永続化した part 記録と突合し（client が送る etag は DO 記録と完全一致必須。不一致・part 数不一致は R2 を呼ばず reject）、一致すれば R2 `completeMultipartUpload` を呼ぶ。**blob を参照可能にする前に、complete 後の object を streaming GET してから全体 SHA-256 を必ず再照合する。** 一致しなければ object を削除し pending 行を消して `blob/hash-mismatch` を返す（他の失敗経路と同様、その手前で DO 記録との突合や R2 `complete` 自体が失敗した場合は R2 `abortMultipartUpload` を呼んでから reject する）。
+- `POST /blobs/:sha256/abort`：`{ uploadId }`。R2 `abortMultipartUpload` を呼び pending 行を消す。既に消えているセッションへの再送は idempotent に成功を返す。
+- 放置されたセッションは pending テーブルの `expiresAt`（upload-url の `expiresAt` と同じ TTL）を alarm が経過チェックし、期限切れなら abort する。ただしこの alarm 呼び出し自体は他の理由（checkpoint 等）で起きた時の best-effort な掃除であり、単独では起こさない。完全に放置された vault のための権威ある backstop は R2 bucket 側の lifecycle rule（incomplete multipart upload を ~24h で abort、`wrangler.toml` 参照）である。
 
 **admin API**: 共通 payload は `operation` と `mode: "dry-run" | "execute"`。
 dry-run は confirmation token を含まず、response が `confirmationToken` と planned effects を返す。
@@ -163,7 +173,18 @@ POST /blobs/upload-url
 request:  { sha256, size, multipart?: boolean }
 response: { kind: "already-exists" }
         | { kind: "single-put"; url; headers; expiresAt }
-        | { kind: "multipart"; ... } // 予約。Worker MVP は拒否
+        | { kind: "multipart"; uploadId; parts: Array<{ partNumber; url; headers }>; expiresAt }
+
+PUT /blobs/:sha256/parts/:uploadId/:partNumber   # body はこの part の生バイト列
+response: { status: "stored"; partNumber; etag; size }
+
+POST /blobs/:sha256/complete
+request:  { uploadId; parts: Array<{ partNumber; etag }> }
+response: { status: "stored"; sha256; size }
+
+POST /blobs/:sha256/abort
+request:  { uploadId }
+response: { status: "aborted"; sha256 }
 
 GET /health
 response: { status: "ok" | "degraded", protocolVersion, checkedAt,
@@ -177,9 +198,10 @@ response: { status: "ok" | "degraded", protocolVersion, checkedAt,
 | -------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | URL                  | http(s) のみ。credential / fragment 付きを拒否。header 値に CR/LF 禁止                                             |
 | setup issue response | `kuroflare://setup?...` URI 内の endpoint / vaultId / setupToken が本体と一致しないものを拒否                      |
-| /blobs/head          | request hash と evidence の 1:1 対応（重複、未要求、欠落を拒否）。`found=false` に `size` 禁止                     |
+| /blobs/head          | request hash と evidence の 1:1 対応（重複、未要求、欠落を拒否）。`found=true` は `size` 必須、`found=false` は `size` 禁止（[sync-model.md](sync-model.md) §5: size 不明を復活許可扱いにしない） |
 | snapshot response    | `snapshots/.../*.yupdate` 形式の key、update / SV の SHA-256、base64 本体。空 vault bootstrap 用に空 base64 は許可 |
 | quarantine           | list は bytes 本体なし。明示 inspect の detail だけが `updateBytesBase64` を返す                                   |
+| multipart part/complete/abort | scope `blob:write`、vault-scoped R2 key prefix、partNumber は計画済み part 数の範囲内、part 数上限 `MAX_BLOB_MULTIPART_PARTS`。complete の `parts` は DO 記録（part 数・etag）と完全一致必須 |
 
 **エラー形式**：公開エラーは 1 型に寄せ、client は `retryable` と `retryAfterMs` だけで backoff 判定する。
 

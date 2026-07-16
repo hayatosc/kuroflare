@@ -3,12 +3,22 @@ import {
   Sha256HexSchema,
   type DocId,
   type MessageId,
+  type Sha256Hex,
   type VaultId,
   type ClientHello,
 } from '@kuroflare/core'
 import type { Kysely } from 'kysely'
 import * as v from 'valibot'
 
+import {
+  insertBlobMultipartUpload,
+  getBlobMultipartUpload,
+  getExpiredBlobMultipartUploads,
+  deleteBlobMultipartUpload as deleteBlobMultipartUploadRow,
+  upsertBlobMultipartPart,
+  getBlobMultipartParts,
+  type ExpiredBlobMultipartUpload,
+} from '../db/blobRepo'
 import {
   getQuarantinedUpdates,
   getQuarantinedUpdateById,
@@ -47,7 +57,13 @@ import type { QuarantinedUpdateRecord } from '../quarantine'
 import type { SyncRequestDocState } from '../sync/request'
 import type { SyncUpdateDocClock, SyncUpdateDuplicateEvidence } from '../sync/update'
 import { VAULT_ID_STORAGE_KEY } from './constants'
-import { PosIntSchema, NonNegIntSchema, type RuntimeSnapshotPointerRecord } from './types'
+import {
+  PosIntSchema,
+  NonNegIntSchema,
+  type RuntimeBlobMultipartUploadRecord,
+  type RuntimeBlobMultipartPartRecord,
+  type RuntimeSnapshotPointerRecord,
+} from './types'
 import { docKey, quarantinedUpdateRecordFromSqlRow } from './utils'
 import type { VaultRoom } from './vault-room'
 
@@ -315,6 +331,85 @@ export async function persistDeviceRevocation(
 ): Promise<void> {
   const db = getDb(room)
   if (db !== undefined) await updateDeviceRevoked(db, deviceId, tokenVersion, revokedAt)
+}
+
+export async function persistBlobMultipartUpload(
+  room: VaultRoom,
+  uploadId: string,
+  sha256: Sha256Hex,
+  size: number,
+  createdAt: number,
+  expiresAt: number,
+): Promise<void> {
+  const db = getDb(room)
+  if (db !== undefined) {
+    await insertBlobMultipartUpload(db, uploadId, sha256, size, createdAt, expiresAt)
+  }
+}
+
+export async function readBlobMultipartUpload(
+  room: VaultRoom,
+  uploadId: string,
+): Promise<RuntimeBlobMultipartUploadRecord | undefined> {
+  const db = getDb(room)
+  if (db === undefined) return undefined
+  const row = await getBlobMultipartUpload(db, uploadId)
+  if (
+    row === undefined ||
+    !v.is(Sha256HexSchema, row.sha256) ||
+    !v.is(NonNegIntSchema, row.size) ||
+    !v.is(NonNegIntSchema, row.createdAt) ||
+    !v.is(NonNegIntSchema, row.expiresAt)
+  )
+    return undefined
+  return { sha256: row.sha256, size: row.size, createdAt: row.createdAt, expiresAt: row.expiresAt }
+}
+
+export async function readExpiredBlobMultipartUploads(
+  room: VaultRoom,
+  now: number,
+  limit: number,
+): Promise<readonly ExpiredBlobMultipartUpload[]> {
+  const db = getDb(room)
+  if (db === undefined) return []
+  return getExpiredBlobMultipartUploads(db, now, limit)
+}
+
+export async function deleteBlobMultipartUpload(room: VaultRoom, uploadId: string): Promise<void> {
+  const db = getDb(room)
+  if (db !== undefined) await deleteBlobMultipartUploadRow(db, uploadId)
+}
+
+export async function persistBlobMultipartPart(
+  room: VaultRoom,
+  uploadId: string,
+  partNumber: number,
+  etag: string,
+  size: number,
+  sha256: Sha256Hex,
+): Promise<void> {
+  const db = getDb(room)
+  if (db !== undefined) await upsertBlobMultipartPart(db, uploadId, partNumber, etag, size, sha256)
+}
+
+export async function readBlobMultipartParts(
+  room: VaultRoom,
+  uploadId: string,
+): Promise<readonly RuntimeBlobMultipartPartRecord[]> {
+  const db = getDb(room)
+  if (db === undefined) return []
+  const rows = await getBlobMultipartParts(db, uploadId)
+  const parts: RuntimeBlobMultipartPartRecord[] = []
+  for (const row of rows) {
+    if (
+      !v.is(PosIntSchema, row.partNumber) ||
+      !v.is(NonNegIntSchema, row.size) ||
+      !v.is(Sha256HexSchema, row.sha256)
+    )
+      continue
+    parts.push({ partNumber: row.partNumber, etag: row.etag, size: row.size, sha256: row.sha256 })
+  }
+  return parts
 }
 
 export async function withSqlTransaction(

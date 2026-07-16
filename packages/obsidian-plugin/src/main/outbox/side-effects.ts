@@ -1,9 +1,12 @@
 import {
+  BLOB_MULTIPART_PART_SIZE_BYTES,
   BlobHeadResponseSchema,
   BlobUploadUrlResponseSchema,
   assembleBlobBytes,
+  blobMultipartPartByteSize,
   decideMaterializeWrite,
   makeSha256Hex,
+  type BlobMultipartUploadResponse,
 } from '@kuroflare/core'
 import { TFile, TFolder } from 'obsidian'
 import * as v from 'valibot'
@@ -59,6 +62,15 @@ export async function runManifestPutSideEffect(
   }
 }
 
+// Not part of the shared wire contract in `@kuroflare/core` (an internal, ad hoc
+// response shape), so it's validated with a small local schema instead.
+const BlobPartPutResponseSchema = v.object({
+  status: v.literal('stored'),
+  partNumber: v.number(),
+  etag: v.string(),
+  size: v.number(),
+})
+
 export async function runBlobPutSideEffect(
   plugin: KuroflareSpikePlugin,
   sideEffect: OutboxWorkerBlobPutSideEffectPlan,
@@ -99,7 +111,7 @@ export async function runBlobPutSideEffect(
     return { kind: 'success' }
   }
   if (uploadUrl.body.kind === 'multipart') {
-    return { kind: 'invalid-payload', code: 'blob-upload-multipart-unimplemented' }
+    return runBlobMultipartPutSideEffect(sideEffect, bytes, uploadUrl.body)
   }
 
   try {
@@ -117,6 +129,80 @@ export async function runBlobPutSideEffect(
     return await httpFailureResult(response)
   } catch (error: unknown) {
     console.warn('[kuroflare] blob put failed before HTTP response', {
+      itemId: sideEffect.itemId,
+      error: safeLogError(error),
+    })
+    return { kind: 'network-error' }
+  }
+}
+
+/**
+ * Uploads one part per `target.parts` (byte ranges reconstructed from `bytes.byteLength`
+ * and the shared `BLOB_MULTIPART_PART_SIZE_BYTES` constant, matching the worker's own
+ * planning), then completes the session. A failure partway through is not retried
+ * in place: the outbox retries the whole `blob-put` side effect, which starts a fresh
+ * upload-url/session; the orphaned R2 session is swept by the worker's gc/lifecycle rule.
+ */
+async function runBlobMultipartPutSideEffect(
+  sideEffect: OutboxWorkerBlobPutSideEffectPlan,
+  bytes: Uint8Array,
+  target: BlobMultipartUploadResponse,
+): Promise<OutboxWorkerSideEffectResultEvidence> {
+  const authorization = sideEffect.uploadUrlRequest.headers.authorization ?? ''
+  const partCount = target.parts.length
+  const completedParts: { partNumber: number; etag: string }[] = []
+  let offset = 0
+
+  for (const part of target.parts) {
+    const partSize = blobMultipartPartByteSize(
+      bytes.byteLength,
+      BLOB_MULTIPART_PART_SIZE_BYTES,
+      part.partNumber,
+      partCount,
+    )
+    const partBytes = bytes.subarray(offset, offset + partSize)
+    offset += partSize
+
+    let response: Response
+    try {
+      response = await fetch(part.url, {
+        method: 'PUT',
+        headers: { ...part.headers, authorization },
+        body: arrayBufferFromBytes(partBytes),
+      })
+    } catch (error: unknown) {
+      console.warn('[kuroflare] blob multipart part put failed before HTTP response', {
+        itemId: sideEffect.itemId,
+        partNumber: part.partNumber,
+        error: safeLogError(error),
+      })
+      return { kind: 'network-error' }
+    }
+    if (!response.ok) {
+      return await httpFailureResult(response)
+    }
+    const partBody: unknown = await response.json().catch(() => undefined)
+    if (!v.is(BlobPartPutResponseSchema, partBody)) {
+      return { kind: 'invalid-payload', code: 'blob-part-put-response-invalid' }
+    }
+    completedParts.push({ partNumber: part.partNumber, etag: partBody.etag })
+  }
+
+  const completeUrl = new URL(sideEffect.uploadUrlRequest.url)
+  completeUrl.pathname = `/blobs/${sideEffect.blob.sha256}/complete`
+  completeUrl.search = ''
+  try {
+    const completeResponse = await fetch(completeUrl.toString(), {
+      method: 'POST',
+      headers: { authorization, 'content-type': 'application/json' },
+      body: JSON.stringify({ uploadId: target.uploadId, parts: completedParts }),
+    })
+    if (completeResponse.ok) {
+      return { kind: 'success' }
+    }
+    return await httpFailureResult(completeResponse)
+  } catch (error: unknown) {
+    console.warn('[kuroflare] blob multipart complete failed before HTTP response', {
       itemId: sideEffect.itemId,
       error: safeLogError(error),
     })

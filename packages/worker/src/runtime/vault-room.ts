@@ -11,11 +11,15 @@ import * as Y from 'yjs'
 
 import { acceptHello, broadcast, rememberVaultId } from './auth'
 import { broadcastAwarenessLeave, handleAwarenessUpdate } from './awareness'
+import { abortExpiredBlobMultipartUploads } from './blob-gc'
 import {
   handleBlobHead,
   handleBlobUploadUrl,
   handleBlobGet,
   handleBlobPut,
+  handleBlobPartPut,
+  handleBlobMultipartComplete,
+  handleBlobMultipartAbort,
   handleBlobManifestGet,
   handleBlobManifestPut,
 } from './blob-handlers'
@@ -101,6 +105,9 @@ export class VaultRoom {
       .post('/blobs/upload-url', (c) => handleBlobUploadUrl(this, c))
       .get('/blobs/:hash', (c) => handleBlobGet(this, c))
       .put('/blobs/:hash', (c) => handleBlobPut(this, c))
+      .put('/blobs/:hash/parts/:uploadId/:partNumber', (c) => handleBlobPartPut(this, c))
+      .post('/blobs/:hash/complete', (c) => handleBlobMultipartComplete(this, c))
+      .post('/blobs/:hash/abort', (c) => handleBlobMultipartAbort(this, c))
       .get('/blob-manifests/*', (c) => handleBlobManifestGet(this, c))
       .put('/blob-manifests/*', (c) => handleBlobManifestPut(this, c))
       .all('*', (c) => handleWebSocketUpgrade(this, c))
@@ -195,5 +202,12 @@ export class VaultRoom {
     // Eviction runs at the tail of the checkpoint alarm, after dirty docs above
     // have had a chance to flush, per server.md §11's "flush then evict" order.
     await evictIdleDocs(this)
+    // deliberate: this only sweeps expired multipart sessions when the alarm
+    // happens to fire for some other reason (sync activity keeps rescheduling
+    // it); it does not itself schedule a wakeup, so it doesn't regress
+    // checkpoint promptness for an otherwise-idle vault. The R2 bucket
+    // lifecycle rule (see wrangler.toml) is the authoritative backstop for a
+    // vault that goes idle right after starting an upload.
+    await abortExpiredBlobMultipartUploads(this)
   }
 }

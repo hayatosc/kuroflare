@@ -13,6 +13,8 @@ export interface Database {
   connected_devices: ConnectedDeviceTable
   quarantined_updates: QuarantinedUpdateTable
   snapshot_health_events: SnapshotHealthEventTable
+  blob_multipart_uploads: BlobMultipartUploadTable
+  blob_multipart_parts: BlobMultipartPartTable
 }
 
 export interface SchemaMigrationTable {
@@ -113,6 +115,22 @@ export interface QuarantinedUpdateTable {
   update_sha256: string
   update_bytes: ArrayBuffer
   created_at: number
+}
+
+export interface BlobMultipartUploadTable {
+  upload_id: string
+  sha256: string
+  size: number
+  created_at: number
+  expires_at: number
+}
+
+export interface BlobMultipartPartTable {
+  upload_id: string
+  part_number: number
+  etag: string
+  size: number
+  sha256: string
 }
 
 export interface SnapshotHealthEventTable {

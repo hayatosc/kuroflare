@@ -1,4 +1,10 @@
-import { type ClientHello, type DocId, type MetadataAccess, type VaultId } from '@kuroflare/core'
+import {
+  type ClientHello,
+  type DocId,
+  type MetadataAccess,
+  type Sha256Hex,
+  type VaultId,
+} from '@kuroflare/core'
 import { VaultIdSchema, DocIdSchema } from '@kuroflare/core'
 import * as v from 'valibot'
 
@@ -60,6 +66,22 @@ export interface R2BucketBinding {
   list(options: R2ListOptionsBinding): Promise<R2ObjectsBinding>
   put(key: string, value: Uint8Array): Promise<void>
   delete(key: string): Promise<void>
+  createMultipartUpload(key: string): Promise<R2MultipartUploadBinding>
+  resumeMultipartUpload(key: string, uploadId: string): R2MultipartUploadBinding
+}
+
+/** Minimal R2 multipart upload session used by blob multipart uploads. */
+export interface R2MultipartUploadBinding {
+  readonly uploadId: string
+  uploadPart(partNumber: number, value: Uint8Array): Promise<R2UploadedPartBinding>
+  complete(uploadedParts: readonly R2UploadedPartBinding[]): Promise<void>
+  abort(): Promise<void>
+}
+
+/** R2 part evidence returned by `uploadPart`/required by `complete`. */
+export interface R2UploadedPartBinding {
+  readonly partNumber: number
+  readonly etag: string
 }
 
 /** Minimal R2 object metadata used by blob HEAD planning. */
@@ -134,6 +156,22 @@ export interface WebSocketResponseInit extends ResponseInit {
 export interface RuntimeDocClockRecord {
   readonly latestSeq: number
   readonly updatedAt: number
+}
+
+/** Persisted pending multipart upload session, keyed by its R2 upload id. */
+export interface RuntimeBlobMultipartUploadRecord {
+  readonly sha256: Sha256Hex
+  readonly size: number
+  readonly createdAt: number
+  readonly expiresAt: number
+}
+
+/** Persisted evidence for one uploaded multipart part. */
+export interface RuntimeBlobMultipartPartRecord {
+  readonly partNumber: number
+  readonly etag: string
+  readonly size: number
+  readonly sha256: Sha256Hex
 }
 
 export interface RuntimeSnapshotPointerRecord {

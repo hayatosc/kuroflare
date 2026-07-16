@@ -5,6 +5,35 @@ import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../util
 
 export const MAX_BLOB_HEAD_HASHES = 512
 
+// R2/S3 multipart uploads cap parts at 10,000; enforced both on the wire (schema
+// maxLength below) and by the worker's own upload planning.
+export const MAX_BLOB_MULTIPART_PARTS = 10_000
+
+// Fixed part size for planned multipart uploads. R2 (like S3) requires every
+// non-final part to be at least 5MiB; 8MiB keeps part count (and R2 API call
+// count) low for large files while staying well clear of that floor. Shared
+// between worker and client so both derive identical part byte ranges from
+// just `size` and `parts.length` (the wire response carries no byte ranges).
+export const BLOB_MULTIPART_PART_SIZE_BYTES = 8 * 1024 * 1024
+
+/**
+ * Number of fixed-size parts a multipart upload of `size` bytes is split into.
+ * At least one part even for a zero-byte blob, since R2 requires a non-empty part list.
+ */
+export function blobMultipartPartCount(size: number, partSizeBytes: number): number {
+  return Math.max(1, Math.ceil(size / partSizeBytes))
+}
+
+/** Expected byte length of one part: fixed size, except the trailing remainder on the last part. */
+export function blobMultipartPartByteSize(
+  size: number,
+  partSizeBytes: number,
+  partNumber: number,
+  partCount: number,
+): number {
+  return partNumber < partCount ? partSizeBytes : size - partSizeBytes * (partCount - 1)
+}
+
 export const BlobHeadRequestSchema = v.object({
   hashes: v.pipe(v.array(Sha256HexSchema), v.minLength(1), v.maxLength(MAX_BLOB_HEAD_HASHES)),
 })
@@ -67,6 +96,8 @@ export const BlobSinglePutUploadResponseSchema = v.object({
 })
 export type BlobSinglePutUploadResponse = v.InferInput<typeof BlobSinglePutUploadResponseSchema>
 
+export const BlobUploadIdSchema = v.pipe(v.string(), v.minLength(1), v.maxLength(1024))
+
 export const BlobMultipartUploadPartSchema = v.object({
   partNumber: PositiveSafeIntegerSchema,
   url: HttpUploadUrlSchema,
@@ -76,8 +107,12 @@ export type BlobMultipartUploadPart = v.InferInput<typeof BlobMultipartUploadPar
 
 export const BlobMultipartUploadResponseSchema = v.object({
   kind: v.literal('multipart'),
-  uploadId: v.pipe(v.string(), v.minLength(1), v.maxLength(1024)),
-  parts: v.pipe(v.array(BlobMultipartUploadPartSchema), v.minLength(1)),
+  uploadId: BlobUploadIdSchema,
+  parts: v.pipe(
+    v.array(BlobMultipartUploadPartSchema),
+    v.minLength(1),
+    v.maxLength(MAX_BLOB_MULTIPART_PARTS),
+  ),
   expiresAt: PositiveSafeIntegerSchema,
 })
 export type BlobMultipartUploadResponse = v.InferInput<typeof BlobMultipartUploadResponseSchema>
@@ -88,3 +123,24 @@ export const BlobUploadUrlResponseSchema = v.union([
   BlobMultipartUploadResponseSchema,
 ])
 export type BlobUploadUrlResponse = v.InferInput<typeof BlobUploadUrlResponseSchema>
+
+export const BlobMultipartCompletePartSchema = v.object({
+  partNumber: PositiveSafeIntegerSchema,
+  etag: v.pipe(v.string(), v.minLength(1), v.maxLength(1024)),
+})
+export type BlobMultipartCompletePart = v.InferInput<typeof BlobMultipartCompletePartSchema>
+
+export const BlobMultipartCompleteRequestSchema = v.object({
+  uploadId: BlobUploadIdSchema,
+  parts: v.pipe(
+    v.array(BlobMultipartCompletePartSchema),
+    v.minLength(1),
+    v.maxLength(MAX_BLOB_MULTIPART_PARTS),
+  ),
+})
+export type BlobMultipartCompleteRequest = v.InferInput<typeof BlobMultipartCompleteRequestSchema>
+
+export const BlobMultipartAbortRequestSchema = v.object({
+  uploadId: BlobUploadIdSchema,
+})
+export type BlobMultipartAbortRequest = v.InferInput<typeof BlobMultipartAbortRequestSchema>

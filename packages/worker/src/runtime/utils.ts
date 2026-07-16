@@ -119,6 +119,16 @@ export function parseBlobSize(request: Request): number | undefined {
   return Number.isSafeInteger(size) && size >= 0 ? size : undefined
 }
 
+export function parsePartNumber(raw: string | undefined, maxParts: number): number | undefined {
+  if (raw === undefined || !/^[1-9][0-9]*$/.test(raw)) {
+    return undefined
+  }
+  const partNumber = Number(raw)
+  return Number.isSafeInteger(partNumber) && partNumber >= 1 && partNumber <= maxParts
+    ? partNumber
+    : undefined
+}
+
 export function parseContentLength(request: Request): number | undefined {
   const rawLength = request.headers.get('content-length')
   if (rawLength === null || !/^(0|[1-9][0-9]*)$/.test(rawLength)) {

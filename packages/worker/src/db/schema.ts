@@ -25,6 +25,11 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     name: 'device-audit-identity',
     migrate: buildDeviceAuditIdentity,
   },
+  {
+    version: 5,
+    name: 'blob-multipart-uploads',
+    migrate: buildBlobMultipartUploads,
+  },
 ]
 
 interface ExpectedColumn {
@@ -399,6 +404,36 @@ async function buildSnapshotHealthEvidence(db: Kysely<Database>): Promise<void> 
     .ifNotExists()
     .on('snapshot_health_events')
     .columns(['doc_id', 'upper_seq', 'id'])
+    .execute()
+}
+
+async function buildBlobMultipartUploads(db: Kysely<Database>): Promise<void> {
+  await db.schema
+    .createTable('blob_multipart_uploads')
+    .ifNotExists()
+    .addColumn('upload_id', 'text', (col) => col.primaryKey())
+    .addColumn('sha256', 'text', (col) => col.notNull())
+    .addColumn('size', 'integer', (col) => col.notNull())
+    .addColumn('created_at', 'integer', (col) => col.notNull())
+    .addColumn('expires_at', 'integer', (col) => col.notNull())
+    .execute()
+
+  await db.schema
+    .createIndex('idx_blob_multipart_uploads_expires_at')
+    .ifNotExists()
+    .on('blob_multipart_uploads')
+    .columns(['expires_at'])
+    .execute()
+
+  await db.schema
+    .createTable('blob_multipart_parts')
+    .ifNotExists()
+    .addColumn('upload_id', 'text', (col) => col.notNull())
+    .addColumn('part_number', 'integer', (col) => col.notNull())
+    .addColumn('etag', 'text', (col) => col.notNull())
+    .addColumn('size', 'integer', (col) => col.notNull())
+    .addColumn('sha256', 'text', (col) => col.notNull())
+    .addPrimaryKeyConstraint('blob_multipart_parts_pk', ['upload_id', 'part_number'])
     .execute()
 }
 

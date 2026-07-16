@@ -293,6 +293,9 @@ workerApp.put('/vaults/:vaultId/files/:ydocId/snapshot', async (c) => {
 workerApp.post('/blobs/head', routeAuthorizedVaultRoom)
 workerApp.post('/blobs/upload-url', routeAuthorizedVaultRoom)
 workerApp.on(['GET', 'PUT'], '/blobs/:hash', routeAuthorizedVaultRoom)
+workerApp.put('/blobs/:hash/parts/:uploadId/:partNumber', routeAuthorizedVaultRoom)
+workerApp.post('/blobs/:hash/complete', routeAuthorizedVaultRoom)
+workerApp.post('/blobs/:hash/abort', routeAuthorizedVaultRoom)
 workerApp.on(['GET', 'PUT'], '/blob-manifests/*', routeAuthorizedVaultRoom)
 
 workerApp.get('/ws/:vaultId', async (c) => {
