@@ -35,7 +35,9 @@ import {
   CHECKPOINT_OP_THRESHOLD,
   CHECKPOINT_ALARM_DELAY_MS,
   LARGE_UPDATE_THRESHOLD_BYTES,
+  MAX_HYDRATED_FILE_DOCS,
 } from './constants'
+import { decideDocLoadAdmission, type DocLoadAdmissionDecision } from './eviction'
 import {
   getDb,
   readDocClock,
@@ -101,6 +103,10 @@ export async function handleSyncRequest(
   const persisted = await readSyncRequestDocState(room, request.docId)
   let docState: SyncRequestDocState | undefined
   if (persisted !== undefined) {
+    if (admitDocLoad(room, request.docId).action === 'degraded') {
+      webSocket.close(1011, 'doc-load-degraded')
+      return
+    }
     try {
       await ensureDocHydrated(room, request.docId)
     } catch {
@@ -226,6 +232,10 @@ async function handleSyncUpdateSerialized(
       webSocket.close(1011, 'duplicate-unsafe')
       return { action: 'stop' }
     }
+    if (admitDocLoad(room, update.docId).action === 'degraded') {
+      webSocket.close(1011, 'doc-load-degraded')
+      return { action: 'stop' }
+    }
     try {
       await ensureDocHydrated(room, update.docId)
     } catch {
@@ -275,6 +285,10 @@ async function handleSyncUpdateSerialized(
     return { action: 'stop' }
   }
 
+  if (admitDocLoad(room, update.docId).action === 'degraded') {
+    webSocket.close(1011, 'doc-load-degraded')
+    return { action: 'stop' }
+  }
   try {
     await ensureDocHydrated(room, update.docId)
   } catch {
@@ -536,8 +550,21 @@ function metaYDocWritableCandidate(room: VaultRoom, candidate: Y.Doc): boolean {
   return metaIdentityImmutable(current, candidate)
 }
 
+/** Decides whether a doc load may proceed, given the room's current residency. */
+export function admitDocLoad(room: VaultRoom, docId: DocId): DocLoadAdmissionDecision {
+  const key = docKey(docId)
+  return decideDocLoadAdmission({
+    isMeta: docId.kind === 'meta',
+    alreadyHydrated: room.hydratedDocs.has(key),
+    hydratedFileDocCount: [...room.hydratedDocs].filter((hydratedKey) => hydratedKey !== 'meta')
+      .length,
+    maxHydratedFileDocs: MAX_HYDRATED_FILE_DOCS,
+  })
+}
+
 export async function ensureDocHydrated(room: VaultRoom, docId: DocId): Promise<void> {
   const key = docKey(docId)
+  room.docLastAccessedAt.set(key, Date.now())
   if (room.hydratedDocs.has(key)) return
 
   const existing = room.hydrationInFlight.get(key)

@@ -62,3 +62,39 @@ export function decideDocEviction(input: DocEvictionInput): DocEvictionDecision 
 
   return { action: 'evict' }
 }
+
+/** Evidence needed to decide whether a doc load may proceed or must wait out memory pressure. */
+export interface DocLoadAdmissionInput {
+  /** `true` for the meta doc, which is always admitted and never evicted. */
+  readonly isMeta: boolean
+  /** `true` when the doc is already resident; re-entrant access is never blocked. */
+  readonly alreadyHydrated: boolean
+  /** Number of non-meta docs currently resident, after the room's eviction pass has run. */
+  readonly hydratedFileDocCount: number
+  /** Maximum number of non-meta docs a room may keep resident at once. */
+  readonly maxHydratedFileDocs: number
+}
+
+/** Decision for whether a doc load may proceed. */
+export type DocLoadAdmissionDecision =
+  | { readonly action: 'admit' }
+  | { readonly action: 'degraded' }
+
+/**
+ * Decides whether a new (not-yet-resident) file doc may be hydrated, or whether
+ * the room is degraded and must refuse the load.
+ *
+ * The meta doc and re-entrant access to an already-resident doc are always
+ * admitted. A genuinely new file doc load is refused once the room's eviction
+ * pass has already run and the room is still at capacity, matching the
+ * "flush + evict first, degrade only if that isn't enough" rule.
+ */
+export function decideDocLoadAdmission(input: DocLoadAdmissionInput): DocLoadAdmissionDecision {
+  if (input.isMeta || input.alreadyHydrated) {
+    return { action: 'admit' }
+  }
+
+  return input.hydratedFileDocCount < input.maxHydratedFileDocs
+    ? { action: 'admit' }
+    : { action: 'degraded' }
+}

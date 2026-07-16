@@ -19,6 +19,7 @@ import {
 } from './blob-handlers'
 import {
   checkpointDoc,
+  evictIdleDocs,
   recoverOrphanedCheckpointRuns,
   readCheckpointableDocIds,
 } from './checkpoint'
@@ -61,6 +62,7 @@ export class VaultRoom {
   readonly docs = new Map<string, Y.Doc>()
   readonly hydratedDocs = new Set<string>()
   readonly hydrationInFlight = new Map<string, Promise<void>>()
+  readonly docLastAccessedAt = new Map<string, number>()
   readonly docWriteQueues = new Map<string, Promise<void>>()
   vaultId: VaultId | undefined
   schemaReady = false
@@ -179,5 +181,8 @@ export class VaultRoom {
     for (const docId of await readCheckpointableDocIds(this, CHECKPOINT_ALARM_DOC_LIMIT)) {
       await checkpointDoc(this, docId)
     }
+    // Eviction runs at the tail of the checkpoint alarm, after dirty docs above
+    // have had a chance to flush, per server.md §11's "flush then evict" order.
+    await evictIdleDocs(this)
   }
 }

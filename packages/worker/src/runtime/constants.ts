@@ -14,5 +14,10 @@ export const BLOB_SINGLE_PUT_MAX_BYTES = BLOB_MULTIPART_THRESHOLD_BYTES - 1
 export const BLOB_MANIFEST_MAX_BYTES = 1024 * 1024
 export const BLOB_UPLOAD_URL_TTL_MS = 10 * 60 * 1_000
 export const VAULT_ID_STORAGE_KEY = 'vault:id'
+// deliberate: the DO runtime doesn't expose byte-level heap accounting, so
+// resident file-doc count is used as a coarse memory-pressure proxy instead of
+// actual bytes. Revisit with real byte accounting if this proves too coarse.
+export const MAX_HYDRATED_FILE_DOCS = 256
+export const EVICTION_IDLE_THRESHOLD_MS = 5 * 60 * 1_000
 export const E2E_SETUP_TOKEN_PATH = '/__e2e/setup-token'
 export const E2E_SNAPSHOT_PATH = '/__e2e/snapshot'

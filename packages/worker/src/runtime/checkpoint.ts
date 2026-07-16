@@ -36,7 +36,8 @@ import {
 } from '../sync/snapshot-health'
 import { makeSnapshotObjectKey, type SnapshotCandidate } from '../sync/snapshots'
 import { makeSnapshotListPrefix } from '../sync/snapshots'
-import { SNAPSHOT_RETENTION_MIN_GENERATIONS } from './constants'
+import { EVICTION_IDLE_THRESHOLD_MS, SNAPSHOT_RETENTION_MIN_GENERATIONS } from './constants'
+import { decideDocEviction } from './eviction'
 import {
   getDb,
   readDocClock,
@@ -87,6 +88,47 @@ export async function readCheckpointableDocIds(
     if (docId !== undefined) docIds.push(docId)
   }
   return docIds
+}
+
+/**
+ * Removes resident file docs from memory once they are checkpointed and idle,
+ * so a room under memory pressure can recover instead of staying degraded.
+ *
+ * deliberate: `activeSocketCount` is always treated as 0 because the runtime
+ * doesn't yet track which sockets have touched which doc (server.md §11 notes
+ * this is only an approximation once added). Evicting a doc a client is still
+ * using just costs an extra re-hydrate on its next access, not data loss, so
+ * this is safe, if not optimal; add per-doc socket tracking if the churn
+ * becomes a problem.
+ */
+export async function evictIdleDocs(room: VaultRoom, now = Date.now()): Promise<void> {
+  const db = getDb(room)
+  if (db === undefined) return
+
+  // Deleting the current key while iterating a Set is safe and doesn't skip
+  // later entries, so no defensive copy is needed here.
+  for (const key of room.hydratedDocs) {
+    if (key === 'meta') continue
+    const docId = docIdFromKey(key)
+    if (docId === undefined) continue
+
+    const clock = await readDocClock(room, docId)
+    const snapshotSeq = await readSnapshotSeq(room, docId)
+    const decision = decideDocEviction({
+      isMeta: false,
+      checkpointed: clock !== undefined && clock.latestSeq === snapshotSeq,
+      activeSocketCount: 0,
+      lastAccessedAt: room.docLastAccessedAt.get(key) ?? 0,
+      now,
+      idleThresholdMs: EVICTION_IDLE_THRESHOLD_MS,
+    })
+    if (decision.action !== 'evict') continue
+
+    room.docs.get(key)?.destroy()
+    room.docs.delete(key)
+    room.hydratedDocs.delete(key)
+    room.docLastAccessedAt.delete(key)
+  }
 }
 
 export async function checkpointDoc(

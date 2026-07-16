@@ -25,6 +25,7 @@ import { assert, expect, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { VaultRoom } from '../runtime'
+import { MAX_HYDRATED_FILE_DOCS } from '../runtime/constants'
 import { ensureSchema } from '../runtime/storage'
 import { ensureDocHydrated } from '../runtime/sync'
 import {
@@ -1555,6 +1556,42 @@ test('VaultRoom rejects large live updates without acknowledging or advancing du
     assert.equal(retryServer.closeCode, 1011)
     assert.equal(retryServer.closeReason, 'append-reject:large-update-requires-snapshot-import')
     assert.equal(room.docs.has('file:large-file-doc'), false)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom refuses a live update that would load a new file doc while at capacity', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    for (let index = 0; index < MAX_HYDRATED_FILE_DOCS; index += 1) {
+      room.hydratedDocs.add(`file:${makeYDocId(`padding-${index}`)}`)
+    }
+
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const docId = { kind: 'file', ydocId: makeYDocId('degraded-new-file') } as const
+    const messageId = makeMessageId('message-degraded-new-file')
+    const update = {
+      ...makeSyncUpdate(messageId),
+      docId,
+      update: makeYjsUpdateBase64(messageId),
+    } satisfies SyncUpdate
+    await room.webSocketMessage(server, JSON.stringify(update))
+
+    assert.equal(server.closeCode, 1011)
+    assert.equal(server.closeReason, 'doc-load-degraded')
+    assert.equal(storage.sql.opLog.has(`file:degraded-new-file:${messageId}`), false)
+    assert.equal(storage.sql.docs.has('file:degraded-new-file'), false)
+    assert.equal(room.hydratedDocs.has('file:degraded-new-file'), false)
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
@@ -3458,6 +3495,65 @@ test('VaultRoom alarm advances and compacts recovered checkpoint pointers', asyn
   assert.equal(storage.sql.docs.get('meta')?.minRetainedSeq, 2)
   assert(storage.sql.docs.get('meta')?.horizonStateVector instanceof Uint8Array)
   assert.equal(storage.sql.opLog.has('meta:message-before-snapshot'), false)
+})
+
+test('VaultRoom alarm evicts a checkpointed, idle file doc at the tail of the checkpoint pass', async () => {
+  const storage = new SqlOnlyStorage()
+  const ydocId = makeYDocId('ydoc-evict-idle')
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: 'snapshots/vault-1/files/ydoc-evict-idle/1.yupdate',
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(new FakeState(storage), makeEnv())
+  room.docs.set(`file:${ydocId}`, new Y.Doc())
+  room.hydratedDocs.add(`file:${ydocId}`)
+  room.docLastAccessedAt.set(`file:${ydocId}`, 0)
+
+  await room.alarm()
+
+  assert.equal(room.docs.has(`file:${ydocId}`), false)
+  assert.equal(room.hydratedDocs.has(`file:${ydocId}`), false)
+})
+
+test('VaultRoom alarm keeps dirty and recently-accessed file docs resident', async () => {
+  const storage = new SqlOnlyStorage()
+  const dirtyYDocId = makeYDocId('ydoc-evict-dirty')
+  const recentYDocId = makeYDocId('ydoc-evict-recent')
+  storage.sql.docs.set(`file:${dirtyYDocId}`, {
+    kind: 'file',
+    latestSeq: 2,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: 'snapshots/vault-1/files/ydoc-evict-dirty/1.yupdate',
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.docs.set(`file:${recentYDocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 1,
+    latestSnapshotKey: 'snapshots/vault-1/files/ydoc-evict-recent/1.yupdate',
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(new FakeState(storage), makeEnv())
+  room.docs.set(`file:${dirtyYDocId}`, new Y.Doc())
+  room.hydratedDocs.add(`file:${dirtyYDocId}`)
+  room.docLastAccessedAt.set(`file:${dirtyYDocId}`, 0)
+  room.docs.set(`file:${recentYDocId}`, new Y.Doc())
+  room.hydratedDocs.add(`file:${recentYDocId}`)
+  room.docLastAccessedAt.set(`file:${recentYDocId}`, Date.now())
+
+  await room.alarm()
+
+  assert.equal(room.hydratedDocs.has(`file:${dirtyYDocId}`), true)
+  assert.equal(room.hydratedDocs.has(`file:${recentYDocId}`), true)
 })
 
 test('VaultRoom waits for stale hydration before rehydrating an orphaned pointer', async () => {
@@ -6647,6 +6743,45 @@ test('VaultRoom serves the latest file snapshot from the production HTTP route',
   assert(v.is(DocLatestSnapshotResponseSchema, body))
   assert.deepEqual(body.docId, { kind: 'file', ydocId })
   assert.equal(body.snapshotSeq, 1)
+})
+
+test('VaultRoom refuses to load a new file doc as degraded once the room is at capacity', async () => {
+  const storage = new SqlOnlyStorage()
+  const ydocId = makeYDocId('ydoc-file-degraded')
+  storage.sql.docs.set(`file:${ydocId}`, {
+    kind: 'file',
+    latestSeq: 1,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+  for (let index = 0; index < MAX_HYDRATED_FILE_DOCS; index += 1) {
+    room.hydratedDocs.add(`file:${makeYDocId(`ydoc-padding-${index}`)}`)
+  }
+
+  const response = await room.fetch(
+    new Request(`https://worker.example/vaults/vault-1/files/${ydocId}/latest`, {
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+      },
+    }),
+  )
+
+  assert.equal(response.status, 503)
+  assert.deepEqual(await response.json(), {
+    code: 'server/degraded',
+    retryable: true,
+    detail: 'doc-load-degraded',
+  })
+  assert.equal(room.hydratedDocs.has(`file:${ydocId}`), false)
 })
 
 test('VaultRoom rejects latest snapshot requests without a valid access token', async () => {

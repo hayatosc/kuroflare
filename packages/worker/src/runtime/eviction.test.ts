@@ -1,6 +1,11 @@
 import { assert, test } from 'vitest'
 
-import { decideDocEviction, type DocEvictionInput } from './eviction'
+import {
+  decideDocEviction,
+  decideDocLoadAdmission,
+  type DocEvictionInput,
+  type DocLoadAdmissionInput,
+} from './eviction'
 
 function input(overrides: Partial<DocEvictionInput>): DocEvictionInput {
   return {
@@ -56,4 +61,40 @@ test('doc eviction rejects malformed clocks instead of evicting', () => {
 test('doc eviction evicts checkpointed, unreferenced, idle file docs', () => {
   assert.deepEqual(decideDocEviction(input({ lastAccessedAt: 5_000 })), { action: 'evict' })
   assert.deepEqual(decideDocEviction(input({ lastAccessedAt: 0 })), { action: 'evict' })
+})
+
+function admissionInput(overrides: Partial<DocLoadAdmissionInput>): DocLoadAdmissionInput {
+  return {
+    isMeta: false,
+    alreadyHydrated: false,
+    hydratedFileDocCount: 0,
+    maxHydratedFileDocs: 2,
+    ...overrides,
+  }
+}
+
+test('doc load admission always admits the meta doc', () => {
+  assert.deepEqual(
+    decideDocLoadAdmission(admissionInput({ isMeta: true, hydratedFileDocCount: 2 })),
+    { action: 'admit' },
+  )
+})
+
+test('doc load admission always admits re-entrant access to an already-resident doc', () => {
+  assert.deepEqual(
+    decideDocLoadAdmission(admissionInput({ alreadyHydrated: true, hydratedFileDocCount: 2 })),
+    { action: 'admit' },
+  )
+})
+
+test('doc load admission admits a new file doc while under capacity', () => {
+  assert.deepEqual(decideDocLoadAdmission(admissionInput({ hydratedFileDocCount: 1 })), {
+    action: 'admit',
+  })
+})
+
+test('doc load admission degrades a new file doc load once the room is at capacity', () => {
+  assert.deepEqual(decideDocLoadAdmission(admissionInput({ hydratedFileDocCount: 2 })), {
+    action: 'degraded',
+  })
 })

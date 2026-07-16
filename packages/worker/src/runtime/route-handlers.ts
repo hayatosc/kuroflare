@@ -97,6 +97,7 @@ import {
   readSnapshotPointer,
 } from './storage'
 import {
+  admitDocLoad,
   appendSnapshotVerificationEventPreservingLogical,
   ensureDocHydrated,
   listR2Objects,
@@ -588,6 +589,9 @@ async function handleLatestSnapshotRequest(
   const clock = await readDocClock(room, docId)
   if (clock === undefined) return c.json(apiErrorBody('snapshot/not-found', 'doc-not-found'), 404)
 
+  if (admitDocLoad(room, docId).action === 'degraded') {
+    return c.json(apiErrorBody('server/degraded', 'doc-load-degraded'), 503)
+  }
   try {
     await ensureDocHydrated(room, docId)
   } catch (error) {
@@ -669,6 +673,9 @@ async function handleSnapshotImportRequest(
     const initialSnapshotKey = makeSnapshotObjectKey(vaultId, docId, existingLatestSeq + 1)
     if ((await bucket.head(initialSnapshotKey)) !== null) {
       return c.json(apiErrorBody('request/conflict', 'snapshot-import-target-exists'), 409)
+    }
+    if (admitDocLoad(room, docId).action === 'degraded') {
+      return c.json(apiErrorBody('server/degraded', 'doc-load-degraded'), 503)
     }
     try {
       await ensureDocHydrated(room, docId)
