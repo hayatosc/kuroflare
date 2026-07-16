@@ -442,11 +442,6 @@ export async function enqueueBinaryUploadFromVaultFile(
   const fileId = existingFileId ?? makeFileId(crypto.randomUUID())
   const now = Date.now()
   const bytes = new Uint8Array(await plugin.app.vault.adapter.readBinary(file.path))
-  if (bytes.byteLength === 0) {
-    console.warn('[kuroflare] skipped empty binary file upload', { path: file.path })
-    return
-  }
-
   const built = await buildBlobManifest(fileId, bytes, fileTreeDeviceId(plugin), now)
   if (
     existing !== undefined &&

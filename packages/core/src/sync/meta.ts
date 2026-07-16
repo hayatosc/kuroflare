@@ -75,7 +75,8 @@ export const TextMetaFileSpecificSchema = v.object({
 export const BinaryMetaFileSpecificSchema = v.object({
   type: v.literal('binary'),
   blobManifestHash: Sha256HexSchema,
-  blobChunks: v.pipe(v.array(Sha256HexSchema), v.minLength(1)),
+  // Empty is valid: it represents a zero-byte file, whose manifest has no chunks (DR-010).
+  blobChunks: v.array(Sha256HexSchema),
   ydocId: v.optional(v.never()),
 })
 
@@ -139,7 +140,8 @@ const BinaryMetaContentSchema = v.strictObject({
   contentUpdatedAt: TimestampSchema,
   contentUpdatedBy: DeviceIdSchema,
   blobManifestHash: Sha256HexSchema,
-  blobChunks: v.pipe(v.array(Sha256HexSchema), v.minLength(1)),
+  // Empty is valid: it represents a zero-byte file, whose manifest has no chunks (DR-010).
+  blobChunks: v.array(Sha256HexSchema),
 })
 
 /** Content group with binary manifest and chunk references kept as one object. */

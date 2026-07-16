@@ -173,6 +173,33 @@ test('buildBlobManifest handles empty files', async () => {
   assert.deepEqual(built.chunks, [])
 })
 
+// DR-010: an empty file's meta entry has no chunks, but keeps blobManifestHash as content
+// evidence, so it must still match its (chunkless) manifest.
+test('empty-file manifests match binary meta entries with no chunks', async () => {
+  const fileId = makeFileId('file-1')
+  const createdBy = makeDeviceId('device-1')
+  const built = await buildBlobManifest(fileId, new Uint8Array(), createdBy, 1)
+  const metaFile: BinaryMetaFile = {
+    schemaVersion: 1,
+    fileId,
+    path: 'Assets/empty.bin',
+    canonicalPath: 'assets/empty.bin',
+    type: 'binary',
+    blobManifestHash: built.manifestHash,
+    blobChunks: [],
+    deleted: false,
+    createdAt: 1,
+    createdBy,
+    contentUpdatedAt: 1,
+    contentUpdatedBy: createdBy,
+    updatedAt: 1,
+    updatedBy: createdBy,
+    mtime: 1,
+  }
+
+  assert.equal(blobManifestMatchesMetaFile(built.manifest, metaFile), true)
+})
+
 test('assembleBlobBytes verifies chunks and content hash', async () => {
   const bytes = new TextEncoder().encode('downloaded binary payload')
   const built = await buildBlobManifest(makeFileId('file-1'), bytes, makeDeviceId('device-1'), 1, {

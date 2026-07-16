@@ -1153,7 +1153,8 @@ test('validates binary meta files', () => {
 
   assert.equal(isMetaFile(entry, fileId), true)
   assert.equal(isMetaFile({ ...entry, ydocId: makeYDocId('doc-1') }, fileId), false)
-  assert.equal(isMetaFile({ ...entry, blobChunks: [] }, fileId), false)
+  // Empty blobChunks is valid: it represents a zero-byte file (DR-010).
+  assert.equal(isMetaFile({ ...entry, blobChunks: [] }, fileId), true)
   assert.equal(isMetaFile({ ...entry, path: '.obsidian/plugins/foo' }, fileId), false)
 })
 
