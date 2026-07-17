@@ -129,7 +129,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ### P2: 運用と配布
 
-- snapshot retention は checkpoint 後に実行され、`snapshot_retention_events` に記録される。残りは retention policy の運用設定、event pagination、alerting。
+- snapshot retention は checkpoint 後に実行され、`snapshot_retention_events` に記録される。保持世代数は `SNAPSHOT_RETENTION_MIN_GENERATIONS` var でデプロイ時に調整可能 (不正値は fail closed で compaction 停止 + `snapshot-retention-invalid-config` ログ)。`GET /admin/retention` は `limit`/`cursor` → `{ items, nextCursor? }` 形式で pagination する。Worker 内 alerting 連携は追加せず、既存 `logEvent` を Workers Logs / Logpush で拾う運用ガイドを deployment.md §6 に記載。
 - quarantine admin は Worker HTTP と plugin settings panel の両方にある。残りは force-apply 後の user-facing audit summary と大量 quarantine 向け pagination。
 - Auth refresh / revoke runtime and plugin lifecycle wiring (foreground/resume, pre-expiry refresh, and revoked-device local shutdown) are active at HEAD `122d2a0`; distribution still requires the surrounding settings UX, migration policy, and operator documentation.
 - Device setup-token issuance now uses an operator-secret-gated route (`POST /admin/setup-tokens`, `ADMIN_TOKEN_SECRET`, constant-time comparison, `ApiError`-envelope responses) instead of the former e2e-disguised `/__e2e/setup-token` path. The e2e-only snapshot-seeding route was folded into the same admin secret as `POST /admin/snapshots/seed` (test/fixture use only, not part of the normal operator flow). Still no self-service "invite a device" UI — onboarding remains a manual, operator-run `curl` step (see `docs/deployment.md` §4). Verified by unit/worker-e2e suites plus the real Obsidian + miniflare `:app` E2E (green 2026-07-18).
