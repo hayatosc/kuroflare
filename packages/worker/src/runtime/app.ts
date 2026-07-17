@@ -22,14 +22,28 @@ import * as v from 'valibot'
 
 import {
   type WorkerEnv,
-  E2eSetupTokenSeedRequestSchema,
-  E2eSnapshotSeedRequestSchema,
+  AdminSetupTokenIssueRequestSchema,
+  AdminSnapshotSeedRequestSchema,
 } from './types'
-import { apiErrorBody, extractBearerToken } from './utils'
+import { apiErrorBody, extractBearerToken, timingSafeEqualString } from './utils'
 
 const WEBSOCKET_UPGRADE = 'websocket'
-const E2E_SETUP_TOKEN_PATH = '/__e2e/setup-token'
-const E2E_SNAPSHOT_PATH = '/__e2e/snapshot'
+const ADMIN_TOKEN_HEADER = 'x-kuroflare-admin-secret'
+const ADMIN_SETUP_TOKEN_PATH = '/admin/setup-tokens'
+const ADMIN_SNAPSHOT_SEED_PATH = '/admin/snapshots/seed'
+
+/** Rejects a request unless it carries the operator's admin secret via constant-time compare. */
+function authorizeAdminRequest(c: Context<{ Bindings: WorkerEnv }>): Response | undefined {
+  const secret = c.env.ADMIN_TOKEN_SECRET
+  if (secret === undefined) {
+    return c.json(apiErrorBody('server/degraded', 'admin-secret-not-configured'), 503)
+  }
+  const header = c.req.header(ADMIN_TOKEN_HEADER)
+  if (header === undefined || !timingSafeEqualString(header, secret)) {
+    return c.json(apiErrorBody('auth/rejected', 'admin-auth-rejected'), 403)
+  }
+  return undefined
+}
 
 async function verifyBearerToken(
   env: WorkerEnv,
@@ -60,39 +74,33 @@ workerApp.use(
   '*',
   cors({
     origin: '*',
-    allowHeaders: ['Authorization', 'Content-Type', 'x-kuroflare-e2e-secret'],
+    allowHeaders: ['Authorization', 'Content-Type', ADMIN_TOKEN_HEADER],
     allowMethods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT'],
   }),
 )
 
-workerApp.post(E2E_SETUP_TOKEN_PATH, async (c) => {
-  const secret = c.env.E2E_SETUP_TOKEN_SECRET
-  if (secret === undefined) return c.notFound()
-  if (c.req.header('x-kuroflare-e2e-secret') !== secret) {
-    return c.json(apiErrorBody('auth/rejected', 'e2e-seed-forbidden'), 403)
-  }
+workerApp.post(ADMIN_SETUP_TOKEN_PATH, async (c) => {
+  const rejection = authorizeAdminRequest(c)
+  if (rejection !== undefined) return rejection
   const body: unknown = await c.req.raw
     .clone()
     .json()
     .catch(() => undefined)
-  if (!v.is(E2eSetupTokenSeedRequestSchema, body)) {
-    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-setup-token-seed-request'), 400)
+  if (!v.is(AdminSetupTokenIssueRequestSchema, body)) {
+    return c.json(apiErrorBody('request/invalid', 'invalid-admin-setup-token-issue-request'), 400)
   }
   return routeVaultRoom(c.req.raw, c.env, body.vaultId)
 })
 
-workerApp.post(E2E_SNAPSHOT_PATH, async (c) => {
-  const secret = c.env.E2E_SETUP_TOKEN_SECRET
-  if (secret === undefined) return c.notFound()
-  if (c.req.header('x-kuroflare-e2e-secret') !== secret) {
-    return c.json(apiErrorBody('auth/rejected', 'e2e-seed-forbidden'), 403)
-  }
+workerApp.post(ADMIN_SNAPSHOT_SEED_PATH, async (c) => {
+  const rejection = authorizeAdminRequest(c)
+  if (rejection !== undefined) return rejection
   const body: unknown = await c.req.raw
     .clone()
     .json()
     .catch(() => undefined)
-  if (!v.is(E2eSnapshotSeedRequestSchema, body)) {
-    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-snapshot-seed-request'), 400)
+  if (!v.is(AdminSnapshotSeedRequestSchema, body)) {
+    return c.json(apiErrorBody('request/invalid', 'invalid-admin-snapshot-seed-request'), 400)
   }
   return routeVaultRoom(c.req.raw, c.env, body.vaultId)
 })

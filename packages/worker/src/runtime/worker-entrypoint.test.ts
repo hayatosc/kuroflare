@@ -7,9 +7,9 @@ import workerEntrypoint, {
 } from '../runtime'
 import { makeEnv, makeDeviceToken, makeEnvWithDeviceTokenSecret } from './test-helpers'
 
-test('worker entrypoint keeps the e2e setup token seed endpoint disabled without a secret', async () => {
+test('worker entrypoint keeps the admin setup token issuance endpoint degraded without a secret', async () => {
   const response = await workerEntrypoint.fetch(
-    new Request('https://worker.example/__e2e/setup-token', {
+    new Request('https://worker.example/admin/setup-tokens', {
       method: 'POST',
       body: JSON.stringify({
         vaultId: 'vault-1',
@@ -19,14 +19,14 @@ test('worker entrypoint keeps the e2e setup token seed endpoint disabled without
     makeEnv(),
   )
 
-  assert.equal(response.status, 404)
+  assert.equal(response.status, 503)
 })
 
-test('worker entrypoint routes e2e setup token seeds by body vaultId when enabled', async () => {
+test('worker entrypoint routes admin setup token issuance by body vaultId when enabled', async () => {
   let routedName = ''
   let routedRequest: Request | undefined
   const env: WorkerEnv = {
-    E2E_SETUP_TOKEN_SECRET: 'seed-secret',
+    ADMIN_TOKEN_SECRET: 'admin-secret',
     VAULT_ROOM: {
       idFromName(name: string): DurableObjectIdBinding {
         routedName = name
@@ -36,7 +36,7 @@ test('worker entrypoint routes e2e setup token seeds by body vaultId when enable
         return {
           async fetch(request: Request): Promise<Response> {
             routedRequest = request
-            return new Response('seed-routed', { status: 206 })
+            return new Response('setup-token-routed', { status: 206 })
           },
         }
       },
@@ -44,9 +44,9 @@ test('worker entrypoint routes e2e setup token seeds by body vaultId when enable
   }
 
   const response = await workerEntrypoint.fetch(
-    new Request('https://worker.example/__e2e/setup-token', {
+    new Request('https://worker.example/admin/setup-tokens', {
       method: 'POST',
-      headers: { 'x-kuroflare-e2e-secret': 'seed-secret' },
+      headers: { 'x-kuroflare-admin-secret': 'admin-secret' },
       body: JSON.stringify({
         vaultId: 'vault-1',
         setupToken: 'setup-token',
@@ -56,9 +56,34 @@ test('worker entrypoint routes e2e setup token seeds by body vaultId when enable
   )
 
   assert.equal(response.status, 206)
-  assert.equal(await response.text(), 'seed-routed')
+  assert.equal(await response.text(), 'setup-token-routed')
   assert.equal(routedName, 'vault-1')
-  assert.equal(routedRequest?.url, 'https://worker.example/__e2e/setup-token')
+  assert.equal(routedRequest?.url, 'https://worker.example/admin/setup-tokens')
+})
+
+test('worker entrypoint rejects admin setup token issuance with a mismatched secret', async () => {
+  const env: WorkerEnv = {
+    ADMIN_TOKEN_SECRET: 'admin-secret',
+    VAULT_ROOM: {
+      idFromName(): DurableObjectIdBinding {
+        throw new Error('should not route')
+      },
+      get(): DurableObjectStubBinding {
+        throw new Error('should not route')
+      },
+    },
+  }
+
+  const response = await workerEntrypoint.fetch(
+    new Request('https://worker.example/admin/setup-tokens', {
+      method: 'POST',
+      headers: { 'x-kuroflare-admin-secret': 'wrong-secret' },
+      body: JSON.stringify({ vaultId: 'vault-1', setupToken: 'setup-token' }),
+    }),
+    env,
+  )
+
+  assert.equal(response.status, 403)
 })
 
 test('worker entrypoint routes auth refresh requests by body vaultId', async () => {

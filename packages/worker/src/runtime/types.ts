@@ -15,7 +15,7 @@ export interface WorkerEnv {
   readonly VAULT_ROOM: DurableObjectNamespaceBinding
   readonly SNAPSHOT_BUCKET?: R2BucketBinding
   readonly DEVICE_TOKEN_SECRET?: string
-  readonly E2E_SETUP_TOKEN_SECRET?: string
+  readonly ADMIN_TOKEN_SECRET?: string
 }
 
 /** Minimal Durable Object namespace surface used by the Worker shell. */
@@ -221,13 +221,13 @@ export type RuntimeCheckpointResult =
 export const PosIntSchema = v.pipe(v.number(), v.integer(), v.minValue(1))
 export const NonNegIntSchema = v.pipe(v.number(), v.integer(), v.minValue(0))
 
-export const E2eSetupTokenSeedRequestSchema = v.object({
+export const AdminSetupTokenIssueRequestSchema = v.object({
   vaultId: VaultIdSchema,
   setupToken: v.pipe(v.string(), v.minLength(1)),
   expiresInMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(86_400_000))),
 })
 
-export const E2eSnapshotSeedRequestSchema = v.object({
+export const AdminSnapshotSeedRequestSchema = v.object({
   vaultId: VaultIdSchema,
   docId: DocIdSchema,
   update: v.pipe(v.string(), v.minLength(1)),

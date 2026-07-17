@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import {
   endpoint,
   vaultId,
-  seedSecret,
+  adminSecret,
   packageDir,
   pluginDir,
   runId,
@@ -109,11 +109,11 @@ async function buildBinaryManifest(
 }
 
 async function seedSetupToken(token: string): Promise<void> {
-  const response = await fetch(`${endpoint}/__e2e/setup-token`, {
+  const response = await fetch(`${endpoint}/admin/setup-tokens`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-kuroflare-e2e-secret': seedSecret,
+      'x-kuroflare-admin-secret': adminSecret,
     },
     body: JSON.stringify({
       vaultId,

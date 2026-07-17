@@ -9,6 +9,7 @@ import {
   Sha256HexSchema,
   YDocIdSchema,
   makeDeviceId,
+  timingSafeEqual,
   type AdminOperation,
   type AdminOperationEffect,
   type ApiError,
@@ -496,6 +497,12 @@ export function encodeBase64(value: Uint8Array): string {
 
 export function encodeOptionalBase64(value: Uint8Array | undefined): string | undefined {
   return value === undefined ? undefined : encodeBase64(value)
+}
+
+/** Constant-time comparison for shared-secret headers (e.g. the admin token). */
+export function timingSafeEqualString(left: string, right: string): boolean {
+  const encoder = new TextEncoder()
+  return timingSafeEqual(encoder.encode(left), encoder.encode(right))
 }
 
 export function extractBearerToken(authorization: string | null): string | undefined {

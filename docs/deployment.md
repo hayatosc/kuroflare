@@ -60,7 +60,7 @@ new_sqlite_classes = ["VaultRoom"]
 | Var                      | Required?                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `DEVICE_TOKEN_SECRET`    | **Effectively required** | HS256 signing/verification secret for device access tokens. It is typed optional, but `VaultRoom.authorizeHello` fails closed: once the Durable Object's SQLite storage exists (i.e. any real, non-fresh vault), a missing secret causes every WebSocket `hello` to be rejected with `auth-reject:missing-secret`. HTTP admin/auth routes (`/setup/exchange`, `/auth/refresh`, `/devices/:id/revoke`, `/admin/*`, snapshot/blob routes) all return `503` when this secret is absent. |
-| `E2E_SETUP_TOKEN_SECRET` | Optional                 | Gates the `/__e2e/setup-token` and `/__e2e/snapshot` routes (see §4). It is the **only** mechanism today for seeding a setup token, so in practice it must be set to onboard any device. Treat it as a shared admin secret, not an end-user-facing credential.                                                                                                                                                                                                                       |
+| `ADMIN_TOKEN_SECRET`     | **Effectively required** | Gates the operator-only `POST /admin/setup-tokens` and `POST /admin/snapshots/seed` routes (see §4). It is the **only** mechanism today for seeding a setup token, so in practice it must be set to onboard any device. Typed optional so tests can omit it, but both routes return `503 server/degraded` when it is absent, and reject with `403` on a header mismatch (constant-time compared). Treat it as a shared operator secret, not an end-user-facing credential.           |
 
 ### Production routes (`packages/worker/src/runtime.ts`, `src/runtime/app.ts`)
 
@@ -78,7 +78,8 @@ new_sqlite_classes = ["VaultRoom"]
 | `PUT /vaults/:vaultId/meta/snapshot`, `PUT /vaults/:vaultId/files/:ydocId/snapshot`               | Bearer device token                                                  | Import a snapshot.                                                                                                                                                                                                                                                                        |
 | `POST /blobs/head`, `POST /blobs/upload-url`, `GET/PUT /blobs/:hash`, `GET/PUT /blob-manifests/*` | Bearer device token, scope `blob:read`/`blob:write`                  | Attachment (blob) storage. Blobs at or above `BLOB_MULTIPART_THRESHOLD_BYTES` (16 MiB), or any upload the client explicitly asks for with `multipart: true`, must use the multipart flow below instead of a single `PUT /blobs/:hash`: `/blobs/upload-url` rejects with `413 blob-upload-url:multipart-required` if the client doesn't ask for multipart in that case, and `PUT /blobs/:hash` rejects with `413 blob-put:use-multipart` once size exceeds `BLOB_SINGLE_PUT_MAX_BYTES` (16 MiB − 1 byte). |
 | `PUT /blobs/:hash/parts/:uploadId/:partNumber`, `POST /blobs/:hash/complete`, `POST /blobs/:hash/abort` | Bearer device token, scope `blob:write`                | Multipart blob upload: upload each part returned by `/blobs/upload-url`, then complete or abort the session. Implemented end-to-end (create/part/complete/abort) on both worker and client and covered by real-R2 e2e, but the current client-side chunking (max 1 MiB per chunk) never produces a single blob at or above the 16 MiB threshold, so this path is not exercised by real traffic yet — see `docs/implementation-status.md`. |
-| `POST /__e2e/setup-token`, `POST /__e2e/snapshot`                                                 | `x-kuroflare-e2e-secret` header == `E2E_SETUP_TOKEN_SECRET`          | Interim admin seeding routes; see §4. `404` if `E2E_SETUP_TOKEN_SECRET` unset, `403` on header mismatch.                                                                                                                                                                                  |
+| `POST /admin/setup-tokens`                                                                        | `x-kuroflare-admin-secret` header == `ADMIN_TOKEN_SECRET`            | Issues a one-time setup token for device onboarding; see §4. `503` if `ADMIN_TOKEN_SECRET` unset, `403` on header mismatch.                                                                                                                                                               |
+| `POST /admin/snapshots/seed`                                                                      | `x-kuroflare-admin-secret` header == `ADMIN_TOKEN_SECRET`            | Test/fixture-only: seeds a doc's snapshot pointer directly from a raw Yjs update, bypassing the normal sync/checkpoint path. Not part of the normal operator workflow. `503` if `ADMIN_TOKEN_SECRET` unset, `403` on header mismatch.                                                    |
 
 CORS is wide open (`origin: '*'`) at the top-level Hono app
 (`packages/worker/src/runtime/app.ts`); a downstream deployment that wants to
@@ -119,7 +120,7 @@ Run everything from `packages/worker`.
    pnpm --filter @kuroflare/worker exec wrangler secret put DEVICE_TOKEN_SECRET
    # paste a long random value, e.g. from `openssl rand -hex 32`
 
-   pnpm --filter @kuroflare/worker exec wrangler secret put E2E_SETUP_TOKEN_SECRET
+   pnpm --filter @kuroflare/worker exec wrangler secret put ADMIN_TOKEN_SECRET
    # paste a second, independent long random value
    ```
 
@@ -142,13 +143,12 @@ Run everything from `packages/worker`.
    # expect: HTTP/1.1 426 Expected WebSocket upgrade
    ```
 
-## 4. Device onboarding (interim path)
+## 4. Device onboarding
 
-There is currently no production-grade "invite a device" flow. The only
-route that mints a setup token is the e2e-named admin route
-`POST /__e2e/setup-token`, gated by the `E2E_SETUP_TOKEN_SECRET` you set
-above. Treat this as an interim operator tool, not something to expose to
-end users, until a real issuance flow exists (see §7).
+There is currently no self-service "invite a device" UI. Onboarding a device
+is an operator action run from the command line, using the admin route
+`POST /admin/setup-tokens`, gated by the `ADMIN_TOKEN_SECRET` you set above.
+Do not expose this secret or route to end users.
 
 1. **Generate a random setup token locally** (never reuse across vaults or
    let it leave your machine other than to your own device):
@@ -161,13 +161,13 @@ end users, until a real issuance flow exists (see §7).
    string identifying the vault; it becomes the Durable Object name):
 
    ```bash
-   curl -s -X POST "https://<your-worker>.workers.dev/__e2e/setup-token" \
+   curl -s -X POST "https://<your-worker>.workers.dev/admin/setup-tokens" \
      -H "content-type: application/json" \
-     -H "x-kuroflare-e2e-secret: <your-E2E_SETUP_TOKEN_SECRET>" \
+     -H "x-kuroflare-admin-secret: <your-ADMIN_TOKEN_SECRET>" \
      -d '{"vaultId":"<your-vault-id>","setupToken":"'"$SETUP_TOKEN"'"}'
    ```
 
-   Request body fields (`E2eSetupTokenSeedRequestSchema`,
+   Request body fields (`AdminSetupTokenIssueRequestSchema`,
    `packages/worker/src/runtime/types.ts`): `vaultId` (required), `setupToken`
    (required, non-empty string), `expiresInMs` (optional, defaults to
    10 minutes / `10 * 60 * 1000`, capped at 24h). The server never stores the
@@ -244,10 +244,8 @@ plugin's settings tab, and follow §4 to connect it to your deployed Worker.
 
 ## 7. Future work
 
-- A production-grade setup-URI issuance flow (replacing the
-  `/__e2e/setup-token` admin path with something safe to expose, e.g.
-  authenticated, rate-limited, and not sharing a route name with the e2e
-  test harness).
+- A self-service setup-URI issuance flow (e.g. rate-limited and safe to
+  expose to end users), replacing the operator-run `curl` step in §4.
 - A separate deployment project with its own `wrangler.toml`/CI that
   consumes `@kuroflare/worker` as a package and reproduces the contract in
   §2 (bindings, secrets, migration tag, compatibility date), rather than

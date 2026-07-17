@@ -105,7 +105,7 @@ import {
   withDocWriteQueue,
 } from './sync'
 import type { RuntimeWebSocketPairConstructor, WebSocketResponseInit } from './types'
-import { E2eSetupTokenSeedRequestSchema, E2eSnapshotSeedRequestSchema } from './types'
+import { AdminSetupTokenIssueRequestSchema, AdminSnapshotSeedRequestSchema } from './types'
 import {
   apiErrorBody,
   docKey,
@@ -130,15 +130,15 @@ import type { VaultRoom } from './vault-room'
 
 declare const WebSocketPair: RuntimeWebSocketPairConstructor | undefined
 
-export async function handleE2eSetupTokenSeed(room: VaultRoom, c: Context): Promise<Response> {
+export async function handleAdminSetupTokenIssue(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   if (db === undefined)
-    return c.json(apiErrorBody('server/degraded', 'e2e-setup-token-seed-unavailable'), 503)
+    return c.json(apiErrorBody('server/degraded', 'admin-setup-token-issue-unavailable'), 503)
   await ensureSchema(room)
 
   const body: unknown = await c.req.json().catch(() => undefined)
-  if (!v.is(E2eSetupTokenSeedRequestSchema, body))
-    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-setup-token-seed-request'), 400)
+  if (!v.is(AdminSetupTokenIssueRequestSchema, body))
+    return c.json(apiErrorBody('request/invalid', 'invalid-admin-setup-token-issue-request'), 400)
   if (room.vaultId !== undefined && body.vaultId !== room.vaultId)
     return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   room.vaultId = body.vaultId
@@ -159,23 +159,23 @@ export async function handleE2eSetupTokenSeed(room: VaultRoom, c: Context): Prom
   )
 }
 
-export async function handleE2eSnapshotSeed(room: VaultRoom, c: Context): Promise<Response> {
+export async function handleAdminSnapshotSeed(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const bucket = room.env.SNAPSHOT_BUCKET
   if (db === undefined || bucket === undefined)
-    return c.json(apiErrorBody('server/degraded', 'e2e-snapshot-seed-unavailable'), 503)
+    return c.json(apiErrorBody('server/degraded', 'admin-snapshot-seed-unavailable'), 503)
   await ensureSchema(room)
 
   const body: unknown = await c.req.json().catch(() => undefined)
-  if (!v.is(E2eSnapshotSeedRequestSchema, body))
-    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-snapshot-seed-request'), 400)
+  if (!v.is(AdminSnapshotSeedRequestSchema, body))
+    return c.json(apiErrorBody('request/invalid', 'invalid-admin-snapshot-seed-request'), 400)
   if (room.vaultId !== undefined && body.vaultId !== room.vaultId)
     return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
   room.vaultId = body.vaultId
 
   const update = decodeBase64(body.update)
   if (update === null || !canApplyYjsUpdate(update))
-    return c.json(apiErrorBody('request/invalid', 'invalid-e2e-snapshot-update'), 400)
+    return c.json(apiErrorBody('request/invalid', 'invalid-admin-snapshot-seed-update'), 400)
   const doc = new Y.Doc()
   Y.applyUpdate(doc, update)
   const stateVector = Y.encodeStateVector(doc)

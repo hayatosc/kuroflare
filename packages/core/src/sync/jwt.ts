@@ -201,7 +201,8 @@ function decodeBase64Character(value: string): number | undefined {
   return index === -1 ? undefined : index
 }
 
-function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean {
+/** Constant-time byte comparison; used to compare HMAC signatures and shared secrets. */
+export function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) {
     return false
   }

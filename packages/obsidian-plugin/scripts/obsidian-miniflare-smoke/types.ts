@@ -5,7 +5,7 @@ const pluginDir = dirname(fileURLToPath(import.meta.url))
 const packageDir = resolve(pluginDir, '../..')
 const pluginId = 'kuroflare'
 const endpoint = process.env.KUROFLARE_E2E_ENDPOINT ?? 'http://127.0.0.1:8787'
-const seedSecret = process.env.KUROFLARE_E2E_SEED_SECRET ?? 'e2e-seed-secret'
+const adminSecret = process.env.KUROFLARE_E2E_ADMIN_SECRET ?? 'e2e-admin-secret'
 const runId = Date.now().toString(36)
 const notePath = `e2e-miniflare-${runId}.md`
 const vaultId = process.env.KUROFLARE_E2E_VAULT_ID ?? `obsidian-miniflare-e2e-${runId}`
@@ -388,7 +388,7 @@ export {
   pluginId,
   notePath,
   endpoint,
-  seedSecret,
+  adminSecret,
   runId,
   vaultId,
   setupToken,

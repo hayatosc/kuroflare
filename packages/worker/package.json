@@ -15,7 +15,7 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "typecheck": "tsgo --noEmit",
     "dev": "tsdown --watch",
-    "dev:local": "wrangler dev --local --ip 127.0.0.1 --port 8787 --persist-to /tmp/kuroflare-worker-miniflare-state --var DEVICE_TOKEN_SECRET:e2e-device-token-secret --var E2E_SETUP_TOKEN_SECRET:e2e-seed-secret",
+    "dev:local": "wrangler dev --local --ip 127.0.0.1 --port 8787 --persist-to /tmp/kuroflare-worker-miniflare-state --var DEVICE_TOKEN_SECRET:e2e-device-token-secret --var ADMIN_TOKEN_SECRET:e2e-admin-secret",
     "typecheck:compat": "tsc --noEmit"
   },
   "dependencies": {

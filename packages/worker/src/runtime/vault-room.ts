@@ -29,10 +29,10 @@ import {
   recoverOrphanedCheckpointRuns,
   readCheckpointableDocIds,
 } from './checkpoint'
-import { E2E_SETUP_TOKEN_PATH, E2E_SNAPSHOT_PATH, CHECKPOINT_ALARM_DOC_LIMIT } from './constants'
+import { ADMIN_SETUP_TOKEN_PATH, ADMIN_SNAPSHOT_SEED_PATH, CHECKPOINT_ALARM_DOC_LIMIT } from './constants'
 import {
-  handleE2eSetupTokenSeed,
-  handleE2eSnapshotSeed,
+  handleAdminSetupTokenIssue,
+  handleAdminSnapshotSeed,
   handleSetupExchange,
   handleAuthRefresh,
   handleDeviceRevoke,
@@ -82,8 +82,8 @@ export class VaultRoom {
     readonly env: WorkerEnv,
   ) {
     this.doRouter = new Hono()
-      .post(E2E_SETUP_TOKEN_PATH, (c) => handleE2eSetupTokenSeed(this, c))
-      .post(E2E_SNAPSHOT_PATH, (c) => handleE2eSnapshotSeed(this, c))
+      .post(ADMIN_SETUP_TOKEN_PATH, (c) => handleAdminSetupTokenIssue(this, c))
+      .post(ADMIN_SNAPSHOT_SEED_PATH, (c) => handleAdminSnapshotSeed(this, c))
       .post('/setup/exchange', (c) => handleSetupExchange(this, c))
       .post('/auth/refresh', (c) => handleAuthRefresh(this, c))
       .post('/devices/:deviceId/revoke', (c) => handleDeviceRevoke(this, c))

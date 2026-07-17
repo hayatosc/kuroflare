@@ -19,5 +19,5 @@ export const VAULT_ID_STORAGE_KEY = 'vault:id'
 // actual bytes. Revisit with real byte accounting if this proves too coarse.
 export const MAX_HYDRATED_FILE_DOCS = 256
 export const EVICTION_IDLE_THRESHOLD_MS = 5 * 60 * 1_000
-export const E2E_SETUP_TOKEN_PATH = '/__e2e/setup-token'
-export const E2E_SNAPSHOT_PATH = '/__e2e/snapshot'
+export const ADMIN_SETUP_TOKEN_PATH = '/admin/setup-tokens'
+export const ADMIN_SNAPSHOT_SEED_PATH = '/admin/snapshots/seed'
