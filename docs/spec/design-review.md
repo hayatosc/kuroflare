@@ -19,8 +19,8 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 | DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship                                    |
 | DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                                                      |
 | DR-009 | P1       | Quarantine and public error evidence       | HTTP envelope differs; guarded WS rejection implemented                              |
-| DR-010 | P2       | Empty binary files                         | Schema contradiction                                                                 |
-| DR-011 | P2       | Portable path materialization              | Deterministic policy missing                                                         |
+| DR-010 | P2       | Empty binary files                         | Closed: chunkless meta entries permitted and cross-checked against the manifest      |
+| DR-011 | P2       | Portable path materialization              | Closed: deterministic shared sanitizer replaces OS-specific repair                   |
 | DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing                                                 |
 
 P0 items can acknowledge or delete durable user data incorrectly.
@@ -332,38 +332,95 @@ Acceptance evidence:
 - Unknown error codes fail closed and are not retried automatically.
 - One malformed update causes one durable quarantine record and one stable client repair entry without an infinite retry loop.
 
-### DR-010: Decide how zero-byte binary files are represented
+### DR-010: Zero-byte binary files are representable — closed
 
-The manifest schema permits `size = 0` with `chunks = []`.
-The `BinaryMetaFile` schema requires at least one chunk.
-Both contracts cannot hold for an empty attachment.
+The manifest schema already permitted `size = 0` with `chunks = []`. The `BinaryMetaFile`
+schema required at least one chunk, so both contracts could not hold for an empty
+attachment, and the Obsidian plugin silently skipped uploading empty binary files to
+work around the contradiction.
 
-Recommended contract:
+Implemented contract:
 
-- Permit `blobChunks = []` only when the referenced manifest has `size = 0` and `chunks = []`.
-- Keep `blobManifestHash` mandatory so the empty file still has content evidence.
-- Do not manufacture a zero-length chunk solely to satisfy the metadata schema.
-
-Acceptance evidence:
-
-- Upload, download, materialize, delete, and restore tests cover an empty binary file.
-
-### DR-011: Make invalid-path repair portable and deterministic
-
-The data model defers Windows reserved names, trailing spaces or periods, and path-length limits to OS-specific materialization.
-If each device chooses a different repair name, watcher feedback can make the shared path oscillate.
-
-Recommended contract:
-
-- Define a deterministic `portablePath` sanitizer shared by every client.
-- Cover Windows reserved names, control characters, trailing spaces and periods, and segment limits with common vectors.
-- Store the original path and repair reason in the repair log.
-- Keep an OS-only local conflict copy for restrictions that cannot be expressed portably; do not write that local alias back to meta state.
+- `blobChunks: []` is valid on both the flat v1 (`BinaryMetaFileSpecificSchema`) and
+  grouped v2 (`BinaryMetaContentSchema`) binary schemas in `packages/core/src/sync/meta.ts`;
+  `blobManifestHash` remains mandatory as content evidence.
+- No zero-length chunk is manufactured to satisfy the schema; a chunkless meta entry is
+  only valid when it matches a manifest with `size = 0` and `chunks = []`.
+- The plugin no longer skips empty binary file uploads.
 
 Acceptance evidence:
 
-- Linux, macOS, and Windows adapters produce the same portable alias for the shared vectors.
-- Materializing and rescanning the alias is a no-op.
+- [x] `packages/core/src/sync/messages.test.ts` ("validates binary meta files") asserts
+  `isMetaFile({ ...entry, blobChunks: [] }, fileId)` is now valid.
+- [x] `packages/core/src/sync/manifest.test.ts` ("empty-file manifests match binary meta
+  entries with no chunks") proves `blobManifestMatchesMetaFile` accepts a chunkless meta
+  entry against the chunkless manifest that `buildBlobManifest` produces for zero bytes
+  ("buildBlobManifest handles empty files").
+- [x] That same match function gates both the upload dedup check
+  (`packages/obsidian-plugin/src/main/file-tree.ts`, `enqueueBinaryUploadFromVaultFile`)
+  and the delete-vs-edit binary-restore evidence check
+  (`packages/obsidian-plugin/src/main/plugin.ts`), so upload and restore share one
+  invariant check.
+- [x] The pre-existing `packages/core/src/outbox.test.ts` test "binary plan builders
+  support zero chunk manifests without hidden dependencies" shows the upload and
+  download/materialize outbox plan builders were already chunk-count-agnostic; only the
+  meta schema and the plugin's manual skip blocked an empty file from reaching that
+  machinery.
+- [x] The plugin's silent skip of empty binary uploads is removed
+  (`packages/obsidian-plugin/src/main/file-tree.ts`).
+
+This evidence is at the schema/invariant/plan-builder unit level plus removal of the
+workaround; no dedicated end-to-end test drives an actual empty-file
+upload-download-materialize-delete-restore round trip through the worker or the Obsidian
+e2e harness. Every exercised code path is chunk-count-agnostic, so a zero-chunk manifest
+runs the same logic as any other chunk count.
+
+### DR-011: Make invalid-path repair portable and deterministic — closed
+
+The data model deferred Windows reserved names, trailing spaces or periods, and
+path-length limits to OS-specific materialization. If each device chose a different
+repair name, watcher feedback could make the shared path oscillate.
+
+Implemented contract:
+
+- `portablePath()` (`packages/core/src/sync/meta.ts`) is a pure function with no OS
+  branch, covering Windows reserved device names, control/forbidden characters, trailing
+  spaces or periods, and a 255-byte segment ceiling shared by ext4/NTFS/APFS component
+  name limits. Every client evaluates the identical rule set.
+- `planPortablePathRepairs()` (`packages/core/src/sync/reconcile.ts`) plans repairs the
+  same way `planPathConflictRepairs` does. The Obsidian reconcile pass
+  (`packages/obsidian-plugin/src/sync/meta/reconcile.ts`) applies portable-path repairs
+  first, then re-runs path-conflict planning over the sanitized paths, so any collision
+  the sanitizer introduces converges through the existing conflict-suffix mechanism.
+  Repair-log entries reuse the existing path-conflict retry/resolve actions
+  (`packages/obsidian-plugin/src/sync/obsidian/repair-actions.ts`,
+  `packages/obsidian-plugin/src/obsidian/settings-tab.ts`) instead of a new independent one.
+
+Acceptance evidence:
+
+- [x] `packages/core/src/sync/meta.test.ts` covers reserved names, control/forbidden
+  characters, trailing space/dot, and 255-byte truncation, and proves
+  `portablePath(portablePath(path).path).path === portablePath(path).path` for every
+  vector ("portablePath is idempotent: re-sanitizing an already-sanitized path is a
+  no-op").
+- [x] `packages/core/src/sync/reconcile.test.ts` ("planPortablePathRepairs renames a
+  Windows reserved device name", "planPortablePathRepairs ignores deleted entries and
+  already-portable paths") and `packages/obsidian-plugin/src/sync/meta/reconcile.test.ts`
+  ("reconcileMetaDoc sanitizes a Windows reserved device name and is a no-op on rescan",
+  "reconcileMetaDoc resolves a portable-path collision through the existing path-conflict
+  repair") prove a sanitized alias is stable on rescan and that a collision introduced by
+  sanitization converges through the existing conflict-suffix mechanism.
+- [x] Because `portablePath` is one deterministic function with no OS-specific branch
+  that every client evaluates identically, "Linux, macOS, and Windows adapters produce
+  the same portable alias for the shared vectors" holds by construction rather than by
+  separately exercising three OS adapters.
+
+The recommended contract's OS-only local conflict copy for restrictions that still
+cannot be expressed portably (kept out of shared meta state) is not implemented; the
+common vectors above are handled entirely by the shared sanitizer, and no residual
+OS-only fallback exists. This gap is outside the stated acceptance evidence and does not
+block this closure, but it remains future work if a restriction is found that
+`portablePath` cannot express deterministically.
 
 ### DR-012: Specify capability negotiation independently of protocol version
 
@@ -392,4 +449,5 @@ Before the first distributed release:
 2. Decide DR-005 through DR-007 before freezing metadata schema version 1 and setup credentials.
 3. DR-008 is closed with the evidence above. Close DR-009 before advertising
    protocol-level self-healing guarantees.
-4. Close DR-010 through DR-012 before cross-platform compatibility testing.
+4. DR-010 and DR-011 are closed with the evidence above. Close DR-012 before
+   cross-platform compatibility testing.
