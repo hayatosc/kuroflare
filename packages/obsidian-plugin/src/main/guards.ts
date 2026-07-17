@@ -5,7 +5,6 @@ import type {
   KuroflareRepairLogEntry,
   KuroflareLocalRepairExportMetadata,
 } from '../main-types'
-import type { LocalSetupMetadata } from '../sync/engine/setup'
 import type { LocalStoreRepairImportedOutboxRecord } from '../sync/store/repair'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 
@@ -57,21 +56,6 @@ export function isKuroflareLocalRepairExportMetadata(
 
 export function isFileAlreadyExistsError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('File already exists')
-}
-
-export function sameLocalSetupMetadata(
-  left: LocalSetupMetadata | undefined,
-  right: LocalSetupMetadata,
-): boolean {
-  return (
-    left !== undefined &&
-    left.endpoint === right.endpoint &&
-    left.vaultId === right.vaultId &&
-    left.deviceId === right.deviceId &&
-    left.protocolVersion === right.protocolVersion &&
-    left.bootstrapMode === right.bootstrapMode &&
-    left.tokenVersion === right.tokenVersion
-  )
 }
 
 export function isLocalStoreOutboxRecord(value: unknown): value is LocalStoreOutboxRecord {

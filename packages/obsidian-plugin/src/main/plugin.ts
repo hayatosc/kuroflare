@@ -57,7 +57,7 @@ import {
   type SyncRuntimeStartupStepEffectPort,
 } from '../sync/engine/actuation'
 import { createLocalSetupPersistIndexedDbMetadataPort } from '../sync/engine/persist'
-import { isLocalSetupMetadata, type LocalSetupMetadata } from '../sync/engine/setup'
+import { type LocalSetupMetadata } from '../sync/engine/setup'
 import {
   commitFullSnapshotApplyIndexedDbTransaction,
   createFullSnapshotApplyIndexedDbDatabasePort,
@@ -157,7 +157,6 @@ import {
   isKuroflareLocalRepairExportMetadata,
   isStoredYDocRecord,
   isDocIdLike,
-  sameLocalSetupMetadata,
 } from './guards'
 import {
   accessTokenSecretKeyForSetup,
@@ -395,15 +394,6 @@ export default class KuroflareSpikePlugin extends Plugin {
       )
         ? this.kuroflareSettings.localRepairExport
         : undefined,
-    }
-    if (
-      isLocalSetupMetadata(this.kuroflareSettings.setupMetadata) &&
-      this.kuroflareSettings.setupToken.trim().length === 0
-    ) {
-      this.kuroflareSettings = {
-        ...this.kuroflareSettings,
-        setupBootstrapMode: undefined,
-      }
     }
     if (secretCleanup.removedLegacySecretKeys.length > 0) {
       console.warn('[kuroflare] removed legacy plaintext token fields from settings', {
@@ -877,13 +867,11 @@ export default class KuroflareSpikePlugin extends Plugin {
       step: 'persist-setup-response',
       phase: 'setup',
     })
-    const setupMetadata = localSetupMetadataFromSetupResponse(response)
-    this.trustedSetupMetadata = setupMetadata
+    this.trustedSetupMetadata = localSetupMetadataFromSetupResponse(response)
     await this.updateSettings({
       endpoint: response.endpoint,
       setupVaultId: response.vaultId,
       setupToken: '',
-      setupMetadata,
       setupBootstrapMode: undefined,
     })
     await this.openMetaPersistence()
@@ -1381,18 +1369,6 @@ export default class KuroflareSpikePlugin extends Plugin {
     })
     if (metadataSnapshot.ok) {
       this.trustedSetupMetadata = metadataSnapshot.snapshot.setup
-      if (
-        !sameLocalSetupMetadata(
-          this.kuroflareSettings.setupMetadata,
-          metadataSnapshot.snapshot.setup,
-        )
-      ) {
-        await this.updateSettings({
-          setupMetadata: metadataSnapshot.snapshot.setup,
-          setupBootstrapMode: undefined,
-          setupToken: '',
-        })
-      }
     }
     const setup = currentSetupMetadata(this)
     if (setup === undefined) return

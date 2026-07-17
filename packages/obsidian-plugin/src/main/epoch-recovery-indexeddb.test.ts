@@ -151,7 +151,7 @@ function createTestPlugin(db: IDBDatabase, setup: Record<string, unknown>): Kuro
     documentRecoveryHydrating: new Set<string>(),
     documentRecoveryRequired: new Set<string>(),
     documentReplacementInProgress: new Set<string>(),
-    kuroflareSettings: { setupMetadata: setup, setupToken: '', setupVaultId: '' },
+    kuroflareSettings: { setupToken: '', setupVaultId: '' },
     loadedTextDocs: new Map(),
     localStoreDb: db,
     localStoreDbName: 'integration-local-store',

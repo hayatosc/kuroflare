@@ -45,7 +45,7 @@ test('requestDocFromWorker reports a closed socket without leaving a pending req
     },
     pendingSetupResponse: null,
     trustedSetupMetadata: null,
-    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    kuroflareSettings: { setupVaultId: '' },
     pendingSyncRequestMessageIds: new Set<string>(),
     workerMessageCounter: 0,
   }
@@ -81,7 +81,7 @@ test('sendLocalAwarenessUpdate drops silently before hello is accepted', () => {
     },
     pendingSetupResponse: null,
     trustedSetupMetadata: awarenessSetup,
-    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    kuroflareSettings: { setupVaultId: '' },
   })
 
   sendLocalAwarenessUpdate(plugin, { kind: 'file', ydocId: makeYDocId('awareness-doc-1') }, 1, {})
@@ -100,7 +100,7 @@ test('sendLocalAwarenessUpdate broadcasts the local presence state over an open 
     },
     pendingSetupResponse: null,
     trustedSetupMetadata: awarenessSetup,
-    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    kuroflareSettings: { setupVaultId: '' },
   })
   const docId = { kind: 'file', ydocId: makeYDocId('awareness-doc-2') } as const
 
@@ -132,7 +132,7 @@ test('wireLocalAwarenessBroadcast sends only local presence changes tied to the 
     },
     pendingSetupResponse: null,
     trustedSetupMetadata: awarenessSetup,
-    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    kuroflareSettings: { setupVaultId: '' },
   })
 
   wireLocalAwarenessBroadcast(plugin)
@@ -364,7 +364,7 @@ test('accepted open worker websocket reuse preserves negotiated metadata access'
     metadataAccess: 'read-write',
     pendingSetupResponse: null,
     trustedSetupMetadata: setup,
-    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    kuroflareSettings: { setupVaultId: '' },
     metadataCapabilityAdvertised: true,
     metadataCapabilityFallbackAttempted: false,
   })

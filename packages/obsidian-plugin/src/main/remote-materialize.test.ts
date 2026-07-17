@@ -392,7 +392,7 @@ test('binary deletion evidence is discarded when metadata changes during HEAD ve
       tokenVersion: 1,
     },
     pendingSetupResponse: null,
-    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    kuroflareSettings: { setupVaultId: '' },
     app: { secretStorage: { getSecret: () => 'access-token' } },
     fetchBlobManifestForMeta: async (): Promise<BlobManifest> => ({
       version: 1,
@@ -846,7 +846,7 @@ test('binary evidence final validation drops an earlier item changed during late
       tokenVersion: 1,
     },
     pendingSetupResponse: null,
-    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    kuroflareSettings: { setupVaultId: '' },
     app: { secretStorage: { getSecret: () => 'access-token' } },
     fetchBlobManifestForMeta: async (
       _setup: unknown,

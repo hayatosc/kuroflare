@@ -75,7 +75,7 @@ test('concurrent vault create events recheck meta after async startup work', asy
       tokenVersion: 1,
     } as const,
     pendingSetupResponse: null,
-    kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+    kuroflareSettings: { setupVaultId: '' },
     activeFile: null,
     app: {
       workspace: { getActiveFile: () => null },
@@ -145,7 +145,7 @@ test('vault delete drops stale evidence when the path is recreated while loading
         tokenVersion: 1,
       } as const,
       pendingSetupResponse: null,
-      kuroflareSettings: { setupMetadata: undefined, setupVaultId: '' },
+      kuroflareSettings: { setupVaultId: '' },
       app: {
         vault: {
           getAbstractFileByPath: () => recreated,

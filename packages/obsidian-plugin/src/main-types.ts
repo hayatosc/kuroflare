@@ -2,15 +2,12 @@ import type { DocId } from '@kuroflare/core'
 import type { IndexeddbPersistence } from 'y-indexeddb'
 import type * as Y from 'yjs'
 
-import type { LocalSetupMetadata } from './sync/engine/setup'
-
 export interface KuroflareSettings {
   readonly endpoint: string
   readonly setupVaultId: string
   readonly setupToken: string
   readonly requestedDeviceName: string
   readonly setupBootstrapMode?: 'new-vault' | 'join-existing' | undefined
-  readonly setupMetadata?: LocalSetupMetadata | undefined
   readonly repairLog?: readonly KuroflareRepairLogEntry[] | undefined
   readonly localRepairExport?: KuroflareLocalRepairExportMetadata | undefined
 }

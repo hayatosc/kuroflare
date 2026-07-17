@@ -56,7 +56,7 @@ import { createRemoteSetupAccessTokenVerifier } from './setup-verifier'
 export interface SetupMetadataSource {
   readonly pendingSetupResponse: SetupExchangeResponse | null
   readonly trustedSetupMetadata: LocalSetupMetadata | null
-  readonly kuroflareSettings: Pick<KuroflareSettings, 'setupMetadata' | 'setupVaultId'>
+  readonly kuroflareSettings: Pick<KuroflareSettings, 'setupVaultId'>
 }
 
 export interface AuthRefreshRetryHost {
@@ -167,9 +167,6 @@ export function currentSetupVaultIdHint(
   if (plugin.trustedSetupMetadata !== null) {
     return plugin.trustedSetupMetadata.vaultId
   }
-  if (plugin.kuroflareSettings.setupMetadata !== undefined) {
-    return plugin.kuroflareSettings.setupMetadata.vaultId
-  }
   return v.is(VaultIdSchema, plugin.kuroflareSettings.setupVaultId)
     ? plugin.kuroflareSettings.setupVaultId
     : undefined
@@ -179,7 +176,7 @@ export function currentSetupMetadata(plugin: SetupMetadataSource): LocalSetupMet
   if (plugin.pendingSetupResponse !== null) {
     return localSetupMetadataFromSetupResponse(plugin.pendingSetupResponse)
   }
-  return plugin.trustedSetupMetadata ?? plugin.kuroflareSettings.setupMetadata
+  return plugin.trustedSetupMetadata ?? undefined
 }
 
 export function requireSetupMetadata(plugin: SetupMetadataSource): LocalSetupMetadata {
@@ -594,7 +591,6 @@ async function persistLocalDeviceRevoke(
   }
   const revokedSetup = { ...setup, tokenVersion: result.response.tokenVersion }
   plugin.trustedSetupMetadata = revokedSetup
-  await plugin.updateSettings({ setupMetadata: revokedSetup })
   stopLocalSyncAfterAuthBlocked(plugin, 'revoked')
   new Notice('Kuroflare auth: this device was revoked and sync is stopped')
 }
@@ -667,7 +663,6 @@ export async function runAuthRefreshRequest(
       plugin.pendingOutboxResumeEvents.push(attempt.emitResumeEvent)
       const refreshedSetup = { ...setup, tokenVersion: attempt.response.tokenVersion }
       plugin.trustedSetupMetadata = refreshedSetup
-      await plugin.updateSettings({ setupMetadata: refreshedSetup })
       plugin.syncStatusEl?.setText(`Kuroflare sync: auth refreshed ${setup.vaultId}`)
       scheduleOutboxWorkerTick(plugin, 0, 'auth-refresh')
       notifyAuthRefreshStartupRetry(plugin)

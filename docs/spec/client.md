@@ -97,14 +97,14 @@ degraded は同期停止ではなく、未処理 queue や repair event があ�
 
 ```
 .obsidian/plugins/kuroflare/data.json
-  endpoint / vaultId / deviceId / auth secret reference（token 本体は保存しない）
+  endpoint / setupVaultId / auth secret reference（token 本体は保存しない）
   ignore rules / sync mode flags
   repairLog        # 自動修復イベント。repair panel から読む
 ```
 
 `path → fileId` の Vault 内キャッシュは持たない。
 マッピングは IndexedDB で完結し、失われても join adoption（§8）で remote meta から再構築できる。
-`data.json` の setup metadata mirror は UI / 復旧用 cache で、IndexedDB 側の trusted snapshot と食い違えば trusted 側で上書きする。
+`data.json` does not mirror trusted setup/auth metadata (deviceId, protocolVersion, tokenVersion, bootstrapMode). The only setup-related field kept in `data.json` is `setupVaultId`, a plain vault-ID hint used to pick which per-vault IndexedDB to probe before that database's `metadata` store has been read; it carries no auth material and is redundant with, never authoritative over, the IndexedDB `metadata` store.
 
 **IndexedDB**:
 
