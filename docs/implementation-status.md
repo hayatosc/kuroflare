@@ -111,7 +111,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ### P0: full snapshot の production 経路
 
-- The production `GET /vaults/:vaultId/{meta,files/:ydocId}/latest` and `PUT /vaults/:vaultId/{meta,files/:ydocId}/snapshot` routes and guarded startup snapshot fetch/apply are implemented. Runtime `NeedFullSnapshot` handling currently pauses matching outbox work for manual recovery; it does not automatically fetch and apply a replacement snapshot.
+- The production `GET /vaults/:vaultId/{meta,files/:ydocId}/latest` and `PUT /vaults/:vaultId/{meta,files/:ydocId}/snapshot` routes and guarded startup snapshot fetch/apply are implemented. Runtime `NeedFullSnapshot` handling now automatically fetches and applies a replacement snapshot through the same authenticated fetch-latest/verify/apply pipeline used at startup (merge-safe: it only replaces local state when there are no pending local updates and no bound active editor), retrying a short bounded backoff schedule (`[0, 2s, 5s]`); exhausting it fails closed by leaving the matching outbox item paused (`reason: 'full-snapshot-required', resumeOn: 'manual'`) for the existing explicit repair path. `planOutboxFullSnapshotRelease` now also releases paused `meta-ref-update` items, matching how they already share the ack/need-full-snapshot completion path with `y-update`. Verified by unit tests plus the real Obsidian + miniflare `:app` E2E (green 2026-07-17).
 - CLI（`snapshot:import` script）と miniflare smoke は e2e seed API に依存せず production import route を使う。
 
 ### P0: outbox worker の実 side effect runner 化
