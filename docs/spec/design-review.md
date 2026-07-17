@@ -21,7 +21,7 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 | DR-009 | P1       | Quarantine and public error evidence       | HTTP envelope differs; guarded WS rejection implemented                              |
 | DR-010 | P2       | Empty binary files                         | Closed: chunkless meta entries permitted and cross-checked against the manifest      |
 | DR-011 | P2       | Portable path materialization              | Closed: deterministic shared sanitizer replaces OS-specific repair                   |
-| DR-012 | P2       | Capability negotiation                     | Forward-compatibility policy missing                                                 |
+| DR-012 | P2       | Capability negotiation                     | Closed: opaque capability tokens with known-intersection negotiation                 |
 
 P0 items can acknowledge or delete durable user data incorrectly.
 P1 items can violate convergence, recovery, or interoperability under realistic concurrency.
@@ -201,8 +201,9 @@ Acceptance evidence:
 - [x] Older clients remain metadata read-only without mutating legacy values.
 - [x] File-YDoc updates from metadata read-only sessions remain accepted.
 
-DR-006 is closed below. DR-012 (general capability negotiation) remains open; the
-metadata write gate is still intentionally narrow.
+DR-006 is closed below. DR-012 (general capability negotiation) is closed below;
+the metadata write gate is still intentionally narrow, but it now derives from the
+generalized negotiated intersection.
 
 ### DR-006: Replace wall-clock delete detection with content-version evidence — closed
 
@@ -422,21 +423,22 @@ OS-only fallback exists. This gap is outside the stated acceptance evidence and 
 block this closure, but it remains future work if a restriction is found that
 `portablePath` cannot express deterministically.
 
-### DR-012: Specify capability negotiation independently of protocol version
+### DR-012: Specify capability negotiation independently of protocol version — closed
 
-`ClientCapabilitySchema` is a closed union.
-Adding a capability makes older guards reject the entire hello if the new value is sent, even when the capability is optional.
+`ClientCapabilitySchema` was a closed union.
+Adding a capability made older guards reject the entire hello if the new value was sent, even when the capability was optional.
 
-Recommended contract:
+Implemented contract:
 
-- A peer ignores unknown optional capabilities and negotiates the known intersection.
-- Required capabilities use an explicit required list or a protocol-version boundary.
-- Capability order and duplicates have no semantic effect.
+- `ClientHello.capabilities` is validated as opaque, format-guarded tokens rather than a closed union, so an unrecognized optional capability no longer fails hello admission.
+- `decideClientCapabilityNegotiation` (`packages/core/src/sync/messages.ts`) computes the known intersection; capability order and duplicates have no semantic effect.
+- A hello is rejected only when it is missing a capability from the explicit required list (`REQUIRED_CLIENT_CAPABILITIES`, currently empty), closing with a stable `capability-required:<name>` reason distinct from the generic malformed-message close.
+- The Worker's `metadata-schema-v2` write gate derives `metadataAccess` from the negotiated intersection instead of a raw advertised-list check.
 
 Acceptance evidence:
 
-- An older client accepts hello with an unknown optional capability.
-- Missing required capability produces a stable upgrade error rather than a generic malformed-message close.
+- [x] A peer accepts a hello advertising an unrecognized optional capability (`packages/core/src/sync/messages.test.ts`; `packages/worker/src/runtime/vault-room.test.ts` "VaultRoom admits a hello advertising an unrecognized optional capability (DR-012)").
+- [x] A hello missing a required capability is rejected with a stable `capability-required:<name>` close reason rather than a generic malformed-message close (`decideClientCapabilityNegotiation` unit tests in `packages/core/src/sync/messages.test.ts`; wired at the sole call site in `packages/worker/src/runtime/auth.ts`). No capability is currently mandatory, so this path is exercised by unit tests rather than live traffic.
 
 ## 5. Documentation and release gate
 
@@ -449,5 +451,4 @@ Before the first distributed release:
 2. Decide DR-005 through DR-007 before freezing metadata schema version 1 and setup credentials.
 3. DR-008 is closed with the evidence above. Close DR-009 before advertising
    protocol-level self-healing guarantees.
-4. DR-010 and DR-011 are closed with the evidence above. Close DR-012 before
-   cross-platform compatibility testing.
+4. DR-010, DR-011, and DR-012 are closed with the evidence above.
