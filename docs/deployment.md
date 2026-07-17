@@ -76,7 +76,8 @@ new_sqlite_classes = ["VaultRoom"]
 | `POST /admin/quarantine/:id/{discard,force-apply}`                                                | Bearer device token, scope `sync:write`                              | Resolve a quarantined update.                                                                                                                                                                                                                                                             |
 | `GET /vaults/:vaultId/meta/latest`, `GET /vaults/:vaultId/files/:ydocId/latest`                   | Bearer device token, scope `sync:read`                               | Fetch the latest hydrated snapshot for a doc.                                                                                                                                                                                                                                             |
 | `PUT /vaults/:vaultId/meta/snapshot`, `PUT /vaults/:vaultId/files/:ydocId/snapshot`               | Bearer device token                                                  | Import a snapshot.                                                                                                                                                                                                                                                                        |
-| `POST /blobs/head`, `POST /blobs/upload-url`, `GET/PUT /blobs/:hash`, `GET/PUT /blob-manifests/*` | Bearer device token, scope `blob:read`/`blob:write`                  | Attachment (blob) storage. **Multipart upload is explicitly unimplemented**: `/blobs/upload-url` and `PUT /blobs/:hash` both reject with `413 blob-upload-url:multipart-unimplemented` once size exceeds `BLOB_SINGLE_PUT_MAX_BYTES` (16 MiB − 1 byte) or `multipart: true` is requested. |
+| `POST /blobs/head`, `POST /blobs/upload-url`, `GET/PUT /blobs/:hash`, `GET/PUT /blob-manifests/*` | Bearer device token, scope `blob:read`/`blob:write`                  | Attachment (blob) storage. Blobs at or above `BLOB_MULTIPART_THRESHOLD_BYTES` (16 MiB), or any upload the client explicitly asks for with `multipart: true`, must use the multipart flow below instead of a single `PUT /blobs/:hash`: `/blobs/upload-url` rejects with `413 blob-upload-url:multipart-required` if the client doesn't ask for multipart in that case, and `PUT /blobs/:hash` rejects with `413 blob-put:use-multipart` once size exceeds `BLOB_SINGLE_PUT_MAX_BYTES` (16 MiB − 1 byte). |
+| `PUT /blobs/:hash/parts/:uploadId/:partNumber`, `POST /blobs/:hash/complete`, `POST /blobs/:hash/abort` | Bearer device token, scope `blob:write`                | Multipart blob upload: upload each part returned by `/blobs/upload-url`, then complete or abort the session. Implemented end-to-end (create/part/complete/abort) on both worker and client and covered by real-R2 e2e, but the current client-side chunking (max 1 MiB per chunk) never produces a single blob at or above the 16 MiB threshold, so this path is not exercised by real traffic yet — see `docs/implementation-status.md`. |
 | `POST /__e2e/setup-token`, `POST /__e2e/snapshot`                                                 | `x-kuroflare-e2e-secret` header == `E2E_SETUP_TOKEN_SECRET`          | Interim admin seeding routes; see §4. `404` if `E2E_SETUP_TOKEN_SECRET` unset, `403` on header mismatch.                                                                                                                                                                                  |
 
 CORS is wide open (`origin: '*'`) at the top-level Hono app
@@ -99,7 +100,19 @@ Run everything from `packages/worker`.
    pnpm --filter @kuroflare/worker exec wrangler r2 bucket create kuroflare-snapshots
    ```
 
-3. **Set secrets** (replace the placeholder values — do not reuse these
+3. **Apply the R2 lifecycle rule for stray multipart uploads.** This is bucket
+   config, not part of `wrangler.toml` (see the comment above
+   `[[r2_buckets]]` in `packages/worker/wrangler.toml`), so it must be applied
+   out of band once per environment; it aborts incomplete multipart uploads
+   (§2) after ~24h even if the Durable Object's own best-effort sweep never
+   runs for an otherwise-idle vault:
+
+   ```bash
+   pnpm --filter @kuroflare/worker exec wrangler r2 bucket lifecycle add \
+     kuroflare-snapshots abort-incomplete-multipart --abort-multipart-days 1
+   ```
+
+4. **Set secrets** (replace the placeholder values — do not reuse these
    examples as real secrets):
 
    ```bash
@@ -110,7 +123,7 @@ Run everything from `packages/worker`.
    # paste a second, independent long random value
    ```
 
-4. **Deploy**:
+5. **Deploy**:
 
    ```bash
    pnpm --filter @kuroflare/worker exec wrangler deploy
@@ -121,7 +134,7 @@ Run everything from `packages/worker`.
    deployment. The Durable Object SQLite migration (`tag = "v1"`) applies
    automatically on first deploy.
 
-5. **Smoke-check** the deployed Worker responds (any vault ID; expect a
+6. **Smoke-check** the deployed Worker responds (any vault ID; expect a
    WebSocket-upgrade-required response, not a 5xx):
 
    ```bash
@@ -183,22 +196,20 @@ end users, until a real issuance flow exists (see §7).
 Setup tokens expire quickly (10 minutes by default) — generate and register
 one right before pasting it into the plugin, not in advance.
 
-## 5. Plugin build and manual install
+## 5. Plugin build and install
 
-From the repository root:
+From the repository root, for each vault you want to sync, run the
+`install:vault` script (`packages/obsidian-plugin/scripts/install-to-vault.ts`).
+It builds the plugin (`NODE_ENV=production tsdown && mv main.cjs main.js`,
+same as the plain `build` script) and copies `manifest.json` and `main.js`
+(plus `styles.css` if the build produced one) into
+`<vault>/.obsidian/plugins/kuroflare/`, overwriting any previous install. It
+fails fast if the target path doesn't look like a vault (no `.obsidian/`
+directory):
 
 ```bash
-pnpm --filter @kuroflare/obsidian-plugin build
-```
-
-This produces `packages/obsidian-plugin/main.js` next to `manifest.json`.
-Then, for each vault you want to sync:
-
-```bash
-mkdir -p /path/to/vault/.obsidian/plugins/kuroflare
-cp packages/obsidian-plugin/manifest.json /path/to/vault/.obsidian/plugins/kuroflare/
-cp packages/obsidian-plugin/versions.json /path/to/vault/.obsidian/plugins/kuroflare/
-cp packages/obsidian-plugin/main.js /path/to/vault/.obsidian/plugins/kuroflare/
+pnpm --filter @kuroflare/obsidian-plugin install:vault /path/to/vault
+# or: KUROFLARE_VAULT_PATH=/path/to/vault pnpm --filter @kuroflare/obsidian-plugin install:vault
 ```
 
 Enable `Kuroflare` from Obsidian's Community plugins settings, open the
@@ -212,10 +223,14 @@ plugin's settings tab, and follow §4 to connect it to your deployed Worker.
   Cloudflare account. Treat the first real deploy as a trial: watch logs
   (`wrangler tail`) and confirm sync end-to-end before trusting it with real
   notes.
-- **Large attachments are rejected.** Multipart blob upload is not
-  implemented (`packages/worker/src/runtime.ts`, `BLOB_MULTIPART_THRESHOLD_BYTES
-= 16 MiB`); any blob at or above 16 MiB is rejected with `413
-blob-upload-url:multipart-unimplemented`.
+- **Large attachments use multipart upload, but it's untested by real
+  traffic.** Blobs at or above `BLOB_MULTIPART_THRESHOLD_BYTES` (16 MiB,
+  `packages/worker/src/runtime/constants.ts`) go through the multipart
+  create/part/complete/abort flow (§2), which is implemented and covered by
+  real-R2 e2e tests. In practice the plugin's client-side chunking caps each
+  chunk at 1 MiB and never assembles a single blob that large, so this path
+  has not yet seen real traffic — treat it as less battle-tested than the
+  single-PUT path until that changes.
 - **Mobile is untested.** The plugin manifest does not set
   `isDesktopOnly`, but `spec.md` documents an open, unresolved spike
   question about whether Obsidian mobile's WebView supports the IndexedDB
