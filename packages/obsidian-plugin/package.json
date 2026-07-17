@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "NODE_ENV=production tsdown && mv main.cjs main.js",
+    "install:vault": "NODE_ENV=production tsdown && mv main.cjs main.js && node --experimental-strip-types scripts/install-to-vault.ts",
     "dev": "tsdown --watch",
     "test": "vitest run",
     "test:e2e:obsidian": "NODE_ENV=production tsdown && mv main.cjs main.js && node --experimental-strip-types scripts/obsidian-cli-smoke.ts",
