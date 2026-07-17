@@ -18,6 +18,7 @@ import {
   type LastMaterializedRecord,
   type DocLatestSnapshotResponse,
   type MetaLatestSnapshotResponse,
+  type NeedFullSnapshotReason,
   type FileId,
   type MessageId,
   type OutboxResumeEvent,
@@ -62,6 +63,7 @@ import {
   commitFullSnapshotApplyIndexedDbTransaction,
   createFullSnapshotApplyIndexedDbDatabasePort,
   planFullSnapshotApplyRuntime,
+  runNeedFullSnapshotRecovery,
   type VerifiedFullSnapshotBytes,
 } from '../sync/engine/snapshot'
 import {
@@ -126,6 +128,7 @@ import {
   REPAIR_ORIGIN,
   REPAIR_DEVICE,
   DEFAULT_SETTINGS,
+  NEED_FULL_SNAPSHOT_RECOVERY_BACKOFF_MS,
 } from './constants'
 import { flushYTextToDisk } from './editor'
 import {
@@ -242,6 +245,8 @@ export default class KuroflareSpikePlugin extends Plugin {
   readonly documentRecoveryRequired = new Set<string>()
   readonly documentRecoveryHydrating = new Set<string>()
   readonly documentReplacementInProgress = new Set<string>()
+  /** Documents currently running automatic NeedFullSnapshot fetch+apply recovery. */
+  readonly needFullSnapshotRecoveryInProgress = new Set<string>()
   activeTextDoc: LoadedTextDoc | null = null
   statusEl: HTMLElement | null = null
   syncStatusEl: HTMLElement | null = null
@@ -1512,6 +1517,56 @@ export default class KuroflareSpikePlugin extends Plugin {
     await this.resolvePendingRemoteTextFile(loaded)
     if (sameDocId(docId, await activeDocId(this))) {
       await flushYTextToDisk(this, 'full-snapshot')
+    }
+  }
+
+  /**
+   * Automatically recovers from a NeedFullSnapshot response by fetching and applying a
+   * replacement snapshot, which resumes the matching paused outbox item as a side effect
+   * of {@link applyLatestSnapshot}. Bounded retries with backoff; exhausting them leaves
+   * the outbox item in its existing paused/manual-recovery state (fail closed).
+   */
+  async recoverFromNeedFullSnapshot(docId: DocId, reason: NeedFullSnapshotReason): Promise<void> {
+    const epochKey = documentEpochMetadataKey(docId)
+    if (
+      this.needFullSnapshotRecoveryInProgress.has(epochKey) ||
+      this.documentRecoveryRequired.has(epochKey) ||
+      this.documentReplacementInProgress.has(epochKey)
+    ) {
+      return
+    }
+    this.needFullSnapshotRecoveryInProgress.add(epochKey)
+    try {
+      const result = await runNeedFullSnapshotRecovery(
+        {
+          fetchSnapshot: async () =>
+            await this.fetchLatestSnapshotPayload(docId, `need-full-snapshot:${reason}`),
+          applySnapshot: async (payload) => {
+            try {
+              await this.applyLatestSnapshot(docId, payload, `need-full-snapshot:${reason}`)
+              return true
+            } catch (error: unknown) {
+              console.warn('[kuroflare] need-full-snapshot auto-recovery apply attempt failed', {
+                docId,
+                reason,
+                error: safeLogError(error),
+              })
+              return false
+            }
+          },
+          wait: async (delayMs) =>
+            await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs)),
+        },
+        NEED_FULL_SNAPSHOT_RECOVERY_BACKOFF_MS,
+      )
+      if (!result.ok) {
+        console.warn(
+          '[kuroflare] need-full-snapshot auto-recovery exhausted retries; outbox item remains paused for manual recovery',
+          { docId, reason, attempts: result.attempts },
+        )
+      }
+    } finally {
+      this.needFullSnapshotRecoveryInProgress.delete(epochKey)
     }
   }
 

@@ -377,3 +377,49 @@ async function waitForSnapshotApplyIndexedDbTransaction(
     }
   })
 }
+
+/** A fetched and verified full snapshot, ready to plan through {@link planFullSnapshotApplyRuntime}. */
+export interface NeedFullSnapshotRecoverySnapshotPayload {
+  readonly response: MetaLatestSnapshotResponse | DocLatestSnapshotResponse
+  readonly verifiedBytes: VerifiedFullSnapshotBytes
+}
+
+/** Ports required to auto-recover from a NeedFullSnapshot pause. */
+export interface NeedFullSnapshotRecoveryPorts {
+  /** Fetches and verifies the latest replacement snapshot; `null` on any fetch or verification failure. */
+  readonly fetchSnapshot: () => Promise<NeedFullSnapshotRecoverySnapshotPayload | null>
+  /** Applies a fetched snapshot and resumes the matching paused outbox item(s). */
+  readonly applySnapshot: (payload: NeedFullSnapshotRecoverySnapshotPayload) => Promise<boolean>
+  /** Waits before the next bounded retry attempt. */
+  readonly wait: (delayMs: number) => Promise<void>
+}
+
+/** Outcome of one bounded NeedFullSnapshot recovery run. */
+export type NeedFullSnapshotRecoveryResult =
+  | { readonly ok: true; readonly attempts: number }
+  | { readonly ok: false; readonly attempts: number }
+
+/**
+ * Runs a bounded, backed-off sequence of fetch+apply attempts after the server reports
+ * NeedFullSnapshot. Every port failure (including a thrown error) is treated as one
+ * exhausted attempt; exhausting the whole schedule fails closed by leaving the matching
+ * outbox item in its existing paused/manual-recovery state rather than retrying forever.
+ */
+export async function runNeedFullSnapshotRecovery(
+  ports: NeedFullSnapshotRecoveryPorts,
+  backoffScheduleMs: readonly number[],
+): Promise<NeedFullSnapshotRecoveryResult> {
+  const schedule = backoffScheduleMs.length > 0 ? backoffScheduleMs : [0]
+  for (const [index, delayMs] of schedule.entries()) {
+    if (delayMs > 0) await ports.wait(delayMs)
+    try {
+      const payload = await ports.fetchSnapshot()
+      if (payload !== null && (await ports.applySnapshot(payload))) {
+        return { ok: true, attempts: index + 1 }
+      }
+    } catch {
+      // Retried on the next scheduled attempt below; see the fail-closed note above.
+    }
+  }
+  return { ok: false, attempts: schedule.length }
+}

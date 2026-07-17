@@ -17,6 +17,8 @@ export const MARKDOWN_EXTENSION = 'md'
 export const BLOB_CACHE_PATH_PREFIX = 'blob-cache/'
 export const OUTBOX_WORKER_LEASE_DURATION_MS = 30_000
 export const OUTBOX_WORKER_MAX_STARTS = 4
+/** Bounded backoff schedule for automatic NeedFullSnapshot fetch+apply recovery. */
+export const NEED_FULL_SNAPSHOT_RECOVERY_BACKOFF_MS = [0, 2_000, 5_000] as const
 export const AUTH_REFRESH_MARGIN_MS = 60_000
 export const AUTH_REFRESH_ESTIMATED_DURATION_MS = 10_000
 export const AUTH_REFRESH_STALE_AFTER_MS = 120_000

@@ -757,8 +757,9 @@ test('outbox quarantine pause rejects unrelated evidence', () => {
   )
 })
 
-test('outbox full snapshot release closes only matching paused y-updates', () => {
+test('outbox full snapshot release closes only matching paused y-updates and meta-ref-updates', () => {
   const matching = outboxId('matching')
+  const matchingMetaRef = outboxId('matching-meta-ref')
   const otherDoc = outboxId('other-doc')
   const manualPaused = outboxId('manual-paused')
   const blobPaused = outboxId('blob-paused')
@@ -771,6 +772,13 @@ test('outbox full snapshot release closes only matching paused y-updates', () =>
         {
           id: matching,
           kind: 'y-update',
+          status: 'paused',
+          reason: 'full-snapshot-required',
+          docId: fileDocId,
+        },
+        {
+          id: matchingMetaRef,
+          kind: 'meta-ref-update',
           status: 'paused',
           reason: 'full-snapshot-required',
           docId: fileDocId,
@@ -803,6 +811,13 @@ test('outbox full snapshot release closes only matching paused y-updates', () =>
       releasePatches: [
         {
           id: matching,
+          status: 'done',
+          nextAttemptAt: undefined,
+          completedBy: 'full-snapshot-apply',
+          snapshotSeq: 20,
+        },
+        {
+          id: matchingMetaRef,
           status: 'done',
           nextAttemptAt: undefined,
           completedBy: 'full-snapshot-apply',

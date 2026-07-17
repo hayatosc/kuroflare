@@ -266,6 +266,7 @@ inbound:
 5. apply 可否を判定する。doc の一致、snapshot seq の前進、hash の一致、対象 doc に未送信 local update が無いこと、active editor binding が外れていること、をすべて満たす場合だけ apply。
 6. apply は local YDoc 置換、`remoteCursorSeq = snapshotSeq` と `stateVectorBase64` の patch、`full-snapshot-required` item の done を 1 つの IndexedDB transaction で commit する。分けると次回 hello が古い SV を送って full snapshot loop に戻る。outbox release の persist が拒否されたら local YDoc も変えない。
 7. `wait(pending-local-updates)` は local update を先に durable ack させるか、conflict UI で discard / fork を選ばせる。`wait(active-editor-bound)` は binding が外れるまで待つ。`reject` は repair log に残して別 generation へ fallback する。
+8. The client runs this whole sequence automatically as soon as `NeedFullSnapshot` arrives, retrying steps 1–7 up to a short bounded backoff schedule. Exhausting the schedule fails closed: the matching outbox item stays in its existing `paused(reason="full-snapshot-required", resumeOn="manual")` state (§5) rather than retrying forever, so the same explicit manual-repair path remains available if automatic recovery cannot make progress.
 
 ## 8. 初回 scan と join adoption
 

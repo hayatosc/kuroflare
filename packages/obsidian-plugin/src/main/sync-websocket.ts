@@ -489,6 +489,16 @@ export async function handleWorkerInboundMessage(
   })
   if (dispatched.route.action === 'apply-remote-update') {
     await plugin.handleWorkerSyncUpdate(dispatched.route.message)
+  } else if (
+    dispatched.route.action === 'outbox-completion' &&
+    dispatched.route.message.type === 'need-full-snapshot'
+  ) {
+    // Fire-and-forget: fetch+apply retries run in the background so this doesn't block
+    // dispatch of subsequent inbound messages (see recoverFromNeedFullSnapshot).
+    void plugin.recoverFromNeedFullSnapshot(
+      dispatched.route.message.docId,
+      dispatched.route.message.reason,
+    )
   }
 }
 

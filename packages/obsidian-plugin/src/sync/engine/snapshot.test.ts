@@ -11,6 +11,7 @@ import { assert, test } from 'vitest'
 import {
   commitFullSnapshotApplyIndexedDbTransaction,
   planFullSnapshotApplyRuntime,
+  runNeedFullSnapshotRecovery,
   type FullSnapshotApplyIndexedDbDatabasePort,
   type FullSnapshotApplyIndexedDbObjectStorePorts,
   type FullSnapshotApplyIndexedDbTransactionHandle,
@@ -18,6 +19,7 @@ import {
   type FullSnapshotApplyRemoteCursorRecord,
   type FullSnapshotApplyYDocObjectStorePort,
   type FullSnapshotApplyYDocRecord,
+  type NeedFullSnapshotRecoverySnapshotPayload,
   type VerifiedFullSnapshotBytes,
 } from '../engine/snapshot'
 import {
@@ -227,6 +229,104 @@ test('snapshot apply indexeddb commit queues all writes before awaiting completi
     assert.equal(completed, true)
   }
 })
+
+test('need-full-snapshot recovery succeeds on the first attempt without waiting', async () => {
+  const payload = recoveryPayload()
+  const waits: number[] = []
+  const result = await runNeedFullSnapshotRecovery(
+    {
+      fetchSnapshot: async () => payload,
+      applySnapshot: async () => true,
+      wait: async (delayMs) => {
+        waits.push(delayMs)
+      },
+    },
+    [0, 2_000, 5_000],
+  )
+  assert.deepEqual(result, { ok: true, attempts: 1 })
+  assert.deepEqual(waits, [])
+})
+
+test('need-full-snapshot recovery retries after a fetch failure and then succeeds', async () => {
+  const payload = recoveryPayload()
+  const waits: number[] = []
+  let fetchCalls = 0
+  const result = await runNeedFullSnapshotRecovery(
+    {
+      fetchSnapshot: async () => {
+        fetchCalls += 1
+        return fetchCalls === 1 ? null : payload
+      },
+      applySnapshot: async () => true,
+      wait: async (delayMs) => {
+        waits.push(delayMs)
+      },
+    },
+    [0, 2_000, 5_000],
+  )
+  assert.deepEqual(result, { ok: true, attempts: 2 })
+  assert.deepEqual(waits, [2_000])
+})
+
+test('need-full-snapshot recovery retries after an apply validation failure and then succeeds', async () => {
+  const payload = recoveryPayload()
+  let applyCalls = 0
+  const result = await runNeedFullSnapshotRecovery(
+    {
+      fetchSnapshot: async () => payload,
+      applySnapshot: async () => {
+        applyCalls += 1
+        return applyCalls > 1
+      },
+      wait: async () => {},
+    },
+    [0, 2_000, 5_000],
+  )
+  assert.deepEqual(result, { ok: true, attempts: 2 })
+})
+
+test('need-full-snapshot recovery treats a thrown port error as one failed attempt', async () => {
+  const payload = recoveryPayload()
+  let fetchCalls = 0
+  const result = await runNeedFullSnapshotRecovery(
+    {
+      fetchSnapshot: async () => {
+        fetchCalls += 1
+        if (fetchCalls === 1) throw new Error('network-error')
+        return payload
+      },
+      applySnapshot: async () => true,
+      wait: async () => {},
+    },
+    [0, 2_000],
+  )
+  assert.deepEqual(result, { ok: true, attempts: 2 })
+})
+
+test('need-full-snapshot recovery exhausts the bounded schedule and fails closed', async () => {
+  const waits: number[] = []
+  let fetchCalls = 0
+  const result = await runNeedFullSnapshotRecovery(
+    {
+      fetchSnapshot: async () => {
+        fetchCalls += 1
+        return null
+      },
+      applySnapshot: async () => true,
+      wait: async (delayMs) => {
+        waits.push(delayMs)
+      },
+    },
+    [0, 2_000, 5_000],
+  )
+  assert.deepEqual(result, { ok: false, attempts: 3 })
+  assert.equal(fetchCalls, 3)
+  assert.deepEqual(waits, [2_000, 5_000])
+})
+
+function recoveryPayload(): NeedFullSnapshotRecoverySnapshotPayload {
+  return { response: snapshotResponse(), verifiedBytes: verifiedBytes() }
+}
 
 function snapshotResponse() {
   return {

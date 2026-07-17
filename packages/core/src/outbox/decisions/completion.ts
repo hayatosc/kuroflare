@@ -210,6 +210,8 @@ export function decideOutboxSyncUpdateRejectedRepair(
 
 /**
  * Plans terminal patches for outbox items superseded by an applied full snapshot.
+ * `meta-ref-update` items are released alongside `y-update`, matching how they share
+ * the same sync-update wire frame and the same ack/need-full-snapshot completion path.
  */
 export function planOutboxFullSnapshotRelease(
   input: OutboxFullSnapshotReleaseInput,
@@ -221,7 +223,7 @@ export function planOutboxFullSnapshotRelease(
   const releasePatches: OutboxFullSnapshotReleasePatch[] = []
   for (const item of input.items) {
     if (
-      item.kind !== 'y-update' ||
+      (item.kind !== 'y-update' && item.kind !== 'meta-ref-update') ||
       item.status !== 'paused' ||
       item.reason !== 'full-snapshot-required' ||
       item.docId === undefined ||
