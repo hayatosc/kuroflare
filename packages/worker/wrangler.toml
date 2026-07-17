@@ -20,3 +20,11 @@ bucket_name = "kuroflare-snapshots"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["VaultRoom"]
+
+# Uncomment to override the default minimum retained snapshot generation
+# count (3, packages/worker/src/runtime/constants.ts). Must be a positive
+# integer string; an invalid value fails closed (blocks retention cleanup
+# instead of silently falling back to the default — see docs/spec/server.md
+# §8 and docs/deployment.md).
+# [vars]
+# SNAPSHOT_RETENTION_MIN_GENERATIONS = "3"

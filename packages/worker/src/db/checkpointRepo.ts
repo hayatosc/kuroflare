@@ -21,6 +21,7 @@ export interface SnapshotRetentionCheckpointRunRow {
 }
 
 export interface SnapshotRetentionEventRow {
+  readonly id: number
   readonly docId: string
   readonly snapshotKey: string
   readonly action: string
@@ -386,20 +387,28 @@ export async function insertSnapshotRetentionEvent(
     .execute()
 }
 
+/**
+ * Lists retention events newest-first, keyed by the autoincrement row `id`
+ * (unique and insertion-ordered, unlike `attempted_at` which can tie).
+ *
+ * @param cursor When set, only returns events with `id` strictly below it —
+ *   i.e. the `id` of the last item from the previous page.
+ */
 export async function getSnapshotRetentionEvents(
   db: Kysely<Database>,
   limit: number,
+  cursor: number | undefined,
 ): Promise<readonly SnapshotRetentionEventRow[]> {
-  return db
-    .selectFrom('snapshot_retention_events')
-    .select((eb) => [
-      eb.ref('doc_id').as('docId'),
-      eb.ref('snapshot_key').as('snapshotKey'),
-      'action',
-      'error',
-      eb.ref('attempted_at').as('attemptedAt'),
-    ])
-    .orderBy('attempted_at', 'desc')
+  const query = db.selectFrom('snapshot_retention_events').select((eb) => [
+    eb.ref('id').as('id'),
+    eb.ref('doc_id').as('docId'),
+    eb.ref('snapshot_key').as('snapshotKey'),
+    'action',
+    'error',
+    eb.ref('attempted_at').as('attemptedAt'),
+  ])
+  return (cursor === undefined ? query : query.where('id', '<', cursor))
+    .orderBy('id', 'desc')
     .limit(limit)
     .execute()
 }

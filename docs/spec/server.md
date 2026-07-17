@@ -300,6 +300,11 @@ Because immutable R2 bytes and SQLite authority evidence are combined, keep mult
 不変条件:
 
 - 最低 `N` 世代（例: 20）または一定期間（例: 30 日）の snapshot を残す。
+  The `N` floor is deploy-time configurable via the `SNAPSHOT_RETENTION_MIN_GENERATIONS`
+  `WorkerEnv` var (`packages/worker/wrangler.toml`, `docs/deployment.md`); an unset var
+  falls back to the code default (`SNAPSHOT_RETENTION_MIN_GENERATIONS`,
+  `packages/worker/src/runtime/constants.ts`), and a set-but-invalid value fails closed
+  (blocks retention cleanup) rather than silently falling back to that default.
 - `compacted` / `failed` で閉じていない checkpoint run が参照する snapshot は retention 対象外でも消さない（`failed` は明示的に閉じた run なので pin しない）。
 - cleanup は最新 `N` 世代に加えて「最新の健全 snapshot」を必ず残す。最新世代が corrupt と判定された後の cleanup が rollback 先を消してはいけない。
 - 「object としては読めるが論理的におかしい」場合も古い世代へ戻せるようにする。
@@ -313,6 +318,9 @@ Because immutable R2 bytes and SQLite authority evidence are combined, keep mult
   authoritative healthy rollback candidate がない限り quarantine を拒否する。
 
 実装: `worker/src/db/retention.ts` の `planSnapshotRetention`。R2 delete の成否は `snapshot_retention_events` に記録し、失敗は次回 cleanup で再試行する。
+`GET /admin/retention` (`worker/src/runtime/route-handlers.ts`) inspects those events, newest
+first, paginated via `limit` (1-200, default 50) and `cursor` (the `id` of the previous page's
+last item) query params; see `docs/deployment.md`.
 
 ## 9. quarantine の管理
 

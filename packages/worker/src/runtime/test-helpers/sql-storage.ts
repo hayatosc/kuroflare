@@ -97,6 +97,7 @@ export interface RecordedMessageDedupRow {
 }
 
 export interface RecordedSnapshotRetentionEventRow {
+  readonly id: number
   readonly docId: string
   readonly snapshotKey: string
   readonly action: string
@@ -652,6 +653,7 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
     }
     if (normalized.includes('insert into snapshot_retention_events')) {
       this.snapshotRetentionEvents.push({
+        id: this.snapshotRetentionEvents.length + 1,
         docId: expectString(bindings[0]),
         snapshotKey: expectString(bindings[1]),
         action: expectString(bindings[2]),
@@ -661,11 +663,15 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       return []
     }
     if (normalized.includes('from snapshot_retention_events')) {
-      const limit = expectNumber(bindings[0])
+      const hasCursor = normalized.includes('where id <')
+      const cursor = hasCursor ? expectNumber(bindings[0]) : undefined
+      const limit = expectNumber(bindings[hasCursor ? 1 : 0])
       const rows = [...this.snapshotRetentionEvents]
-        .sort((left, right) => right.attemptedAt - left.attemptedAt)
+        .filter((event) => cursor === undefined || event.id < cursor)
+        .sort((left, right) => right.id - left.id)
         .slice(0, limit)
         .map((event) => ({
+          id: event.id,
           docId: event.docId,
           snapshotKey: event.snapshotKey,
           action: event.action,

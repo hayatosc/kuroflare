@@ -73,7 +73,6 @@ import {
   REFRESH_TOKEN_TTL_MS,
   SETUP_ACCESS_TOKEN_TTL_MS,
   SETUP_REFRESH_TOKEN_TTL_MS,
-  SNAPSHOT_RETENTION_EVENT_LIMIT,
   WEBSOCKET_UPGRADE,
 } from './constants'
 import {
@@ -515,10 +514,45 @@ export async function handleRetentionInspect(room: VaultRoom, c: Context): Promi
   const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
   if (rejection !== undefined) return rejection
 
+  const limit = parseRetentionEventLimit(c.req.query('limit'))
+  const cursor = parseRetentionEventCursor(c.req.query('cursor'))
+  if (limit === undefined || (c.req.query('cursor') !== undefined && cursor === undefined)) {
+    return c.json(apiErrorBody('request/invalid', 'invalid-retention-pagination'), 400)
+  }
+
+  const rows = await getSnapshotRetentionEvents(db, limit + 1, cursor)
+  const page = rows.slice(0, limit)
+  const lastRow = page.at(-1)
   return c.json(
-    { events: await getSnapshotRetentionEvents(db, SNAPSHOT_RETENTION_EVENT_LIMIT) },
+    {
+      items: page.map((row) => ({
+        docId: row.docId,
+        snapshotKey: row.snapshotKey,
+        action: row.action,
+        error: row.error,
+        attemptedAt: row.attemptedAt,
+      })),
+      ...(lastRow !== undefined && rows.length > page.length
+        ? { nextCursor: String(lastRow.id) }
+        : {}),
+    },
     200,
   )
+}
+
+/** Default/maximum page size and cursor parsing for `GET /admin/retention`. */
+function parseRetentionEventLimit(value: string | undefined): number | undefined {
+  if (value === undefined) return 50
+  if (!/^[1-9][0-9]*$/.test(value)) return undefined
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed <= 200 ? parsed : undefined
+}
+
+function parseRetentionEventCursor(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  if (!/^[1-9][0-9]*$/.test(value)) return undefined
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) ? parsed : undefined
 }
 
 export async function handleMetaLatest(room: VaultRoom, c: Context): Promise<Response> {

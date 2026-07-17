@@ -62,6 +62,12 @@ new_sqlite_classes = ["VaultRoom"]
 | `DEVICE_TOKEN_SECRET`    | **Effectively required** | HS256 signing/verification secret for device access tokens. It is typed optional, but `VaultRoom.authorizeHello` fails closed: once the Durable Object's SQLite storage exists (i.e. any real, non-fresh vault), a missing secret causes every WebSocket `hello` to be rejected with `auth-reject:missing-secret`. HTTP admin/auth routes (`/setup/exchange`, `/auth/refresh`, `/devices/:id/revoke`, `/admin/*`, snapshot/blob routes) all return `503` when this secret is absent. |
 | `ADMIN_TOKEN_SECRET`     | **Effectively required** | Gates the operator-only `POST /admin/setup-tokens` and `POST /admin/snapshots/seed` routes (see §4). It is the **only** mechanism today for seeding a setup token, so in practice it must be set to onboard any device. Typed optional so tests can omit it, but both routes return `503 server/degraded` when it is absent, and reject with `403` on a header mismatch (constant-time compared). Treat it as a shared operator secret, not an end-user-facing credential.           |
 
+### Vars (`WorkerEnv`, `packages/worker/src/runtime/types.ts`)
+
+| Var                                    | Required? | Purpose                                                                                                                                                                                                                                                                                                                            |
+| --------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SNAPSHOT_RETENTION_MIN_GENERATIONS`   | Optional  | Overrides the minimum number of snapshot generations kept per doc during retention cleanup (code default: 3, `packages/worker/src/runtime/constants.ts`). Set as a plain `wrangler.toml` `[vars]` entry (see the commented example there), not a secret. Must be a positive integer string; if set to anything else, retention cleanup fails closed (skips cleanup and logs `snapshot-retention-invalid-config`) rather than silently falling back to the default — fix the value and the next checkpoint alarm retries. |
+
 ### Production routes (`packages/worker/src/runtime.ts`, `src/runtime/app.ts`)
 
 | Method + path                                                                                     | Auth                                                                 | Purpose                                                                                                                                                                                                                                                                                   |
@@ -71,7 +77,7 @@ new_sqlite_classes = ["VaultRoom"]
 | `POST /auth/refresh`                                                                              | Refresh token (body)                                                 | Rotates the device's refresh token and mints a new access token.                                                                                                                                                                                                                          |
 | `POST /devices/:deviceId/revoke`                                                                  | Bearer device token, scope `sync:write`                              | Revokes a device.                                                                                                                                                                                                                                                                         |
 | `GET /admin/quarantine`, `GET /admin/quarantine/:id`                                              | Bearer device token, scope `sync:write`                              | Inspect quarantined (rejected) updates.                                                                                                                                                                                                                                                   |
-| `GET /admin/retention`                                                                            | Bearer device token, scope `sync:write`                              | Inspect snapshot retention events.                                                                                                                                                                                                                                                        |
+| `GET /admin/retention`                                                                            | Bearer device token, scope `sync:write`                              | Inspect `snapshot_retention_events`, newest first. Paginated: `limit` (1-200, default 50) and `cursor` (the `id` of the previous page's last item) query params; response is `{ items, nextCursor? }`, and an invalid `limit`/`cursor` returns `400 request/invalid`.                    |
 | `POST /admin/{gc,force-local,force-remote,rebuild}`                                               | Bearer device token, scope `sync:write`                              | Admin recovery operations.                                                                                                                                                                                                                                                                |
 | `POST /admin/quarantine/:id/{discard,force-apply}`                                                | Bearer device token, scope `sync:write`                              | Resolve a quarantined update.                                                                                                                                                                                                                                                             |
 | `GET /vaults/:vaultId/meta/latest`, `GET /vaults/:vaultId/files/:ydocId/latest`                   | Bearer device token, scope `sync:read`                               | Fetch the latest hydrated snapshot for a doc.                                                                                                                                                                                                                                             |
@@ -241,6 +247,38 @@ plugin's settings tab, and follow §4 to connect it to your deployed Worker.
   restore before pointing it at your primary notes.
 - **Setup tokens expire fast (10 minutes by default).** Issue one
   immediately before pasting it into the plugin (§4), not ahead of time.
+
+### Alerting on structured log events
+
+There is no built-in notification/alerting integration (e.g. email, Slack,
+PagerDuty) — this is deliberately out of scope; wire up whichever of your
+existing Cloudflare-native options below fits your operational setup instead
+of adding one to the Worker itself.
+
+The Worker emits single-line structured JSON log entries via `logEvent`
+(`packages/worker/src/runtime/utils.ts`) for checkpoint and retention
+lifecycle events, notably `checkpoint-failed`, `snapshot-retention-delete-failed`,
+and `snapshot-retention-invalid-config` (emitted when
+`SNAPSHOT_RETENTION_MIN_GENERATIONS` is set to an invalid value; see the Vars
+table in §2). Each entry has an `event` field you can filter on.
+
+- **`wrangler tail`** streams these live during manual operation — the
+  quickest way to watch a deploy, per the first bullet above.
+- **Workers Logs** (enabled per Worker in the Cloudflare dashboard, or via
+  `[observability]` in `wrangler.toml`) retains and lets you query these log
+  lines in the dashboard without a persistent `tail` session.
+- **Logpush** (Cloudflare dashboard → your account → Logpush, or the
+  `wrangler.toml` `[[logpush]]`/API config) can ship Workers Trace Events —
+  including `console.log` output, so the `logEvent` JSON lines above — to an
+  external destination (e.g. an object storage bucket, Datadog, Splunk) for
+  alerting rules built in that destination. This is the recommended path for
+  anything beyond ad hoc `wrangler tail` watching: filter the shipped logs on
+  `event` values ending in `-failed` or `-invalid-config` and alert on any
+  occurrence.
+- Cloudflare **Notifications** (dashboard → Notifications) cover
+  account/zone-level alerts (e.g. Workers CPU/error-rate thresholds), not
+  arbitrary log-line content; they're a coarser complement to Logpush-based
+  alerting on the specific `logEvent` names above, not a replacement for it.
 
 ## 7. Future work
 

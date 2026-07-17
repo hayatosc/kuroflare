@@ -70,7 +70,8 @@ import {
 } from './test-helpers'
 
 interface RetentionAdminResponse {
-  readonly events: readonly RetentionAdminEvent[]
+  readonly items: readonly RetentionAdminEvent[]
+  readonly nextCursor?: string
 }
 
 interface RetentionAdminEvent {
@@ -86,8 +87,8 @@ function isRetentionAdminResponse(value: unknown): value is RetentionAdminRespon
     typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value) &&
-    Array.isArray(Reflect.get(value, 'events')) &&
-    Reflect.get(value, 'events').every(
+    Array.isArray(Reflect.get(value, 'items')) &&
+    Reflect.get(value, 'items').every(
       (event: unknown) =>
         typeof event === 'object' &&
         event !== null &&
@@ -3493,12 +3494,74 @@ test('VaultRoom runs snapshot retention cleanup after checkpoint and exposes adm
     const body = await response.json()
     assert(
       isRetentionAdminResponse(body) &&
-        body.events.some((event) => event.snapshotKey === 'snapshots/vault-1/meta/1.yupdate'),
+        body.items.some((event) => event.snapshotKey === 'snapshots/vault-1/meta/1.yupdate'),
     )
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
   }
+})
+
+test('GET /admin/retention paginates newest-first with a cursor and rejects out-of-range limits', async () => {
+  const storage = new SqlOnlyStorage()
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithSnapshotBucketAndDeviceTokenSecret(new FakeR2Bucket(), TEST_DEVICE_TOKEN_SECRET),
+  )
+  await ensureSchema(room)
+  for (let seq = 1; seq <= 3; seq += 1) {
+    storage.sql.snapshotRetentionEvents.push({
+      id: seq,
+      docId: 'meta',
+      snapshotKey: `snapshots/vault-1/meta/${seq}.yupdate`,
+      action: 'delete',
+      error: undefined,
+      attemptedAt: seq,
+    })
+  }
+  const authHeader = {
+    Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, { tokenVersion: 1 })}`,
+  }
+
+  const firstPage = await room.fetch(
+    new Request('https://worker.example/admin/retention?limit=2', { headers: authHeader }),
+  )
+  assert.equal(firstPage.status, 200)
+  const firstBody = await firstPage.json()
+  assert(isRetentionAdminResponse(firstBody))
+  assert.deepEqual(
+    firstBody.items.map((event) => event.snapshotKey),
+    ['snapshots/vault-1/meta/3.yupdate', 'snapshots/vault-1/meta/2.yupdate'],
+  )
+  assert.equal(firstBody.nextCursor, '2')
+
+  const secondPage = await room.fetch(
+    new Request(`https://worker.example/admin/retention?limit=2&cursor=${firstBody.nextCursor}`, {
+      headers: authHeader,
+    }),
+  )
+  assert.equal(secondPage.status, 200)
+  const secondBody = await secondPage.json()
+  assert(isRetentionAdminResponse(secondBody))
+  assert.deepEqual(
+    secondBody.items.map((event) => event.snapshotKey),
+    ['snapshots/vault-1/meta/1.yupdate'],
+  )
+  assert.equal(secondBody.nextCursor, undefined)
+
+  const invalidLimit = await room.fetch(
+    new Request('https://worker.example/admin/retention?limit=0', { headers: authHeader }),
+  )
+  assert.equal(invalidLimit.status, 400)
+  assert.equal(v.is(ApiErrorSchema, await invalidLimit.json()), true)
+
+  const invalidCursor = await room.fetch(
+    new Request('https://worker.example/admin/retention?cursor=not-a-number', {
+      headers: authHeader,
+    }),
+  )
+  assert.equal(invalidCursor.status, 400)
+  assert.equal(v.is(ApiErrorSchema, await invalidCursor.json()), true)
 })
 
 test('VaultRoom blocks compaction when snapshot retention candidates are invalid', async () => {
@@ -3528,6 +3591,40 @@ test('VaultRoom blocks compaction when snapshot retention candidates are invalid
       compactedSeq: undefined,
     })
     assert.equal(storage.sql.opLog.get(`meta:${update.messageId}`)?.seq, 1)
+    assert.equal(storage.sql.docs.get('meta')?.minRetainedSeq, 0)
+    assert.deepEqual(bucket.deletes, [])
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom blocks compaction and fails closed when SNAPSHOT_RETENTION_MIN_GENERATIONS is invalid', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const env = {
+      ...makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+      SNAPSHOT_RETENTION_MIN_GENERATIONS: 'not-a-positive-integer',
+    }
+    const room = new VaultRoom(state, env)
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    const update = makeSyncUpdate(makeMessageId('message-retention-config-invalid'))
+    await room.webSocketMessage(server, JSON.stringify(update))
+
+    assert.deepEqual(await room.checkpointDoc({ kind: 'meta' }, 99), {
+      action: 'checkpointed',
+      snapshotKey: 'snapshots/vault-1/meta/1.yupdate',
+      upperSeq: 1,
+      compactedSeq: undefined,
+    })
     assert.equal(storage.sql.docs.get('meta')?.minRetainedSeq, 0)
     assert.deepEqual(bucket.deletes, [])
   } finally {
@@ -4146,6 +4243,89 @@ test('VaultRoom applies the retained snapshot floor while recovering orphaned ch
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
   }
+})
+
+test('VaultRoom honors an operator-configured minimum generation count during retention cleanup', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const cumulativeDoc = new Y.Doc()
+  const snapshotStateVectors = new Map<number, Uint8Array>()
+  for (const seq of [1, 2, 3, 4, 5]) {
+    const updateBytes = makeYjsUpdateBytes(makeMessageId(`message-min-generations-${seq}`))
+    Y.applyUpdate(cumulativeDoc, updateBytes)
+    const snapshotBytes = Y.encodeStateAsUpdate(cumulativeDoc)
+    const stateVector = Y.encodeStateVector(cumulativeDoc)
+    bucket.set(`snapshots/vault-1/meta/${seq}.yupdate`, snapshotBytes)
+    await seedVerifiedSnapshotEvidence(
+      storage,
+      `snapshots/vault-1/meta/${seq}.yupdate`,
+      'meta',
+      snapshotBytes,
+    )
+    snapshotStateVectors.set(seq, stateVector)
+    storage.sql.opLog.set(`meta:message-min-generations-${seq}`, {
+      docId: 'meta',
+      seq,
+      messageId: `message-min-generations-${seq}`,
+      deviceId: 'device-1',
+      updateBytes,
+      updateSha256: 'sha',
+      createdAt: seq,
+    })
+    storage.sql.checkpointRuns.set(`seed-min-generations-${seq}`, {
+      runId: `seed-min-generations-${seq}`,
+      docId: 'meta',
+      upperSeq: seq,
+      snapshotKey: `snapshots/vault-1/meta/${seq}.yupdate`,
+      stateVector,
+      status: 'compacted',
+      createdAt: seq,
+      r2WrittenAt: seq,
+      pointerUpdatedAt: seq,
+      compactedAt: seq,
+    })
+  }
+  cumulativeDoc.destroy()
+  const snapshotStateVector = snapshotStateVectors.get(5)
+  assert(snapshotStateVector)
+  storage.sql.docs.set('meta', {
+    kind: 'meta',
+    latestSeq: 5,
+    latestSnapshotSeq: 5,
+    latestSnapshotKey: 'snapshots/vault-1/meta/5.yupdate',
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  storage.sql.checkpointRuns.set('run-min-generations', {
+    runId: 'run-min-generations',
+    docId: 'meta',
+    upperSeq: 5,
+    snapshotKey: 'snapshots/vault-1/meta/5.yupdate',
+    stateVector: snapshotStateVector,
+    status: 'pointer-updated',
+    createdAt: 1,
+    r2WrittenAt: 2,
+    pointerUpdatedAt: 3,
+    compactedAt: undefined,
+  })
+  await storage.put('vault:id', 'vault-1')
+  const room = new VaultRoom(new FakeState(storage), {
+    ...makeEnvWithSnapshotBucket(bucket),
+    SNAPSHOT_RETENTION_MIN_GENERATIONS: '1',
+  })
+
+  await room.alarm()
+
+  // The hardcoded default (3, see the sibling "applies the retained snapshot
+  // floor" test) would only delete generations 1 and 2. Overriding to 1 keeps
+  // just the newest generation.
+  assert.deepEqual(bucket.deletes, [
+    'snapshots/vault-1/meta/1.yupdate',
+    'snapshots/vault-1/meta/2.yupdate',
+    'snapshots/vault-1/meta/3.yupdate',
+    'snapshots/vault-1/meta/4.yupdate',
+  ])
 })
 
 test('VaultRoom answers sync requests with Yjs diffs and no-ops empty diffs', async () => {

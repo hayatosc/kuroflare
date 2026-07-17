@@ -16,6 +16,11 @@ export interface WorkerEnv {
   readonly SNAPSHOT_BUCKET?: R2BucketBinding
   readonly DEVICE_TOKEN_SECRET?: string
   readonly ADMIN_TOKEN_SECRET?: string
+  /**
+   * Overrides `SNAPSHOT_RETENTION_MIN_GENERATIONS` (constants.ts) when set.
+   * Must be a positive integer string; see `resolveSnapshotRetentionMinGenerations`.
+   */
+  readonly SNAPSHOT_RETENTION_MIN_GENERATIONS?: string
 }
 
 /** Minimal Durable Object namespace surface used by the Worker shell. */

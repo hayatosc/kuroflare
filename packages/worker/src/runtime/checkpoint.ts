@@ -384,6 +384,16 @@ async function readSnapshotRetentionPlan(
   const vaultId = await resolveVaultId(room)
   if (db === undefined || bucket === undefined || vaultId === undefined) return undefined
 
+  const minGenerationCount = resolveSnapshotRetentionMinGenerations(room.env)
+  if (minGenerationCount === undefined) {
+    logEvent('snapshot-retention-invalid-config', {
+      vaultId,
+      docId,
+      variable: 'SNAPSHOT_RETENTION_MIN_GENERATIONS',
+    })
+    return undefined
+  }
+
   try {
     const prefix = makeSnapshotListPrefix(vaultId, docId)
     const listed = await listR2Objects(bucket, prefix)
@@ -449,7 +459,7 @@ async function readSnapshotRetentionPlan(
       snapshots,
       checkpointRuns,
       currentPointerKey: pointer?.latestSnapshotKey,
-      minGenerationCount: SNAPSHOT_RETENTION_MIN_GENERATIONS,
+      minGenerationCount,
     })
 
     const retainedKeys = new Set(plan.retainKeys)
@@ -973,6 +983,22 @@ function snapshotExpectedEvidenceFromEvent(
     updateSha256: event.expectedUpdateSha256,
     stateVectorSha256: event.expectedStateVectorSha256,
   }
+}
+
+/**
+ * Resolves the deploy-configurable minimum snapshot generation count.
+ *
+ * Falls back to `SNAPSHOT_RETENTION_MIN_GENERATIONS` (constants.ts) when the
+ * `WorkerEnv` var is unset. Returns `undefined` — never a silently clamped or
+ * default value — when the var is set but not a positive integer, so callers
+ * fail closed instead of running retention with an unvalidated policy.
+ */
+function resolveSnapshotRetentionMinGenerations(env: WorkerEnv): number | undefined {
+  const raw = env.SNAPSHOT_RETENTION_MIN_GENERATIONS
+  if (raw === undefined) return SNAPSHOT_RETENTION_MIN_GENERATIONS
+  if (!/^[1-9][0-9]*$/.test(raw)) return undefined
+  const parsed = Number(raw)
+  return Number.isSafeInteger(parsed) ? parsed : undefined
 }
 
 function snapshotUpperSeqFromKey(snapshotKey: string): number | undefined {
