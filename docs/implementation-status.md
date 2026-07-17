@@ -107,7 +107,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 - The production plugin instantiates the startup composition root and lifecycle wiring at HEAD `122d2a0`; the Obsidian + miniflare `:app` E2E exercises it together with the trial-readiness fixes.
 - Production adapters for snapshot operations, IndexedDB YDoc loading, setup persistence, local evidence, resume lifecycle, and auth refresh/revoke are connected. Startup side-effect gates still protect the existing WebSocket, outbox, metadata enqueue, and active-file request paths from duplicate effects.
-- setup persistence は SecretStorage + IndexedDB metadata の実行境界を通り、`data.json` に token を保存しない。残りは `data.json.setupMetadata` mirror を UI / 復旧用 cache として明確化するか、完全廃止するかの決着。
+- setup persistence は SecretStorage + IndexedDB metadata の実行境界を通り、`data.json` に token を保存しない。`data.json.setupMetadata` mirror は完全廃止で決着済み: UI 表示には未使用で、唯一の実用途だった vaultId ヒントは setup 完了時に常に併記される既存 `setupVaultId` と完全重複、初回起動/再接続判定は元々 IndexedDB 由来の `trustedSetupMetadata` のみを参照し、IndexedDB 消失時は mirror の有無に関わらず setup exchange に倒れるため復旧経路としても機能していなかった。既存ユーザーの `data.json` に残る旧キーは型に存在しないフィールドとして無視される(token は含まれない)。`client.md` §4 に現行の local-persistence 形を反映済み。
 
 ### P0: full snapshot の production 経路
 
