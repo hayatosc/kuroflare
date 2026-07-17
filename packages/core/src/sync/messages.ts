@@ -1,25 +1,60 @@
 import * as v from 'valibot'
 
 import { Sha256HexSchema } from '../sync/meta'
-import { DeviceIdSchema, DocIdSchema, MessageIdSchema, VaultIdSchema } from '../utils/ids'
+import {
+  DeviceIdSchema,
+  DocIdSchema,
+  KuroflareIdSchema,
+  MessageIdSchema,
+  VaultIdSchema,
+} from '../utils/ids'
 import { NonEmptyBase64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
 import { ProtocolVersionSchema } from '../utils/version'
 
-export const ClientCapabilitySchema = v.union([
-  v.literal('awareness'),
-  v.literal('binary-v1'),
-  v.literal('metadata-schema-v2'),
-])
-export type ClientCapability = v.InferInput<typeof ClientCapabilitySchema>
+/**
+ * Capabilities this build understands and can act on. DR-012: adding an entry here must never
+ * change what {@link ClientHelloSchema} accepts on the wire — a peer has to keep admitting a
+ * hello that advertises a capability it predates, simply ignoring the value it does not know.
+ */
+export const KNOWN_CLIENT_CAPABILITIES = ['awareness', 'binary-v1', 'metadata-schema-v2'] as const
+export const ClientCapabilitySchema = v.picklist(KNOWN_CLIENT_CAPABILITIES)
+export type ClientCapability = (typeof KNOWN_CLIENT_CAPABILITIES)[number]
+
+/** No capability is mandatory today; kept as the required-capability boundary DR-012 calls for. */
+export const REQUIRED_CLIENT_CAPABILITIES: readonly ClientCapability[] = []
 
 export const ClientHelloSchema = v.strictObject({
   type: v.literal('hello'),
   protocolVersion: ProtocolVersionSchema,
   vaultId: VaultIdSchema,
   deviceId: DeviceIdSchema,
-  capabilities: v.array(ClientCapabilitySchema),
+  // Opaque, format-guarded tokens rather than KNOWN_CLIENT_CAPABILITIES: an unrecognized
+  // optional capability must not fail hello admission (DR-012).
+  capabilities: v.array(KuroflareIdSchema),
 })
 export type ClientHello = v.InferInput<typeof ClientHelloSchema>
+
+export type ClientCapabilityNegotiation =
+  | { readonly action: 'accept'; readonly accepted: readonly ClientCapability[] }
+  | { readonly action: 'reject'; readonly capability: ClientCapability }
+
+/**
+ * Negotiates the known intersection of an advertised capability list (DR-012). Unknown or
+ * duplicate entries never fail negotiation; a capability missing from `required` does, and the
+ * decision names it instead of forcing a generic malformed-hello close.
+ */
+export function decideClientCapabilityNegotiation(input: {
+  readonly advertised: readonly string[]
+  readonly required?: readonly ClientCapability[]
+}): ClientCapabilityNegotiation {
+  const accepted = KNOWN_CLIENT_CAPABILITIES.filter((capability) =>
+    input.advertised.includes(capability),
+  )
+  for (const capability of input.required ?? REQUIRED_CLIENT_CAPABILITIES) {
+    if (!accepted.includes(capability)) return { action: 'reject', capability }
+  }
+  return { action: 'accept', accepted }
+}
 
 export const HelloAcceptedSchema = v.strictObject({
   type: v.literal('hello-accepted'),

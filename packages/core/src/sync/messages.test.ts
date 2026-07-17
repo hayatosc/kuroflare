@@ -30,6 +30,7 @@ import {
   AwarenessUpdateSchema,
   ClientHelloSchema,
   ControlMessageSchema,
+  decideClientCapabilityNegotiation,
   HelloAcceptedSchema,
   NeedFullSnapshotSchema,
   SyncUpdateRejectedSchema,
@@ -83,8 +84,28 @@ test('validates client hello', () => {
 
   assert.equal(v.is(ClientHelloSchema, hello), true)
   assert.equal(v.is(ControlMessageSchema, hello), true)
-  assert.equal(v.is(ClientHelloSchema, { ...hello, capabilities: ['unknown'] }), false)
+  // DR-012: an unrecognized optional capability must not fail hello admission.
+  assert.equal(v.is(ClientHelloSchema, { ...hello, capabilities: ['unknown'] }), true)
+  assert.equal(v.is(ClientHelloSchema, { ...hello, capabilities: ['/bad'] }), false)
   assert.equal(v.is(ClientHelloSchema, { ...hello, yClientId: 0 }), false)
+})
+
+test('negotiates the known capability intersection and reports a missing required capability (DR-012)', () => {
+  assert.deepEqual(
+    decideClientCapabilityNegotiation({ advertised: ['binary-v1', 'unknown', 'binary-v1'] }),
+    { action: 'accept', accepted: ['binary-v1'] },
+  )
+  assert.deepEqual(decideClientCapabilityNegotiation({ advertised: [] }), {
+    action: 'accept',
+    accepted: [],
+  })
+  assert.deepEqual(
+    decideClientCapabilityNegotiation({
+      advertised: ['binary-v1'],
+      required: ['metadata-schema-v2'],
+    }),
+    { action: 'reject', capability: 'metadata-schema-v2' },
+  )
 })
 
 test('validates hello accepted', () => {

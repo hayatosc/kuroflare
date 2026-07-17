@@ -6187,6 +6187,36 @@ test('VaultRoom grants grouped metadata write access only to clients advertising
   }
 })
 
+test('VaultRoom admits a hello advertising an unrecognized optional capability (DR-012)', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    await room.webSocketMessage(
+      server,
+      JSON.stringify({
+        ...makeHello(),
+        capabilities: ['metadata-schema-v2', 'future-capability'],
+      }),
+    )
+
+    assert.equal(server.closed, false)
+    const helloAcceptedRaw = server.sent[0]
+    if (typeof helloAcceptedRaw !== 'string') throw new Error('missing hello-accepted frame')
+    const helloAccepted = JSON.parse(helloAcceptedRaw) as { metadataAccess?: string }
+    assert.equal(helloAccepted.metadataAccess, 'read-write')
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
 test('VaultRoom quarantines live v1-to-v2 migration updates instead of appending them', async () => {
   const previousPair = installFakeWebSocketPair()
   const previousResponse = installFakeUpgradeResponse()

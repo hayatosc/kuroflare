@@ -1,6 +1,7 @@
 import {
   CURRENT_PROTOCOL_VERSION,
   VaultIdSchema,
+  decideClientCapabilityNegotiation,
   verifyHs256DeviceToken,
   type ApiErrorCode,
   type ClientHello,
@@ -31,6 +32,11 @@ export async function acceptHello(
     webSocket.close(1008, 'vault-mismatch')
     return
   }
+  const negotiation = decideClientCapabilityNegotiation({ advertised: hello.capabilities })
+  if (negotiation.action === 'reject') {
+    webSocket.close(1008, `capability-required:${negotiation.capability}`)
+    return
+  }
   const device = await readDeviceRegistryEntry(room, hello.deviceId)
   const tokenVersion = await authorizeHello(room, webSocket, hello, device)
   if (tokenVersion === undefined) return
@@ -42,10 +48,13 @@ export async function acceptHello(
     webSocket.close(1008, `hello-reject:${registry.reason}`)
     return
   }
+  const metadataAccess = negotiation.accepted.includes('metadata-schema-v2')
+    ? 'read-write'
+    : 'read-only'
   rememberSession(room, webSocket, {
     vaultId: hello.vaultId,
     deviceId: hello.deviceId,
-    metadataAccess: hello.capabilities.includes('metadata-schema-v2') ? 'read-write' : 'read-only',
+    metadataAccess,
     metadataCapabilityAdvertised: hello.capabilities.includes('metadata-schema-v2'),
   })
   await persistVaultId(room, hello.vaultId)
@@ -55,9 +64,7 @@ export async function acceptHello(
       protocolVersion: CURRENT_PROTOCOL_VERSION,
       vaultId: hello.vaultId,
       deviceId: hello.deviceId,
-      metadataAccess: hello.capabilities.includes('metadata-schema-v2')
-        ? 'read-write'
-        : 'read-only',
+      metadataAccess,
     }),
   )
 }
