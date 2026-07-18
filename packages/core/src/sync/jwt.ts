@@ -1,5 +1,6 @@
 import * as v from 'valibot'
 
+import { isRecord } from '../auth/validation'
 import { DeviceTokenClaimsSchema, type DeviceTokenClaims } from '../sync/schemas'
 
 const base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
@@ -216,8 +217,4 @@ export function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean {
     mismatch |= leftByte ^ rightByte
   }
   return mismatch === 0
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

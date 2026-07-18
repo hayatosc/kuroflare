@@ -1,6 +1,6 @@
 import { assert, test } from 'vitest'
 
-import { createStartupSideEffectGate } from './startup-gate'
+import { createStartupSideEffectGate } from './boot-guard'
 
 test('startup side effects stay closed during persistence replay', () => {
   const gate = createStartupSideEffectGate()

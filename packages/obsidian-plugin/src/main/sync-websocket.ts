@@ -37,11 +37,8 @@ import type { SetupMetadataSource } from './auth'
 import { META_SYNC_DOC_ID, WORKER_ORIGIN } from './constants'
 import { safeLogError, encodeBase64, accessTokenSecretKeyForSetup } from './helpers'
 import { loadTextDoc, metaDocWritable, metadataWritesEnabled } from './meta'
-import {
-  recoverLeasedOutboxAfterWebSocketFailure,
-  runOutboxWorkerTick,
-  scheduleOutboxWorkerTick,
-} from './outbox'
+import { recoverLeasedOutboxAfterWebSocketFailure } from './outbox/completion'
+import { runOutboxWorkerTick, scheduleOutboxWorkerTick } from './outbox/tick'
 import type KuroflareSpikePlugin from './plugin'
 import { openLocalStoreDatabase, putOutboxRecord, readOutboxWorkerSnapshot } from './store'
 

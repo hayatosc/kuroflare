@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
+import * as v from 'valibot'
 import { afterEach, assert, test } from 'vitest'
 import * as Y from 'yjs'
 
@@ -25,11 +26,6 @@ afterEach(() => {
   }
   document.body.replaceChildren()
 })
-
-function castForTest<T>(value: unknown): T {
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-  return value as T
-}
 
 function mountEditor(ytext: Y.Text, awareness: LocalAwareness | null = null): EditorView {
   const parent = document.createElement('div')
@@ -114,7 +110,11 @@ test('binding with a LocalAwareness keeps text sync working and tracks the local
   view.focus()
   view.dispatch({ selection: { anchor: 5, head: 11 } })
 
-  const cursor = castForTest<{ anchor: Y.RelativePosition; head: Y.RelativePosition } | undefined>(
+  const cursor = v.parse(
+    v.custom<{ anchor: Y.RelativePosition; head: Y.RelativePosition } | undefined>(
+      (v) =>
+        v === undefined || (typeof v === 'object' && v !== null && 'anchor' in v && 'head' in v),
+    ),
     awareness.getLocalState()?.cursor,
   )
   if (cursor === undefined) throw new Error('expected yCollab to have set a local cursor')

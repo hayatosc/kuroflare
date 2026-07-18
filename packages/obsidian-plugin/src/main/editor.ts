@@ -10,19 +10,19 @@ import {
 import { MarkdownView, Notice, TFile } from 'obsidian'
 import * as Y from 'yjs'
 
-import type { FileDocId } from '../main-types'
 import {
   createYTextEditorExtension,
   dispatchFullDocumentReplace,
   getEditorView,
   replaceYText,
-} from '../obsidian/editor-binding'
+} from '../editor/editor-binding'
+import type { FileDocId } from '../main-types'
 import { fileDocIdForPath } from './auth'
 import { DISK_ORIGIN, MARKDOWN_EXTENSION } from './constants'
 import { loadTextDoc, setActiveTextDoc } from './meta'
 import type KuroflareSpikePlugin from './plugin'
 import { activeMarkdownBindingMatches } from './runtime-guards'
-import { handleLifecycleResume, runSyncStartupTick } from './sync-runtime'
+import { handleLifecycleResume, runSyncStartupTick } from './sync-bridge'
 import {
   requestActiveFileFromWorker,
   sendCurrentYDocToWorker,

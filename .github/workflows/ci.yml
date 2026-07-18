@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
 
-# 同一 ref の先行 run は新しい push で打ち切る
+# Cancel previous runs on the same ref when a new push arrives
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

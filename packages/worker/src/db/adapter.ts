@@ -16,15 +16,14 @@ class DurableObjectSqlConnection implements DatabaseConnection {
   constructor(private readonly sql: DurableObjectSqlStorageBinding) {}
 
   async executeQuery<R>(compiledQuery: CompiledQuery): Promise<QueryResult<R>> {
-    return this.#rawQuery(compiledQuery)
+    return this.#rawQuery(compiledQuery) as unknown as Promise<QueryResult<R>>
   }
 
   async *streamQuery<R>(compiledQuery: CompiledQuery): AsyncIterableIterator<QueryResult<R>> {
     yield await this.executeQuery<R>(compiledQuery)
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async #rawQuery(compiledQuery: CompiledQuery): Promise<QueryResult<any>> {
+  async #rawQuery(compiledQuery: CompiledQuery): Promise<QueryResult<unknown>> {
     const rows = [...this.sql.exec(compiledQuery.sql, ...compiledQuery.parameters)]
     return { rows }
   }
@@ -78,8 +77,7 @@ export class DurableObjectSqlDialect implements Dialect {
     return new SqliteAdapter()
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  createIntrospector(db: Kysely<any>): SqliteIntrospector {
+  createIntrospector(db: Kysely<unknown>): SqliteIntrospector {
     return new SqliteIntrospector(db)
   }
 }

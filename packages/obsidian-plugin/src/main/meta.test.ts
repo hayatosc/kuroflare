@@ -9,15 +9,17 @@ import {
   makeYDocId,
   type MetaFile,
 } from '@kuroflare/core'
+import * as v from 'valibot'
 import { assert, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
+import { LocalAwareness } from '../editor/awareness'
 import type { LoadedTextDoc } from '../main-types'
-import { LocalAwareness } from '../obsidian/awareness'
 import { flushYTextToDisk } from './editor'
 import { createReadyDocumentEpoch, documentEpochMetadataKey } from './epoch-recovery'
 import {
   activateLoadedTextDoc,
+  createFreshMetaDocForVaultSwitch,
   hasLegacyDeletedTombstones,
   migrateLegacyMetaDoc,
   insertMetaFile,
@@ -29,17 +31,19 @@ import {
 } from './meta'
 import type KuroflareSpikePlugin from './plugin'
 
-function castForTest<T>(value: unknown): T {
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-  return value as T
-}
-
 function createEvidenceReadDatabase(epoch: unknown): IDBDatabase {
   const metadata = new Map([[documentEpochMetadataKey({ kind: 'meta' }), epoch]])
   const requestFor = (result: unknown): IDBRequest<unknown> => {
-    const request = { result, onsuccess: null as (() => void) | null, onerror: null }
+    const request: { result: unknown; onsuccess: (() => void) | null; onerror: null } = {
+      result,
+      onsuccess: null,
+      onerror: null,
+    }
     queueMicrotask(() => request.onsuccess?.())
-    return castForTest<IDBRequest<unknown>>(request)
+    return v.parse(
+      v.custom<IDBRequest<unknown>>((v) => typeof v === 'object' && v !== null),
+      request,
+    )
   }
   const database = {
     transaction: () => {
@@ -63,7 +67,10 @@ function createEvidenceReadDatabase(epoch: unknown): IDBDatabase {
       return transaction
     },
   }
-  return castForTest<IDBDatabase>(database)
+  return v.parse(
+    v.custom<IDBDatabase>((v) => typeof v === 'object' && v !== null),
+    database,
+  )
 }
 
 test('active full-snapshot replacement rebinds editor, active doc, and disk to remote text', async () => {
@@ -165,7 +172,10 @@ test('intentional provider replacement bypasses loss recovery while reopening th
   vi.stubGlobal('indexedDB', { databases: async () => [] })
   try {
     const recoveredEpoch = await prepareDocumentProvider(
-      castForTest<KuroflareSpikePlugin>(plugin),
+      v.parse(
+        v.custom<KuroflareSpikePlugin>((v) => typeof v === 'object' && v !== null),
+        plugin,
+      ),
       docId,
       providerDbName,
     )
@@ -174,7 +184,10 @@ test('intentional provider replacement bypasses loss recovery while reopening th
     plugin.documentReplacementInProgress.clear()
     try {
       await prepareDocumentProvider(
-        castForTest<KuroflareSpikePlugin>(plugin),
+        v.parse(
+          v.custom<KuroflareSpikePlugin>((v) => typeof v === 'object' && v !== null),
+          plugin,
+        ),
         docId,
         providerDbName,
       )
@@ -367,3 +380,16 @@ function legacyText(fileId: string): MetaFile {
     mtime: 1,
   }
 }
+
+test('vault namespace switch starts with a fresh Y.Doc and no prior vault structs', () => {
+  const vaultADoc = new Y.Doc()
+  vaultADoc.getMap('meta').set('vault-a-file', { path: 'A.md' })
+
+  const vaultBDoc = createFreshMetaDocForVaultSwitch(vaultADoc)
+
+  assert.equal(vaultBDoc.getMap('meta').has('vault-a-file'), false)
+  vaultBDoc.getMap('meta').set('vault-b-file', { path: 'B.md' })
+  assert.equal(vaultBDoc.getMap('meta').has('vault-a-file'), false)
+  assert.equal(vaultBDoc.getMap('meta').has('vault-b-file'), true)
+  vaultBDoc.destroy()
+})

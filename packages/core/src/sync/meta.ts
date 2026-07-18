@@ -1,5 +1,6 @@
 import * as v from 'valibot'
 
+import { isRecord } from '../auth/validation'
 import { DeviceIdSchema, FileIdSchema, YDocIdSchema } from '../utils/ids'
 import { NonEmptyBase64Schema } from '../utils/shared'
 
@@ -324,10 +325,6 @@ function isMapLike(
 function isDetachedMap(value: unknown): boolean {
   if (!isMapLike(value) || !('doc' in value)) return true
   return (value as { readonly doc?: unknown }).doc == null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** Decodes one root value and preserves a four-way disposition for compatibility handling. */

@@ -9,9 +9,9 @@ import {
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
+import type { LocalAwareness } from '../editor/awareness'
+import { createYTextEditorExtension, dispatchFullDocumentReplace } from '../editor/editor-binding'
 import type { FileDocId, LoadedTextDoc } from '../main-types'
-import type { LocalAwareness } from '../obsidian/awareness'
-import { createYTextEditorExtension, dispatchFullDocumentReplace } from '../obsidian/editor-binding'
 import { DISK_ORIGIN, REMOTE_ORIGIN, WORKER_ORIGIN, SPIKE_TEXT_NAME } from './constants'
 import {
   classifyDocumentEpoch,
@@ -413,4 +413,10 @@ export function activateLoadedTextDoc(plugin: ActiveTextDocPlugin, loaded: Loade
     ),
   })
   plugin.yCollabBoundViews.add(editorView)
+}
+
+/** Creates an empty in-memory meta document when switching persisted vault namespaces. */
+export function createFreshMetaDocForVaultSwitch(previous: Y.Doc): Y.Doc {
+  previous.destroy()
+  return new Y.Doc()
 }

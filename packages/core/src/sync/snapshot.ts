@@ -2,6 +2,7 @@ import { type DocLatestSnapshotResponse, type MetaLatestSnapshotResponse } from 
 import { makeSha256Hex, type Sha256Hex } from '../sync/meta'
 import { hashBytesSha256 } from '../utils/hashing'
 import { type DocId } from '../utils/ids'
+import { isNonNegativeSafeInteger } from '../utils/shared'
 
 /** Input for deciding whether a fetched full snapshot may replace local doc state. */
 export interface FullSnapshotApplyInput {
@@ -210,10 +211,6 @@ function sameDocId(left: DocId, right: DocId): boolean {
     return true
   }
   return right.kind === 'file' && left.ydocId === right.ydocId
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 const BASE64_DECODE_TABLE = new Int16Array(128).fill(-1)

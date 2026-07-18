@@ -15,11 +15,9 @@ const MAX_ADMIN_EFFECTS = 1024
 const MAX_QUARANTINED_UPDATE_ID_LENGTH = 128
 const MAX_QUARANTINED_UPDATE_ENTRIES = 1024
 
-// The only admin repair operations with a specified server-side contract are
-// the quarantine actions below (see docs/spec/server.md §9, "admin repair は
-// 3 種に絞る"). The generic `gc`/`force-local`/`force-remote`/`rebuild`
-// operation names were never given a payload or effect contract and have no
-// route; see docs/implementation-status.md for the removal note.
+// Only the quarantine actions below have a defined server-side contract.
+// The generic `gc`/`force-local`/`force-remote`/`rebuild` operations have
+// no payload contract and no route.
 export const AdminOperationEffectSchema = v.object({
   kind: v.union([v.literal('quarantine-discard'), v.literal('quarantine-force-apply')]),
   count: NonNegativeSafeIntegerSchema,

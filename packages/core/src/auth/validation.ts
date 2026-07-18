@@ -1,37 +1,26 @@
-import { isNonNegativeSafeInteger, isPositiveSafeInteger } from '../utils/shared'
-export { isNonNegativeSafeInteger, isPositiveSafeInteger }
+import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
+export { isNonNegativeSafeInteger, isPositiveSafeInteger } from '../utils/shared'
 import * as v from 'valibot'
 
 import { DeviceIdSchema } from '../utils/ids'
 import type { ClientAuthMetadata } from './types'
 
+export const ClientAuthMetadataSchema = v.object({
+  deviceId: DeviceIdSchema,
+  authState: v.union([v.literal('active'), v.literal('revoked'), v.literal('reauth-required')]),
+  tokenVersion: PositiveSafeIntegerSchema,
+  accessTokenExpiresAt: v.optional(NonNegativeSafeIntegerSchema),
+  revokedAt: v.optional(NonNegativeSafeIntegerSchema),
+  refreshState: v.union([v.literal('idle'), v.literal('refreshing'), v.literal('backing-off')]),
+  refreshStartedAt: v.optional(NonNegativeSafeIntegerSchema),
+  retryCount: NonNegativeSafeIntegerSchema,
+  nextAllowedRefreshAt: v.optional(NonNegativeSafeIntegerSchema),
+  accessTokenSecretKey: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
+  refreshTokenSecretKey: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
+})
+
 export function isClientAuthMetadata(value: unknown): value is ClientAuthMetadata {
-  if (!isRecord(value)) {
-    return false
-  }
-
-  if (
-    !v.is(DeviceIdSchema, value.deviceId) ||
-    !isClientAuthState(value.authState) ||
-    !isPositiveSafeInteger(value.tokenVersion) ||
-    !isClientRefreshState(value.refreshState) ||
-    !isNonNegativeSafeInteger(value.retryCount)
-  ) {
-    return false
-  }
-
-  return (
-    (value.accessTokenExpiresAt === undefined ||
-      isNonNegativeSafeInteger(value.accessTokenExpiresAt)) &&
-    (value.revokedAt === undefined || isNonNegativeSafeInteger(value.revokedAt)) &&
-    (value.refreshStartedAt === undefined || isNonNegativeSafeInteger(value.refreshStartedAt)) &&
-    (value.nextAllowedRefreshAt === undefined ||
-      isNonNegativeSafeInteger(value.nextAllowedRefreshAt)) &&
-    (value.accessTokenSecretKey === undefined ||
-      isBoundedNonEmptyString(value.accessTokenSecretKey, 256)) &&
-    (value.refreshTokenSecretKey === undefined ||
-      isBoundedNonEmptyString(value.refreshTokenSecretKey, 256))
-  )
+  return v.is(ClientAuthMetadataSchema, value)
 }
 
 export function isBoundedNonEmptyString(value: unknown, maxLength: number): value is string {
@@ -39,11 +28,11 @@ export function isBoundedNonEmptyString(value: unknown, maxLength: number): valu
 }
 
 export function isClientAuthState(value: unknown): value is ClientAuthMetadata['authState'] {
-  return value === 'active' || value === 'revoked' || value === 'reauth-required'
+  return v.is(v.picklist(['active', 'revoked', 'reauth-required']), value)
 }
 
 export function isClientRefreshState(value: unknown): value is ClientAuthMetadata['refreshState'] {
-  return value === 'idle' || value === 'refreshing' || value === 'backing-off'
+  return v.is(v.picklist(['idle', 'refreshing', 'backing-off']), value)
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

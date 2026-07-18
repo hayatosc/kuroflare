@@ -16,6 +16,16 @@ export const NonEmptyBase64Schema = v.pipe(
   v.regex(BASE64_PATTERN, 'Invalid base64'),
 )
 
+export function guard<S extends v.GenericSchema, R extends string>(
+  schema: S,
+  value: unknown,
+  reason: R,
+): { ok: true; value: v.InferOutput<S> } | { ok: false; reason: R } {
+  const result = v.safeParse(schema, value)
+  if (!result.success) return { ok: false, reason }
+  return { ok: true, value: result.output }
+}
+
 export function isNonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }

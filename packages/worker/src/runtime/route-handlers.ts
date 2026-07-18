@@ -2027,16 +2027,14 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
       let sourceInvalidated = false
       let targetInvalidated = false
       await withSqlTransaction(room, async () => {
+        if (snapshotKey === undefined) throw new Error('unreachable: snapshotKey must be assigned')
+        if (runId === undefined) throw new Error('unreachable: runId must be assigned')
         const latestSource = await getLatestSnapshotHealthEvent(
           db,
           docKey(body.docId),
           candidate.key,
         )
-        const latestTarget = await getLatestSnapshotHealthEvent(
-          db,
-          docKey(body.docId),
-          snapshotKey as string,
-        )
+        const latestTarget = await getLatestSnapshotHealthEvent(db, docKey(body.docId), snapshotKey)
         sourceInvalidated =
           latestSource?.authorityStatus !== 'authoritative' ||
           latestSource.physicalStatus !== 'verified' ||
@@ -2050,16 +2048,16 @@ export async function handleSnapshotRollback(room: VaultRoom, c: Context): Promi
         await updateDocSnapshotPointer(
           db,
           snapshotSeq,
-          snapshotKey as string,
+          snapshotKey,
           rollbackStateVector,
           now,
           docKey(body.docId),
           snapshotSeq,
         )
-        await updateCheckpointPointerUpdated(db, runId as string, now)
+        await updateCheckpointPointerUpdated(db, runId, now)
         await insertSnapshotHealthEvent(db, {
           docId: docKey(body.docId),
-          snapshotKey: snapshotKey as string,
+          snapshotKey,
           upperSeq: snapshotSeq,
           event: 'rollback',
           actor,
@@ -2171,12 +2169,13 @@ async function collectSnapshotHealthRows(
       room.vaultId === undefined ? undefined : makeSnapshotListPrefix(room.vaultId, docId)
     const parsedCandidate =
       prefix === undefined ? undefined : snapshotCandidateFromKeyForHealth(prefix, row.snapshotKey)
+    const rawSeq = runSequences.get(row.snapshotKey)
     const candidate =
       parsedCandidate ??
-      (row.upperSeq <= 0 && runSequences.has(row.snapshotKey)
+      (row.upperSeq <= 0 && rawSeq !== undefined
         ? {
             key: row.snapshotKey,
-            upperSeq: runSequences.get(row.snapshotKey) as number,
+            upperSeq: rawSeq,
             healthy: true,
           }
         : undefined)

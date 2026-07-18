@@ -1,3 +1,6 @@
+import * as v from 'valibot'
+
+import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema, guard } from '../utils/shared'
 import type {
   ClientAuthRefreshDecisionInput,
   ClientAuthRefreshDecision,
@@ -17,12 +20,7 @@ import type {
   ClientAuthMetadataPatchDecision,
   ClientAuthMetadataRefreshAttemptPatchInput,
 } from './types'
-import {
-  isPositiveSafeInteger,
-  isNonNegativeSafeInteger,
-  isBoundedNonEmptyString,
-  isClientAuthMetadata,
-} from './validation'
+import { ClientAuthMetadataSchema } from './validation'
 
 /** Backoff policy for retrying client token refresh attempts. */
 export const CLIENT_AUTH_REFRESH_RETRY_POLICY = {
@@ -30,20 +28,39 @@ export const CLIENT_AUTH_REFRESH_RETRY_POLICY = {
   maxDelayMs: 300_000,
 } as const
 
+const ClientAuthStartInputSchema = v.object({
+  now: NonNegativeSafeIntegerSchema,
+  tokenExpiresAt: NonNegativeSafeIntegerSchema,
+  refreshMarginMs: NonNegativeSafeIntegerSchema,
+  estimatedDurationMs: v.optional(NonNegativeSafeIntegerSchema),
+})
+
+const SetupPersistInputSchema = v.object({
+  response: v.looseObject({
+    tokenVersion: PositiveSafeIntegerSchema,
+  }),
+  accessTokenExpiresAt: NonNegativeSafeIntegerSchema,
+  accessTokenSecretKey: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
+  refreshTokenSecretKey: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
+})
+
 /**
  * Decides whether the plugin may persist a refreshed access token and resume auth-paused work.
  */
 export function decideClientAuthRefresh(
   input: ClientAuthRefreshDecisionInput,
 ): ClientAuthRefreshDecision {
-  if (!isNonNegativeSafeInteger(input.now)) {
-    return { action: 'reject', reason: 'invalid-time' }
-  }
-  if (
-    input.previousTokenVersion !== undefined &&
-    !isPositiveSafeInteger(input.previousTokenVersion)
-  ) {
-    return { action: 'reject', reason: 'invalid-previous-token-version' }
+  const nowResult = guard(NonNegativeSafeIntegerSchema, input.now, 'invalid-time')
+  if (!nowResult.ok) return { action: 'reject', reason: nowResult.reason }
+  const now = nowResult.value
+
+  if (input.previousTokenVersion !== undefined) {
+    const tv = guard(
+      PositiveSafeIntegerSchema,
+      input.previousTokenVersion,
+      'invalid-previous-token-version',
+    )
+    if (!tv.ok) return { action: 'reject', reason: tv.reason }
   }
   if (input.claims.aud !== input.expectedVaultId) {
     return { action: 'reject', reason: 'vault-mismatch' }
@@ -51,10 +68,10 @@ export function decideClientAuthRefresh(
   if (input.claims.sub !== input.expectedDeviceId) {
     return { action: 'reject', reason: 'device-mismatch' }
   }
-  if (input.now < input.claims.iat) {
+  if (now < input.claims.iat) {
     return { action: 'reject', reason: 'token-not-yet-valid' }
   }
-  if (input.now >= input.claims.exp) {
+  if (now >= input.claims.exp) {
     return { action: 'reject', reason: 'token-expired' }
   }
   if (
@@ -83,24 +100,25 @@ export function decideClientAuthRefresh(
 export function decideClientAuthStart(
   input: ClientAuthStartDecisionInput,
 ): ClientAuthStartDecision {
-  if (!isNonNegativeSafeInteger(input.now)) {
-    return { action: 'reject', reason: 'invalid-time' }
+  const result = v.safeParse(ClientAuthStartInputSchema, input)
+  if (!result.success) {
+    switch (String(result.issues[0]?.path?.[0]?.key)) {
+      case 'now':
+        return { action: 'reject', reason: 'invalid-time' }
+      case 'tokenExpiresAt':
+        return { action: 'reject', reason: 'invalid-token-expiry' }
+      case 'refreshMarginMs':
+        return { action: 'reject', reason: 'invalid-refresh-margin' }
+      case 'estimatedDurationMs':
+        return { action: 'reject', reason: 'invalid-estimated-duration' }
+      default:
+        return { action: 'reject', reason: 'invalid-time' }
+    }
   }
-  if (!isNonNegativeSafeInteger(input.tokenExpiresAt)) {
-    return { action: 'reject', reason: 'invalid-token-expiry' }
-  }
-  if (!isNonNegativeSafeInteger(input.refreshMarginMs)) {
-    return { action: 'reject', reason: 'invalid-refresh-margin' }
-  }
-  if (
-    input.estimatedDurationMs !== undefined &&
-    !isNonNegativeSafeInteger(input.estimatedDurationMs)
-  ) {
-    return { action: 'reject', reason: 'invalid-estimated-duration' }
-  }
+  const { now, tokenExpiresAt, refreshMarginMs, estimatedDurationMs } = result.output
 
-  const remainingMs = input.tokenExpiresAt - input.now
-  const requiredRemainingMs = input.refreshMarginMs + (input.estimatedDurationMs ?? 0)
+  const remainingMs = tokenExpiresAt - now
+  const requiredRemainingMs = refreshMarginMs + (estimatedDurationMs ?? 0)
   if (remainingMs <= 0) {
     return {
       action: 'refresh-first',
@@ -126,30 +144,41 @@ export function decideClientAuthStart(
 export function decideClientAuthRefreshAttempt(
   input: ClientAuthRefreshAttemptInput,
 ): ClientAuthRefreshAttemptDecision {
-  if (!isNonNegativeSafeInteger(input.now)) {
-    return { action: 'reject', reason: 'invalid-time' }
-  }
-  if (!isNonNegativeSafeInteger(input.retryCount)) {
-    return { action: 'reject', reason: 'invalid-retry-count' }
-  }
-  if (input.retryAfterMs !== undefined && !isNonNegativeSafeInteger(input.retryAfterMs)) {
-    return { action: 'reject', reason: 'invalid-retry-after' }
+  const nowResult = guard(NonNegativeSafeIntegerSchema, input.now, 'invalid-time')
+  if (!nowResult.ok) return { action: 'reject', reason: nowResult.reason }
+  const now = nowResult.value
+
+  const rc = guard(NonNegativeSafeIntegerSchema, input.retryCount, 'invalid-retry-count')
+  if (!rc.ok) return { action: 'reject', reason: rc.reason }
+  const retryCount = rc.value
+
+  let retryAfterMs: number | undefined
+  if (input.retryAfterMs !== undefined) {
+    const ra = guard(NonNegativeSafeIntegerSchema, input.retryAfterMs, 'invalid-retry-after')
+    if (!ra.ok) return { action: 'reject', reason: ra.reason }
+    retryAfterMs = ra.value
   }
 
   if (input.result.status === 'accepted') {
-    if (!isPositiveSafeInteger(input.result.patch.tokenVersion)) {
-      return { action: 'reject', reason: 'invalid-token-version' }
-    }
-    if (!isNonNegativeSafeInteger(input.result.patch.expiresAt)) {
-      return { action: 'reject', reason: 'invalid-token-expiry' }
-    }
+    const tv = guard(
+      PositiveSafeIntegerSchema,
+      input.result.patch.tokenVersion,
+      'invalid-token-version',
+    )
+    if (!tv.ok) return { action: 'reject', reason: tv.reason }
+    const expiresAtResult = guard(
+      NonNegativeSafeIntegerSchema,
+      input.result.patch.expiresAt,
+      'invalid-token-expiry',
+    )
+    if (!expiresAtResult.ok) return { action: 'reject', reason: expiresAtResult.reason }
     return {
       action: 'complete',
       patch: {
         refreshState: 'idle',
         retryCount: 0,
-        tokenVersion: input.result.patch.tokenVersion,
-        expiresAt: input.result.patch.expiresAt,
+        tokenVersion: tv.value,
+        expiresAt: expiresAtResult.value,
         emitResumeEvent: input.result.patch.emitResumeEvent,
       },
     }
@@ -166,18 +195,18 @@ export function decideClientAuthRefreshAttempt(
     }
   }
 
-  const nextRetryCount = input.retryCount + 1
+  const nextRetryCount = retryCount + 1
   const scheduledDelayMs =
     CLIENT_AUTH_REFRESH_RETRY_POLICY.scheduleMs[
-      Math.min(input.retryCount, CLIENT_AUTH_REFRESH_RETRY_POLICY.scheduleMs.length - 1)
+      Math.min(retryCount, CLIENT_AUTH_REFRESH_RETRY_POLICY.scheduleMs.length - 1)
     ] ?? CLIENT_AUTH_REFRESH_RETRY_POLICY.maxDelayMs
-  const delayMs = Math.max(scheduledDelayMs, input.retryAfterMs ?? 0)
+  const delayMs = Math.max(scheduledDelayMs, retryAfterMs ?? 0)
   return {
     action: 'backoff',
     patch: {
       refreshState: 'backing-off',
       retryCount: nextRetryCount,
-      nextAllowedRefreshAt: input.now + delayMs,
+      nextAllowedRefreshAt: now + delayMs,
       reason: input.result.reason,
     },
   }
@@ -189,28 +218,27 @@ export function decideClientAuthRefreshAttempt(
 export function decideClientAuthRefreshStart(
   input: ClientAuthRefreshStartInput,
 ): ClientAuthRefreshStartDecision {
-  if (!isClientAuthMetadata(input.metadata)) {
-    return { action: 'reject', reason: 'invalid-metadata' }
-  }
-  if (!isNonNegativeSafeInteger(input.requestedAt)) {
-    return { action: 'reject', reason: 'invalid-requested-at' }
-  }
-  if (input.metadata.authState !== 'active') {
+  const mdResult = guard(ClientAuthMetadataSchema, input.metadata, 'invalid-metadata')
+  if (!mdResult.ok) return { action: 'reject', reason: mdResult.reason }
+  const metadata = mdResult.value
+
+  const reqResult = guard(NonNegativeSafeIntegerSchema, input.requestedAt, 'invalid-requested-at')
+  if (!reqResult.ok) return { action: 'reject', reason: reqResult.reason }
+  const requestedAt = reqResult.value
+
+  if (metadata.authState !== 'active') {
     return { action: 'reject', reason: 'device-not-active' }
   }
-  if (
-    input.metadata.accessTokenSecretKey === undefined ||
-    input.metadata.refreshTokenSecretKey === undefined
-  ) {
+  if (metadata.accessTokenSecretKey === undefined || metadata.refreshTokenSecretKey === undefined) {
     return { action: 'reject', reason: 'missing-token-secret-keys' }
   }
-  if (input.metadata.refreshState === 'refreshing') {
+  if (metadata.refreshState === 'refreshing') {
     return { action: 'reject', reason: 'refresh-already-running' }
   }
   if (
-    input.metadata.refreshState === 'backing-off' &&
-    input.metadata.nextAllowedRefreshAt !== undefined &&
-    input.requestedAt < input.metadata.nextAllowedRefreshAt
+    metadata.refreshState === 'backing-off' &&
+    metadata.nextAllowedRefreshAt !== undefined &&
+    requestedAt < metadata.nextAllowedRefreshAt
   ) {
     return { action: 'reject', reason: 'refresh-backoff' }
   }
@@ -218,15 +246,15 @@ export function decideClientAuthRefreshStart(
   return {
     action: 'start',
     metadata: {
-      deviceId: input.metadata.deviceId,
+      deviceId: metadata.deviceId,
       authState: 'active',
-      tokenVersion: input.metadata.tokenVersion,
-      accessTokenExpiresAt: input.metadata.accessTokenExpiresAt,
+      tokenVersion: metadata.tokenVersion,
+      accessTokenExpiresAt: metadata.accessTokenExpiresAt,
       refreshState: 'refreshing',
-      refreshStartedAt: input.requestedAt,
-      retryCount: input.metadata.retryCount,
-      accessTokenSecretKey: input.metadata.accessTokenSecretKey,
-      refreshTokenSecretKey: input.metadata.refreshTokenSecretKey,
+      refreshStartedAt: requestedAt,
+      retryCount: metadata.retryCount,
+      accessTokenSecretKey: metadata.accessTokenSecretKey,
+      refreshTokenSecretKey: metadata.refreshTokenSecretKey,
     },
   }
 }
@@ -237,45 +265,48 @@ export function decideClientAuthRefreshStart(
 export function decideClientAuthRefreshStaleStartRecovery(
   input: ClientAuthRefreshStaleStartRecoveryInput,
 ): ClientAuthRefreshStaleStartRecoveryDecision {
-  if (!isClientAuthMetadata(input.metadata)) {
-    return { action: 'reject', reason: 'invalid-metadata' }
-  }
-  if (!isNonNegativeSafeInteger(input.now)) {
-    return { action: 'reject', reason: 'invalid-clock' }
-  }
-  if (!isPositiveSafeInteger(input.staleAfterMs)) {
-    return { action: 'reject', reason: 'invalid-stale-timeout' }
-  }
-  if (input.metadata.refreshState !== 'refreshing') {
+  const mdResult = guard(ClientAuthMetadataSchema, input.metadata, 'invalid-metadata')
+  if (!mdResult.ok) return { action: 'reject', reason: mdResult.reason }
+  const metadata = mdResult.value
+
+  const nowResult = guard(NonNegativeSafeIntegerSchema, input.now, 'invalid-clock')
+  if (!nowResult.ok) return { action: 'reject', reason: nowResult.reason }
+  const now = nowResult.value
+
+  const saResult = guard(PositiveSafeIntegerSchema, input.staleAfterMs, 'invalid-stale-timeout')
+  if (!saResult.ok) return { action: 'reject', reason: saResult.reason }
+  const staleAfterMs = saResult.value
+
+  if (metadata.refreshState !== 'refreshing') {
     return { action: 'noop', reason: 'not-refreshing' }
   }
-  const refreshStartedAt = input.metadata.refreshStartedAt
-  if (refreshStartedAt === undefined || !isNonNegativeSafeInteger(refreshStartedAt)) {
+  const refreshStartedAt = metadata.refreshStartedAt
+  if (refreshStartedAt === undefined) {
     return { action: 'reject', reason: 'invalid-refresh-started-at' }
   }
 
-  const staleAt = refreshStartedAt + input.staleAfterMs
-  if (input.now < staleAt) {
+  const staleAt = refreshStartedAt + staleAfterMs
+  if (now < staleAt) {
     return { action: 'wait', refreshStartedAt, staleAt }
   }
 
-  const retryCount = input.metadata.retryCount + 1
+  const retryCount = metadata.retryCount + 1
   const scheduledDelayMs =
     CLIENT_AUTH_REFRESH_RETRY_POLICY.scheduleMs[
-      Math.min(input.metadata.retryCount, CLIENT_AUTH_REFRESH_RETRY_POLICY.scheduleMs.length - 1)
+      Math.min(metadata.retryCount, CLIENT_AUTH_REFRESH_RETRY_POLICY.scheduleMs.length - 1)
     ] ?? CLIENT_AUTH_REFRESH_RETRY_POLICY.maxDelayMs
   return {
     action: 'recover',
     metadata: {
-      deviceId: input.metadata.deviceId,
+      deviceId: metadata.deviceId,
       authState: 'active',
-      tokenVersion: input.metadata.tokenVersion,
-      accessTokenExpiresAt: input.metadata.accessTokenExpiresAt,
+      tokenVersion: metadata.tokenVersion,
+      accessTokenExpiresAt: metadata.accessTokenExpiresAt,
       refreshState: 'backing-off',
       retryCount,
-      nextAllowedRefreshAt: input.now + scheduledDelayMs,
-      accessTokenSecretKey: input.metadata.accessTokenSecretKey,
-      refreshTokenSecretKey: input.metadata.refreshTokenSecretKey,
+      nextAllowedRefreshAt: now + scheduledDelayMs,
+      accessTokenSecretKey: metadata.accessTokenSecretKey,
+      refreshTokenSecretKey: metadata.refreshTokenSecretKey,
     },
   }
 }
@@ -286,30 +317,35 @@ export function decideClientAuthRefreshStaleStartRecovery(
 export function planClientAuthMetadataFromSetupResponse(
   input: ClientAuthMetadataSetupPersistInput,
 ): ClientAuthMetadataSetupPersistDecision {
-  if (!isPositiveSafeInteger(input.response.tokenVersion)) {
-    return { action: 'reject', reason: 'invalid-token-version' }
+  const result = v.safeParse(SetupPersistInputSchema, input)
+  if (!result.success) {
+    switch (String(result.issues[0]?.path?.[0]?.key)) {
+      case 'response':
+        return { action: 'reject', reason: 'invalid-token-version' }
+      case 'accessTokenExpiresAt':
+        return { action: 'reject', reason: 'invalid-token-expiry' }
+      case 'accessTokenSecretKey':
+        return { action: 'reject', reason: 'invalid-secret-key' }
+      case 'refreshTokenSecretKey':
+        return { action: 'reject', reason: 'invalid-secret-key' }
+      default:
+        return { action: 'reject', reason: 'invalid-token-version' }
+    }
   }
-  if (!isNonNegativeSafeInteger(input.accessTokenExpiresAt)) {
-    return { action: 'reject', reason: 'invalid-token-expiry' }
-  }
-  if (
-    !isBoundedNonEmptyString(input.accessTokenSecretKey, 256) ||
-    !isBoundedNonEmptyString(input.refreshTokenSecretKey, 256)
-  ) {
-    return { action: 'reject', reason: 'invalid-secret-key' }
-  }
+  const { response, accessTokenExpiresAt, accessTokenSecretKey, refreshTokenSecretKey } =
+    result.output
 
   return {
     action: 'persist',
     metadata: {
       deviceId: input.response.deviceId,
       authState: 'active',
-      tokenVersion: input.response.tokenVersion,
-      accessTokenExpiresAt: input.accessTokenExpiresAt,
+      tokenVersion: response.tokenVersion,
+      accessTokenExpiresAt,
       refreshState: 'idle',
       retryCount: 0,
-      accessTokenSecretKey: input.accessTokenSecretKey,
-      refreshTokenSecretKey: input.refreshTokenSecretKey,
+      accessTokenSecretKey,
+      refreshTokenSecretKey,
     },
   }
 }
@@ -323,17 +359,17 @@ export function decideClientDeviceRevoke(
   if (input.response.deviceId !== input.expectedDeviceId) {
     return { action: 'reject', reason: 'device-mismatch' }
   }
-  if (!isPositiveSafeInteger(input.response.tokenVersion)) {
-    return { action: 'reject', reason: 'invalid-token-version' }
-  }
-  if (!isNonNegativeSafeInteger(input.response.revokedAt)) {
-    return { action: 'reject', reason: 'invalid-revoked-at' }
-  }
-  if (
-    input.previousTokenVersion !== undefined &&
-    !isPositiveSafeInteger(input.previousTokenVersion)
-  ) {
-    return { action: 'reject', reason: 'invalid-token-version' }
+  const tv = guard(PositiveSafeIntegerSchema, input.response.tokenVersion, 'invalid-token-version')
+  if (!tv.ok) return { action: 'reject', reason: tv.reason }
+  const ra = guard(NonNegativeSafeIntegerSchema, input.response.revokedAt, 'invalid-revoked-at')
+  if (!ra.ok) return { action: 'reject', reason: ra.reason }
+  if (input.previousTokenVersion !== undefined) {
+    const ptv = guard(
+      PositiveSafeIntegerSchema,
+      input.previousTokenVersion,
+      'invalid-token-version',
+    )
+    if (!ptv.ok) return { action: 'reject', reason: ptv.reason }
   }
   if (
     input.previousTokenVersion !== undefined &&
@@ -346,8 +382,8 @@ export function decideClientDeviceRevoke(
     action: 'mark-revoked',
     patch: {
       authState: 'revoked',
-      tokenVersion: input.response.tokenVersion,
-      revokedAt: input.response.revokedAt,
+      tokenVersion: tv.value,
+      revokedAt: ra.value,
       clearAccessToken: true,
       clearRefreshToken: true,
       stopSync: true,
@@ -362,20 +398,21 @@ export function decideClientDeviceRevoke(
 export function applyClientAuthMetadataRevokePatch(
   input: ClientAuthMetadataRevokePatchInput,
 ): ClientAuthMetadataPatchDecision {
-  if (!isClientAuthMetadata(input.metadata)) {
-    return { action: 'reject', reason: 'invalid-metadata' }
-  }
-  if (input.metadata.authState !== 'active') {
+  const mdResult = guard(ClientAuthMetadataSchema, input.metadata, 'invalid-metadata')
+  if (!mdResult.ok) return { action: 'reject', reason: mdResult.reason }
+  const metadata = mdResult.value
+
+  if (metadata.authState !== 'active') {
     return { action: 'reject', reason: 'device-not-active' }
   }
-  if (input.patch.tokenVersion < input.metadata.tokenVersion) {
+  if (input.patch.tokenVersion < metadata.tokenVersion) {
     return { action: 'reject', reason: 'token-version-regressed' }
   }
 
   return {
     action: 'apply',
     metadata: {
-      deviceId: input.metadata.deviceId,
+      deviceId: metadata.deviceId,
       authState: 'revoked',
       tokenVersion: input.patch.tokenVersion,
       revokedAt: input.patch.revokedAt,
@@ -391,10 +428,11 @@ export function applyClientAuthMetadataRevokePatch(
 export function applyClientAuthMetadataRefreshAttemptPatch(
   input: ClientAuthMetadataRefreshAttemptPatchInput,
 ): ClientAuthMetadataPatchDecision {
-  if (!isClientAuthMetadata(input.metadata)) {
-    return { action: 'reject', reason: 'invalid-metadata' }
-  }
-  if (input.metadata.authState !== 'active') {
+  const mdResult = guard(ClientAuthMetadataSchema, input.metadata, 'invalid-metadata')
+  if (!mdResult.ok) return { action: 'reject', reason: mdResult.reason }
+  const metadata = mdResult.value
+
+  if (metadata.authState !== 'active') {
     return { action: 'reject', reason: 'device-not-active' }
   }
 
@@ -403,21 +441,21 @@ export function applyClientAuthMetadataRefreshAttemptPatch(
   }
 
   if (input.decision.action === 'complete') {
-    if (input.decision.patch.tokenVersion < input.metadata.tokenVersion) {
+    if (input.decision.patch.tokenVersion < metadata.tokenVersion) {
       return { action: 'reject', reason: 'token-version-regressed' }
     }
 
     return {
       action: 'apply',
       metadata: {
-        deviceId: input.metadata.deviceId,
+        deviceId: metadata.deviceId,
         authState: 'active',
         tokenVersion: input.decision.patch.tokenVersion,
         accessTokenExpiresAt: input.decision.patch.expiresAt,
         refreshState: 'idle',
         retryCount: 0,
-        accessTokenSecretKey: input.metadata.accessTokenSecretKey,
-        refreshTokenSecretKey: input.metadata.refreshTokenSecretKey,
+        accessTokenSecretKey: metadata.accessTokenSecretKey,
+        refreshTokenSecretKey: metadata.refreshTokenSecretKey,
       },
     }
   }
@@ -426,15 +464,15 @@ export function applyClientAuthMetadataRefreshAttemptPatch(
     return {
       action: 'apply',
       metadata: {
-        deviceId: input.metadata.deviceId,
+        deviceId: metadata.deviceId,
         authState: 'active',
-        tokenVersion: input.metadata.tokenVersion,
-        accessTokenExpiresAt: input.metadata.accessTokenExpiresAt,
+        tokenVersion: metadata.tokenVersion,
+        accessTokenExpiresAt: metadata.accessTokenExpiresAt,
         refreshState: 'backing-off',
         retryCount: input.decision.patch.retryCount,
         nextAllowedRefreshAt: input.decision.patch.nextAllowedRefreshAt,
-        accessTokenSecretKey: input.metadata.accessTokenSecretKey,
-        refreshTokenSecretKey: input.metadata.refreshTokenSecretKey,
+        accessTokenSecretKey: metadata.accessTokenSecretKey,
+        refreshTokenSecretKey: metadata.refreshTokenSecretKey,
       },
     }
   }
@@ -442,9 +480,9 @@ export function applyClientAuthMetadataRefreshAttemptPatch(
   return {
     action: 'apply',
     metadata: {
-      deviceId: input.metadata.deviceId,
+      deviceId: metadata.deviceId,
       authState: 'reauth-required',
-      tokenVersion: input.metadata.tokenVersion,
+      tokenVersion: metadata.tokenVersion,
       refreshState: 'idle',
       retryCount: 0,
     },

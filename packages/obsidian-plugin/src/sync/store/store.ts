@@ -22,10 +22,10 @@ export type {
   SuccessfulOutboundQueueTickPlan,
 } from '../store/store.types'
 
+export { applyLocalStoreTransactionSnapshot } from '../store/store/apply'
+export { planLocalStoreTransactionCommit } from '../store/store/commit'
+export { applyLocalStoreOutboxPatch, localStoreOutboxPatchItemId } from '../store/store/patch'
 export {
-  applyLocalStoreOutboxPatch,
-  applyLocalStoreTransactionSnapshot,
-  localStoreOutboxPatchItemId,
   planLocalStoreAckCompletionTransaction,
   planLocalStoreFailureCompletionTransaction,
   planLocalStoreFullSnapshotReleaseTransaction,
@@ -37,5 +37,4 @@ export {
   planLocalStoreSyncUpdateRejectedPauseTransaction,
   planLocalStoreSyncUpdateRejectedRepairTransaction,
   planLocalStoreSuccessCompletionTransaction,
-  planLocalStoreTransactionCommit,
-} from '../store/store/index'
+} from '../store/store/plan'

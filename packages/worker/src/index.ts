@@ -1,4 +1,5 @@
-export { default, VaultRoom, workerEntrypoint } from './runtime'
+export { default, VaultRoom, workerApp, workerEntrypoint } from './runtime'
+export type { AppType } from './runtime'
 export type {
   DurableObjectIdBinding,
   DurableObjectNamespaceBinding,

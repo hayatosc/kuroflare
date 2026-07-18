@@ -4,7 +4,7 @@ packages/*/dist/
 packages/*/dist-test/
 packages/obsidian-plugin/main.js
 
-# Local machine-specific config (mise *.local.toml は端末固有の上書き)
+# Local machine-specific config overrides
 mise.local.toml
 
 # wrangler dev local state

@@ -38,6 +38,9 @@ import * as v from 'valibot'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
+import { LocalAwareness } from '../editor/awareness'
+import { replaceYText } from '../editor/editor-binding'
+import { KuroflareSettingTab } from '../editor/settings-tab'
 import type {
   KuroflareSettings,
   KuroflareInvalidMetaIsolationDetail,
@@ -45,9 +48,6 @@ import type {
   LoadedTextDoc,
   KuroflareRepairLogEntry,
 } from '../main-types'
-import { LocalAwareness } from '../obsidian/awareness'
-import { replaceYText } from '../obsidian/editor-binding'
-import { KuroflareSettingTab } from '../obsidian/settings-tab'
 import {
   createSyncRuntimeIndexedDbLocalStoreEffectPort,
   createSyncRuntimeLocalStoreRebuildReplanPort,
@@ -74,17 +74,17 @@ import {
   createSyncRuntimeObsidianComposition,
   type SyncRuntimeObsidianComposition,
 } from '../sync/obsidian/composition'
+import { createSyncRuntimeObsidianResumePort } from '../sync/obsidian/lifecycle'
 import {
   canDiscardInvalidMetaRepairEntry,
   planInvalidMetaIsolationDetail,
-} from '../sync/obsidian/invalid-meta-isolation'
-import { createSyncRuntimeObsidianResumePort } from '../sync/obsidian/lifecycle'
+} from '../sync/obsidian/meta-quarantine'
 import type { SyncRuntimeObsidianRepairPresentation } from '../sync/obsidian/presentation'
 import {
   listPausedRejectedUpdates,
   repairPausedRejectedUpdate,
   type RejectedUpdateRepairResult,
-} from '../sync/obsidian/rejected-update-repair'
+} from '../sync/obsidian/rejected-repair'
 import {
   planPathConflictAutoResolve,
   planRemoteMaterializeBlockedAutoResolve,
@@ -117,6 +117,7 @@ import {
   readAccessToken,
   requireSetupMetadata,
 } from './auth'
+import { createStartupSideEffectGate } from './boot-guard'
 import {
   SPIKE_TEXT_NAME,
   DISK_ORIGIN,
@@ -144,7 +145,8 @@ import {
   type DocumentEpochRecord,
   type RecoveryOutboxUpdate,
 } from './epoch-recovery'
-import { commitDocumentRecoveryTransaction } from './epoch-recovery-store'
+import { createYDocFromSnapshot } from './epoch-recovery'
+import { commitDocumentRecoveryTransaction } from './epoch-repair'
 import {
   adoptLocalFilesAfterRemoteMeta,
   createLocalMetaYDocFromStartupScan,
@@ -192,8 +194,8 @@ import {
   prepareDocumentProvider,
   updateMetaFile,
 } from './meta'
-import { createFreshMetaDocForVaultSwitch } from './meta-namespace'
-import { runOutboxWorkerTick } from './outbox'
+import { createFreshMetaDocForVaultSwitch } from './meta'
+import { runOutboxWorkerTick } from './outbox/tick'
 import {
   blobHeadHashBatches,
   blobHeadEntryMatchesChunk,
@@ -204,10 +206,8 @@ import {
   deferStartupReplan,
 } from './runtime-guards'
 import { createRemoteSetupAccessTokenVerifier } from './setup-verifier'
-import { createYDocFromSnapshot } from './snapshot-replace'
-import { createStartupSideEffectGate } from './startup-gate'
 import { openLocalStoreDatabase, putOutboxRecords, readOutboxWorkerSnapshot } from './store'
-import { handleLifecycleResume } from './sync-runtime'
+import { handleLifecycleResume } from './sync-bridge'
 import {
   openWorkerWebSocket,
   requestActiveFileFromWorker,

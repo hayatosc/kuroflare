@@ -7,9 +7,10 @@ import {
   makeVaultId,
   makeYDocId,
 } from '@kuroflare/core'
+import * as v from 'valibot'
 import { assert, expect, test } from 'vitest'
 
-import { LocalAwareness } from '../obsidian/awareness'
+import { LocalAwareness } from '../editor/awareness'
 import {
   createBrowserSyncRuntimeWebSocketFactory,
   createSyncRuntimeWebSocketSession,
@@ -27,11 +28,6 @@ import {
   wireLocalAwarenessBroadcast,
   type WorkerWebSocketOpenRuntime,
 } from './sync-websocket'
-
-function castForTest<T>(value: unknown): T {
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-  return value as T
-}
 
 test('requestDocFromWorker reports a closed socket without leaving a pending request', async () => {
   const plugin = {
@@ -72,17 +68,20 @@ const awarenessSetup = {
 
 test('sendLocalAwarenessUpdate drops silently before hello is accepted', () => {
   const sent: string[] = []
-  const plugin = castForTest<KuroflareSpikePlugin>({
-    startupSideEffectGate: { canSendNetwork: () => true },
-    workerHelloAccepted: false,
-    workerWebSocketSession: {
-      send: (data: string) => sent.push(data),
-      snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+  const plugin = v.parse(
+    v.custom<KuroflareSpikePlugin>((v) => typeof v === 'object' && v !== null),
+    {
+      startupSideEffectGate: { canSendNetwork: () => true },
+      workerHelloAccepted: false,
+      workerWebSocketSession: {
+        send: (data: string) => sent.push(data),
+        snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+      },
+      pendingSetupResponse: null,
+      trustedSetupMetadata: awarenessSetup,
+      kuroflareSettings: { setupVaultId: '' },
     },
-    pendingSetupResponse: null,
-    trustedSetupMetadata: awarenessSetup,
-    kuroflareSettings: { setupVaultId: '' },
-  })
+  )
 
   sendLocalAwarenessUpdate(plugin, { kind: 'file', ydocId: makeYDocId('awareness-doc-1') }, 1, {})
 
@@ -91,17 +90,20 @@ test('sendLocalAwarenessUpdate drops silently before hello is accepted', () => {
 
 test('sendLocalAwarenessUpdate broadcasts the local presence state over an open session', () => {
   const sent: string[] = []
-  const plugin = castForTest<KuroflareSpikePlugin>({
-    startupSideEffectGate: { canSendNetwork: () => true },
-    workerHelloAccepted: true,
-    workerWebSocketSession: {
-      send: (data: string) => sent.push(data),
-      snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+  const plugin = v.parse(
+    v.custom<KuroflareSpikePlugin>((v) => typeof v === 'object' && v !== null),
+    {
+      startupSideEffectGate: { canSendNetwork: () => true },
+      workerHelloAccepted: true,
+      workerWebSocketSession: {
+        send: (data: string) => sent.push(data),
+        snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+      },
+      pendingSetupResponse: null,
+      trustedSetupMetadata: awarenessSetup,
+      kuroflareSettings: { setupVaultId: '' },
     },
-    pendingSetupResponse: null,
-    trustedSetupMetadata: awarenessSetup,
-    kuroflareSettings: { setupVaultId: '' },
-  })
+  )
   const docId = { kind: 'file', ydocId: makeYDocId('awareness-doc-2') } as const
 
   sendLocalAwarenessUpdate(plugin, docId, 7, { cursor: { anchor: 1, head: 1 } })
@@ -121,26 +123,32 @@ test('wireLocalAwarenessBroadcast sends only local presence changes tied to the 
   const sent: string[] = []
   const awareness = new LocalAwareness()
   const docId = { kind: 'file', ydocId: makeYDocId('awareness-doc-3') } as const
-  const plugin = castForTest<KuroflareSpikePlugin>({
-    awareness,
-    activeTextDoc: null,
-    startupSideEffectGate: { canSendNetwork: () => true },
-    workerHelloAccepted: true,
-    workerWebSocketSession: {
-      send: (data: string) => sent.push(data),
-      snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+  const plugin = v.parse(
+    v.custom<KuroflareSpikePlugin>((v) => typeof v === 'object' && v !== null),
+    {
+      awareness,
+      activeTextDoc: null,
+      startupSideEffectGate: { canSendNetwork: () => true },
+      workerHelloAccepted: true,
+      workerWebSocketSession: {
+        send: (data: string) => sent.push(data),
+        snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+      },
+      pendingSetupResponse: null,
+      trustedSetupMetadata: awarenessSetup,
+      kuroflareSettings: { setupVaultId: '' },
     },
-    pendingSetupResponse: null,
-    trustedSetupMetadata: awarenessSetup,
-    kuroflareSettings: { setupVaultId: '' },
-  })
+  )
 
   wireLocalAwarenessBroadcast(plugin)
 
   awareness.setLocalStateField('cursor', { anchor: 1, head: 1 })
   assert.deepEqual(sent, [])
 
-  plugin.activeTextDoc = castForTest<KuroflareSpikePlugin['activeTextDoc']>({ docId })
+  plugin.activeTextDoc = v.parse(
+    v.custom<KuroflareSpikePlugin['activeTextDoc']>((v) => typeof v === 'object' && v !== null),
+    { docId },
+  )
   awareness.setLocalStateField('cursor', { anchor: 2, head: 2 })
 
   assert.equal(sent.length, 1)
@@ -352,22 +360,25 @@ test('accepted open worker websocket reuse preserves negotiated metadata access'
     bootstrapMode: 'new-vault',
     tokenVersion: 1,
   } as const
-  const plugin = castForTest<KuroflareSpikePlugin>({
-    startupSideEffectGate: { canSendNetwork: () => true },
-    syncStoppedByAuth: null,
-    workerWebSocketOpenPromise: null,
-    workerWebSocketSession: {
-      snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+  const plugin = v.parse(
+    v.custom<KuroflareSpikePlugin>((v) => typeof v === 'object' && v !== null),
+    {
+      startupSideEffectGate: { canSendNetwork: () => true },
+      syncStoppedByAuth: null,
+      workerWebSocketOpenPromise: null,
+      workerWebSocketSession: {
+        snapshot: () => ({ hasConnection: true, readyState: WebSocket.OPEN }),
+      },
+      workerWebSocketStartupPort: null,
+      workerHelloAccepted: true,
+      metadataAccess: 'read-write',
+      pendingSetupResponse: null,
+      trustedSetupMetadata: setup,
+      kuroflareSettings: { setupVaultId: '' },
+      metadataCapabilityAdvertised: true,
+      metadataCapabilityFallbackAttempted: false,
     },
-    workerWebSocketStartupPort: null,
-    workerHelloAccepted: true,
-    metadataAccess: 'read-write',
-    pendingSetupResponse: null,
-    trustedSetupMetadata: setup,
-    kuroflareSettings: { setupVaultId: '' },
-    metadataCapabilityAdvertised: true,
-    metadataCapabilityFallbackAttempted: false,
-  })
+  )
 
   await withFakeWebSocket(async () => {
     await openWorkerWebSocket(plugin, async () => {

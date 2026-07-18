@@ -618,3 +618,10 @@ function encodeBase64(bytes: Uint8Array): string {
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return btoa(binary)
 }
+
+/** Creates a fresh Y.Doc from a verified full snapshot update. */
+export function createYDocFromSnapshot(updateBytes: Uint8Array, origin: unknown): Y.Doc {
+  const doc = new Y.Doc()
+  Y.applyUpdate(doc, updateBytes, origin)
+  return doc
+}

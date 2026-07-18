@@ -1,4 +1,5 @@
 export * from './types'
 export * from './constants'
 export { VaultRoom } from './vault-room'
-export { workerEntrypoint } from './app'
+export { workerApp, workerEntrypoint } from './app'
+export type { AppType } from './app'

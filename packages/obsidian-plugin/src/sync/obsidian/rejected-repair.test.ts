@@ -14,7 +14,7 @@ import {
   listPausedRejectedUpdates,
   repairRejectedUpdateRemote,
   type RejectedUpdateRepairRemoteRow,
-} from './rejected-update-repair'
+} from './rejected-repair'
 
 const vaultId = makeVaultId('repair-vault')
 const docId = { kind: 'file', ydocId: makeYDocId('repair-doc') } as const

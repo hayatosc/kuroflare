@@ -12,12 +12,12 @@ import {
 } from '../main'
 import { readAccessToken, requireSetupMetadata } from '../main/auth'
 import { accessTokenSecretKeyForSetup, deviceRevokeUrl } from '../main/helpers'
-import { planLocalStoreRepairSettingsPresentation } from '../sync/obsidian/local-store-repair-presentation'
 import { renderQuarantineAdmin } from '../sync/obsidian/quarantine-ui'
 import {
   planRejectedUpdateRepairOutcomePresentation,
   planRejectedUpdateRepairSettingsPresentation,
-} from '../sync/obsidian/rejected-update-repair-presentation'
+} from '../sync/obsidian/rejected-repair-ui'
+import { planLocalStoreRepairSettingsPresentation } from '../sync/obsidian/repair-ui'
 import { renderSnapshotHealthAdmin } from '../sync/obsidian/snapshot-health-ui'
 
 export class KuroflareSettingTab extends PluginSettingTab {

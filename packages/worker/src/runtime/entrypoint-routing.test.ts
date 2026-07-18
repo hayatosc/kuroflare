@@ -60,6 +60,7 @@ test('worker entrypoint routes setup exchange requests by body vaultId', async (
 
   const request = new Request('https://worker.example/setup/exchange', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       vaultId: 'vault-1',
       setupToken: 'setup-token',

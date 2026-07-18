@@ -3,7 +3,7 @@ import { assert, test } from 'vitest'
 import {
   planRejectedUpdateRepairOutcomePresentation,
   planRejectedUpdateRepairSettingsPresentation,
-} from './rejected-update-repair-presentation'
+} from './rejected-repair-ui'
 
 test('rejected repair settings present a quiet empty state after setup', () => {
   assert.deepEqual(

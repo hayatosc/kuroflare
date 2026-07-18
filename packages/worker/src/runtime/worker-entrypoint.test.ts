@@ -11,6 +11,7 @@ test('worker entrypoint keeps the admin setup token issuance endpoint degraded w
   const response = await workerEntrypoint.fetch(
     new Request('https://worker.example/admin/setup-tokens', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         vaultId: 'vault-1',
         setupToken: 'setup-token',
@@ -46,7 +47,7 @@ test('worker entrypoint routes admin setup token issuance by body vaultId when e
   const response = await workerEntrypoint.fetch(
     new Request('https://worker.example/admin/setup-tokens', {
       method: 'POST',
-      headers: { 'x-kuroflare-admin-secret': 'admin-secret' },
+      headers: { 'Content-Type': 'application/json', 'x-kuroflare-admin-secret': 'admin-secret' },
       body: JSON.stringify({
         vaultId: 'vault-1',
         setupToken: 'setup-token',
@@ -77,7 +78,7 @@ test('worker entrypoint rejects admin setup token issuance with a mismatched sec
   const response = await workerEntrypoint.fetch(
     new Request('https://worker.example/admin/setup-tokens', {
       method: 'POST',
-      headers: { 'x-kuroflare-admin-secret': 'wrong-secret' },
+      headers: { 'Content-Type': 'application/json', 'x-kuroflare-admin-secret': 'wrong-secret' },
       body: JSON.stringify({ vaultId: 'vault-1', setupToken: 'setup-token' }),
     }),
     env,
@@ -108,6 +109,7 @@ test('worker entrypoint routes auth refresh requests by body vaultId', async () 
 
   const request = new Request('https://worker.example/auth/refresh', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       vaultId: 'vault-1',
       deviceId: 'device-1',
@@ -169,7 +171,10 @@ test('worker entrypoint routes device revoke requests by token vault', async () 
 
   const request = new Request('https://worker.example/devices/device-2/revoke', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${await makeDeviceToken(secret)}` },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${await makeDeviceToken(secret)}`,
+    },
     body: JSON.stringify({ reason: 'lost' }),
   })
 
@@ -251,6 +256,7 @@ test('worker entrypoint rejects invalid routes before touching Durable Objects',
       await workerEntrypoint.fetch(
         new Request('https://worker.example/setup/exchange', {
           method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ vaultId: 'bad id' }),
         }),
         env,
@@ -263,6 +269,7 @@ test('worker entrypoint rejects invalid routes before touching Durable Objects',
       await workerEntrypoint.fetch(
         new Request('https://worker.example/auth/refresh', {
           method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ vaultId: 'bad id' }),
         }),
         env,
@@ -275,6 +282,7 @@ test('worker entrypoint rejects invalid routes before touching Durable Objects',
       await workerEntrypoint.fetch(
         new Request('https://worker.example/devices/bad id/revoke', {
           method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({}),
         }),
         env,

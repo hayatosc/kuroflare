@@ -172,6 +172,12 @@ importers:
       '@kuroflare/core':
         specifier: workspace:*
         version: link:../core
+      '@kuroflare/worker':
+        specifier: workspace:*
+        version: link:../worker
+      hono:
+        specifier: ^4.12.27
+        version: 4.12.27
       valibot:
         specifier: ^1.4.1
         version: 1.4.1(typescript@5.9.3)
@@ -215,6 +221,9 @@ importers:
 
   packages/worker:
     dependencies:
+      '@hono/standard-validator':
+        specifier: ^0.3.0
+        version: 0.3.0(@standard-schema/spec@1.1.0)(hono@4.12.27)
       '@kuroflare/core':
         specifier: workspace:*
         version: link:../core
@@ -240,6 +249,9 @@ importers:
       typescript:
         specifier: ^5.8.3
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.9
+        version: 4.1.9(@types/node@22.19.21)(jsdom@29.1.1)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.28.1))
       wrangler:
         specifier: ^4.105.0
         version: 4.105.0
@@ -564,6 +576,12 @@ packages:
     peerDependenciesMeta:
       '@noble/hashes':
         optional: true
+
+  '@hono/standard-validator@0.3.0':
+    resolution: {integrity: sha512-tHLKEjKXDcHImj0XTFWW4Hr0ev+1G5GxnBZrGdpg/7NLy9s9meFPTSCOkw++ZzZKom3FjrMw2e0nFQpPPvwUVQ==}
+    peerDependencies:
+      '@standard-schema/spec': ^1.0.0
+      hono: '>=4.11.2'
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -2257,6 +2275,11 @@ snapshots:
     optional: true
 
   '@exodus/bytes@1.15.1': {}
+
+  '@hono/standard-validator@0.3.0(@standard-schema/spec@1.1.0)(hono@4.12.27)':
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      hono: 4.12.27
 
   '@img/colour@1.1.0': {}
 

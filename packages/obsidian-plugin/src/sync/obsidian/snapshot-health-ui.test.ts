@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { makeDeviceId, makeVaultId, makeYDocId } from '@kuroflare/core'
+import * as v from 'valibot'
 import { assert, beforeEach, describe, test, vi } from 'vitest'
 
 import type KuroflareSpikePlugin from '../../main'
@@ -290,18 +291,18 @@ describe('snapshot health Obsidian settings UI', () => {
   })
 })
 
-// oxlint-disable no-unsafe-type-assertion
 function fakePlugin(): KuroflareSpikePlugin {
   // Test fixture supplies only the plugin fields consumed by the operator surface.
-  // oxlint-disable-next-line no-unsafe-type-assertion
-  return {
-    pendingSetupResponse: null,
-    trustedSetupMetadata: setup,
-    kuroflareSettings: {},
-    app: { secretStorage: { getSecret: () => 'device-access-token' } },
-  } as unknown as KuroflareSpikePlugin
+  return v.parse(
+    v.custom<KuroflareSpikePlugin>((v) => typeof v === 'object' && v !== null),
+    {
+      pendingSetupResponse: null,
+      trustedSetupMetadata: setup,
+      kuroflareSettings: {},
+      app: { secretStorage: { getSecret: () => 'device-access-token' } },
+    },
+  )
 }
-// oxlint-enable no-unsafe-type-assertion
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

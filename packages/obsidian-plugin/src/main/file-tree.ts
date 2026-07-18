@@ -46,8 +46,8 @@ import {
   readMetaFile,
   updateMetaFile,
 } from './meta'
-import { runOutboxWorkerTick } from './outbox'
-import { writeBlobCacheBytes } from './outbox'
+import { writeBlobCacheBytes } from './outbox/blob-cache'
+import { runOutboxWorkerTick } from './outbox/tick'
 import type KuroflareSpikePlugin from './plugin'
 import { consumePendingFsRename } from './runtime-guards'
 import { openLocalStoreDatabase, putOutboxRecords } from './store'

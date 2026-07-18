@@ -1,20 +1,25 @@
 import type { OutboxRunningLease } from '@kuroflare/core'
+import * as v from 'valibot'
 import { assert, describe, test } from 'vitest'
 import * as Y from 'yjs'
 
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import { createReadyDocumentEpoch, documentEpochMetadataKey } from './epoch-recovery'
-import {
-  commitDocumentRecoveryTransaction,
-  type DocumentRecoveryCommitInput,
-} from './epoch-recovery-store'
-
-function castForFake<T>(value: unknown): T {
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-  return value as T
-}
+import { commitDocumentRecoveryTransaction, type DocumentRecoveryCommitInput } from './epoch-repair'
+import { isLocalStoreOutboxRecord } from './guards'
 
 type StoredValue = unknown
+
+const fakeIdbRequest = v.custom<IDBRequest<unknown>>((v) => typeof v === 'object' && v !== null)
+const fakeIdbRequestArray = v.custom<IDBRequest<unknown[]>>(
+  (v) => typeof v === 'object' && v !== null,
+)
+const fakeIdbRequestUndef = v.custom<IDBRequest<undefined>>(
+  (v) => typeof v === 'object' && v !== null,
+)
+const fakeIdbTransaction = v.custom<IDBTransaction>((v) => typeof v === 'object' && v !== null)
+const fakeIdbDatabase = v.custom<IDBDatabase>((v) => typeof v === 'object' && v !== null)
+const fakeRecord = v.custom<Record<string, unknown>>((v) => typeof v === 'object' && v !== null)
 
 class FakeRequest<Result> {
   result: Result
@@ -71,23 +76,24 @@ class FakeObjectStore {
     }
     const value = cloneValue(this.database.read(this.name, key))
     const request = new FakeRequest(value)
-    return castForFake<IDBRequest<unknown>>(request)
+    return v.parse(fakeIdbRequest, request)
   }
 
   getAll(): IDBRequest<unknown[]> {
-    return castForFake<IDBRequest<unknown[]>>(
+    return v.parse(
+      fakeIdbRequestArray,
       new FakeRequest(this.database.readAll(this.name).map(cloneValue)),
     )
   }
 
   put(value: unknown, key: string): IDBRequest<unknown> {
     this.transaction.writes.push(() => this.database.write(this.name, key, cloneValue(value)))
-    return castForFake<IDBRequest<unknown>>(new FakeRequest(key))
+    return v.parse(fakeIdbRequest, new FakeRequest(key))
   }
 
   delete(key: string): IDBRequest<undefined> {
     this.transaction.writes.push(() => this.database.delete(this.name, key))
-    return castForFake<IDBRequest<undefined>>(new FakeRequest(undefined))
+    return v.parse(fakeIdbRequestUndef, new FakeRequest(undefined))
   }
 }
 
@@ -110,7 +116,7 @@ class FakeDatabase {
   }
 
   transaction(): IDBTransaction {
-    return castForFake<IDBTransaction>(new FakeTransaction(this))
+    return v.parse(fakeIdbTransaction, new FakeTransaction(this))
   }
 
   read(store: string, key: string): StoredValue {
@@ -135,7 +141,7 @@ class FakeDatabase {
     const current = this.stores.get(store)?.get(key)
     if (typeof current !== 'object' || current === null) return
     this.stores.get(store)?.set(key, {
-      ...castForFake<Record<string, unknown>>(current),
+      ...v.parse(fakeRecord, current),
       status: 'paused',
     })
   }
@@ -164,7 +170,7 @@ function createInput(database: FakeDatabase): DocumentRecoveryCommitInput {
     docId,
     updateBytesBase64: 'AQI=',
   }
-  const typedRow = castForFake<LocalStoreOutboxRecord>(row)
+  const typedRow = v.parse(v.custom<LocalStoreOutboxRecord>(isLocalStoreOutboxRecord), row)
   const lease: OutboxRunningLease = {
     itemId: typedRow.id,
     kind: 'y-update',
@@ -174,7 +180,7 @@ function createInput(database: FakeDatabase): DocumentRecoveryCommitInput {
   database.write('outbox', typedRow.id, typedRow)
   database.write('running-leases', typedRow.id, lease)
   return {
-    db: castForFake<IDBDatabase>(database),
+    db: v.parse(fakeIdbDatabase, database),
     docId,
     updateBytes,
     snapshotSeq: 7,
@@ -198,20 +204,27 @@ describe('document recovery IndexedDB commit', () => {
     await expectFailure(commitDocumentRecoveryTransaction(input), 'transaction aborted')
     assert.equal(database.read('metadata', documentEpochMetadataKey(input.docId)), undefined)
     assert.equal(
-      castForFake<LocalStoreOutboxRecord>(database.read('outbox', 'outbox-1')).status,
+      v.parse(
+        v.custom<LocalStoreOutboxRecord>(isLocalStoreOutboxRecord),
+        database.read('outbox', 'outbox-1'),
+      ).status,
       'pending',
     )
     assert.notEqual(database.read('running-leases', 'outbox-1'), undefined)
 
     await commitDocumentRecoveryTransaction(input)
     assert.equal(
-      castForFake<{ status: string }>(
+      v.parse(
+        v.object({ status: v.string() }),
         database.read('metadata', documentEpochMetadataKey(input.docId)),
       ).status,
       'ready',
     )
     assert.equal(
-      castForFake<LocalStoreOutboxRecord>(database.read('outbox', 'outbox-1')).status,
+      v.parse(
+        v.custom<LocalStoreOutboxRecord>(isLocalStoreOutboxRecord),
+        database.read('outbox', 'outbox-1'),
+      ).status,
       'done',
     )
     assert.equal(database.read('running-leases', 'outbox-1'), undefined)

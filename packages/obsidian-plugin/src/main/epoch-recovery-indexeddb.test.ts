@@ -8,17 +8,21 @@ import {
   type OutboxRunningLease,
 } from '@kuroflare/core'
 import { indexedDB as fakeIndexedDB, IDBKeyRange } from 'fake-indexeddb'
+import * as v from 'valibot'
 import { assert, test, vi } from 'vitest'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
+import { createStartupSideEffectGate } from './boot-guard'
 import {
   createReadyDocumentEpoch,
   createRecoveringDocumentEpoch,
   documentEpochMetadataKey,
+  isDocumentEpochRecord,
   probeIndexedDbProvider,
 } from './epoch-recovery'
+import { isLocalStoreOutboxRecord, isOutboxRunningLease } from './guards'
 import {
   encodeBase64,
   waitForIndexedDbDeleteDatabase,
@@ -26,7 +30,6 @@ import {
   waitForIndexedDbTransaction,
 } from './helpers'
 import KuroflareSpikePlugin, { recoverDocumentEpochsAtStartup } from './plugin'
-import { createStartupSideEffectGate } from './startup-gate'
 
 vi.mock('obsidian', () => {
   class FakePlugin {}
@@ -51,11 +54,6 @@ vi.mock('obsidian', () => {
 
 const docId = { kind: 'file', ydocId: makeYDocId('epoch-recovery-integration') } as const
 type IntegrationDocId = typeof docId
-
-function castForIntegration<T>(value: unknown): T {
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-  return value as T
-}
 
 function updateForText(value: string): Uint8Array {
   const doc = new Y.Doc()
@@ -105,7 +103,7 @@ async function readLocalValues(
   docId: IntegrationDocId,
 ): Promise<{
   readonly epoch: ReturnType<typeof createReadyDocumentEpoch>
-  readonly ydoc: { readonly updateBytes: Uint8Array; readonly snapshotSeq?: number }
+  readonly ydoc: { readonly updateBytes: Uint8Array; readonly snapshotSeq: number | undefined }
   readonly cursor: { readonly snapshotSeq: number; readonly remoteCursorSeq: number }
   readonly outbox: LocalStoreOutboxRecord
   readonly lease: OutboxRunningLease | undefined
@@ -128,20 +126,35 @@ async function readLocalValues(
   ])
   await waitForIndexedDbTransaction(transaction)
   return {
-    epoch: castForIntegration<ReturnType<typeof createReadyDocumentEpoch>>(epoch),
-    ydoc: castForIntegration<{ readonly updateBytes: Uint8Array; readonly snapshotSeq?: number }>(
+    epoch: v.parse(
+      v.custom<ReturnType<typeof createReadyDocumentEpoch>>(isDocumentEpochRecord),
+      epoch,
+    ),
+    ydoc: v.parse(
+      v.object({
+        updateBytes: v.custom<Uint8Array>((v) => v instanceof Uint8Array),
+        snapshotSeq: v.union([v.number(), v.undefined()]),
+      }),
       ydoc,
     ),
-    cursor: castForIntegration<{ readonly snapshotSeq: number; readonly remoteCursorSeq: number }>(
+    cursor: v.parse(
+      v.object({
+        snapshotSeq: v.number(),
+        remoteCursorSeq: v.number(),
+      }),
       cursor,
     ),
-    outbox: castForIntegration<LocalStoreOutboxRecord>(outbox),
-    lease: castForIntegration<OutboxRunningLease | undefined>(lease),
+    outbox: v.parse(v.custom<LocalStoreOutboxRecord>(isLocalStoreOutboxRecord), outbox),
+    lease: v.parse(
+      v.custom<OutboxRunningLease | undefined>((v) => v === undefined || isOutboxRunningLease(v)),
+      lease,
+    ),
   }
 }
 
 function createTestPlugin(db: IDBDatabase, setup: Record<string, unknown>): KuroflareSpikePlugin {
-  const plugin = castForIntegration<KuroflareSpikePlugin>(
+  const plugin = v.parse(
+    v.instance(KuroflareSpikePlugin),
     Object.create(KuroflareSpikePlugin.prototype),
   )
   const ydoc = new Y.Doc()

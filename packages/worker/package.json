@@ -19,6 +19,7 @@
     "typecheck:compat": "tsc --noEmit"
   },
   "dependencies": {
+    "@hono/standard-validator": "^0.3.0",
     "@kuroflare/core": "workspace:*",
     "hono": "^4.12.27",
     "kysely": "^0.29.2",
@@ -29,6 +30,7 @@
     "@cloudflare/vitest-pool-workers": "0.16.20",
     "@types/node": "^22.15.30",
     "typescript": "^5.8.3",
+    "vitest": "^4.1.9",
     "wrangler": "^4.105.0"
   }
 }

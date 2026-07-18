@@ -1,5 +1,6 @@
 import type { LocalOutboxRepairExportEntry } from '../local-store/repair'
 import type { DocId } from '../utils/ids'
+import { isPositiveSafeInteger, isNonNegativeSafeInteger } from '../utils/shared'
 import type {
   LocalStoreObjectStore,
   LocalStoreSchemaDecisionInput,
@@ -336,14 +337,6 @@ function sameDocId(left: DocId, right: DocId): boolean {
 
 function hasDuplicateString(values: readonly string[]): boolean {
   return new Set(values).size !== values.length
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 function makeLocalStoreRepairExportName(now: number): string {

@@ -1,6 +1,7 @@
 import * as v from 'valibot'
 
 import { DeviceIdSchema, VaultIdSchema } from '../utils/ids'
+import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
 import { ProtocolVersionSchema } from '../utils/version'
 
 export const DEVICE_TOKEN_ISSUER = 'kuroflare-worker'
@@ -16,9 +17,6 @@ export type DeviceTokenScope = v.InferInput<typeof DeviceTokenScopeSchema>
 const DEVICE_TOKEN_SCOPE_COUNT = 4
 const MAX_ACCESS_TOKEN_LENGTH = 16_384
 const MAX_REFRESH_TOKEN_LENGTH = 4096
-
-const NonNegativeSafeIntegerSchema = v.pipe(v.number(), v.integer(), v.minValue(0))
-const PositiveSafeIntegerSchema = v.pipe(v.number(), v.integer(), v.minValue(1))
 
 export const DeviceTokenClaimsSchema = v.pipe(
   v.object({

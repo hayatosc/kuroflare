@@ -1,6 +1,6 @@
 import { assert, test } from 'vitest'
 
-import { planLocalStoreRepairSettingsPresentation } from './local-store-repair-presentation'
+import { planLocalStoreRepairSettingsPresentation } from './repair-ui'
 
 const rebuildConfirmation = 'REBUILD LOCAL STORE'
 const discardConfirmation = 'DISCARD LOCAL STORE OUTBOX'

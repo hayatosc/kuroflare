@@ -48,7 +48,7 @@ import {
   safeLogError,
 } from './helpers'
 import { metaMap, readMetaFile } from './meta'
-import { scheduleOutboxWorkerTick, runOutboxWorkerTick } from './outbox'
+import { scheduleOutboxWorkerTick, runOutboxWorkerTick } from './outbox/tick'
 import type KuroflareSpikePlugin from './plugin'
 import { createRemoteSetupAccessTokenVerifier } from './setup-verifier'
 

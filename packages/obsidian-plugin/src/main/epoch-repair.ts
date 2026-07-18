@@ -4,8 +4,8 @@ import * as Y from 'yjs'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import { WORKER_ORIGIN } from './constants'
 import { documentEpochMetadataKey, type DocumentEpochRecord } from './epoch-recovery'
+import { createYDocFromSnapshot } from './epoch-recovery'
 import { encodeBase64, waitForIndexedDbRequest, waitForIndexedDbTransaction } from './helpers'
-import { createYDocFromSnapshot } from './snapshot-replace'
 
 export interface DocumentRecoveryCommitInput {
   readonly db: IDBDatabase
