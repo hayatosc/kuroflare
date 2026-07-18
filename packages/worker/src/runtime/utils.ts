@@ -10,8 +10,6 @@ import {
   YDocIdSchema,
   makeDeviceId,
   timingSafeEqual,
-  type AdminOperation,
-  type AdminOperationEffect,
   type ApiError,
   type ApiErrorCode,
   type DeviceId,
@@ -85,26 +83,6 @@ export function blobManifestObjectKey(vaultId: VaultId, sha256: Sha256Hex): stri
 
 export function quarantineConfirmationStorageKey(subject: string): string {
   return `quarantine-confirmation:${subject}`
-}
-
-export function adminOperationConfirmationSubject(operation: AdminOperation): string {
-  return `admin-operation:${operation}`
-}
-
-export function adminOperationConfirmationStorageKey(subject: string): string {
-  return `admin-operation-confirmation:${subject}`
-}
-
-export function adminOperationPlaceholderEffect(operation: AdminOperation): AdminOperationEffect {
-  switch (operation) {
-    case 'force-local':
-    case 'force-remote':
-      return { kind: 'rewrite-meta', count: 1, detail: `${operation}:not-implemented` }
-    case 'rebuild':
-      return { kind: 'rebuild-index', count: 1, detail: 'not-implemented' }
-    case 'gc':
-      return { kind: 'delete-snapshot', count: 0, detail: 'snapshot-retention' }
-  }
 }
 
 export function compareCodeUnitString(left: string, right: string): number {
@@ -271,19 +249,6 @@ export function quarantineAuditEntryFromSqlRow(
 }
 
 export function isStoredQuarantineConfirmation(value: unknown): value is {
-  readonly subject: string
-  readonly tokenHash: string
-  readonly expiresAt: number
-} {
-  return (
-    isRecord(value) &&
-    typeof value.subject === 'string' &&
-    typeof value.tokenHash === 'string' &&
-    typeof value.expiresAt === 'number'
-  )
-}
-
-export function isStoredAdminOperationConfirmation(value: unknown): value is {
   readonly subject: string
   readonly tokenHash: string
   readonly expiresAt: number

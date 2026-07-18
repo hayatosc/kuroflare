@@ -8,14 +8,6 @@ import {
   PositiveSafeIntegerSchema,
 } from '../utils/shared'
 
-export const AdminOperationSchema = v.union([
-  v.literal('gc'),
-  v.literal('force-local'),
-  v.literal('force-remote'),
-  v.literal('rebuild'),
-])
-export type AdminOperation = v.InferInput<typeof AdminOperationSchema>
-
 const MAX_CONFIRMATION_TOKEN_LENGTH = 4096
 const MAX_ADMIN_REASON_LENGTH = 1024
 const MAX_ADMIN_DETAIL_LENGTH = 2048
@@ -23,65 +15,17 @@ const MAX_ADMIN_EFFECTS = 1024
 const MAX_QUARANTINED_UPDATE_ID_LENGTH = 128
 const MAX_QUARANTINED_UPDATE_ENTRIES = 1024
 
-export const AdminOperationRequestSchema = v.union([
-  v.object({
-    operation: AdminOperationSchema,
-    mode: v.literal('dry-run'),
-    reason: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_ADMIN_REASON_LENGTH))),
-    confirmationToken: v.optional(v.never()),
-  }),
-  v.object({
-    operation: AdminOperationSchema,
-    mode: v.literal('execute'),
-    confirmationToken: v.pipe(
-      v.string(),
-      v.minLength(1),
-      v.maxLength(MAX_CONFIRMATION_TOKEN_LENGTH),
-    ),
-    reason: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_ADMIN_REASON_LENGTH))),
-  }),
-])
-export type AdminOperationRequest = v.InferInput<typeof AdminOperationRequestSchema>
-
+// The only admin repair operations with a specified server-side contract are
+// the quarantine actions below (see docs/spec/server.md §9, "admin repair は
+// 3 種に絞る"). The generic `gc`/`force-local`/`force-remote`/`rebuild`
+// operation names were never given a payload or effect contract and have no
+// route; see docs/implementation-status.md for the removal note.
 export const AdminOperationEffectSchema = v.object({
-  kind: v.union([
-    v.literal('delete-blob'),
-    v.literal('delete-snapshot'),
-    v.literal('rewrite-meta'),
-    v.literal('materialize'),
-    v.literal('rebuild-index'),
-    v.literal('revoke-device'),
-    v.literal('quarantine-discard'),
-    v.literal('quarantine-force-apply'),
-  ]),
+  kind: v.union([v.literal('quarantine-discard'), v.literal('quarantine-force-apply')]),
   count: NonNegativeSafeIntegerSchema,
   detail: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_ADMIN_DETAIL_LENGTH))),
 })
 export type AdminOperationEffect = v.InferInput<typeof AdminOperationEffectSchema>
-
-export const AdminDryRunResponseSchema = v.object({
-  operation: AdminOperationSchema,
-  mode: v.literal('dry-run'),
-  confirmationRequired: v.literal(true),
-  confirmationToken: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_CONFIRMATION_TOKEN_LENGTH)),
-  effects: v.pipe(v.array(AdminOperationEffectSchema), v.maxLength(MAX_ADMIN_EFFECTS)),
-})
-export type AdminDryRunResponse = v.InferInput<typeof AdminDryRunResponseSchema>
-
-export const AdminExecuteResponseSchema = v.object({
-  operation: AdminOperationSchema,
-  mode: v.literal('execute'),
-  confirmationRequired: v.literal(false),
-  confirmationToken: v.optional(v.never()),
-  effects: v.pipe(v.array(AdminOperationEffectSchema), v.maxLength(MAX_ADMIN_EFFECTS)),
-})
-export type AdminExecuteResponse = v.InferInput<typeof AdminExecuteResponseSchema>
-
-export const AdminOperationResponseSchema = v.union([
-  AdminDryRunResponseSchema,
-  AdminExecuteResponseSchema,
-])
-export type AdminOperationResponse = v.InferInput<typeof AdminOperationResponseSchema>
 
 export const QuarantinedUpdateReasonSchema = v.union([
   v.literal('hash-mismatch'),

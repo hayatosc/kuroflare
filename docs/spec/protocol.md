@@ -124,11 +124,14 @@ POST /blobs/:sha256/abort
 PUT  /blob-manifests/:sha256.json
 GET  /blob-manifests/:sha256.json
 POST /devices/:deviceId/revoke
-POST /admin/gc                    # dry-run/execute
 GET  /admin/quarantine[/:id]
 POST /admin/quarantine/:id/{discard,force-apply}
-POST /admin/{force-local,force-remote,rebuild}   # 手動エスケープハッチ
 ```
+
+`gc`/`force-local`/`force-remote`/`rebuild` admin operations were named as a
+placeholder route family but never given a payload/effect contract, so no
+route exists for them (see docs/spec/server.md §9 and
+docs/implementation-status.md).
 
 R2 の public URL を直接配らず、初期実装は Worker 経由で認証を一元化する（個人用途なので単純さを優先）。
 

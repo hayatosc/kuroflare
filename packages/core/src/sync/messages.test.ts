@@ -55,8 +55,6 @@ import {
   DocLatestSnapshotResponseSchema,
   SnapshotImportRequestSchema,
   SnapshotImportResponseSchema,
-  AdminOperationRequestSchema,
-  AdminOperationResponseSchema,
   QuarantinedUpdateEntrySchema,
   QuarantinedUpdateListResponseSchema,
   QuarantinedUpdateDetailResponseSchema,
@@ -658,83 +656,6 @@ test('validates snapshot import request and response bodies', () => {
   assert.equal(v.is(SnapshotImportResponseSchema, { ...response, snapshotSeq: 0 }), false)
   assert.equal(
     v.is(SnapshotImportResponseSchema, { ...response, snapshotKey: 'blob/doc-1/2.yupdate' }),
-    false,
-  )
-})
-
-test('validates admin operation request bodies', () => {
-  assert.equal(
-    v.is(AdminOperationRequestSchema, {
-      operation: 'gc',
-      mode: 'dry-run',
-      reason: 'cleanup',
-    }),
-    true,
-  )
-  assert.equal(
-    v.is(AdminOperationRequestSchema, {
-      operation: 'gc',
-      mode: 'execute',
-      confirmationToken: 'confirm-token',
-    }),
-    true,
-  )
-  assert.equal(
-    v.is(AdminOperationRequestSchema, {
-      operation: 'gc',
-      mode: 'execute',
-    }),
-    false,
-  )
-  assert.equal(
-    v.is(AdminOperationRequestSchema, {
-      operation: 'gc',
-      mode: 'dry-run',
-      confirmationToken: 'stale-token',
-    }),
-    false,
-  )
-  assert.equal(v.is(AdminOperationRequestSchema, { operation: 'unknown', mode: 'dry-run' }), false)
-})
-
-test('validates admin operation response bodies', () => {
-  assert.equal(
-    v.is(AdminOperationResponseSchema, {
-      operation: 'rebuild',
-      mode: 'dry-run',
-      confirmationRequired: true,
-      confirmationToken: 'confirm-token',
-      effects: [{ kind: 'rebuild-index', count: 1 }],
-    }),
-    true,
-  )
-  assert.equal(
-    v.is(AdminOperationResponseSchema, {
-      operation: 'rebuild',
-      mode: 'execute',
-      confirmationRequired: false,
-      effects: [{ kind: 'rebuild-index', count: 1, detail: 'meta' }],
-    }),
-    true,
-  )
-  assert.equal(
-    v.is(AdminOperationResponseSchema, {
-      operation: 'rebuild',
-      mode: 'execute',
-      confirmationRequired: false,
-      confirmationToken: 'should-not-return',
-      effects: [],
-    }),
-    false,
-  )
-  assert.equal(
-    v.is(AdminOperationResponseSchema, {
-      operation: 'gc',
-      mode: 'dry-run',
-      confirmationRequired: true,
-      confirmationToken: 'confirm-token',
-      effects: [{ kind: 'delete-blob', count: -1 }],
-    }),
     false,
   )
 })

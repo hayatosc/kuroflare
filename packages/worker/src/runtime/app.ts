@@ -1,5 +1,4 @@
 import {
-  AdminOperationRequestSchema,
   DeviceIdSchema,
   DeviceTokenRefreshRequestSchema,
   LocalOutboxRepairEvidenceRequestSchema,
@@ -193,19 +192,6 @@ function snapshotHealthRouteDocMatches(
   docId: { readonly kind: 'meta' } | { readonly kind: 'file'; readonly ydocId: string },
 ): boolean {
   return docId.kind === 'meta' ? routeDocId === 'meta' : routeDocId === docId.ydocId
-}
-
-for (const operation of ['gc', 'force-local', 'force-remote', 'rebuild'] as const) {
-  workerApp.post(`/admin/${operation}`, async (c) => {
-    const body: unknown = await c.req.raw
-      .clone()
-      .json()
-      .catch(() => undefined)
-    if (!v.is(AdminOperationRequestSchema, body) || body.operation !== operation) {
-      return c.json(apiErrorBody('request/invalid', 'invalid-admin-operation-request'), 400)
-    }
-    return routeAuthorizedVaultRoom(c)
-  })
 }
 
 for (const action of ['discard', 'force-apply'] as const) {
