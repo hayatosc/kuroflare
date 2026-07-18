@@ -25,7 +25,7 @@ import {
 import { VaultRelativePathSchema, decodeMetaValue } from '@kuroflare/core'
 import { Notice, Plugin, TFile, TFolder, type EventRef } from 'obsidian'
 import * as v from 'valibot'
-import { IndexeddbPersistence } from 'y-indexeddb'
+import type { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
 import { LocalAwareness } from '../editor/awareness'
@@ -51,21 +51,14 @@ import {
   type MetadataReconcilePort,
   type MetadataReconcileWriteContext,
 } from '../plugin/metadata-reconcile'
-import { probeIndexedDbProvider, documentEpochMetadataKey } from '../recovery/epoch'
-import { createYDocFromSnapshot } from '../recovery/epoch'
-import { commitDocumentRecoveryTransaction } from '../recovery/epoch-repair'
-import {
-  recoverDocumentEpochsAtStartup,
-  type DocumentEpochRecoveryHost,
-} from '../recovery/epoch-startup'
+import { documentEpochMetadataKey } from '../recovery/epoch'
+import type { DocumentEpochRecoveryHost } from '../recovery/epoch-startup'
 import {
   createSyncRuntimeIndexedDbLocalStoreEffectPort,
   createSyncRuntimeLocalStoreRebuildReplanPort,
-  createVerifiedSyncRuntimeSetupPersistStepPort,
   createSyncRuntimeStartupStepEffectPort,
   type SyncRuntimeStartupStepEffectPort,
 } from '../sync/engine/actuation'
-import { createLocalSetupPersistIndexedDbMetadataPort } from '../sync/engine/persist'
 import { type LocalSetupMetadata } from '../sync/engine/setup'
 import {
   commitFullSnapshotApplyIndexedDbTransaction,
@@ -93,22 +86,9 @@ import {
   planPathConflictAutoResolve,
   planRemoteMaterializeBlockedAutoResolve,
 } from '../sync/obsidian/repair-actions'
-import {
-  createSyncRuntimeObsidianSetupExchangeEvidenceReader,
-  planSyncRuntimeObsidianLegacySettingsSecretCleanup,
-} from '../sync/obsidian/settings'
+import { createSyncRuntimeObsidianSetupExchangeEvidenceReader } from '../sync/obsidian/settings'
 import { createEvidenceBackedHttpSyncRuntimeSetupExchangePort } from '../sync/setup-exchange-http'
-import {
-  createBrowserLocalStoreIndexedDbFactoryPort,
-  createLocalStoreIndexedDbMetadataDatabasePort,
-  readLocalStoreIndexedDbMetadataSnapshot,
-  readLocalStoreIndexedDbSchemaEvidence,
-} from '../sync/store/indexeddb'
-import {
-  localStoreIndexedDbName,
-  LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION,
-  LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
-} from '../sync/store/schema'
+import { createBrowserLocalStoreIndexedDbFactoryPort } from '../sync/store/indexeddb'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import {
   createSyncRuntimeWebSocketSession,
@@ -120,7 +100,6 @@ import {
   cancelAuthRefreshStartupRetry,
   currentSetupDeviceId,
   currentSetupMetadata,
-  currentSetupVaultIdHint,
   findActiveFileId,
   findMetaFileIdForDoc,
   readAccessToken,
@@ -153,23 +132,12 @@ import {
 } from './file-tree'
 import { registerFileTreeWatcher } from './file-tree'
 import {
-  isPartialSettings,
-  isKuroflareRepairLogEntry,
-  isKuroflareLocalRepairExportMetadata,
-  isStoredYDocRecord,
-} from './guards'
-import {
   accessTokenSecretKeyForSetup,
-  createObsidianSecretStoragePort,
   encodeBase64,
-  localSetupMetadataFromSetupResponse,
   mergeRepairLogEntries,
   safeLogError,
   sameDocId,
   hasPendingRunnableOutboxUpdate,
-  waitForIndexedDbDeleteDatabase,
-  waitForIndexedDbRequest,
-  waitForIndexedDbTransaction,
 } from './helpers'
 import {
   activateLoadedTextDoc,
@@ -189,17 +157,8 @@ import {
   prepareDocumentProvider,
   updateMetaFile,
 } from './meta'
-import { createFreshMetaDocForVaultSwitch } from './meta'
 import { runOutboxWorkerTick } from './outbox/tick'
-import {
-  claimOwnedPathMarker,
-  clearOwnedPathMarker,
-  clearPathMarkers,
-  deferStartupReplan,
-  metaPersistenceDatabaseName,
-  setOwnedPathMarker,
-} from './runtime-guards'
-import { createRemoteSetupAccessTokenVerifier } from './setup-verifier'
+import { claimOwnedPathMarker, clearOwnedPathMarker, deferStartupReplan } from './runtime-guards'
 import {
   openLocalStoreDatabase,
   putOutboxRecords,
@@ -219,6 +178,23 @@ import {
   wireLocalAwarenessBroadcast,
 } from './sync-websocket'
 import { sendDocUpdateToWorker } from './sync-websocket'
+import {
+  captureVaultOperationContext as captureVaultOperationContextLifecycle,
+  clearLoadedTextDocsForVaultTransition,
+  createDocumentEpochRecoveryHost as createDocumentEpochRecoveryHostLifecycle,
+  enqueueSettingsWrite,
+  loadIndexedDbYDocs as loadIndexedDbYDocsLifecycle,
+  loadVaultSettings,
+  loadedTextDocStillCurrent as loadedTextDocStillCurrentLifecycle,
+  metadataReconcileTransitionPending as metadataReconcileTransitionPendingLifecycle,
+  openMetaPersistence as openMetaPersistenceLifecycle,
+  persistPendingSetupResponse as persistPendingSetupResponseLifecycle,
+  readLocalEvidence as readLocalEvidenceLifecycle,
+  replaceMetaDoc as replaceMetaDocLifecycle,
+  stagePendingSetupResponse as stagePendingSetupResponseLifecycle,
+  updateVaultSettings,
+  vaultOperationStillCurrent as vaultOperationStillCurrentLifecycle,
+} from './vault-lifecycle'
 
 export default class KuroflareSpikePlugin extends Plugin {
   ydoc = new Y.Doc()
@@ -378,38 +354,11 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   async updateSettings(patch: Partial<KuroflareSettings>): Promise<void> {
-    await this.enqueueSettingsWrite(async () => {
-      const next = { ...this.kuroflareSettings, ...patch }
-      this.kuroflareSettings = next
-      await this.saveData(next)
-    })
+    await updateVaultSettings(this, patch)
   }
 
   private async loadSettings(): Promise<void> {
-    const loaded = await this.loadData()
-    const loadedSettings = isPartialSettings(loaded) ? loaded : {}
-    const secretCleanup = planSyncRuntimeObsidianLegacySettingsSecretCleanup(loadedSettings)
-    this.kuroflareSettings = {
-      ...DEFAULT_SETTINGS,
-      ...secretCleanup.settings,
-    }
-    this.kuroflareSettings = {
-      ...this.kuroflareSettings,
-      repairLog: Array.isArray(this.kuroflareSettings.repairLog)
-        ? this.kuroflareSettings.repairLog.filter(isKuroflareRepairLogEntry)
-        : undefined,
-      localRepairExport: isKuroflareLocalRepairExportMetadata(
-        this.kuroflareSettings.localRepairExport,
-      )
-        ? this.kuroflareSettings.localRepairExport
-        : undefined,
-    }
-    if (secretCleanup.removedLegacySecretKeys.length > 0) {
-      console.warn('[kuroflare] removed legacy plaintext token fields from settings', {
-        keys: secretCleanup.removedLegacySecretKeys,
-      })
-      await this.enqueueSettingsWrite(() => this.saveData(this.kuroflareSettings))
-    }
+    await loadVaultSettings(this)
   }
 
   getSettingsSnapshot(): KuroflareSettings {
@@ -509,7 +458,7 @@ export default class KuroflareSpikePlugin extends Plugin {
     update: (current: KuroflareSettings) => Partial<KuroflareSettings>,
     context: MetadataReconcileWriteContext,
   ): Promise<boolean> {
-    return this.enqueueSettingsWrite(async () => {
+    return enqueueSettingsWrite(this, async () => {
       if (!metadataReconcileWriteContextStillStable(this, context)) return false
       const previousRepairLog = this.kuroflareSettings.repairLog
       const patch = update(this.kuroflareSettings)
@@ -527,60 +476,15 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async enqueueSettingsWrite<Result>(operation: () => Promise<Result>): Promise<Result> {
-    const previousWrite = this.settingsWritePromise
-    const result = (async () => {
-      if (previousWrite !== null) await previousWrite
-      return operation()
-    })()
-    const tail = result.then(
-      () => undefined,
-      () => undefined,
-    )
-    this.settingsWritePromise = tail
-    try {
-      return await result
-    } finally {
-      if (this.settingsWritePromise === tail) this.settingsWritePromise = null
-    }
+    return enqueueSettingsWrite(this, operation)
   }
 
   async stagePendingSetupResponse(response: SetupExchangeResponse): Promise<void> {
-    this.startupSideEffectGate.setPermission('blocked')
-    this.metadataSetupStagingCount += 1
-    this.metadataVaultGeneration += 1
-    const stagingGeneration = this.metadataVaultGeneration
-    const settingsReset = this.enqueueSettingsWrite(async () => {
-      if (this.metadataVaultGeneration !== stagingGeneration) return
-      if ((this.kuroflareSettings.repairLog?.length ?? 0) === 0) return
-      const next = { ...this.kuroflareSettings, repairLog: [] }
-      this.kuroflareSettings = next
-      await this.saveData(next)
-    })
-    const textDocumentCleanup = this.clearLoadedTextDocsForVaultTransition()
-    try {
-      await textDocumentCleanup
-      await settingsReset
-      const outboxCompletion = this.outboxWorkerCompletionPromise
-      if (outboxCompletion !== null) await outboxCompletion
-      const authRefreshCompletion = this.authRefreshCompletionPromise
-      if (authRefreshCompletion !== null) await authRefreshCompletion
-      await Promise.allSettled([...this.remoteTextMaterializationOperations])
-      if (this.metadataVaultGeneration !== stagingGeneration) return
-      this.pendingSetupResponse = response
-    } finally {
-      this.metadataSetupStagingCount -= 1
-    }
+    await stagePendingSetupResponseLifecycle(this, response)
   }
 
   metadataReconcileTransitionPending(): boolean {
-    return (
-      this.pendingSetupResponse !== null ||
-      this.metadataSetupStagingCount > 0 ||
-      this.startupSideEffectGate.replayingPersistence ||
-      this.metadataMigrationPending ||
-      this.metadataMigrationPromise !== null ||
-      this.documentReplacementInProgress.has(documentEpochMetadataKey(META_SYNC_DOC_ID))
-    )
+    return metadataReconcileTransitionPendingLifecycle(this)
   }
 
   captureTextDocumentOwner(): TextDocumentOwner | undefined {
@@ -588,10 +492,7 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   captureVaultOperationContext(): TextDocumentOwner | undefined {
-    if (this.pendingSetupResponse !== null || this.metadataSetupStagingCount > 0) return undefined
-    const setup = currentSetupMetadata(this)
-    if (setup === undefined) return undefined
-    return { vaultId: setup.vaultId, generation: this.metadataVaultGeneration }
+    return captureVaultOperationContextLifecycle(this)
   }
 
   textDocumentOwnerStillCurrent(owner: TextDocumentOwner): boolean {
@@ -599,62 +500,18 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   vaultOperationStillCurrent(owner: TextDocumentOwner): boolean {
-    return (
-      this.pendingSetupResponse === null &&
-      this.metadataSetupStagingCount === 0 &&
-      this.metadataVaultGeneration === owner.generation &&
-      currentSetupMetadata(this)?.vaultId === owner.vaultId
-    )
+    return vaultOperationStillCurrentLifecycle(this, owner)
   }
 
   loadedTextDocStillCurrent(loaded: LoadedTextDoc, owner: TextDocumentOwner): boolean {
-    return (
-      loaded.vaultId === owner.vaultId &&
-      loaded.vaultGeneration === owner.generation &&
-      this.textDocumentOwnerStillCurrent(owner) &&
-      this.loadedTextDocs.get(loaded.docId.ydocId) === loaded
-    )
+    return loadedTextDocStillCurrentLifecycle(this, loaded, owner)
   }
 
-  private async clearLoadedTextDocsForVaultTransition(): Promise<void> {
-    this.bindGeneration += 1
-    const loadedDocs = [...this.loadedTextDocs.values()]
-    const previousActiveDoc = this.ydoc
-    this.loadedTextDocs.clear()
-    this.loadingTextDocs.clear()
-    this.documentRecoveryRequired.clear()
-    this.documentRecoveryHydrating.clear()
-    this.needFullSnapshotRecoveryInProgress.clear()
-    this.needFullSnapshotRecoveryOwners.clear()
-    this.pendingTextDeletionEvidenceRequests.clear()
-    for (const timer of this.pendingTextDeletionEvidenceRetryTimers.values()) {
-      window.clearTimeout(timer)
-    }
-    this.pendingTextDeletionEvidenceRetryTimers.clear()
-    this.activeTextDoc = null
-    const replacement = new Y.Doc()
-    this.ydoc = replacement
-    this.ytext = replacement.getText(SPIKE_TEXT_NAME)
-    if (!loadedDocs.some((loaded) => loaded.doc === previousActiveDoc)) {
-      previousActiveDoc.destroy()
-    }
-    await Promise.all(
-      loadedDocs.map(async (loaded) => {
-        try {
-          await loaded.persistence?.destroy()
-        } catch (error: unknown) {
-          console.warn('[kuroflare] failed to close stale text persistence', {
-            docId: loaded.docId,
-            error: safeLogError(error),
-          })
-        } finally {
-          loaded.doc.destroy()
-        }
-      }),
-    )
+  private clearLoadedTextDocsForVaultTransition(): Promise<void> {
+    return clearLoadedTextDocsForVaultTransition(this)
   }
 
-  private attachMetaDocObservers(): void {
+  attachMetaDocObservers(): void {
     this.metaDoc.on('afterTransaction', (transaction: Y.Transaction) => {
       if (
         transaction.origin === REPAIR_ORIGIN ||
@@ -683,11 +540,6 @@ export default class KuroflareSpikePlugin extends Plugin {
         () => this.vaultOperationStillCurrent(context) && this.metaDoc === observedMetaDoc,
       )
     })
-  }
-
-  private metaPersistenceDatabaseName(): string | undefined {
-    const vaultId = currentSetupVaultIdHint(this)
-    return vaultId === undefined ? undefined : metaPersistenceDatabaseName(vaultId)
   }
 
   private async recordRemoteMaterializeBlocked(
@@ -727,77 +579,14 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async openMetaPersistence(): Promise<void> {
-    const name = this.metaPersistenceDatabaseName()
-    if (name === undefined || this.metaPersistenceName === name) return
-    await this.metaPersistence?.destroy()
-    this.metaPersistence = null
-    if (this.metaPersistenceName !== null) {
-      this.metaPersistenceName = null
-      this.metadataVaultGeneration += 1
-      await this.clearLoadedTextDocsForVaultTransition()
-      this.metaDoc = createFreshMetaDocForVaultSwitch(this.metaDoc)
-      this.attachMetaDocObservers()
-      clearPathMarkers(this.materializedPaths, this.materializedPathOwners)
-      clearPathMarkers(this.pendingRemoteTextFiles, this.pendingRemoteTextFileOwners)
-    }
-    this.startupSideEffectGate.beginPersistenceReplay()
-    try {
-      const epoch = await prepareDocumentProvider(this, META_SYNC_DOC_ID, name)
-      this.metaPersistence = new IndexeddbPersistence(name, this.metaDoc)
-      this.metaPersistenceName = name
-      await this.metaPersistence.whenSynced
-      if (epoch === undefined) {
-        await establishInitialDocumentEpoch(this, META_SYNC_DOC_ID, name)
-      }
-      for (const [fileId] of metaMap(this).entries()) {
-        const value = readMetaFile(metaMap(this), fileId)
-        if (value !== undefined && !value.deleted) {
-          setOwnedPathMarker(
-            this.materializedPaths,
-            this.materializedPathOwners,
-            value.fileId,
-            value.path,
-            this.metadataVaultGeneration,
-          )
-        }
-      }
-    } finally {
-      this.startupSideEffectGate.endPersistenceReplay()
-    }
+    await openMetaPersistenceLifecycle(this)
   }
 
   private async replaceMetaDoc(
     updateBytes: Uint8Array,
     isCurrent: () => boolean = () => true,
   ): Promise<void> {
-    if (!isCurrent()) return
-    const oldDoc = this.metaDoc
-    const persistenceName = this.metaPersistenceName
-    const epochKey = documentEpochMetadataKey(META_SYNC_DOC_ID)
-    const ownsReplacementMarker = !this.documentReplacementInProgress.has(epochKey)
-    this.documentReplacementInProgress.add(epochKey)
-    try {
-      if (this.metaPersistence !== null) {
-        const persistence = this.metaPersistence
-        await persistence.clearData()
-        if (!isCurrent()) return
-        if (this.metaPersistence !== persistence) return
-        this.metaPersistence = null
-        this.metaPersistenceName = null
-        if (persistenceName !== null) {
-          await waitForIndexedDbDeleteDatabase(indexedDB.deleteDatabase(persistenceName))
-          if (!isCurrent()) return
-        }
-      }
-      oldDoc.destroy()
-      this.metadataVaultGeneration += 1
-      this.metaDoc = createYDocFromSnapshot(updateBytes, WORKER_ORIGIN)
-      this.attachMetaDocObservers()
-      await this.openMetaPersistence()
-      clearPathMarkers(this.materializedPaths, this.materializedPathOwners)
-    } finally {
-      if (ownsReplacementMarker) this.documentReplacementInProgress.delete(epochKey)
-    }
+    await replaceMetaDocLifecycle(this, updateBytes, isCurrent)
   }
 
   /** Performs the legacy-to-v2 transition through the snapshot-import CAS endpoint. */
@@ -1098,342 +887,47 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async persistPendingSetupResponse(): Promise<void> {
-    const response = this.pendingSetupResponse
-    if (response === null) {
-      if (this.trustedSetupMetadata !== null) return
-      throw new Error('setup-response-missing')
-    }
-    const db = await openLocalStoreDatabase(this, response.vaultId)
-    const port = createVerifiedSyncRuntimeSetupPersistStepPort({
-      response,
-      now: Date.now(),
-      verifier: createRemoteSetupAccessTokenVerifier({
-        endpoint: response.endpoint,
-        fetch: (input, init) => fetch(input, init),
-      }),
-      secretKeyPrefix: 'kuroflare',
-      secretStorage: createObsidianSecretStoragePort(this.app.secretStorage),
-      metadata: createLocalSetupPersistIndexedDbMetadataPort(
-        createLocalStoreIndexedDbMetadataDatabasePort(db),
-      ),
-    })
-    await port.persistSetupResponse({
-      kind: 'run-startup-step',
-      vaultId: response.vaultId,
-      step: 'persist-setup-response',
-      phase: 'setup',
-    })
-    this.trustedSetupMetadata = localSetupMetadataFromSetupResponse(response)
-    await this.updateSettings({
-      endpoint: response.endpoint,
-      setupVaultId: response.vaultId,
-      setupToken: '',
-      setupBootstrapMode: undefined,
-    })
-    await this.openMetaPersistence()
-    this.pendingSetupResponse = null
+    await persistPendingSetupResponseLifecycle(this)
   }
 
   private async readLocalEvidence() {
-    const vaultId = currentSetupVaultIdHint(this)
-    if (vaultId === undefined) {
-      return {
-        metadataSnapshot: undefined,
-        localStoreEvidence: undefined,
-        hasMetaYDoc: metaMap(this).size > 0,
-        hasLocalVaultFiles: this.app.vault.getMarkdownFiles().length > 0,
-        setupResponse: this.pendingSetupResponse ?? undefined,
-      }
-    }
-
-    const localStoreEvidence = await readLocalStoreIndexedDbSchemaEvidence({
-      dbName: localStoreIndexedDbName(vaultId),
-      indexedDb: createBrowserLocalStoreIndexedDbFactoryPort(indexedDB),
-    })
-    const metadataSnapshot =
-      localStoreEvidence.ok &&
-      localStoreEvidence.evidence.dbExists &&
-      localStoreEvidence.evidence.presentStores.includes('metadata')
-        ? await this.readLocalSetupMetadataSnapshot(
-            vaultId,
-            localStoreEvidence.evidence.currentVersion,
-          )
-        : undefined
-
-    if (metadataSnapshot?.ok === true) {
-      this.trustedSetupMetadata = metadataSnapshot.snapshot.setup
-    }
-    const evidence = localStoreEvidence.ok ? localStoreEvidence.evidence : undefined
-    const canOpenMetaPersistence =
-      evidence !== undefined &&
-      evidence.dbExists &&
-      evidence.currentVersion !== undefined &&
-      evidence.currentVersion >= LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION &&
-      evidence.currentVersion <= LOCAL_STORE_INDEXEDDB_TARGET_VERSION &&
-      evidence.presentStores.includes('metadata') &&
-      evidence.presentStores.includes('outbox') &&
-      evidence.presentStores.includes('running-leases')
-    if (canOpenMetaPersistence) {
-      if (this.localStoreDb === null && evidence.currentVersion !== undefined) {
-        const existing = await this.openExistingLocalStoreDatabase(vaultId, evidence.currentVersion)
-        this.localStoreDb = existing
-        this.localStoreDbName = localStoreIndexedDbName(vaultId)
-      }
-      try {
-        await this.openMetaPersistence()
-      } catch (error: unknown) {
-        if (!String(error).includes('document-provider-recovery-required')) throw error
-        console.warn(
-          '[kuroflare] metadata provider recovery deferred until local-store startup step',
-        )
-      }
-    }
-
-    return {
-      metadataSnapshot,
-      localStoreEvidence,
-      hasMetaYDoc: metaMap(this).size > 0,
-      hasLocalVaultFiles: this.app.vault.getMarkdownFiles().length > 0,
-      setupResponse: this.pendingSetupResponse ?? undefined,
-    }
+    return await readLocalEvidenceLifecycle(this)
   }
 
-  private async readLocalSetupMetadataSnapshot(
+  openLocalStoreDatabase(
     vaultId: LocalSetupMetadata['vaultId'],
-    version: number | undefined,
-  ) {
-    if (version === undefined) return undefined
-    let db: IDBDatabase | undefined
-    try {
-      db = await this.openExistingLocalStoreDatabase(vaultId, version)
-      const snapshot = await readLocalStoreIndexedDbMetadataSnapshot({
-        database: createLocalStoreIndexedDbMetadataDatabasePort(db),
-      })
-      return snapshot
-    } catch (error: unknown) {
-      console.warn('[kuroflare] failed to read local setup metadata', {
-        error: safeLogError(error),
-      })
-      return undefined
-    } finally {
-      db?.close()
-    }
-  }
-
-  private async openExistingLocalStoreDatabase(
-    vaultId: LocalSetupMetadata['vaultId'],
-    version: number,
+    isCurrent: () => boolean = () => true,
   ): Promise<IDBDatabase> {
-    const dbName = localStoreIndexedDbName(vaultId)
-    const request = indexedDB.open(dbName, version)
-    return await new Promise<IDBDatabase>((resolve, reject) => {
-      request.onupgradeneeded = () => {
-        request.transaction?.abort()
-        reject(new Error('local-store-schema-changed-during-evidence-read'))
-      }
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'))
-    })
+    return openLocalStoreDatabase(this, vaultId, isCurrent)
+  }
+
+  loadTextDocument(docId: Extract<DocId, { readonly kind: 'file' }>): Promise<LoadedTextDoc> {
+    return loadTextDoc(this, docId)
+  }
+
+  prepareDocumentProvider(
+    docId: DocId,
+    providerDbName: string,
+  ): Promise<Awaited<ReturnType<typeof prepareDocumentProvider>>> {
+    return prepareDocumentProvider(this, docId, providerDbName)
+  }
+
+  establishInitialDocumentEpoch(docId: DocId, providerDbName: string): Promise<void> {
+    return establishInitialDocumentEpoch(this, docId, providerDbName)
+  }
+
+  readAccessToken(setup: LocalSetupMetadata): Promise<string | undefined> {
+    return readAccessToken(this, accessTokenSecretKeyForSetup(setup))
   }
 
   createDocumentEpochRecoveryHost(
     isCurrent: () => boolean = () => true,
   ): DocumentEpochRecoveryHost {
-    const assertCurrent = () => {
-      if (!isCurrent()) throw new Error('document-recovery-vault-context-stale')
-    }
-    return {
-      currentSetup: () => (isCurrent() ? currentSetupMetadata(this) : undefined),
-      recoveryGate: {
-        beginRecovery: () => {
-          assertCurrent()
-          this.startupSideEffectGate.beginRecovery()
-        },
-        clearRecoveryBlock: () => {
-          if (isCurrent()) this.startupSideEffectGate.clearRecoveryBlock()
-        },
-        endRecovery: () => this.startupSideEffectGate.endRecovery(),
-        failRecovery: (reason) => {
-          if (isCurrent()) {
-            this.startupSideEffectGate.failRecovery(reason)
-          } else {
-            this.startupSideEffectGate.endRecovery()
-            this.startupSideEffectGate.setPermission('blocked')
-          }
-        },
-      },
-      recoveryRequired: {
-        add: (key) => {
-          assertCurrent()
-          this.documentRecoveryRequired.add(key)
-          return this.documentRecoveryRequired
-        },
-        clear: () => {
-          if (isCurrent()) this.documentRecoveryRequired.clear()
-        },
-      },
-      recoveryHydrating: {
-        add: (key) => {
-          assertCurrent()
-          this.documentRecoveryHydrating.add(key)
-          return this.documentRecoveryHydrating
-        },
-        delete: (key) => (isCurrent() ? this.documentRecoveryHydrating.delete(key) : false),
-      },
-      probeProvider: async (dbName) => {
-        assertCurrent()
-        const provider = await probeIndexedDbProvider(indexedDB, dbName)
-        assertCurrent()
-        return provider
-      },
-      resetProvider: async (docId, providerDbName) => {
-        assertCurrent()
-        if (docId.kind === 'meta') {
-          const persistence = this.metaPersistence
-          await persistence?.destroy()
-          assertCurrent()
-          if (this.metaPersistence === persistence) {
-            this.metaPersistence = null
-            this.metaPersistenceName = null
-          }
-        } else {
-          const loaded = this.loadedTextDocs.get(docId.ydocId)
-          if (loaded !== undefined) {
-            await loaded.persistence?.destroy()
-            assertCurrent()
-            loaded.doc.destroy()
-            if (this.loadedTextDocs.get(docId.ydocId) === loaded) {
-              this.loadedTextDocs.delete(docId.ydocId)
-            }
-            if (this.activeTextDoc === loaded) this.activeTextDoc = null
-          }
-        }
-        await waitForIndexedDbDeleteDatabase(indexedDB.deleteDatabase(providerDbName))
-        assertCurrent()
-      },
-      readAccessToken: async (setup) => {
-        assertCurrent()
-        const token = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
-        assertCurrent()
-        return token
-      },
-      latestSnapshotUrl: (setup, docId) => {
-        assertCurrent()
-        return this.latestSnapshotUrl(setup, docId)
-      },
-      snapshotImportUrl: (setup, docId) => {
-        assertCurrent()
-        return this.snapshotImportUrl(setup, docId)
-      },
-      validateMetaCandidate: (doc) => {
-        assertCurrent()
-        return metaDocWritable(doc)
-      },
-      hydrateProvider: {
-        create: async (docId) => {
-          assertCurrent()
-          if (docId.kind === 'meta') {
-            if (this.metaPersistence === null) await this.openMetaPersistence()
-            assertCurrent()
-            return
-          }
-          await loadTextDoc(this, docId)
-          assertCurrent()
-        },
-        apply: async (docId, updateBytes) => {
-          assertCurrent()
-          if (docId.kind === 'meta') {
-            Y.applyUpdate(this.metaDoc, updateBytes, WORKER_ORIGIN)
-            assertCurrent()
-            return
-          }
-          const loaded = this.loadedTextDocs.get(docId.ydocId)
-          if (loaded === undefined) throw new Error('document-recovery-provider-missing')
-          Y.applyUpdate(loaded.doc, updateBytes, WORKER_ORIGIN)
-          assertCurrent()
-        },
-        whenSynced: async (docId, epochId) => {
-          assertCurrent()
-          if (docId.kind === 'meta') {
-            const persistence = this.metaPersistence
-            await persistence?.whenSynced
-            assertCurrent()
-            await persistence?.set('__kuroflare_epoch_barrier', epochId)
-            assertCurrent()
-            return
-          }
-          const loaded = this.loadedTextDocs.get(docId.ydocId)
-          const persistence = loaded?.persistence
-          await persistence?.whenSynced
-          assertCurrent()
-          await persistence?.set('__kuroflare_epoch_barrier', epochId)
-          assertCurrent()
-        },
-      },
-      commit: async (input) => {
-        assertCurrent()
-        await commitDocumentRecoveryTransaction(input)
-        assertCurrent()
-      },
-    }
+    return createDocumentEpochRecoveryHostLifecycle(this, isCurrent)
   }
 
   private async loadIndexedDbYDocs(vaultId?: LocalSetupMetadata['vaultId']): Promise<void> {
-    const initialSetup = currentSetupMetadata(this)
-    const targetVaultId = vaultId ?? initialSetup?.vaultId
-    if (targetVaultId === undefined) return
-    const generation = this.metadataVaultGeneration
-    const targetMetaDoc = this.metaDoc
-    const isCurrent = () =>
-      this.metadataVaultGeneration === generation &&
-      this.metaDoc === targetMetaDoc &&
-      (currentSetupMetadata(this)?.vaultId ?? targetVaultId) === targetVaultId
-    const assertCurrent = () => {
-      if (!isCurrent()) throw new Error('local-store-vault-context-stale')
-    }
-    const db = await openLocalStoreDatabase(this, targetVaultId, isCurrent)
-    assertCurrent()
-    const metadataSnapshot = await readLocalStoreIndexedDbMetadataSnapshot({
-      database: createLocalStoreIndexedDbMetadataDatabasePort(db),
-    })
-    assertCurrent()
-    if (metadataSnapshot.ok) {
-      if (metadataSnapshot.snapshot.setup.vaultId !== targetVaultId) {
-        throw new Error('local-store-setup-vault-mismatch')
-      }
-      this.trustedSetupMetadata = metadataSnapshot.snapshot.setup
-    }
-    const setup = currentSetupMetadata(this)
-    if (setup === undefined) return
-    const transaction = db.transaction(['meta-ydoc', 'file-ydocs'], 'readonly')
-    const metaRequest = transaction.objectStore('meta-ydoc').get('meta')
-    const fileRequest = transaction.objectStore('file-ydocs').getAll()
-    const [metaRecord, fileRecords] = await Promise.all([
-      waitForIndexedDbRequest(metaRequest),
-      waitForIndexedDbRequest(fileRequest),
-    ])
-    await waitForIndexedDbTransaction(transaction)
-    assertCurrent()
-    await recoverDocumentEpochsAtStartup(
-      this.createDocumentEpochRecoveryHost(isCurrent),
-      db,
-      metaRecord,
-      fileRecords,
-    )
-    assertCurrent()
-    if (this.metaPersistence === null) {
-      await this.openMetaPersistence()
-      assertCurrent()
-    }
-    if (isStoredYDocRecord(metaRecord) && metaRecord.docId.kind === 'meta') {
-      Y.applyUpdate(this.metaDoc, metaRecord.updateBytes, WORKER_ORIGIN)
-    }
-    for (const record of fileRecords) {
-      if (!isStoredYDocRecord(record) || record.docId.kind !== 'file') continue
-      const loaded = await loadTextDoc(this, record.docId)
-      assertCurrent()
-      Y.applyUpdate(loaded.doc, record.updateBytes, WORKER_ORIGIN)
-    }
+    await loadIndexedDbYDocsLifecycle(this, vaultId)
   }
 
   private async publishLocalMetaSnapshot(reason: string): Promise<void> {
