@@ -7,6 +7,7 @@ import {
   makeVaultId,
   makeYDocId,
   signHs256DeviceToken,
+  verifyHs256DeviceToken,
   type DeviceTokenScope,
   type FileId,
   type MetaFile,
@@ -16,8 +17,11 @@ import { env, evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { expect, test } from 'vitest'
 import * as Y from 'yjs'
 
+import { insertSnapshotRetentionEvent } from '../../src/db/checkpointRepo'
 import { createDb } from '../../src/db/db'
 import { SCHEMA_MIGRATIONS } from '../../src/db/schema'
+import { REFRESH_ACCESS_TOKEN_TTL_MS, REFRESH_TOKEN_TTL_MS } from '../../src/runtime/constants'
+import { sha256Text } from '../../src/runtime/utils'
 import { makeSnapshotListPrefix } from '../../src/sync/snapshots'
 
 const VAULT_ID = 'vault-1'
@@ -29,6 +33,7 @@ const CONCURRENT_DOC_ID = { kind: 'file', ydocId: 'ydoc-concurrent' } as const
 const META_DOC_ID = { kind: 'meta' } as const
 const CHECKPOINT_DOC_ID = { kind: 'file', ydocId: 'ydoc-checkpoint' } as const
 const COLD_START_DOC_ID = { kind: 'file', ydocId: 'ydoc-coldstart' } as const
+const ROLLBACK_DOC_ID = { kind: 'file', ydocId: 'ydoc-rollback' } as const
 const ACCESS_SCOPES: readonly DeviceTokenScope[] = [
   'sync:read',
   'sync:write',
@@ -614,6 +619,98 @@ test('real SQLite snapshot health queries select latest events per generation', 
   })
 })
 
+test('GET /admin/retention paginates real SQLite retention events across cursor boundaries', async () => {
+  await seedDevices([DEVICE_A])
+  const docKeyA = 'file:ydoc-retention-a'
+  const docKeyB = 'file:ydoc-retention-b'
+  // Ordered oldest to newest; the endpoint returns newest-first by autoincrement id.
+  const seededEvents = [
+    {
+      docId: docKeyA,
+      snapshotKey: `snapshots/${VAULT_ID}/files/ydoc-retention-a/1.yupdate`,
+      action: 'delete',
+      error: null,
+    },
+    {
+      docId: docKeyB,
+      snapshotKey: `snapshots/${VAULT_ID}/files/ydoc-retention-b/1.yupdate`,
+      action: 'skip',
+      error: 'snapshot-health-not-eligible',
+    },
+    {
+      docId: docKeyA,
+      snapshotKey: `snapshots/${VAULT_ID}/files/ydoc-retention-a/2.yupdate`,
+      action: 'delete',
+      error: null,
+    },
+    {
+      docId: docKeyB,
+      snapshotKey: `snapshots/${VAULT_ID}/files/ydoc-retention-b/2.yupdate`,
+      action: 'delete',
+      error: null,
+    },
+    {
+      docId: docKeyA,
+      snapshotKey: `snapshots/${VAULT_ID}/files/ydoc-retention-a/3.yupdate`,
+      action: 'delete',
+      error: 'transient-r2-error',
+    },
+  ] as const
+
+  await runInDurableObject(roomStub(), async (_instance, state) => {
+    const sql = state.storage.sql
+    const db = createDb(sql)
+    for (const migration of SCHEMA_MIGRATIONS) {
+      await migration.migrate(db)
+    }
+    const now = Date.now()
+    for (const [index, event] of seededEvents.entries()) {
+      await insertSnapshotRetentionEvent(
+        db,
+        event.docId,
+        event.snapshotKey,
+        event.action,
+        event.error,
+        now + index,
+      )
+    }
+  })
+
+  const token = await mintAccessToken(DEVICE_A.deviceId)
+  const fetchRetentionPage = async (
+    query: string,
+  ): Promise<{
+    readonly items: readonly { readonly snapshotKey: string }[]
+    readonly nextCursor?: string
+  }> => {
+    const response = await roomStub().fetch(
+      new Request(`https://kuroflare.test/admin/retention?${query}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    )
+    expect(response.status).toBe(200)
+    return response.json()
+  }
+
+  const page1 = await fetchRetentionPage('limit=2')
+  expect(page1.items.map((item) => item.snapshotKey)).toEqual([
+    seededEvents[4].snapshotKey,
+    seededEvents[3].snapshotKey,
+  ])
+  expect(page1.nextCursor).toBeDefined()
+
+  const page2 = await fetchRetentionPage(`limit=2&cursor=${page1.nextCursor}`)
+  expect(page2.items.map((item) => item.snapshotKey)).toEqual([
+    seededEvents[2].snapshotKey,
+    seededEvents[1].snapshotKey,
+  ])
+  expect(page2.nextCursor).toBeDefined()
+
+  const page3 = await fetchRetentionPage(`limit=2&cursor=${page2.nextCursor}`)
+  expect(page3.items.map((item) => item.snapshotKey)).toEqual([seededEvents[0].snapshotKey])
+  expect(page3.nextCursor).toBeUndefined()
+})
+
 test('force-applying a quarantined update against real SQLite appends it and records an audit entry', async () => {
   await seedDevices([DEVICE_A])
   const ydocId = makeYDocId('ydoc-quarantine-force-apply')
@@ -715,4 +812,336 @@ test('force-applying a quarantined update against real SQLite appends it and rec
       },
     ],
   })
+})
+
+test('discarding a quarantined update via confirm/execute removes it without touching the op log', async () => {
+  await seedDevices([DEVICE_A])
+  const ydocId = makeYDocId('ydoc-quarantine-discard')
+  const targetDocKey = `file:${ydocId}`
+  const source = new Y.Doc()
+  source.getText('body').insert(0, 'discard me')
+  const updateBytes = Y.encodeStateAsUpdate(source)
+  source.destroy()
+
+  await runInDurableObject(roomStub(), async (_instance, state) => {
+    const sql = state.storage.sql
+    const db = createDb(sql)
+    for (const migration of SCHEMA_MIGRATIONS) {
+      await migration.migrate(db)
+    }
+    const now = Date.now()
+    sql.exec(
+      'insert into docs (doc_id, kind, latest_seq, latest_snapshot_seq, min_retained_seq, updated_at) values (?, ?, ?, ?, ?, ?)',
+      targetDocKey,
+      'file',
+      0,
+      0,
+      0,
+      now,
+    )
+    sql.exec(
+      'insert into quarantined_updates (id, doc_id, message_id, device_id, reason, update_sha256, update_bytes, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+      'q-discard-e2e',
+      targetDocKey,
+      'message-discard-e2e',
+      DEVICE_A.deviceId,
+      'yjs-apply-failed',
+      'b'.repeat(64),
+      updateBytes,
+      now,
+    )
+  })
+
+  const token = await mintAccessToken(DEVICE_A.deviceId)
+  const dryRun = await roomStub().fetch(
+    new Request('https://kuroflare.test/admin/quarantine/q-discard-e2e/discard', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'dry-run' }),
+    }),
+  )
+  expect(dryRun.status).toBe(200)
+  const dryRunBody: { readonly confirmationToken: string } = await dryRun.json()
+
+  const execute = await roomStub().fetch(
+    new Request('https://kuroflare.test/admin/quarantine/q-discard-e2e/discard', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'execute',
+        confirmationToken: dryRunBody.confirmationToken,
+      }),
+    }),
+  )
+  expect(execute.status).toBe(200)
+  expect(await execute.json()).toMatchObject({ action: 'discard' })
+
+  await runInDurableObject(roomStub(), async (_instance, state) => {
+    const sql = state.storage.sql
+    const [remainingQuarantine] = [
+      ...sql.exec<{ readonly count: number }>('select count(*) as count from quarantined_updates'),
+    ]
+    expect(remainingQuarantine?.count).toBe(0)
+    const [doc] = [
+      ...sql.exec<{ readonly latestSeq: number }>(
+        'select latest_seq as latestSeq from docs where doc_id = ?',
+        targetDocKey,
+      ),
+    ]
+    // Unlike force-apply, discard never appends to the op log or advances the doc clock.
+    expect(doc?.latestSeq).toBe(0)
+    const [opLogRow] = [
+      ...sql.exec<{ readonly count: number }>(
+        'select count(*) as count from op_log where doc_id = ?',
+        targetDocKey,
+      ),
+    ]
+    expect(opLogRow?.count).toBe(0)
+  })
+
+  const auditResponse = await roomStub().fetch(
+    new Request('https://kuroflare.test/admin/quarantine/audit', {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  )
+  expect(auditResponse.status).toBe(200)
+  const auditBody: { readonly items: readonly Record<string, unknown>[] } =
+    await auditResponse.json()
+  // The vault-wide audit log is shared with other tests (e.g. the force-apply e2e test),
+  // so look up this test's entry by id instead of asserting the full page.
+  const discardEntry = auditBody.items.find((item) => item.quarantineId === 'q-discard-e2e')
+  expect(discardEntry).toMatchObject({ action: 'discarded-by-admin', actor: DEVICE_A.deviceId })
+  expect(discardEntry).not.toHaveProperty('appliedSeq')
+
+  // Double discard: the record is gone, so a fresh dry-run must fail closed.
+  const secondDryRun = await roomStub().fetch(
+    new Request('https://kuroflare.test/admin/quarantine/q-discard-e2e/discard', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'dry-run' }),
+    }),
+  )
+  expect(secondDryRun.status).toBe(404)
+  expect(await secondDryRun.json()).toMatchObject({ code: 'request/not-found' })
+})
+
+test('rollback replays the retained op-log range onto a new authoritative generation', async () => {
+  await seedDevices([DEVICE_A])
+  const client = await TestClient.connect(DEVICE_A)
+
+  const doc = new Y.Doc()
+  doc.getText('content').insert(0, 'gen-one ')
+  client.sendUpdate('rollback-1', ROLLBACK_DOC_ID, Y.encodeStateAsUpdate(doc))
+  await client.waitFor((message) => message.type === 'ack' && message.messageId === 'rollback-1')
+  const firstCheckpoint = await runInDurableObject(roomStub(), (instance) =>
+    instance.checkpointDoc(ROLLBACK_DOC_ID),
+  )
+  expect(firstCheckpoint.action).toBe('checkpointed')
+  if (firstCheckpoint.action !== 'checkpointed') throw new Error('expected first checkpoint')
+
+  const baseVector = Y.encodeStateVector(doc)
+  doc.getText('content').insert(doc.getText('content').length, 'gen-two')
+  client.sendUpdate('rollback-2', ROLLBACK_DOC_ID, Y.encodeStateAsUpdate(doc, baseVector))
+  await client.waitFor((message) => message.type === 'ack' && message.messageId === 'rollback-2')
+  const secondCheckpoint = await runInDurableObject(roomStub(), (instance) =>
+    instance.checkpointDoc(ROLLBACK_DOC_ID),
+  )
+  expect(secondCheckpoint.action).toBe('checkpointed')
+  if (secondCheckpoint.action !== 'checkpointed') throw new Error('expected second checkpoint')
+
+  const token = await mintAccessToken(DEVICE_A.deviceId)
+  const rollbackResponse = await roomStub().fetch(
+    new Request(`https://kuroflare.test/admin/snapshots/${ROLLBACK_DOC_ID.ydocId}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        docId: ROLLBACK_DOC_ID,
+        snapshotKey: firstCheckpoint.snapshotKey,
+        upperSeq: firstCheckpoint.upperSeq,
+        reason: 'Rollback e2e: restore authority from the first verified generation',
+        confirmation: 'rollback',
+      }),
+    }),
+  )
+  expect(rollbackResponse.status).toBe(200)
+  const rollbackBody: {
+    readonly ok: true
+    readonly snapshotKey: string
+    readonly snapshotSeq: number
+    readonly sourceSnapshotKey: string
+    readonly sourceSnapshotSeq: number
+    readonly actor: string
+  } = await rollbackResponse.json()
+  expect(rollbackBody).toMatchObject({
+    actor: DEVICE_A.deviceId,
+    sourceSnapshotKey: firstCheckpoint.snapshotKey,
+    sourceSnapshotSeq: firstCheckpoint.upperSeq,
+    snapshotSeq: secondCheckpoint.upperSeq + 1,
+  })
+
+  await runInDurableObject(roomStub(), async (_instance, state) => {
+    const sql = state.storage.sql
+    const [row] = [
+      ...sql.exec<{ readonly latestSnapshotSeq: number; readonly latestSnapshotKey: string }>(
+        'select latest_snapshot_seq as latestSnapshotSeq, latest_snapshot_key as latestSnapshotKey from docs where doc_id = ?',
+        `file:${ROLLBACK_DOC_ID.ydocId}`,
+      ),
+    ]
+    expect(row?.latestSnapshotSeq).toBe(rollbackBody.snapshotSeq)
+    expect(row?.latestSnapshotKey).toBe(rollbackBody.snapshotKey)
+  })
+
+  // Read the new generation straight from R2 (bypassing the WS layer, where an empty-vector
+  // sync-request after a checkpoint deliberately returns need-full-snapshot, not a diff -- see
+  // the cold-start test above) to confirm the replay restored the full expected content.
+  const rolledBackObject = await env.SNAPSHOT_BUCKET.get(rollbackBody.snapshotKey)
+  expect(rolledBackObject).not.toBeNull()
+  if (rolledBackObject === null) throw new Error('expected rolled-back snapshot object')
+  const restored = new Y.Doc()
+  Y.applyUpdate(restored, new Uint8Array(await rolledBackObject.arrayBuffer()))
+  expect(restored.getText('content').toJSON()).toBe('gen-one gen-two')
+
+  client.close()
+})
+
+test('rollback to a generation that was never checkpointed fails closed', async () => {
+  await seedDevices([DEVICE_A])
+  const token = await mintAccessToken(DEVICE_A.deviceId)
+  const missingDocId = { kind: 'file', ydocId: 'ydoc-rollback-missing' } as const
+
+  const response = await roomStub().fetch(
+    new Request(`https://kuroflare.test/admin/snapshots/${missingDocId.ydocId}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        docId: missingDocId,
+        snapshotKey: `snapshots/${VAULT_ID}/files/${missingDocId.ydocId}/1.yupdate`,
+        upperSeq: 1,
+        reason: 'Rollback e2e: source generation was never checkpointed',
+        confirmation: 'rollback',
+      }),
+    }),
+  )
+  expect(response.status).toBe(409)
+  expect(await response.json()).toMatchObject({ code: 'request/conflict' })
+})
+
+test('refreshing a device token issues a fresh access token, and revoking a device rejects its refresh and websocket hello', async () => {
+  await seedDevices([DEVICE_A, DEVICE_B])
+  const rawRefreshToken = 'refresh-token-e2e-auth'
+  const refreshTokenHash = await sha256Text(rawRefreshToken)
+  const seedNow = Date.now()
+
+  await runInDurableObject(roomStub(), async (_instance, state) => {
+    const sql = state.storage.sql
+    const db = createDb(sql)
+    for (const migration of SCHEMA_MIGRATIONS) {
+      await migration.migrate(db)
+    }
+    sql.exec(
+      'insert into device_refresh_tokens (token_hash, device_id, issued_at, expires_at) values (?, ?, ?, ?)',
+      refreshTokenHash,
+      DEVICE_A.deviceId,
+      seedNow - 1_000,
+      seedNow + REFRESH_TOKEN_TTL_MS,
+    )
+  })
+
+  const refreshResponse = await roomStub().fetch(
+    new Request('https://kuroflare.test/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vaultId: VAULT_ID,
+        deviceId: DEVICE_A.deviceId,
+        refreshToken: rawRefreshToken,
+        previousTokenVersion: 1,
+      }),
+    }),
+  )
+  expect(refreshResponse.status).toBe(200)
+  const refreshBody: {
+    readonly accessToken: string
+    readonly tokenVersion: number
+    readonly expiresAt: number
+    readonly refreshToken?: string
+  } = await refreshResponse.json()
+  expect(refreshBody.refreshToken).toBeDefined()
+  expect(refreshBody.refreshToken).not.toBe(rawRefreshToken)
+
+  // The new access token carries a freshly computed window, not whatever expiry an old token held.
+  const refreshedClaims = await verifyHs256DeviceToken({
+    token: refreshBody.accessToken,
+    secret: DEVICE_TOKEN_SECRET,
+  })
+  if (refreshedClaims === undefined) throw new Error('expected valid refreshed claims')
+  expect(refreshedClaims.exp - refreshedClaims.iat).toBe(REFRESH_ACCESS_TOKEN_TTL_MS)
+  expect(refreshedClaims.iat).toBeGreaterThanOrEqual(seedNow)
+  expect(refreshedClaims.exp).toBe(refreshBody.expiresAt)
+
+  await runInDurableObject(roomStub(), async (_instance, state) => {
+    const sql = state.storage.sql
+    const [oldTokenRow] = [
+      ...sql.exec<{ readonly revokedAt: number | null }>(
+        'select revoked_at as revokedAt from device_refresh_tokens where token_hash = ?',
+        refreshTokenHash,
+      ),
+    ]
+    // Rotation revokes the presented refresh token so it cannot be replayed.
+    expect(oldTokenRow?.revokedAt).not.toBeNull()
+  })
+
+  const revokerToken = await mintAccessToken(DEVICE_B.deviceId)
+  const revokeResponse = await roomStub().fetch(
+    new Request(`https://kuroflare.test/devices/${DEVICE_A.deviceId}/revoke`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${revokerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+  )
+  expect(revokeResponse.status).toBe(200)
+
+  const rejectedRefresh = await roomStub().fetch(
+    new Request('https://kuroflare.test/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vaultId: VAULT_ID,
+        deviceId: DEVICE_A.deviceId,
+        refreshToken: refreshBody.refreshToken,
+        previousTokenVersion: 1,
+      }),
+    }),
+  )
+  expect(rejectedRefresh.status).toBe(403)
+  expect(await rejectedRefresh.json()).toMatchObject({ code: 'auth/revoked' })
+
+  const revokedToken = await mintAccessToken(DEVICE_A.deviceId)
+  const upgrade = await roomStub().fetch(
+    new Request(`https://kuroflare.test/ws/${VAULT_ID}`, {
+      headers: { Upgrade: 'websocket', Authorization: `Bearer ${revokedToken}` },
+    }),
+  )
+  const socket = upgrade.webSocket
+  if (socket === null) throw new Error(`expected websocket upgrade, got status ${upgrade.status}`)
+  socket.accept()
+  const closed = await new Promise<{ readonly code: number; readonly reason: string }>(
+    (resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('timed out waiting for close')), 3000)
+      socket.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timeout)
+        resolve({ code: event.code, reason: event.reason })
+      })
+      socket.send(
+        JSON.stringify({
+          type: 'hello',
+          protocolVersion: CURRENT_PROTOCOL_VERSION,
+          vaultId: VAULT_ID,
+          deviceId: DEVICE_A.deviceId,
+          capabilities: ['metadata-schema-v2'],
+        }),
+      )
+    },
+  )
+  expect(closed).toMatchObject({ code: 1008, reason: 'auth-reject:device-revoked' })
 })

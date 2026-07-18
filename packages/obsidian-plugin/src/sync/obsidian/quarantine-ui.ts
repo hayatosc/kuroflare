@@ -350,9 +350,7 @@ function setupMetadataAvailable(plugin: KuroflareSpikePlugin): boolean {
   }
 }
 
-async function quarantineAuth(
-  plugin: KuroflareSpikePlugin,
-): Promise<
+async function quarantineAuth(plugin: KuroflareSpikePlugin): Promise<
   | {
       readonly ok: true
       readonly setup: ReturnType<typeof requireSetupMetadata>

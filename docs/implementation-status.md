@@ -5,9 +5,16 @@
 設計レビュー（2026-07-03）で見つかった項目は spec 本文へ反映済みで、記録は git 履歴にある。
 The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-review.md](spec/design-review.md).
 
-## Current summary (2026-07-16)
+## Current summary (2026-07-18)
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 211 件、worker 273 件、model-tests 17 件、Obsidian 493 件、worker e2e 10 件（multipart upload の実 R2 e2e を含む）。
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 210 件、worker 282 件、model-tests 17 件、Obsidian 501 件、worker e2e 16 件（multipart upload の実 R2 e2e を含む）。
+- Worker SQLite e2e suite: extended from 11 to 16 tests, adding real-workerd coverage
+  for quarantine discard (confirm/execute, audit trail, double-discard rejection),
+  `GET /admin/retention` cursor pagination across page boundaries, snapshot rollback
+  (op-log replay onto a new authoritative generation, plus fail-closed rejection of
+  an unknown source generation), and device-token refresh/revoke (fresh access-token
+  window on refresh, and revoked-device rejection of both HTTP refresh and WS hello).
+  No production bugs surfaced; all four features behaved as designed.
 - DR-010 と DR-011 は design-review.md で acceptance evidence 付きでクローズ済み。DR-010: `blobChunks: []` をスキーマで許可し（`blobManifestHash` は必須のまま）、manifest 側の既存不変条件（size=0 ⇔ chunks=[]）と突合で空バイナリの整合性を保証。plugin の「空ファイルを黙ってスキップ」も撤去。DR-011: OS 分岐なしの純粋関数 `portablePath()`（`core/src/sync/meta.ts`）が Windows 予約名・禁止文字・末尾 space/dot・255 byte 超過を決定論的に修復し、sanitizer が生む衝突は既存の path-conflict 機構（conflict suffix / repair log / retry・resolve UI）に合流する。recommended contract にある「portable に表現できない制約向けの OS-only local conflict copy」は未実装で、acceptance evidence の対象外として design-review.md に明記した。
 - workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
