@@ -6,7 +6,7 @@ import {
   type DocId,
   type VaultId,
 } from '@kuroflare/core'
-import { Hono } from 'hono'
+import { type Context, Hono } from 'hono'
 import * as Y from 'yjs'
 
 import {
@@ -16,7 +16,26 @@ import {
   handleQuarantineAction,
 } from '../room/http/admin-quarantine'
 import { handleRetentionInspect } from '../room/http/admin-retention'
-import { acceptHello, broadcast, rememberVaultId } from './auth'
+import {
+  handleAdminSetupTokenIssue,
+  handleAuthRefresh,
+  handleDeviceRevoke,
+  handleSetupExchange,
+} from '../room/http/auth'
+import {
+  handleSnapshotHealthQuarantine,
+  handleSnapshotRollback,
+} from '../room/http/snapshot-health-mutations'
+import { handleSnapshotHealthList } from '../room/http/snapshot-health-query'
+import { handleSnapshotHealthVerify } from '../room/http/snapshot-health-verify'
+import {
+  handleAdminSnapshotSeed,
+  handleFileLatest,
+  handleFileSnapshotImport,
+  handleMetaLatest,
+  handleMetaSnapshotImport,
+} from '../room/http/snapshot-transfer'
+import { acceptHello, broadcast, rememberSocketToken, rememberVaultId } from './auth'
 import { broadcastAwarenessLeave, handleAwarenessUpdate } from './awareness'
 import { abortExpiredBlobMultipartUploads } from './blob-gc'
 import {
@@ -40,23 +59,8 @@ import {
   ADMIN_SETUP_TOKEN_PATH,
   ADMIN_SNAPSHOT_SEED_PATH,
   CHECKPOINT_ALARM_DOC_LIMIT,
+  WEBSOCKET_UPGRADE,
 } from './constants'
-import {
-  handleAdminSetupTokenIssue,
-  handleAdminSnapshotSeed,
-  handleSetupExchange,
-  handleAuthRefresh,
-  handleDeviceRevoke,
-  handleSnapshotHealthList,
-  handleSnapshotHealthVerify,
-  handleSnapshotHealthQuarantine,
-  handleSnapshotRollback,
-  handleMetaLatest,
-  handleFileLatest,
-  handleMetaSnapshotImport,
-  handleFileSnapshotImport,
-  handleWebSocketUpgrade,
-} from './route-handlers'
 import { ensureSchema } from './storage'
 import { handleSyncRequest, handleSyncUpdate } from './sync'
 import type {
@@ -65,9 +69,13 @@ import type {
   RuntimeWebSocket,
   SessionState,
   RuntimeCheckpointResult,
+  RuntimeWebSocketPairConstructor,
   WebSocketAwarenessAttachment,
+  WebSocketResponseInit,
 } from './types'
-import { makeArrayBuffer, encodeBase64 } from './utils'
+import { encodeBase64, extractWebSocketBearerToken, makeArrayBuffer, apiErrorBody } from './utils'
+
+declare const WebSocketPair: RuntimeWebSocketPairConstructor | undefined
 
 /** Cloudflare Durable Object shell for one vault room. */
 export class VaultRoom {
@@ -123,7 +131,28 @@ export class VaultRoom {
       .post('/blobs/:hash/abort', (c) => handleBlobMultipartAbort(this, c))
       .get('/blob-manifests/*', (c) => handleBlobManifestGet(this, c))
       .put('/blob-manifests/*', (c) => handleBlobManifestPut(this, c))
-      .all('*', (c) => handleWebSocketUpgrade(this, c))
+      .all('*', (c) => this.handleWebSocketUpgrade(c))
+  }
+
+  private handleWebSocketUpgrade(c: Context): Response {
+    if (c.req.header('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE)
+      return c.json(apiErrorBody('request/invalid', 'expected-websocket-upgrade'), 426)
+    if (typeof WebSocketPair === 'undefined')
+      return c.json(apiErrorBody('server/error', 'websocket-pair-unavailable'), 500)
+
+    const pair = new WebSocketPair()
+    const client = pair[0]
+    const server = pair[1]
+    this.state.acceptWebSocket(server)
+    this.sessions.add(server)
+    rememberSocketToken(this, server, extractWebSocketBearerToken(c.req.raw))
+
+    const upgradeInit: WebSocketResponseInit = {
+      status: 101,
+      webSocket: client,
+      headers: { 'Sec-WebSocket-Protocol': 'kuroflare.v1' },
+    }
+    return new Response(null, upgradeInit)
   }
 
   fetch(request: Request): Response | Promise<Response> {

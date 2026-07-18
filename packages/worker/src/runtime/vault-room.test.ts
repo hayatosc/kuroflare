@@ -33,6 +33,7 @@ import {
   metaRootMutationAllowed,
   metaYDocSchemaDisposition,
   metaYDocWritable,
+  encodeBase64,
 } from '../runtime/utils'
 import {
   TEST_DEVICE_TOKEN_SECRET,
@@ -212,6 +213,38 @@ test('VaultRoom accepts websocket upgrades and rejects malformed binary frames',
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
   }
+})
+
+test('VaultRoom seeds an admin snapshot and records verified evidence', async () => {
+  const storage = new SqlOnlyStorage()
+  const bucket = new FakeR2Bucket()
+  const room = new VaultRoom(new FakeState(storage), makeEnvWithSnapshotBucket(bucket))
+  const update = makeYjsUpdateBytes(makeMessageId('message-admin-snapshot-seed'))
+  const response = await room.fetch(
+    new Request('https://worker.example/admin/snapshots/seed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vaultId: makeVaultId('vault-1'),
+        docId: { kind: 'meta' },
+        latestSeq: 3,
+        update: encodeBase64(update),
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    vaultId: makeVaultId('vault-1'),
+    docId: { kind: 'meta' },
+    snapshotKey: 'snapshots/vault-1/meta/3.yupdate',
+  })
+  assert.deepEqual(bucket.puts, ['snapshots/vault-1/meta/3.yupdate'])
+  assert.equal(storage.sql.docs.get('meta')?.latestSeq, 3)
+  assert.equal(storage.sql.docs.get('meta')?.latestSnapshotKey, 'snapshots/vault-1/meta/3.yupdate')
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.physicalStatus, 'verified')
+  assert.equal(storage.sql.snapshotHealthEvents.at(-1)?.logicalStatus, 'healthy')
 })
 
 test('VaultRoom exchanges setup tokens for device credentials', async () => {
