@@ -11,7 +11,7 @@ import * as Y from 'yjs'
 
 import type { LocalAwareness } from '../editor/awareness'
 import { createYTextEditorExtension, dispatchFullDocumentReplace } from '../editor/editor-binding'
-import type { FileDocId, LoadedTextDoc } from '../main-types'
+import type { FileDocId, LoadedTextDoc, TextDocumentOwner } from '../main-types'
 import {
   classifyDocumentEpoch,
   createReadyDocumentEpoch,
@@ -27,6 +27,7 @@ import {
   waitForIndexedDbTransaction,
 } from './helpers'
 import type KuroflareSpikePlugin from './plugin'
+import { filePersistenceDatabaseName, legacyFilePersistenceDatabaseName } from './runtime-guards'
 import { sendDocUpdateToWorker } from './sync-websocket'
 
 export function metaMap(plugin: Pick<KuroflareSpikePlugin, 'metaDoc'>): Y.Map<unknown> {
@@ -231,30 +232,156 @@ export async function loadTextDoc(
   plugin: KuroflareSpikePlugin,
   docId: FileDocId,
 ): Promise<LoadedTextDoc> {
+  const owner = plugin.captureTextDocumentOwner()
+  if (owner === undefined) throw new Error('text-document-vault-context-unavailable')
   const existing = plugin.loadedTextDocs.get(docId.ydocId)
-  if (existing !== undefined) {
+  if (existing !== undefined && plugin.loadedTextDocStillCurrent(existing, owner)) {
     return existing
   }
+  const loadKey = `${owner.vaultId}:${docId.ydocId}`
+  const inFlight = plugin.loadingTextDocs.get(loadKey)
+  if (inFlight !== undefined) return inFlight
 
+  const loading = loadTextDocForOwner(plugin, docId, owner)
+  plugin.loadingTextDocs.set(loadKey, loading)
+  try {
+    return await loading
+  } finally {
+    if (plugin.loadingTextDocs.get(loadKey) === loading) plugin.loadingTextDocs.delete(loadKey)
+  }
+}
+
+async function loadTextDocForOwner(
+  plugin: KuroflareSpikePlugin,
+  docId: FileDocId,
+  owner: TextDocumentOwner,
+): Promise<LoadedTextDoc> {
   const doc = new Y.Doc()
   const text = doc.getText(SPIKE_TEXT_NAME)
-  const loaded: LoadedTextDoc = { docId, doc, text, persistence: null }
-  doc.on('update', (update: Uint8Array, origin: unknown) => {
-    if (origin === DISK_ORIGIN || origin === REMOTE_ORIGIN || origin === WORKER_ORIGIN) {
-      return
-    }
-    void sendDocUpdateToWorker(plugin, docId, update, 'local-update')
-  })
-  const providerDbName = `kuroflare-file:${docId.ydocId}`
-  const epoch = await prepareDocumentProvider(plugin, docId, providerDbName)
-  const persistence = new IndexeddbPersistence(providerDbName, doc)
-  loaded.persistence = persistence
-  plugin.loadedTextDocs.set(docId.ydocId, loaded)
-  await persistence.whenSynced
-  if (epoch === undefined) {
-    await establishInitialDocumentEpoch(plugin, docId, providerDbName)
+  const loaded: LoadedTextDoc = {
+    docId,
+    vaultId: owner.vaultId,
+    vaultGeneration: owner.generation,
+    doc,
+    text,
+    persistence: null,
   }
-  return loaded
+  doc.on('update', (update: Uint8Array, origin: unknown) => {
+    if (origin === DISK_ORIGIN || origin === REMOTE_ORIGIN || origin === WORKER_ORIGIN) return
+    if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
+    void sendDocUpdateToWorker(plugin, docId, update, 'local-update', () =>
+      plugin.loadedTextDocStillCurrent(loaded, owner),
+    )
+  })
+  const providerDbName = filePersistenceDatabaseName(owner.vaultId, docId.ydocId)
+  try {
+    await migrateLegacyFilePersistence(plugin, docId, owner, providerDbName)
+    assertTextDocumentOwner(plugin, owner)
+    const epoch = await prepareDocumentProvider(plugin, docId, providerDbName)
+    assertTextDocumentOwner(plugin, owner)
+    const persistence = new IndexeddbPersistence(providerDbName, doc)
+    loaded.persistence = persistence
+    await persistence.whenSynced
+    assertTextDocumentOwner(plugin, owner)
+    plugin.loadedTextDocs.set(docId.ydocId, loaded)
+    if (epoch === undefined) await establishInitialDocumentEpoch(plugin, docId, providerDbName)
+    assertTextDocumentOwner(plugin, owner)
+    return loaded
+  } catch (error: unknown) {
+    if (plugin.loadedTextDocs.get(docId.ydocId) === loaded) {
+      plugin.loadedTextDocs.delete(docId.ydocId)
+    }
+    await loaded.persistence?.destroy()
+    doc.destroy()
+    throw error
+  }
+}
+
+function assertTextDocumentOwner(plugin: KuroflareSpikePlugin, owner: TextDocumentOwner): void {
+  if (!plugin.textDocumentOwnerStillCurrent(owner)) {
+    throw new Error('text-document-vault-context-stale')
+  }
+}
+
+async function migrateLegacyFilePersistence(
+  plugin: KuroflareSpikePlugin,
+  docId: FileDocId,
+  owner: TextDocumentOwner,
+  providerDbName: string,
+): Promise<void> {
+  const scoped = await probeIndexedDbProvider(indexedDB, providerDbName)
+  assertTextDocumentOwner(plugin, owner)
+  if (!scoped.ok) throw new Error(`file-provider-probe-failed:${scoped.reason}`)
+  if (scoped.status === 'present') return
+  const legacyName = legacyFilePersistenceDatabaseName(docId.ydocId)
+  const legacy = await probeIndexedDbProvider(indexedDB, legacyName)
+  assertTextDocumentOwner(plugin, owner)
+  if (!legacy.ok) throw new Error(`legacy-file-provider-probe-failed:${legacy.reason}`)
+  if (legacy.status !== 'present') return
+
+  const localStore = plugin.localStoreDb
+  const evidence =
+    localStore === null ? undefined : await readDocumentEpochEvidence(localStore, docId)
+  assertTextDocumentOwner(plugin, owner)
+  const legacyEpoch = evidence?.epoch
+  if (!legacyFilePersistenceMigrationIsOwned(legacyEpoch, docId, legacyName)) {
+    // The old database name carries no vault identity. Leave it untouched and let
+    // vault-scoped local-store/remote recovery establish the new provider safely.
+    console.warn('[kuroflare] ignored unowned legacy file persistence', {
+      vaultId: owner.vaultId,
+      ydocId: docId.ydocId,
+    })
+    return
+  }
+
+  const migrationDoc = new Y.Doc()
+  const legacyPersistence = new IndexeddbPersistence(legacyName, migrationDoc)
+  let scopedPersistence: IndexeddbPersistence | null = null
+  let scopedDoc: Y.Doc | null = null
+  try {
+    await legacyPersistence.whenSynced
+    assertTextDocumentOwner(plugin, owner)
+    scopedDoc = new Y.Doc()
+    Y.applyUpdate(scopedDoc, Y.encodeStateAsUpdate(migrationDoc), WORKER_ORIGIN)
+    scopedPersistence = new IndexeddbPersistence(providerDbName, scopedDoc)
+    await scopedPersistence.whenSynced
+    assertTextDocumentOwner(plugin, owner)
+    if (localStore === null) throw new Error('legacy-file-provider-owner-store-unavailable')
+    const transaction = localStore.transaction(['metadata'], 'readwrite')
+    await waitForIndexedDbRequest(
+      transaction
+        .objectStore('metadata')
+        .put(
+          { ...legacyEpoch, providerDbName, updatedAt: Date.now() },
+          documentEpochMetadataKey(docId),
+        ),
+    )
+    await waitForIndexedDbTransaction(transaction)
+    assertTextDocumentOwner(plugin, owner)
+  } catch (error: unknown) {
+    await scopedPersistence?.destroy()
+    scopedPersistence = null
+    await waitForIndexedDbDeleteDatabase(indexedDB.deleteDatabase(providerDbName))
+    throw error
+  } finally {
+    await scopedPersistence?.destroy()
+    scopedDoc?.destroy()
+    migrationDoc.destroy()
+  }
+}
+
+/** Allows legacy provider adoption only when this vault's durable epoch claims it exactly. */
+export function legacyFilePersistenceMigrationIsOwned(
+  epoch: DocumentEpochRecord | undefined,
+  docId: FileDocId,
+  legacyName: string,
+): epoch is DocumentEpochRecord {
+  return (
+    epoch?.status === 'ready' &&
+    epoch.providerDbName === legacyName &&
+    epoch.docId.kind === 'file' &&
+    epoch.docId.ydocId === docId.ydocId
+  )
 }
 
 /** Inspects provider/local evidence before y-indexeddb is allowed to open. */
@@ -364,14 +491,17 @@ export async function replaceTextDoc(
   updateBytes: Uint8Array,
   origin: unknown,
 ): Promise<LoadedTextDoc> {
+  const owner = plugin.captureTextDocumentOwner()
+  if (owner === undefined) throw new Error('text-document-vault-context-unavailable')
   const existing = plugin.loadedTextDocs.get(docId.ydocId)
   const epochKey = documentEpochMetadataKey(docId)
+  const ownsReplacementMarker = !plugin.documentReplacementInProgress.has(epochKey)
   plugin.documentReplacementInProgress.add(epochKey)
   try {
     if (existing !== undefined) {
       await existing.persistence?.clearData()
       await waitForIndexedDbDeleteDatabase(
-        indexedDB.deleteDatabase(`kuroflare-file:${docId.ydocId}`),
+        indexedDB.deleteDatabase(filePersistenceDatabaseName(owner.vaultId, docId.ydocId)),
       )
       existing.doc.destroy()
       plugin.loadedTextDocs.delete(docId.ydocId)
@@ -379,11 +509,13 @@ export async function replaceTextDoc(
         plugin.activeTextDoc = null
       }
     }
+    assertTextDocumentOwner(plugin, owner)
     const loaded = await loadTextDoc(plugin, docId)
+    assertTextDocumentOwner(plugin, owner)
     Y.applyUpdate(loaded.doc, updateBytes, origin)
     return loaded
   } finally {
-    plugin.documentReplacementInProgress.delete(epochKey)
+    if (ownsReplacementMarker) plugin.documentReplacementInProgress.delete(epochKey)
   }
 }
 

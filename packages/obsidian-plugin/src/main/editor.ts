@@ -237,8 +237,10 @@ export async function bindActiveMarkdownView(
   }
 
   const loaded = await loadTextDoc(plugin, docId)
+  const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
   if (generation !== plugin.bindGeneration) return
   if (!plugin.startupSideEffectGate.canRun()) return
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
 
   setActiveTextDoc(plugin, loaded)
   plugin.targetPath = file.path
@@ -250,8 +252,9 @@ export async function bindActiveMarkdownView(
     plugin.yCollabBoundViews.delete(editorView)
   }
 
-  await seedYTextFromDiskIfNeeded(plugin, file, editorView, generation)
+  await seedYTextFromDiskIfNeeded(plugin, file, editorView, loaded, generation)
   if (generation !== plugin.bindGeneration) return
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
 
   editorView.dispatch({
     effects: plugin.cmCompartment.reconfigure(
@@ -260,6 +263,7 @@ export async function bindActiveMarkdownView(
   })
   plugin.yCollabBoundViews.add(editorView)
   await requestActiveFileFromWorker(plugin, `bind:${reason}`)
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
 
   plugin.setStatus(`bound: ${file.basename}`)
   console.info('[kuroflare] bound active editor', { path: file.path, docId, reason })
@@ -289,23 +293,30 @@ async function seedYTextFromDiskIfNeeded(
   plugin: KuroflareSpikePlugin,
   file: TFile,
   editorView: EditorView,
+  loaded: Awaited<ReturnType<typeof loadTextDoc>>,
   generation: number,
 ): Promise<void> {
   const diskText = await plugin.app.vault.read(file)
+  const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+  if (generation !== plugin.bindGeneration) return
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
   const diskHash = await hashCanonicalText(diskText)
-  const currentYText = plugin.ytext.toJSON()
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
+  const currentYText = loaded.text.toJSON()
+  const ydocHash = await hashCanonicalText(currentYText)
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
 
   plugin.lastMaterialized.set(file.path, {
     diskHash,
-    ydocHash: await hashCanonicalText(currentYText),
+    ydocHash,
     path: file.path,
     writtenAt: Date.now(),
   })
 
   if (generation !== plugin.bindGeneration) return
 
-  if (plugin.ytext.length === 0) {
-    replaceYText(plugin.ydoc, plugin.ytext, canonicalizeTextForYText(diskText), DISK_ORIGIN)
+  if (loaded.text.length === 0) {
+    replaceYText(loaded.doc, loaded.text, canonicalizeTextForYText(diskText), DISK_ORIGIN)
     return
   }
 
@@ -357,9 +368,13 @@ async function handleBackgroundDiskModify(
   if (!plugin.startupSideEffectGate.canRun()) return
   const docId = await fileDocIdForPath(plugin, file.path)
   const loaded = await loadTextDoc(plugin, docId)
+  const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
   const diskText = await plugin.app.vault.read(file)
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
   const diskHash = await hashCanonicalText(diskText)
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
   const yTextHash = await hashCanonicalText(loaded.text.toJSON())
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
   const last = plugin.lastMaterialized.get(file.path)
 
   const decision = decideWatcherHashGate({
@@ -405,8 +420,13 @@ export async function importFileTextAndSend(
   reason: string,
 ): Promise<void> {
   if (!plugin.startupSideEffectGate.canRun()) return
-  replaceYText(plugin.ydoc, plugin.ytext, canonicalizeTextForYText(text), DISK_ORIGIN)
-  const textHash = await hashCanonicalText(plugin.ytext.toJSON())
+  const loaded = plugin.activeTextDoc
+  if (loaded === null) return
+  const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
+  replaceYText(loaded.doc, loaded.text, canonicalizeTextForYText(text), DISK_ORIGIN)
+  const textHash = await hashCanonicalText(loaded.text.toJSON())
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
   plugin.lastMaterialized.set(file.path, {
     diskHash: textHash,
     ydocHash: textHash,
@@ -425,7 +445,10 @@ export async function importFileTextIntoDocAndSend(
   if (!plugin.startupSideEffectGate.canRun()) return
   await importFileTextIntoDoc(plugin, file, docId, await plugin.app.vault.read(file))
   const loaded = await loadTextDoc(plugin, docId)
-  await sendDocUpdateToWorker(plugin, docId, Y.encodeStateAsUpdate(loaded.doc), reason)
+  const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+  const isCurrent = () => plugin.loadedTextDocStillCurrent(loaded, owner)
+  if (!isCurrent()) return
+  await sendDocUpdateToWorker(plugin, docId, Y.encodeStateAsUpdate(loaded.doc), reason, isCurrent)
 }
 
 export async function importFileTextIntoDoc(
@@ -436,9 +459,12 @@ export async function importFileTextIntoDoc(
 ): Promise<void> {
   if (!plugin.startupSideEffectGate.canRun()) return
   const loaded = await loadTextDoc(plugin, docId)
+  const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
   const text = canonicalizeTextForYText(textContent)
   replaceYText(loaded.doc, loaded.text, text, DISK_ORIGIN)
   const textHash = await hashCanonicalText(loaded.text.toJSON())
+  if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
   plugin.lastMaterialized.set(file.path, {
     diskHash: textHash,
     ydocHash: textHash,

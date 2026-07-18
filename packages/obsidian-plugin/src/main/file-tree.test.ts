@@ -57,6 +57,15 @@ function createTestPlugin(): KuroflareSpikePlugin {
   if (!(value instanceof KuroflareSpikePlugin)) {
     throw new Error('failed to create test plugin')
   }
+  Object.assign(value, {
+    materializedPathOwners: new Map(),
+    loadingTextDocs: new Map(),
+    metadataVaultGeneration: 0,
+    metadataSetupStagingCount: 0,
+    metadataMigrationPending: false,
+    metadataMigrationPromise: null,
+    documentReplacementInProgress: new Set(),
+  })
   return value
 }
 
@@ -65,6 +74,8 @@ test('concurrent vault create events recheck meta after async startup work', asy
     startupSideEffectGate: { canRun: () => true },
     metaDoc: new Y.Doc(),
     materializedPaths: new Map(),
+    materializedPathOwners: new Map(),
+    metadataVaultGeneration: 0,
     pendingFsRenames: new Set(),
     trustedSetupMetadata: {
       endpoint: 'https://worker.example.test',
@@ -107,6 +118,8 @@ test('vault delete drops stale evidence when the path is recreated while loading
     const doc = new Y.Doc()
     const loaded: LoadedTextDoc = {
       docId: { kind: 'file', ydocId },
+      vaultId: makeVaultId('delete-recreated-vault'),
+      vaultGeneration: 0,
       doc,
       text: doc.getText('content'),
       persistence: null,
@@ -131,7 +144,7 @@ test('vault delete drops stale evidence when the path is recreated while loading
     let recreated: TFile | null = null
     const plugin = createTestPlugin()
     Object.assign(plugin, {
-      startupSideEffectGate: { canRun: () => true },
+      startupSideEffectGate: { canRun: () => true, canSendNetwork: () => true },
       metaDoc,
       metadataAccess: 'read-write' as const,
       materializedPaths: new Map([[fileId, 'note.md']]),

@@ -315,7 +315,7 @@ scan 中に Vault が変更されたら、scan 完了後に差分 scan をもう
 
 ## 10. Provider-loss epoch recovery
 
-The plugin probes `kuroflare-meta:<vaultId>` and `kuroflare-file:<ydocId>` with
+The plugin probes `kuroflare-meta:<vaultId>` and `kuroflare-file:<vaultId>:<ydocId>` with
 `indexedDB.databases()` before constructing `IndexeddbPersistence`. It never opens a
 missing provider without local evidence proving that the document is genuinely new;
 directory API absence or malformed entries fail closed.

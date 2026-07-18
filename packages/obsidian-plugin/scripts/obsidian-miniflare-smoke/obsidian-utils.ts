@@ -429,10 +429,16 @@ async function waitForObsidianVaultReady(vaultPath: string, timeoutMs = 30_000):
   throw new Error(`Obsidian did not reopen the e2e vault within ${timeoutMs}ms.`)
 }
 
-async function deleteObsidianProviderDatabase(ydocId: string, timeoutMs = 10_000): Promise<void> {
+async function deleteObsidianProviderDatabase(
+  vaultId: string,
+  ydocId: string,
+  timeoutMs = 10_000,
+): Promise<void> {
+  if (vaultId === '')
+    throw new Error('Cannot delete an Obsidian provider database without a vaultId.')
   if (ydocId === '')
     throw new Error('Cannot delete an Obsidian provider database without a ydocId.')
-  const databaseName = `kuroflare-file:${ydocId}`
+  const databaseName = `kuroflare-file:${vaultId}:${ydocId}`
   const result = evalInObsidian(`(async () => {
     const expectedName = ${JSON.stringify(databaseName)};
     const request = indexedDB.deleteDatabase(expectedName);

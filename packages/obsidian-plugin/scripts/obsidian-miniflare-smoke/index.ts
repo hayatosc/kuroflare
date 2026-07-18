@@ -158,7 +158,7 @@ function readRecoverySnapshot(): RecoverySnapshot {
       });
     }
     const databases = typeof indexedDB.databases === 'function' ? await indexedDB.databases() : [];
-    const providerPresent = databases.some((database) => database?.name === ${JSON.stringify(`kuroflare-file:${docId.ydocId}`)});
+    const providerPresent = databases.some((database) => database?.name === ${JSON.stringify(`kuroflare-file:${vaultId}:${docId.ydocId}`)});
     const file = app.vault.getAbstractFileByPath(${JSON.stringify(notePath)});
     return JSON.stringify({
       vaultId: typeof plugin?.kuroflareSettings?.setupVaultId === 'string' ? plugin.kuroflareSettings.setupVaultId : null,
@@ -981,7 +981,7 @@ try {
   }
 
   obsidian(['plugin:disable', `id=${pluginId}`, 'filter=community'])
-  await deleteObsidianProviderDatabase(docId.ydocId, obsidianPollTimeoutMs)
+  await deleteObsidianProviderDatabase(vaultId, docId.ydocId, obsidianPollTimeoutMs)
   await restartObsidianProcess({
     appCommand: obsidianAppCommand,
     vaultPath,

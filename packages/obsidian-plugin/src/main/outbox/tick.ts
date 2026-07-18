@@ -134,6 +134,10 @@ export async function runOutboxWorkerTick(
   reason: string,
 ): Promise<void> {
   if (!plugin.startupSideEffectGate.canSendNetwork()) return
+  const context = plugin.captureVaultOperationContext()
+  if (context === undefined) return
+  const isCurrent = () =>
+    plugin.startupSideEffectGate.canSendNetwork() && plugin.vaultOperationStillCurrent(context)
   if (plugin.syncStoppedByAuth !== null) {
     return
   }
@@ -150,20 +154,30 @@ export async function runOutboxWorkerTick(
     return
   }
   plugin.outboxWorkerRunning = true
+  let completeTickResolve!: () => void
+  const completion = new Promise<void>((resolve) => {
+    completeTickResolve = resolve
+  })
+  plugin.outboxWorkerCompletionPromise = completion
   try {
     const setup = requireSetupMetadata(plugin)
-    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId, isCurrent)
+    if (!isCurrent()) return
     const snapshot = await readOutboxWorkerSnapshot(db)
+    if (!isCurrent()) return
     const metadataSnapshot = await readLocalStoreIndexedDbMetadataSnapshot({
       database: createLocalStoreIndexedDbMetadataDatabasePort(db),
     })
+    if (!isCurrent()) return
     const authMetadata = metadataSnapshot.ok ? metadataSnapshot.snapshot.auth : undefined
     if (authMetadata?.refreshState === 'refreshing') {
       await recoverStaleAuthRefreshStart(plugin, db, authMetadata)
+      if (!isCurrent()) return
     }
     const currentMetadataSnapshot = await readLocalStoreIndexedDbMetadataSnapshot({
       database: createLocalStoreIndexedDbMetadataDatabasePort(db),
     })
+    if (!isCurrent()) return
     const currentAuthMetadata = currentMetadataSnapshot.ok
       ? currentMetadataSnapshot.snapshot.auth
       : undefined
@@ -208,17 +222,23 @@ export async function runOutboxWorkerTick(
       return
     }
     for (const transaction of planOutboxWorkerTickIndexedDbWriteTransactions(workerTick)) {
+      if (!isCurrent()) return
       await commitOutboxWorkerIndexedDbWriteTransaction(db, transaction)
     }
+    if (!isCurrent()) return
     if (tick.authRefresh.action === 'request-refresh') {
       await runAuthRefreshRequest(plugin, tick.authRefresh)
+      if (!isCurrent()) return
     }
     const nextSnapshot = await readOutboxWorkerSnapshot(db)
+    if (!isCurrent()) return
     const accessToken = await readAccessToken(plugin, accessTokenSecretKeyForSetup(setup))
+    if (!isCurrent()) return
     const sender = createSyncRuntimeWebSocketOutboxSendPort({
       session: plugin.workerWebSocketSession,
     })
     for (const effect of workerTick.starts) {
+      if (!isCurrent()) return
       const record = nextSnapshot.outboxRecords.find(
         (candidate) => candidate.id === effect.start.id,
       )
@@ -241,6 +261,7 @@ export async function runOutboxWorkerTick(
             vaultId: setup.vaultId,
             deviceId: setup.deviceId,
           })
+          if (!isCurrent()) return
           if (!send.ok) {
             console.warn('[kuroflare] outbox websocket send rejected', {
               reason: send.reason,
@@ -280,21 +301,25 @@ export async function runOutboxWorkerTick(
       }
       if (sideEffect.action === 'blob-put') {
         const result = await runBlobPutSideEffect(plugin, sideEffect)
+        if (!isCurrent()) return
         await completeNonAckSideEffect(plugin, db, record, result)
         continue
       }
       if (sideEffect.action === 'blob-get') {
-        const result = await runBlobGetSideEffect(plugin, sideEffect)
+        const result = await runBlobGetSideEffect(plugin, sideEffect, isCurrent)
+        if (!isCurrent()) return
         await completeNonAckSideEffect(plugin, db, record, result)
         continue
       }
       if (sideEffect.action === 'manifest-put') {
         const result = await runManifestPutSideEffect(sideEffect)
+        if (!isCurrent()) return
         await completeNonAckSideEffect(plugin, db, record, result)
         continue
       }
       if (sideEffect.action === 'materialize') {
-        const result = await runMaterializeSideEffect(plugin, sideEffect)
+        const result = await runMaterializeSideEffect(plugin, sideEffect, isCurrent)
+        if (!isCurrent()) return
         await completeNonAckSideEffect(plugin, db, record, result)
         continue
       }
@@ -316,6 +341,7 @@ export async function runOutboxWorkerTick(
           vaultId: setup.vaultId,
           deviceId: setup.deviceId,
         })
+        if (!isCurrent()) return
         if (!send.ok) {
           console.warn('[kuroflare] outbox websocket send rejected', {
             reason: send.reason,
@@ -332,6 +358,7 @@ export async function runOutboxWorkerTick(
       }
     }
     const completionSnapshot = await readOutboxWorkerSnapshot(db)
+    if (!isCurrent()) return
     if (
       hasRunnableOutboxWork(
         schedulerItemsForMetadataAccess(completionSnapshot.outboxRecords, plugin.metadataAccess),
@@ -347,5 +374,9 @@ export async function runOutboxWorkerTick(
     console.error('[kuroflare] outbox worker tick failed', { reason, error: safeLogError(error) })
   } finally {
     plugin.outboxWorkerRunning = false
+    completeTickResolve()
+    if (plugin.outboxWorkerCompletionPromise === completion) {
+      plugin.outboxWorkerCompletionPromise = null
+    }
   }
 }

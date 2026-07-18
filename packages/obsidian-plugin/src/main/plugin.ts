@@ -37,6 +37,8 @@ import type {
   KuroflareBinaryRestoreCheckDetail,
   LoadedTextDoc,
   KuroflareRepairLogEntry,
+  GenerationMarkerOwner,
+  TextDocumentOwner,
 } from '../main-types'
 import {
   materializeMetaRenames,
@@ -47,6 +49,7 @@ import {
   enqueueMissingRemoteBinaryDownloads,
   reconcileAndMaterializeMeta,
   type MetadataReconcilePort,
+  type MetadataReconcileWriteContext,
 } from '../plugin/metadata-reconcile'
 import { probeIndexedDbProvider, documentEpochMetadataKey } from '../recovery/epoch'
 import { createYDocFromSnapshot } from '../recovery/epoch'
@@ -188,9 +191,21 @@ import {
 } from './meta'
 import { createFreshMetaDocForVaultSwitch } from './meta'
 import { runOutboxWorkerTick } from './outbox/tick'
-import { metaPersistenceDatabaseName, deferStartupReplan } from './runtime-guards'
+import {
+  claimOwnedPathMarker,
+  clearOwnedPathMarker,
+  clearPathMarkers,
+  deferStartupReplan,
+  metaPersistenceDatabaseName,
+  setOwnedPathMarker,
+} from './runtime-guards'
 import { createRemoteSetupAccessTokenVerifier } from './setup-verifier'
-import { openLocalStoreDatabase, putOutboxRecords, readOutboxWorkerSnapshot } from './store'
+import {
+  openLocalStoreDatabase,
+  putOutboxRecords,
+  readOutboxWorkerSnapshot,
+  readRemoteCursorSeq,
+} from './store'
 import { handleLifecycleResume } from './sync-bridge'
 import {
   openWorkerWebSocket,
@@ -213,12 +228,14 @@ export default class KuroflareSpikePlugin extends Plugin {
   readonly cmCompartment = new Compartment()
   readonly lastMaterialized = new Map<string, LastMaterializedRecord>()
   readonly loadedTextDocs = new Map<string, LoadedTextDoc>()
+  readonly loadingTextDocs = new Map<string, Promise<LoadedTextDoc>>()
   /** Documents whose provider evidence requires guarded epoch recovery before startup resumes. */
   readonly documentRecoveryRequired = new Set<string>()
   readonly documentRecoveryHydrating = new Set<string>()
   readonly documentReplacementInProgress = new Set<string>()
   /** Documents currently running automatic NeedFullSnapshot fetch+apply recovery. */
   readonly needFullSnapshotRecoveryInProgress = new Set<string>()
+  readonly needFullSnapshotRecoveryOwners = new Map<string, object>()
   activeTextDoc: LoadedTextDoc | null = null
   statusEl: HTMLElement | null = null
   syncStatusEl: HTMLElement | null = null
@@ -238,8 +255,10 @@ export default class KuroflareSpikePlugin extends Plugin {
   workerWebSocketOpenPromise: Promise<void> | null = null
   workerWebSocketRecoveryPromise: Promise<void> | null = null
   outboxWorkerRunning = false
+  outboxWorkerCompletionPromise: Promise<void> | null = null
   outboxWorkerRetryTimeout: number | null = null
   authRefreshRunning = false
+  authRefreshCompletionPromise: Promise<void> | null = null
   authRefreshRetryTimeout: number | null = null
   pendingOutboxResumeEvents: OutboxResumeEvent[] = []
   syncStoppedByAuth: ClientAuthMetadata['authState'] | null = null
@@ -250,6 +269,10 @@ export default class KuroflareSpikePlugin extends Plugin {
   metadataMigrationPending = false
   metadataCapabilityAdvertised = true
   metadataCapabilityFallbackAttempted = false
+  metadataReconcileRetryTimeout: number | null = null
+  metadataVaultGeneration = 0
+  settingsWritePromise: Promise<void> | null = null
+  metadataSetupStagingCount = 0
   workerMessageCounter = 0
   pendingSyncRequestMessageIds = new Set<MessageId>()
   activeFile: TFile | null = null
@@ -264,12 +287,16 @@ export default class KuroflareSpikePlugin extends Plugin {
   localStoreDb: IDBDatabase | null = null
   localStoreDbName: string | null = null
   readonly materializedPaths = new Map<FileId, string>()
+  readonly materializedPathOwners = new Map<FileId, GenerationMarkerOwner>()
   readonly pendingRemoteTextFiles = new Map<string, string>()
+  readonly pendingRemoteTextFileOwners = new Map<string, GenerationMarkerOwner>()
+  readonly remoteTextMaterializationOperations = new Set<Promise<void>>()
   readonly pendingTextDeletionEvidenceRequests = new Map<string, number>()
   readonly pendingTextDeletionEvidenceRetryTimers = new Map<string, number>()
   startupScannedMarkdownFiles: readonly TFile[] = []
   readonly pendingFsRenames = new Set<string>()
   readonly pendingFsDeletes = new Set<string>()
+  readonly binaryMaterializationOwners = new Map<string, object>()
   readonly activeRemoteDeletedFileIds = new Set<FileId>()
   pendingRemoteMetaSnapshot: {
     readonly response: MetaLatestSnapshotResponse | DocLatestSnapshotResponse
@@ -342,13 +369,20 @@ export default class KuroflareSpikePlugin extends Plugin {
       window.clearTimeout(this.outboxWorkerRetryTimeout)
       this.outboxWorkerRetryTimeout = null
     }
+    if (this.metadataReconcileRetryTimeout !== null) {
+      window.clearTimeout(this.metadataReconcileRetryTimeout)
+      this.metadataReconcileRetryTimeout = null
+    }
     cancelAuthRefreshStartupRetry(this)
     this.metaDoc.destroy()
   }
 
   async updateSettings(patch: Partial<KuroflareSettings>): Promise<void> {
-    this.kuroflareSettings = { ...this.kuroflareSettings, ...patch }
-    await this.saveData(this.kuroflareSettings)
+    await this.enqueueSettingsWrite(async () => {
+      const next = { ...this.kuroflareSettings, ...patch }
+      this.kuroflareSettings = next
+      await this.saveData(next)
+    })
   }
 
   private async loadSettings(): Promise<void> {
@@ -374,7 +408,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       console.warn('[kuroflare] removed legacy plaintext token fields from settings', {
         keys: secretCleanup.removedLegacySecretKeys,
       })
-      await this.saveData(this.kuroflareSettings)
+      await this.enqueueSettingsWrite(() => this.saveData(this.kuroflareSettings))
     }
   }
 
@@ -445,6 +479,181 @@ export default class KuroflareSpikePlugin extends Plugin {
     await flushYTextToDisk(this, reason)
   }
 
+  scheduleMetadataReconcileRetry(): void {
+    if (this.metadataReconcileRetryTimeout !== null) return
+    if (this.metadataReconcileTransitionPending()) return
+    const setup = currentSetupMetadata(this)
+    if (setup === undefined) return
+    const capturedGeneration = this.metadataVaultGeneration
+    const capturedVaultId = setup.vaultId
+    const capturedMetaDoc = this.metaDoc
+    this.metadataReconcileRetryTimeout = window.setTimeout(() => {
+      this.metadataReconcileRetryTimeout = null
+      if (
+        !this.startupSideEffectGate.canSendNetwork() ||
+        this.metadataReconcileTransitionPending() ||
+        this.metadataVaultGeneration !== capturedGeneration ||
+        this.metaDoc !== capturedMetaDoc ||
+        currentSetupMetadata(this)?.vaultId !== capturedVaultId
+      ) {
+        return
+      }
+      void reconcileAndMaterializeMeta(
+        metadataReconcilePort(this),
+        metadataMaterializationPort(this),
+      )
+    }, 0)
+  }
+
+  async updateMetadataReconcileSettings(
+    update: (current: KuroflareSettings) => Partial<KuroflareSettings>,
+    context: MetadataReconcileWriteContext,
+  ): Promise<boolean> {
+    return this.enqueueSettingsWrite(async () => {
+      if (!metadataReconcileWriteContextStillStable(this, context)) return false
+      const previousRepairLog = this.kuroflareSettings.repairLog
+      const patch = update(this.kuroflareSettings)
+      const next = { ...this.kuroflareSettings, ...patch }
+      this.kuroflareSettings = next
+      await this.saveData(next)
+      if (metadataReconcileWriteContextStillStable(this, context)) return true
+      if (this.kuroflareSettings.repairLog === next.repairLog) {
+        const rolledBack = { ...this.kuroflareSettings, repairLog: previousRepairLog }
+        this.kuroflareSettings = rolledBack
+        await this.saveData(rolledBack)
+      }
+      return false
+    })
+  }
+
+  private async enqueueSettingsWrite<Result>(operation: () => Promise<Result>): Promise<Result> {
+    const previousWrite = this.settingsWritePromise
+    const result = (async () => {
+      if (previousWrite !== null) await previousWrite
+      return operation()
+    })()
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.settingsWritePromise = tail
+    try {
+      return await result
+    } finally {
+      if (this.settingsWritePromise === tail) this.settingsWritePromise = null
+    }
+  }
+
+  async stagePendingSetupResponse(response: SetupExchangeResponse): Promise<void> {
+    this.startupSideEffectGate.setPermission('blocked')
+    this.metadataSetupStagingCount += 1
+    this.metadataVaultGeneration += 1
+    const stagingGeneration = this.metadataVaultGeneration
+    const settingsReset = this.enqueueSettingsWrite(async () => {
+      if (this.metadataVaultGeneration !== stagingGeneration) return
+      if ((this.kuroflareSettings.repairLog?.length ?? 0) === 0) return
+      const next = { ...this.kuroflareSettings, repairLog: [] }
+      this.kuroflareSettings = next
+      await this.saveData(next)
+    })
+    const textDocumentCleanup = this.clearLoadedTextDocsForVaultTransition()
+    try {
+      await textDocumentCleanup
+      await settingsReset
+      const outboxCompletion = this.outboxWorkerCompletionPromise
+      if (outboxCompletion !== null) await outboxCompletion
+      const authRefreshCompletion = this.authRefreshCompletionPromise
+      if (authRefreshCompletion !== null) await authRefreshCompletion
+      await Promise.allSettled([...this.remoteTextMaterializationOperations])
+      if (this.metadataVaultGeneration !== stagingGeneration) return
+      this.pendingSetupResponse = response
+    } finally {
+      this.metadataSetupStagingCount -= 1
+    }
+  }
+
+  metadataReconcileTransitionPending(): boolean {
+    return (
+      this.pendingSetupResponse !== null ||
+      this.metadataSetupStagingCount > 0 ||
+      this.startupSideEffectGate.replayingPersistence ||
+      this.metadataMigrationPending ||
+      this.metadataMigrationPromise !== null ||
+      this.documentReplacementInProgress.has(documentEpochMetadataKey(META_SYNC_DOC_ID))
+    )
+  }
+
+  captureTextDocumentOwner(): TextDocumentOwner | undefined {
+    return this.captureVaultOperationContext()
+  }
+
+  captureVaultOperationContext(): TextDocumentOwner | undefined {
+    if (this.pendingSetupResponse !== null || this.metadataSetupStagingCount > 0) return undefined
+    const setup = currentSetupMetadata(this)
+    if (setup === undefined) return undefined
+    return { vaultId: setup.vaultId, generation: this.metadataVaultGeneration }
+  }
+
+  textDocumentOwnerStillCurrent(owner: TextDocumentOwner): boolean {
+    return this.vaultOperationStillCurrent(owner)
+  }
+
+  vaultOperationStillCurrent(owner: TextDocumentOwner): boolean {
+    return (
+      this.pendingSetupResponse === null &&
+      this.metadataSetupStagingCount === 0 &&
+      this.metadataVaultGeneration === owner.generation &&
+      currentSetupMetadata(this)?.vaultId === owner.vaultId
+    )
+  }
+
+  loadedTextDocStillCurrent(loaded: LoadedTextDoc, owner: TextDocumentOwner): boolean {
+    return (
+      loaded.vaultId === owner.vaultId &&
+      loaded.vaultGeneration === owner.generation &&
+      this.textDocumentOwnerStillCurrent(owner) &&
+      this.loadedTextDocs.get(loaded.docId.ydocId) === loaded
+    )
+  }
+
+  private async clearLoadedTextDocsForVaultTransition(): Promise<void> {
+    this.bindGeneration += 1
+    const loadedDocs = [...this.loadedTextDocs.values()]
+    const previousActiveDoc = this.ydoc
+    this.loadedTextDocs.clear()
+    this.loadingTextDocs.clear()
+    this.documentRecoveryRequired.clear()
+    this.documentRecoveryHydrating.clear()
+    this.needFullSnapshotRecoveryInProgress.clear()
+    this.needFullSnapshotRecoveryOwners.clear()
+    this.pendingTextDeletionEvidenceRequests.clear()
+    for (const timer of this.pendingTextDeletionEvidenceRetryTimers.values()) {
+      window.clearTimeout(timer)
+    }
+    this.pendingTextDeletionEvidenceRetryTimers.clear()
+    this.activeTextDoc = null
+    const replacement = new Y.Doc()
+    this.ydoc = replacement
+    this.ytext = replacement.getText(SPIKE_TEXT_NAME)
+    if (!loadedDocs.some((loaded) => loaded.doc === previousActiveDoc)) {
+      previousActiveDoc.destroy()
+    }
+    await Promise.all(
+      loadedDocs.map(async (loaded) => {
+        try {
+          await loaded.persistence?.destroy()
+        } catch (error: unknown) {
+          console.warn('[kuroflare] failed to close stale text persistence', {
+            docId: loaded.docId,
+            error: safeLogError(error),
+          })
+        } finally {
+          loaded.doc.destroy()
+        }
+      }),
+    )
+  }
+
   private attachMetaDocObservers(): void {
     this.metaDoc.on('afterTransaction', (transaction: Y.Transaction) => {
       if (
@@ -455,6 +664,7 @@ export default class KuroflareSpikePlugin extends Plugin {
         return
       }
       if (!this.startupSideEffectGate.canSendNetwork()) return
+      if (this.metadataReconcileTransitionPending()) return
       void reconcileAndMaterializeMeta(
         metadataReconcilePort(this),
         metadataMaterializationPort(this),
@@ -462,8 +672,16 @@ export default class KuroflareSpikePlugin extends Plugin {
     })
     this.metaDoc.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin === WORKER_ORIGIN || origin === BINARY_UPLOAD_ORIGIN) return
-      if (!this.startupSideEffectGate.canSendNetwork()) return
-      void sendDocUpdateToWorker(this, META_SYNC_DOC_ID, update, 'meta-update')
+      const context = this.captureVaultOperationContext()
+      const observedMetaDoc = this.metaDoc
+      if (context === undefined) return
+      void sendDocUpdateToWorker(
+        this,
+        META_SYNC_DOC_ID,
+        update,
+        'meta-update',
+        () => this.vaultOperationStillCurrent(context) && this.metaDoc === observedMetaDoc,
+      )
     })
   }
 
@@ -476,7 +694,9 @@ export default class KuroflareSpikePlugin extends Plugin {
     loaded: LoadedTextDoc,
     path: string,
     reason: 'invalid-path' | 'path-collision' | 'parent-collision',
+    context: MetadataReconcileWriteContext,
   ): Promise<void> {
+    if (!metadataReconcileWriteContextStillStable(this, context)) return
     const fileId = findMetaFileIdForDoc(this, loaded.docId)
     const entry: KuroflareRepairLogEntry = {
       id: `remote-materialize-blocked:${loaded.docId.ydocId}:${reason}`,
@@ -486,15 +706,24 @@ export default class KuroflareSpikePlugin extends Plugin {
       reason,
       createdAt: Date.now(),
     }
-    await this.updateSettings({
-      repairLog: mergeRepairLogEntries(this.kuroflareSettings.repairLog ?? [], [entry]),
-    })
+    await this.updateMetadataReconcileSettings(
+      (current) => ({
+        repairLog: mergeRepairLogEntries(current.repairLog ?? [], [entry]),
+      }),
+      context,
+    )
   }
 
-  private async removeRepairLogEntry(entryId: string): Promise<void> {
-    await this.updateSettings({
-      repairLog: (this.kuroflareSettings.repairLog ?? []).filter((entry) => entry.id !== entryId),
-    })
+  private async removeRepairLogEntry(
+    entryId: string,
+    context: MetadataReconcileWriteContext,
+  ): Promise<boolean> {
+    return this.updateMetadataReconcileSettings(
+      (current) => ({
+        repairLog: (current.repairLog ?? []).filter((entry) => entry.id !== entryId),
+      }),
+      context,
+    )
   }
 
   private async openMetaPersistence(): Promise<void> {
@@ -504,10 +733,12 @@ export default class KuroflareSpikePlugin extends Plugin {
     this.metaPersistence = null
     if (this.metaPersistenceName !== null) {
       this.metaPersistenceName = null
+      this.metadataVaultGeneration += 1
+      await this.clearLoadedTextDocsForVaultTransition()
       this.metaDoc = createFreshMetaDocForVaultSwitch(this.metaDoc)
       this.attachMetaDocObservers()
-      this.materializedPaths.clear()
-      this.pendingRemoteTextFiles.clear()
+      clearPathMarkers(this.materializedPaths, this.materializedPathOwners)
+      clearPathMarkers(this.pendingRemoteTextFiles, this.pendingRemoteTextFileOwners)
     }
     this.startupSideEffectGate.beginPersistenceReplay()
     try {
@@ -521,7 +752,13 @@ export default class KuroflareSpikePlugin extends Plugin {
       for (const [fileId] of metaMap(this).entries()) {
         const value = readMetaFile(metaMap(this), fileId)
         if (value !== undefined && !value.deleted) {
-          this.materializedPaths.set(value.fileId, value.path)
+          setOwnedPathMarker(
+            this.materializedPaths,
+            this.materializedPathOwners,
+            value.fileId,
+            value.path,
+            this.metadataVaultGeneration,
+          )
         }
       }
     } finally {
@@ -529,32 +766,47 @@ export default class KuroflareSpikePlugin extends Plugin {
     }
   }
 
-  private async replaceMetaDoc(updateBytes: Uint8Array): Promise<void> {
+  private async replaceMetaDoc(
+    updateBytes: Uint8Array,
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> {
+    if (!isCurrent()) return
     const oldDoc = this.metaDoc
     const persistenceName = this.metaPersistenceName
     const epochKey = documentEpochMetadataKey(META_SYNC_DOC_ID)
+    const ownsReplacementMarker = !this.documentReplacementInProgress.has(epochKey)
     this.documentReplacementInProgress.add(epochKey)
     try {
       if (this.metaPersistence !== null) {
-        await this.metaPersistence.clearData()
+        const persistence = this.metaPersistence
+        await persistence.clearData()
+        if (!isCurrent()) return
+        if (this.metaPersistence !== persistence) return
         this.metaPersistence = null
         this.metaPersistenceName = null
         if (persistenceName !== null) {
           await waitForIndexedDbDeleteDatabase(indexedDB.deleteDatabase(persistenceName))
+          if (!isCurrent()) return
         }
       }
       oldDoc.destroy()
+      this.metadataVaultGeneration += 1
       this.metaDoc = createYDocFromSnapshot(updateBytes, WORKER_ORIGIN)
       this.attachMetaDocObservers()
       await this.openMetaPersistence()
-      this.materializedPaths.clear()
+      clearPathMarkers(this.materializedPaths, this.materializedPathOwners)
     } finally {
-      this.documentReplacementInProgress.delete(epochKey)
+      if (ownsReplacementMarker) this.documentReplacementInProgress.delete(epochKey)
     }
   }
 
   /** Performs the legacy-to-v2 transition through the snapshot-import CAS endpoint. */
   async prepareMetadataAfterHello(): Promise<void> {
+    const context = this.captureVaultOperationContext()
+    const migrationMetaDoc = this.metaDoc
+    if (context === undefined) return
+    const isCurrent = () =>
+      this.vaultOperationStillCurrent(context) && this.metaDoc === migrationMetaDoc
     if (this.metadataAccess !== 'read-write') return
     const root = this.metaDoc.getMap<unknown>('meta')
     if (root.size === 0) return
@@ -574,7 +826,12 @@ export default class KuroflareSpikePlugin extends Plugin {
     let latest: Awaited<ReturnType<KuroflareSpikePlugin['fetchLatestSnapshotPayload']>> = null
     let manualRepairRequired = false
     try {
-      latest = await this.fetchLatestSnapshotPayload(META_SYNC_DOC_ID, 'metadata-migration')
+      latest = await this.fetchLatestSnapshotPayload(
+        META_SYNC_DOC_ID,
+        'metadata-migration',
+        isCurrent,
+      )
+      if (!isCurrent()) return
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const candidate = new Y.Doc()
         try {
@@ -583,7 +840,7 @@ export default class KuroflareSpikePlugin extends Plugin {
             const candidateRoot = candidate.getMap<unknown>('meta')
             if (shouldAdoptRemoteMetadata(this.metaDoc, candidate)) {
               this.metadataMigrationPending = false
-              await this.replaceMetaDoc(latest.verifiedBytes.updateBytes)
+              await this.replaceMetaDoc(latest.verifiedBytes.updateBytes, isCurrent)
               return
             }
             if (candidateRoot.size > 0 && !metaDocLegacyOnly(candidate)) {
@@ -597,6 +854,7 @@ export default class KuroflareSpikePlugin extends Plugin {
           const migrationUpdate = Y.encodeStateAsUpdate(candidate, baseStateVector)
           const setup = requireSetupMetadata(this)
           const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
+          if (!isCurrent()) return
           if (accessToken === undefined) break
           const response = await fetch(this.snapshotImportUrl(setup, META_SYNC_DOC_ID), {
             method: 'PUT',
@@ -612,23 +870,28 @@ export default class KuroflareSpikePlugin extends Plugin {
               metadataSchemaVersion: 2,
             }),
           })
+          if (!isCurrent()) return
           if (response.ok) {
             this.metadataMigrationPending = false
-            await this.replaceMetaDoc(Y.encodeStateAsUpdate(candidate))
+            await this.replaceMetaDoc(Y.encodeStateAsUpdate(candidate), isCurrent)
             return
           }
           if (response.status !== 409) break
           latest = await this.fetchLatestSnapshotPayload(
             META_SYNC_DOC_ID,
             'metadata-migration-retry',
+            isCurrent,
           )
+          if (!isCurrent()) return
         } finally {
           candidate.destroy()
         }
       }
     } catch (error: unknown) {
+      if (!isCurrent()) return
       console.warn('[kuroflare] metadata migration CAS failed', { error: safeLogError(error) })
     }
+    if (!isCurrent()) return
     this.metadataMigrationPending = false
     this.metadataAccess = 'read-only'
     if (manualRepairRequired) {
@@ -683,7 +946,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       fetch: (input, init) => fetch(input, init),
       readEvidence: (effect) => setupEvidenceReader.readEvidence(effect),
       scheduleReplan: async (request) => {
-        this.pendingSetupResponse = request.response
+        await this.stagePendingSetupResponse(request.response)
       },
     })
 
@@ -973,63 +1236,145 @@ export default class KuroflareSpikePlugin extends Plugin {
     })
   }
 
-  createDocumentEpochRecoveryHost(): DocumentEpochRecoveryHost {
+  createDocumentEpochRecoveryHost(
+    isCurrent: () => boolean = () => true,
+  ): DocumentEpochRecoveryHost {
+    const assertCurrent = () => {
+      if (!isCurrent()) throw new Error('document-recovery-vault-context-stale')
+    }
     return {
-      currentSetup: () => currentSetupMetadata(this),
-      recoveryGate: this.startupSideEffectGate,
-      recoveryRequired: this.documentRecoveryRequired,
-      recoveryHydrating: this.documentRecoveryHydrating,
-      probeProvider: (dbName) => probeIndexedDbProvider(indexedDB, dbName),
+      currentSetup: () => (isCurrent() ? currentSetupMetadata(this) : undefined),
+      recoveryGate: {
+        beginRecovery: () => {
+          assertCurrent()
+          this.startupSideEffectGate.beginRecovery()
+        },
+        clearRecoveryBlock: () => {
+          if (isCurrent()) this.startupSideEffectGate.clearRecoveryBlock()
+        },
+        endRecovery: () => this.startupSideEffectGate.endRecovery(),
+        failRecovery: (reason) => {
+          if (isCurrent()) {
+            this.startupSideEffectGate.failRecovery(reason)
+          } else {
+            this.startupSideEffectGate.endRecovery()
+            this.startupSideEffectGate.setPermission('blocked')
+          }
+        },
+      },
+      recoveryRequired: {
+        add: (key) => {
+          assertCurrent()
+          this.documentRecoveryRequired.add(key)
+          return this.documentRecoveryRequired
+        },
+        clear: () => {
+          if (isCurrent()) this.documentRecoveryRequired.clear()
+        },
+      },
+      recoveryHydrating: {
+        add: (key) => {
+          assertCurrent()
+          this.documentRecoveryHydrating.add(key)
+          return this.documentRecoveryHydrating
+        },
+        delete: (key) => (isCurrent() ? this.documentRecoveryHydrating.delete(key) : false),
+      },
+      probeProvider: async (dbName) => {
+        assertCurrent()
+        const provider = await probeIndexedDbProvider(indexedDB, dbName)
+        assertCurrent()
+        return provider
+      },
       resetProvider: async (docId, providerDbName) => {
+        assertCurrent()
         if (docId.kind === 'meta') {
-          await this.metaPersistence?.destroy()
-          this.metaPersistence = null
-          this.metaPersistenceName = null
+          const persistence = this.metaPersistence
+          await persistence?.destroy()
+          assertCurrent()
+          if (this.metaPersistence === persistence) {
+            this.metaPersistence = null
+            this.metaPersistenceName = null
+          }
         } else {
           const loaded = this.loadedTextDocs.get(docId.ydocId)
           if (loaded !== undefined) {
             await loaded.persistence?.destroy()
+            assertCurrent()
             loaded.doc.destroy()
-            this.loadedTextDocs.delete(docId.ydocId)
+            if (this.loadedTextDocs.get(docId.ydocId) === loaded) {
+              this.loadedTextDocs.delete(docId.ydocId)
+            }
             if (this.activeTextDoc === loaded) this.activeTextDoc = null
           }
         }
         await waitForIndexedDbDeleteDatabase(indexedDB.deleteDatabase(providerDbName))
+        assertCurrent()
       },
-      readAccessToken: async (setup) =>
-        await readAccessToken(this, accessTokenSecretKeyForSetup(setup)),
-      latestSnapshotUrl: (setup, docId) => this.latestSnapshotUrl(setup, docId),
-      snapshotImportUrl: (setup, docId) => this.snapshotImportUrl(setup, docId),
-      validateMetaCandidate: (doc) => metaDocWritable(doc),
+      readAccessToken: async (setup) => {
+        assertCurrent()
+        const token = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
+        assertCurrent()
+        return token
+      },
+      latestSnapshotUrl: (setup, docId) => {
+        assertCurrent()
+        return this.latestSnapshotUrl(setup, docId)
+      },
+      snapshotImportUrl: (setup, docId) => {
+        assertCurrent()
+        return this.snapshotImportUrl(setup, docId)
+      },
+      validateMetaCandidate: (doc) => {
+        assertCurrent()
+        return metaDocWritable(doc)
+      },
       hydrateProvider: {
         create: async (docId) => {
+          assertCurrent()
           if (docId.kind === 'meta') {
             if (this.metaPersistence === null) await this.openMetaPersistence()
+            assertCurrent()
             return
           }
           await loadTextDoc(this, docId)
+          assertCurrent()
         },
         apply: async (docId, updateBytes) => {
+          assertCurrent()
           if (docId.kind === 'meta') {
             Y.applyUpdate(this.metaDoc, updateBytes, WORKER_ORIGIN)
+            assertCurrent()
             return
           }
           const loaded = this.loadedTextDocs.get(docId.ydocId)
           if (loaded === undefined) throw new Error('document-recovery-provider-missing')
           Y.applyUpdate(loaded.doc, updateBytes, WORKER_ORIGIN)
+          assertCurrent()
         },
         whenSynced: async (docId, epochId) => {
+          assertCurrent()
           if (docId.kind === 'meta') {
-            await this.metaPersistence?.whenSynced
-            await this.metaPersistence?.set('__kuroflare_epoch_barrier', epochId)
+            const persistence = this.metaPersistence
+            await persistence?.whenSynced
+            assertCurrent()
+            await persistence?.set('__kuroflare_epoch_barrier', epochId)
+            assertCurrent()
             return
           }
           const loaded = this.loadedTextDocs.get(docId.ydocId)
-          await loaded?.persistence?.whenSynced
-          await loaded?.persistence?.set('__kuroflare_epoch_barrier', epochId)
+          const persistence = loaded?.persistence
+          await persistence?.whenSynced
+          assertCurrent()
+          await persistence?.set('__kuroflare_epoch_barrier', epochId)
+          assertCurrent()
         },
       },
-      commit: async (input) => await commitDocumentRecoveryTransaction(input),
+      commit: async (input) => {
+        assertCurrent()
+        await commitDocumentRecoveryTransaction(input)
+        assertCurrent()
+      },
     }
   }
 
@@ -1037,11 +1382,25 @@ export default class KuroflareSpikePlugin extends Plugin {
     const initialSetup = currentSetupMetadata(this)
     const targetVaultId = vaultId ?? initialSetup?.vaultId
     if (targetVaultId === undefined) return
-    const db = await openLocalStoreDatabase(this, targetVaultId)
+    const generation = this.metadataVaultGeneration
+    const targetMetaDoc = this.metaDoc
+    const isCurrent = () =>
+      this.metadataVaultGeneration === generation &&
+      this.metaDoc === targetMetaDoc &&
+      (currentSetupMetadata(this)?.vaultId ?? targetVaultId) === targetVaultId
+    const assertCurrent = () => {
+      if (!isCurrent()) throw new Error('local-store-vault-context-stale')
+    }
+    const db = await openLocalStoreDatabase(this, targetVaultId, isCurrent)
+    assertCurrent()
     const metadataSnapshot = await readLocalStoreIndexedDbMetadataSnapshot({
       database: createLocalStoreIndexedDbMetadataDatabasePort(db),
     })
+    assertCurrent()
     if (metadataSnapshot.ok) {
+      if (metadataSnapshot.snapshot.setup.vaultId !== targetVaultId) {
+        throw new Error('local-store-setup-vault-mismatch')
+      }
       this.trustedSetupMetadata = metadataSnapshot.snapshot.setup
     }
     const setup = currentSetupMetadata(this)
@@ -1054,14 +1413,17 @@ export default class KuroflareSpikePlugin extends Plugin {
       waitForIndexedDbRequest(fileRequest),
     ])
     await waitForIndexedDbTransaction(transaction)
+    assertCurrent()
     await recoverDocumentEpochsAtStartup(
-      this.createDocumentEpochRecoveryHost(),
+      this.createDocumentEpochRecoveryHost(isCurrent),
       db,
       metaRecord,
       fileRecords,
     )
+    assertCurrent()
     if (this.metaPersistence === null) {
       await this.openMetaPersistence()
+      assertCurrent()
     }
     if (isStoredYDocRecord(metaRecord) && metaRecord.docId.kind === 'meta') {
       Y.applyUpdate(this.metaDoc, metaRecord.updateBytes, WORKER_ORIGIN)
@@ -1069,6 +1431,7 @@ export default class KuroflareSpikePlugin extends Plugin {
     for (const record of fileRecords) {
       if (!isStoredYDocRecord(record) || record.docId.kind !== 'file') continue
       const loaded = await loadTextDoc(this, record.docId)
+      assertCurrent()
       Y.applyUpdate(loaded.doc, record.updateBytes, WORKER_ORIGIN)
     }
   }
@@ -1079,7 +1442,15 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   private async publishInitialFileSnapshots(reason: string): Promise<void> {
     for (const loaded of this.loadedTextDocs.values()) {
-      await this.importLocalSnapshot(loaded.docId, Y.encodeStateAsUpdate(loaded.doc), reason)
+      const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+      const isCurrent = () => this.loadedTextDocStillCurrent(loaded, owner)
+      if (!isCurrent()) return
+      await this.importLocalSnapshot(
+        loaded.docId,
+        Y.encodeStateAsUpdate(loaded.doc),
+        reason,
+        isCurrent,
+      )
     }
   }
 
@@ -1087,10 +1458,13 @@ export default class KuroflareSpikePlugin extends Plugin {
     docId: DocId,
     updateBytes: Uint8Array,
     reason: string,
+    isCurrent: () => boolean = () => true,
   ): Promise<void> {
+    if (!isCurrent()) return
     if (docId.kind === 'meta' && !metadataWritesEnabled(this)) return
     const setup = requireSetupMetadata(this)
     const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
+    if (!isCurrent()) return
     if (accessToken === undefined) throw new Error('snapshot-import-token-missing')
     const response = await fetch(this.snapshotImportUrl(setup, docId), {
       method: 'PUT',
@@ -1103,6 +1477,7 @@ export default class KuroflareSpikePlugin extends Plugin {
         ...(docId.kind === 'meta' ? { metadataSchemaVersion: 2 } : {}),
       }),
     })
+    if (!isCurrent()) return
     if (!response.ok) {
       console.warn('[kuroflare] local snapshot import failed', {
         status: response.status,
@@ -1112,6 +1487,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       throw new Error('snapshot-import-http-failed')
     }
     const body: unknown = await response.json().catch(() => undefined)
+    if (!isCurrent()) return
     if (!v.is(SnapshotImportResponseSchema, body)) {
       throw new Error('snapshot-import-response-invalid')
     }
@@ -1120,16 +1496,20 @@ export default class KuroflareSpikePlugin extends Plugin {
   private async fetchLatestSnapshotPayload(
     docId: DocId,
     reason: string,
+    isCurrent: () => boolean = () => true,
   ): Promise<{
     readonly response: MetaLatestSnapshotResponse | DocLatestSnapshotResponse
     readonly verifiedBytes: VerifiedFullSnapshotBytes
   } | null> {
+    if (!isCurrent()) return null
     const setup = requireSetupMetadata(this)
     const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
+    if (!isCurrent()) return null
     if (accessToken === undefined) return null
     const response = await fetch(this.latestSnapshotUrl(setup, docId), {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
+    if (!isCurrent()) return null
     if (!response.ok) {
       console.warn('[kuroflare] latest snapshot fetch failed', {
         status: response.status,
@@ -1139,10 +1519,12 @@ export default class KuroflareSpikePlugin extends Plugin {
       return null
     }
     const body: unknown = await response.json().catch(() => undefined)
+    if (!isCurrent()) return null
     const schema =
       docId.kind === 'meta' ? MetaLatestSnapshotResponseSchema : DocLatestSnapshotResponseSchema
     if (!v.is(schema, body)) return null
     const decoded = await decodeFullSnapshotBytesFromResponse({ response: body })
+    if (!isCurrent()) return null
     if (!decoded.ok) return null
     return { response: body, verifiedBytes: decoded }
   }
@@ -1154,16 +1536,25 @@ export default class KuroflareSpikePlugin extends Plugin {
       readonly verifiedBytes: VerifiedFullSnapshotBytes
     },
     _reason: string,
+    isCurrent: () => boolean = () => true,
   ): Promise<void> {
+    if (!isCurrent()) return
     const setup = requireSetupMetadata(this)
-    const db = await openLocalStoreDatabase(this, setup.vaultId)
+    const db = await openLocalStoreDatabase(this, setup.vaultId, isCurrent)
+    if (!isCurrent()) return
     const localStore = await readOutboxWorkerSnapshot(db)
+    if (!isCurrent()) return
+    const currentSnapshotSeq = await readRemoteCursorSeq(db, docId)
+    if (!isCurrent()) return
+    const activeEditorBound = docId.kind === 'file' && sameDocId(docId, await activeDocId(this))
+    if (!isCurrent()) return
     const plan = planFullSnapshotApplyRuntime({
       requestedDocId: docId,
       response: snapshot.response,
       verifiedBytes: snapshot.verifiedBytes,
+      currentSnapshotSeq,
       hasPendingLocalUpdates: hasPendingRunnableOutboxUpdate(localStore.outboxRecords, docId),
-      activeEditorBound: docId.kind === 'file' && sameDocId(docId, await activeDocId(this)),
+      activeEditorBound,
       currentOutboxRecords: localStore.outboxRecords,
       currentLeaseRows: localStore.leaseRows,
     })
@@ -1175,20 +1566,30 @@ export default class KuroflareSpikePlugin extends Plugin {
       })
       throw new Error(`latest-snapshot-apply:${plan.action}:${plan.reason}`)
     }
-    await commitFullSnapshotApplyIndexedDbTransaction({
+    const cursorSeqBeforeCommit = await readRemoteCursorSeq(db, docId)
+    if (!isCurrent()) return
+    if (cursorSeqBeforeCommit !== currentSnapshotSeq) {
+      throw new Error('latest-snapshot-apply:wait:remote-cursor-advanced')
+    }
+    const committed = await commitFullSnapshotApplyIndexedDbTransaction({
       database: createFullSnapshotApplyIndexedDbDatabasePort(db),
       transaction: plan.indexedDbWriteTransaction,
+      remoteCursorCas: { expectedRemoteCursorSeq: currentSnapshotSeq },
     })
+    if (!committed) throw new Error('latest-snapshot-apply:wait:remote-cursor-advanced')
+    if (!isCurrent()) return
     if (docId.kind === 'meta') {
-      await this.replaceMetaDoc(plan.updateBytes)
+      await this.replaceMetaDoc(plan.updateBytes, isCurrent)
       return
     }
     const wasActiveTextDoc = this.activeTextDoc?.docId.ydocId === docId.ydocId
     const loaded = await replaceTextDoc(this, docId, plan.updateBytes, WORKER_ORIGIN)
+    if (!isCurrent()) return
     if (wasActiveTextDoc) {
       activateLoadedTextDoc(this, loaded)
     }
     await this.resolvePendingRemoteTextFile(loaded)
+    if (!isCurrent()) return
     if (sameDocId(docId, await activeDocId(this))) {
       await flushYTextToDisk(this, 'full-snapshot')
     }
@@ -1201,6 +1602,10 @@ export default class KuroflareSpikePlugin extends Plugin {
    * the outbox item in its existing paused/manual-recovery state (fail closed).
    */
   async recoverFromNeedFullSnapshot(docId: DocId, reason: NeedFullSnapshotReason): Promise<void> {
+    const initialContext = this.captureVaultOperationContext()
+    if (initialContext === undefined) return
+    let context: TextDocumentOwner = initialContext
+    const isCurrent = () => this.vaultOperationStillCurrent(context)
     const epochKey = documentEpochMetadataKey(docId)
     if (
       this.needFullSnapshotRecoveryInProgress.has(epochKey) ||
@@ -1209,16 +1614,38 @@ export default class KuroflareSpikePlugin extends Plugin {
     ) {
       return
     }
+    const owner = {}
     this.needFullSnapshotRecoveryInProgress.add(epochKey)
+    this.needFullSnapshotRecoveryOwners.set(epochKey, owner)
+    this.documentReplacementInProgress.add(epochKey)
     try {
       const result = await runNeedFullSnapshotRecovery(
         {
-          fetchSnapshot: async () =>
-            await this.fetchLatestSnapshotPayload(docId, `need-full-snapshot:${reason}`),
+          fetchSnapshot: async () => {
+            if (!isCurrent()) return null
+            return await this.fetchLatestSnapshotPayload(
+              docId,
+              `need-full-snapshot:${reason}`,
+              isCurrent,
+            )
+          },
           applySnapshot: async (payload) => {
+            if (!isCurrent()) return false
             try {
-              await this.applyLatestSnapshot(docId, payload, `need-full-snapshot:${reason}`)
-              return true
+              await this.applyLatestSnapshot(
+                docId,
+                payload,
+                `need-full-snapshot:${reason}`,
+                isCurrent,
+              )
+              if (
+                docId.kind === 'meta' &&
+                this.pendingSetupResponse === null &&
+                currentSetupMetadata(this)?.vaultId === context.vaultId
+              ) {
+                context = { ...context, generation: this.metadataVaultGeneration }
+              }
+              return isCurrent()
             } catch (error: unknown) {
               console.warn('[kuroflare] need-full-snapshot auto-recovery apply attempt failed', {
                 docId,
@@ -1228,8 +1655,9 @@ export default class KuroflareSpikePlugin extends Plugin {
               return false
             }
           },
-          wait: async (delayMs) =>
-            await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs)),
+          wait: async (delayMs) => {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs))
+          },
         },
         NEED_FULL_SNAPSHOT_RECOVERY_BACKOFF_MS,
       )
@@ -1240,7 +1668,24 @@ export default class KuroflareSpikePlugin extends Plugin {
         )
       }
     } finally {
-      this.needFullSnapshotRecoveryInProgress.delete(epochKey)
+      if (this.needFullSnapshotRecoveryOwners.get(epochKey) === owner) {
+        this.needFullSnapshotRecoveryOwners.delete(epochKey)
+        this.needFullSnapshotRecoveryInProgress.delete(epochKey)
+      }
+      this.documentReplacementInProgress.delete(epochKey)
+    }
+    if (isCurrent()) {
+      const recoveredDoc =
+        docId.kind === 'meta' ? this.metaDoc : this.loadedTextDocs.get(docId.ydocId)?.doc
+      if (recoveredDoc !== undefined) {
+        await requestDocFromWorker(
+          this,
+          docId,
+          Y.encodeStateVector(recoveredDoc),
+          'need-full-snapshot:post-recovery-catch-up',
+          isCurrent,
+        )
+      }
     }
   }
 
@@ -1283,16 +1728,38 @@ export default class KuroflareSpikePlugin extends Plugin {
     })
   }
 
-  async resolvePendingRemoteTextFile(loaded: LoadedTextDoc): Promise<void> {
+  resolvePendingRemoteTextFile(loaded: LoadedTextDoc): Promise<void> {
+    const operation = this.resolvePendingRemoteTextFileOperation(loaded)
+    this.remoteTextMaterializationOperations.add(operation)
+    void operation.then(
+      () => this.remoteTextMaterializationOperations.delete(operation),
+      () => this.remoteTextMaterializationOperations.delete(operation),
+    )
+    return operation
+  }
+
+  private async resolvePendingRemoteTextFileOperation(loaded: LoadedTextDoc): Promise<void> {
+    const context = this.captureMetadataMaterializationContext()
+    if (context === undefined) return
+    if (!this.loadedTextDocMatchesMetadataContext(loaded, context)) return
     const path = this.pendingRemoteTextFiles.get(loaded.docId.ydocId)
     if (path === undefined) return
-    if (!this.pendingRemoteTextMatchesMeta(loaded, path)) {
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+    if (!metadataReconcileWriteContextStillStable(this, context)) return
+    const markerOwner = claimOwnedPathMarker(
+      this.pendingRemoteTextFiles,
+      this.pendingRemoteTextFileOwners,
+      loaded.docId.ydocId,
+      path,
+      this.metadataVaultGeneration,
+    )
+    if (markerOwner === undefined) return
+    if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
+      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
       return
     }
     if (!v.is(VaultRelativePathSchema, path)) {
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'invalid-path')
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+      await this.recordRemoteMaterializeBlocked(loaded, path, 'invalid-path', context)
+      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
       return
     }
     const existing = this.app.vault.getAbstractFileByPath(path)
@@ -1301,7 +1768,8 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
     if (existing !== null) {
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision')
+      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
+      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
       return
     }
     const createdFolders: string[] = []
@@ -1312,56 +1780,58 @@ export default class KuroflareSpikePlugin extends Plugin {
       for (const part of parts) {
         current = current.length === 0 ? part : `${current}/${part}`
         if (this.app.vault.getAbstractFileByPath(current) === null) {
-          if (!this.pendingRemoteTextMatchesMeta(loaded, path)) {
-            this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+          if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
+            this.clearPendingRemoteTextFile(loaded, path, markerOwner)
             return
           }
           try {
             await this.app.vault.createFolder(current)
             createdFolders.push(current)
-            if (!this.pendingRemoteTextMatchesMeta(loaded, path)) {
-              this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+            if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
+              this.clearPendingRemoteTextFile(loaded, path, markerOwner)
               await this.cleanupRemoteMaterializeFolders(createdFolders)
               return
             }
           } catch {
             const existingFolder = this.app.vault.getAbstractFileByPath(current)
             if (!(existingFolder instanceof TFolder)) {
-              await this.recordRemoteMaterializeBlocked(loaded, path, 'parent-collision')
-              this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+              await this.recordRemoteMaterializeBlocked(loaded, path, 'parent-collision', context)
+              this.clearPendingRemoteTextFile(loaded, path, markerOwner)
               await this.cleanupRemoteMaterializeFolders(createdFolders)
               return
             }
-            if (!this.pendingRemoteTextMatchesMeta(loaded, path)) {
-              this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+            if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
+              this.clearPendingRemoteTextFile(loaded, path, markerOwner)
               await this.cleanupRemoteMaterializeFolders(createdFolders)
               return
             }
           }
         } else if (!(this.app.vault.getAbstractFileByPath(current) instanceof TFolder)) {
-          await this.recordRemoteMaterializeBlocked(loaded, path, 'parent-collision')
+          await this.recordRemoteMaterializeBlocked(loaded, path, 'parent-collision', context)
+          this.clearPendingRemoteTextFile(loaded, path, markerOwner)
           return
         }
       }
     }
-    if (!this.pendingRemoteTextMatchesMeta(loaded, path)) {
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+    if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
+      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
       await this.cleanupRemoteMaterializeFolders(createdFolders)
       return
     }
     const content = loaded.text.toJSON()
     const contentHash = await hashCanonicalText(content)
-    if (!this.pendingRemoteTextMatchesMeta(loaded, path)) {
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+    if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
+      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
       await this.cleanupRemoteMaterializeFolders(createdFolders)
       return
     }
+    let createdFile: TFile
     try {
-      await this.app.vault.create(path, content)
+      createdFile = await this.app.vault.create(path, content)
     } catch (error: unknown) {
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
       try {
-        await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision')
+        await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
       } catch (repairError: unknown) {
         console.warn('[kuroflare] failed to record a remote materialization collision', {
           path,
@@ -1376,8 +1846,16 @@ export default class KuroflareSpikePlugin extends Plugin {
       })
       return
     }
-    if (!this.pendingRemoteTextMatchesMeta(loaded, path)) {
-      await this.compensateRemoteTextMaterialization(loaded, path, contentHash, createdFolders)
+    if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
+      await this.compensateRemoteTextMaterialization(
+        loaded,
+        path,
+        contentHash,
+        createdFolders,
+        createdFile,
+        markerOwner,
+        context,
+      )
       return
     }
     this.lastMaterialized.set(path, {
@@ -1386,7 +1864,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       path,
       writtenAt: Date.now(),
     })
-    this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+    this.clearPendingRemoteTextFile(loaded, path, markerOwner)
   }
 
   private async cleanupRemoteMaterializeFolders(paths: readonly string[]): Promise<void> {
@@ -1409,63 +1887,94 @@ export default class KuroflareSpikePlugin extends Plugin {
     path: string,
     expectedHash: string,
     createdFolders: readonly string[],
+    createdFile: TFile,
+    markerOwner: GenerationMarkerOwner,
+    context: MetadataReconcileWriteContext,
   ): Promise<void> {
-    const tombstoned = this.remoteTextTombstoneMatchesMeta(loaded, path)
-    if (!tombstoned) {
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision')
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
-      await this.cleanupRemoteMaterializeFolders(createdFolders)
-      return
-    }
-
-    const created = this.app.vault.getAbstractFileByPath(path)
-    if (!(created instanceof TFile)) {
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
-      await this.cleanupRemoteMaterializeFolders(createdFolders)
+    const stillOwnsMarker = () =>
+      this.pendingRemoteTextFiles.get(loaded.docId.ydocId) === path &&
+      this.pendingRemoteTextFileOwners.get(loaded.docId.ydocId) === markerOwner
+    if (!stillOwnsMarker() || this.app.vault.getAbstractFileByPath(path) !== createdFile) {
+      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
       return
     }
     let actualHash: string
     try {
-      actualHash = await hashCanonicalText(await this.app.vault.read(created))
+      actualHash = await hashCanonicalText(await this.app.vault.read(createdFile))
     } catch (error: unknown) {
       console.warn('[kuroflare] could not verify a raced remote text materialization', {
         path,
         error: safeLogError(error),
       })
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision')
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
-      await this.cleanupRemoteMaterializeFolders(createdFolders)
+      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
+      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
       return
     }
 
-    if (!this.remoteTextTombstoneMatchesMeta(loaded, path) || actualHash !== expectedHash) {
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision')
+    if (
+      !stillOwnsMarker() ||
+      this.app.vault.getAbstractFileByPath(path) !== createdFile ||
+      actualHash !== expectedHash
+    ) {
+      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
       new Notice(
         `Kuroflare sync: preserved a raced local edit at ${path}; resolve the remote materialization repair manually.`,
       )
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
-      await this.cleanupRemoteMaterializeFolders(createdFolders)
+      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
       return
     }
 
     this.pendingFsDeletes.add(path)
     try {
-      await this.app.vault.delete(created)
+      await this.app.vault.delete(createdFile)
     } catch (error: unknown) {
       this.pendingFsDeletes.delete(path)
       console.warn('[kuroflare] failed to compensate a raced remote text materialization', {
         path,
         error: safeLogError(error),
       })
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision')
+      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
     } finally {
       this.pendingFsDeletes.delete(path)
     }
-    this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+    this.clearPendingRemoteTextFile(loaded, path, markerOwner)
     await this.cleanupRemoteMaterializeFolders(createdFolders)
   }
 
-  private pendingRemoteTextMatchesMeta(loaded: LoadedTextDoc, path: string): boolean {
+  private clearPendingRemoteTextFile(
+    loaded: LoadedTextDoc,
+    path: string,
+    markerOwner: GenerationMarkerOwner,
+  ): void {
+    clearOwnedPathMarker(
+      this.pendingRemoteTextFiles,
+      this.pendingRemoteTextFileOwners,
+      loaded.docId.ydocId,
+      path,
+      markerOwner,
+    )
+  }
+
+  private captureMetadataMaterializationContext(): MetadataReconcileWriteContext | undefined {
+    if (this.metadataReconcileTransitionPending()) return undefined
+    const setup = currentSetupMetadata(this)
+    if (setup === undefined || !this.startupSideEffectGate.canSendNetwork()) return undefined
+    return {
+      metaDoc: this.metaDoc,
+      generation: this.metadataVaultGeneration,
+      vaultId: setup.vaultId,
+    }
+  }
+
+  private pendingRemoteTextMatchesMeta(
+    loaded: LoadedTextDoc,
+    path: string,
+    markerOwner: GenerationMarkerOwner,
+    context: MetadataReconcileWriteContext,
+  ): boolean {
+    if (!metadataReconcileWriteContextStillStable(this, context)) return false
+    if (!this.loadedTextDocMatchesMetadataContext(loaded, context)) return false
+    if (this.pendingRemoteTextFileOwners.get(loaded.docId.ydocId) !== markerOwner) return false
     const fileId = findMetaFileIdForDoc(this, loaded.docId)
     if (fileId === undefined) return false
     const value = readMetaFile(metaMap(this), fileId)
@@ -1478,31 +1987,48 @@ export default class KuroflareSpikePlugin extends Plugin {
     )
   }
 
-  private remoteTextTombstoneMatchesMeta(loaded: LoadedTextDoc, path: string): boolean {
-    const fileId = findMetaFileIdForDoc(this, loaded.docId)
-    if (fileId === undefined) return false
-    const value = readMetaFile(metaMap(this), fileId)
-    return (
-      value !== undefined &&
-      value.deleted &&
-      value.type === 'text' &&
-      value.ydocId === loaded.docId.ydocId &&
-      value.path === path
-    )
+  private loadedTextDocMatchesMetadataContext(
+    loaded: LoadedTextDoc,
+    context: MetadataReconcileWriteContext,
+  ): boolean {
+    if (context.vaultId === undefined) return false
+    return this.loadedTextDocStillCurrent(loaded, {
+      vaultId: context.vaultId,
+      generation: context.generation,
+    })
   }
 
   async resolveJoinAdoptionHashCheck(file: TFile, loaded: LoadedTextDoc): Promise<void> {
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path)) {
-      this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
+    const context = this.captureMetadataMaterializationContext()
+    if (context === undefined) return
+    if (!this.loadedTextDocMatchesMetadataContext(loaded, context)) return
+    const markerPath = this.pendingRemoteTextFiles.get(loaded.docId.ydocId)
+    if (markerPath === undefined) return
+    if (!metadataReconcileWriteContextStillStable(this, context)) return
+    const markerOwner = claimOwnedPathMarker(
+      this.pendingRemoteTextFiles,
+      this.pendingRemoteTextFileOwners,
+      loaded.docId.ydocId,
+      markerPath,
+      this.metadataVaultGeneration,
+    )
+    if (markerOwner === undefined) return
+    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) {
+      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
       return
     }
-    this.pendingRemoteTextFiles.delete(loaded.docId.ydocId)
     const fileId = findActiveFileId(this, file.path)
-    if (fileId === undefined) return
+    if (fileId === undefined) {
+      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
+      return
+    }
 
     const remoteContentHash = await hashCanonicalText(loaded.text.toJSON())
     const localContentHash = await hashCanonicalText(await this.app.vault.read(file))
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path)) return
+    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) {
+      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
+      return
+    }
     const decision = decideJoinFileAdoption({
       remoteEntry: { fileId, contentHash: remoteContentHash },
       localContentHash,
@@ -1516,18 +2042,28 @@ export default class KuroflareSpikePlugin extends Plugin {
         diskMtimeMs: file.stat.mtime,
         diskSize: file.stat.size,
       })
+      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
       return
     }
-    await this.importJoinAdoptionTextIfActive(file, loaded)
+    try {
+      await this.importJoinAdoptionTextIfActive(file, loaded, markerOwner, context)
+    } finally {
+      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
+    }
   }
 
-  private async importJoinAdoptionTextIfActive(file: TFile, loaded: LoadedTextDoc): Promise<void> {
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path)) return
+  private async importJoinAdoptionTextIfActive(
+    file: TFile,
+    loaded: LoadedTextDoc,
+    markerOwner: GenerationMarkerOwner,
+    context: MetadataReconcileWriteContext,
+  ): Promise<void> {
+    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) return
     const diskText = await this.app.vault.read(file)
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path)) return
+    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) return
     const canonicalText = canonicalizeTextForYText(diskText)
     const textHash = await hashCanonicalText(canonicalText)
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path)) return
+    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) return
     replaceYText(loaded.doc, loaded.text, canonicalText, DISK_ORIGIN)
     this.lastMaterialized.set(file.path, {
       diskHash: textHash,
@@ -1537,12 +2073,13 @@ export default class KuroflareSpikePlugin extends Plugin {
       diskMtimeMs: file.stat.mtime,
       diskSize: file.stat.size,
     })
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path)) return
+    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) return
     await sendDocUpdateToWorker(
       this,
       loaded.docId,
       Y.encodeStateAsUpdate(loaded.doc),
       'join-adoption-hash-mismatch',
+      () => this.loadedTextDocMatchesMetadataContext(loaded, context),
     )
   }
 
@@ -1557,26 +2094,38 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
     const loaded = await loadTextDoc(this, message.docId)
+    const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+    const isCurrent = () => this.loadedTextDocStillCurrent(loaded, owner)
+    if (!isCurrent()) return
     clearTextDeletionEvidenceRequest(metadataReconcilePort(this), message.docId.ydocId)
     await this.resolvePendingRemoteTextFile(loaded)
+    if (!isCurrent()) return
     await reconcileAndMaterializeMeta(
       metadataReconcilePort(this),
       metadataMaterializationPort(this),
     )
+    if (!isCurrent()) return
     if (sameDocId(message.docId, await activeDocId(this))) {
+      if (!isCurrent()) return
       await flushYTextToDisk(this, 'worker-update')
     }
   }
 
   async clearRepairLogEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    await this.removeRepairLogEntry(entry.id)
-    new Notice(`Kuroflare repair: cleared ${entry.kind}`)
+    const context = this.captureMetadataMaterializationContext()
+    if (context === undefined) return
+    if (await this.removeRepairLogEntry(entry.id, context)) {
+      new Notice(`Kuroflare repair: cleared ${entry.kind}`)
+    }
   }
 
   async retryPathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'path-conflict' && entry.kind !== 'portable-path') return
     if (!metadataWritesEnabled(this)) return
-    await materializeMetaRenames(metadataMaterializationPort(this))
+    if (this.metadataReconcileTransitionPending()) return
+    const context = this.captureMetadataMaterializationContext()
+    if (context === undefined) return
+    if (!(await materializeMetaRenames(metadataMaterializationPort(this)))) return
     if (this.workerWebSocketSession.snapshot().readyState !== WebSocket.OPEN) {
       await openWorkerWebSocket(this)
     }
@@ -1587,16 +2136,18 @@ export default class KuroflareSpikePlugin extends Plugin {
     // observed (including ones from other actors this device hasn't durably
     // synced yet), not just what changed since the last send.
     await waitForOutboundUpdates(this, 120_000)
-    await this.removeRepairLogEntry(entry.id)
+    await this.removeRepairLogEntry(entry.id, context)
   }
 
   async retryKeepDeletedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'delete-vs-edit' || entry.reason !== 'missing-binary-content') return
     if (!metadataWritesEnabled(this)) return
+    const context = this.captureMetadataMaterializationContext()
+    if (context === undefined) return
 
     const current = readMetaFile(metaMap(this), entry.fileId)
     if (current === undefined || !current.deleted || current.type !== 'binary') {
-      await this.removeRepairLogEntry(entry.id)
+      await this.removeRepairLogEntry(entry.id, context)
       return
     }
 
@@ -1606,12 +2157,16 @@ export default class KuroflareSpikePlugin extends Plugin {
     )
     const reconciled = readMetaFile(metaMap(this), entry.fileId)
     if (reconciled === undefined || reconciled.deleted) return
-    await this.removeRepairLogEntry(entry.id)
+    await this.removeRepairLogEntry(entry.id, context)
   }
 
   async resolvePathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'path-conflict' && entry.kind !== 'portable-path') return
     if (!metadataWritesEnabled(this)) return
+    if (this.metadataReconcileTransitionPending()) return
+    const context = this.captureMetadataMaterializationContext()
+    if (context === undefined) return
+    if (!metadataReconcileWriteContextStillStable(this, context)) return
     const current = readMetaFile(metaMap(this), entry.fileId)
     const plan = planPathConflictAutoResolve({
       entry,
@@ -1619,10 +2174,12 @@ export default class KuroflareSpikePlugin extends Plugin {
       isPathAvailable: (path) => this.app.vault.getAbstractFileByPath(path) === null,
     })
     if (plan.action === 'rename-meta-path') {
-      this.metaDoc.transact(() => {
-        const value = readMetaFile(metaMap(this), entry.fileId)
+      if (!metadataReconcileWriteContextStillStable(this, context)) return
+      const contextMeta = metaMap({ metaDoc: context.metaDoc })
+      context.metaDoc.transact(() => {
+        const value = readMetaFile(contextMeta, entry.fileId)
         if (value === undefined) return
-        updateMetaFile(metaMap(this), {
+        updateMetaFile(contextMeta, {
           ...value,
           path: plan.toPath,
           canonicalPath: plan.toCanonicalPath,
@@ -1630,33 +2187,41 @@ export default class KuroflareSpikePlugin extends Plugin {
           updatedBy: REPAIR_DEVICE,
         })
       }, REPAIR_ORIGIN)
-      await materializeMetaRenames(metadataMaterializationPort(this))
+      if (!metadataReconcileWriteContextStillStable(this, context)) return
+      if (!(await materializeMetaRenames(metadataMaterializationPort(this)))) return
     }
-    await this.removeRepairLogEntry(entry.id)
+    await this.removeRepairLogEntry(entry.id, context)
   }
 
   async retryRemoteMaterializeBlockedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'remote-materialize-blocked') return
+    const context = this.captureMetadataMaterializationContext()
+    if (context === undefined) return
     const current = readMetaFile(metaMap(this), entry.fileId)
     if (current === undefined || current.deleted) {
-      await this.removeRepairLogEntry(entry.id)
+      await this.removeRepairLogEntry(entry.id, context)
       return
     }
     if (current.type === 'text') {
-      await requestMissingRemoteTextFile(this, current)
+      if (!(await requestMissingRemoteTextFile(this, current))) return
     } else {
-      await enqueueMissingRemoteBinaryDownloads(
+      const completedFileIds = await enqueueMissingRemoteBinaryDownloads(
         metadataReconcilePort(this),
         metadataMaterializationPort(this),
         'repair:remote-materialize-retry',
       )
+      if (!completedFileIds.has(current.fileId)) return
     }
-    await this.removeRepairLogEntry(entry.id)
+    await this.removeRepairLogEntry(entry.id, context)
   }
 
   async resolveRemoteMaterializeBlockedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'remote-materialize-blocked') return
     if (!metadataWritesEnabled(this)) return
+    if (this.metadataReconcileTransitionPending()) return
+    const context = this.captureMetadataMaterializationContext()
+    if (context === undefined) return
+    if (!metadataReconcileWriteContextStillStable(this, context)) return
     const current = readMetaFile(metaMap(this), entry.fileId)
     const plan = planRemoteMaterializeBlockedAutoResolve({
       entry,
@@ -1669,10 +2234,12 @@ export default class KuroflareSpikePlugin extends Plugin {
       !current.deleted &&
       current.type === 'text'
     ) {
-      this.metaDoc.transact(() => {
-        const value = readMetaFile(metaMap(this), entry.fileId)
+      if (!metadataReconcileWriteContextStillStable(this, context)) return
+      const contextMeta = metaMap({ metaDoc: context.metaDoc })
+      context.metaDoc.transact(() => {
+        const value = readMetaFile(contextMeta, entry.fileId)
         if (value === undefined) return
-        updateMetaFile(metaMap(this), {
+        updateMetaFile(contextMeta, {
           ...value,
           path: plan.toPath,
           canonicalPath: plan.toCanonicalPath,
@@ -1680,13 +2247,15 @@ export default class KuroflareSpikePlugin extends Plugin {
           updatedBy: REPAIR_DEVICE,
         })
       }, REPAIR_ORIGIN)
-      await requestMissingRemoteTextFile(this, {
-        type: current.type,
-        path: plan.toPath,
-        ydocId: current.ydocId,
-      })
+      if (!metadataReconcileWriteContextStillStable(this, context)) return
+      const updated = readMetaFile(contextMeta, entry.fileId)
+      if (updated !== undefined && !updated.deleted && updated.type === 'text') {
+        if (!(await requestMissingRemoteTextFile(this, updated))) return
+      }
+    } else {
+      return
     }
-    await this.removeRepairLogEntry(entry.id)
+    await this.removeRepairLogEntry(entry.id, context)
   }
 
   async inspectInvalidMetaRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
@@ -1706,6 +2275,8 @@ export default class KuroflareSpikePlugin extends Plugin {
     confirmation: string,
   ): Promise<void> {
     if (entry.kind !== 'invalid-meta') return
+    const context = this.captureMetadataMaterializationContext()
+    if (context === undefined) return
     const current = metaMap(this).get(entry.fileId)
     if (
       !canDiscardInvalidMetaRepairEntry({
@@ -1722,7 +2293,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       if (this.invalidMetaIsolationDetail?.fileId === entry.fileId) {
         this.invalidMetaIsolationDetail = null
       }
-      await this.removeRepairLogEntry(entry.id)
+      await this.removeRepairLogEntry(entry.id, context)
       return
     }
     // This transaction's own `update` event already syncs the deletion
@@ -1730,13 +2301,16 @@ export default class KuroflareSpikePlugin extends Plugin {
     // here duplicated that update and could quarantine the sync-update on
     // the server, because `Y.encodeStateAsUpdate(doc)` re-emits every delete
     // this device has ever observed, not just what changed since the last send.
-    this.metaDoc.transact(() => {
-      metaMap(this).delete(entry.fileId)
+    if (!metadataReconcileWriteContextStillStable(this, context)) return
+    const contextMeta = metaMap({ metaDoc: context.metaDoc })
+    context.metaDoc.transact(() => {
+      contextMeta.delete(entry.fileId)
     }, REPAIR_ORIGIN)
+    if (!metadataReconcileWriteContextStillStable(this, context)) return
     if (this.invalidMetaIsolationDetail?.fileId === entry.fileId) {
       this.invalidMetaIsolationDetail = null
     }
-    await this.removeRepairLogEntry(entry.id)
+    await this.removeRepairLogEntry(entry.id, context)
   }
 
   /** Reads one normalized metadata entry for concrete integration adapters. */
@@ -1762,16 +2336,23 @@ export default class KuroflareSpikePlugin extends Plugin {
 function metadataReconcilePort(plugin: KuroflareSpikePlugin): MetadataReconcilePort {
   return {
     canSendNetwork: () => plugin.startupSideEffectGate.canSendNetwork(),
+    scheduleReconcileRetry: () => plugin.scheduleMetadataReconcileRetry(),
+    getVaultGeneration: () => plugin.metadataVaultGeneration,
+    isVaultTransitionPending: () => plugin.metadataReconcileTransitionPending(),
     getMetaDoc: () => plugin.metaDoc,
     getMetadataAccess: () => plugin.metadataAccess,
     loadedTextDocs: plugin.loadedTextDocs,
     pendingTextDeletionEvidenceRequests: plugin.pendingTextDeletionEvidenceRequests,
     pendingTextDeletionEvidenceRetryTimers: plugin.pendingTextDeletionEvidenceRetryTimers,
     loadTextDoc: (ydocId) => loadTextDoc(plugin, { kind: 'file', ydocId }),
-    requestDocFromWorker: (loaded, stateVector, reason) =>
-      requestDocFromWorker(plugin, loaded.docId, stateVector, reason),
+    requestDocFromWorker: (loaded, stateVector, reason) => {
+      const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+      return requestDocFromWorker(plugin, loaded.docId, stateVector, reason, () =>
+        plugin.loadedTextDocStillCurrent(loaded, owner),
+      )
+    },
     getSettings: () => plugin.kuroflareSettings,
-    updateSettings: (patch) => plugin.updateSettings(patch),
+    updateSettings: (patch, context) => plugin.updateMetadataReconcileSettings(patch, context),
     currentSetup: () => currentSetupMetadata(plugin),
     readAccessToken: (setup) => readAccessToken(plugin, accessTokenSecretKeyForSetup(setup)),
     setBinaryRestoreCheckDetail: (detail) => {
@@ -1780,14 +2361,32 @@ function metadataReconcilePort(plugin: KuroflareSpikePlugin): MetadataReconcileP
   }
 }
 
+function metadataReconcileWriteContextStillStable(
+  plugin: KuroflareSpikePlugin,
+  context: MetadataReconcileWriteContext,
+): boolean {
+  return (
+    !plugin.metadataReconcileTransitionPending() &&
+    plugin.metaDoc === context.metaDoc &&
+    plugin.metadataVaultGeneration === context.generation &&
+    currentSetupMetadata(plugin)?.vaultId === context.vaultId &&
+    plugin.startupSideEffectGate.canSendNetwork()
+  )
+}
+
 function metadataMaterializationPort(plugin: KuroflareSpikePlugin): MetadataMaterializationPort {
   return {
     getMetaDoc: () => plugin.metaDoc,
+    getVaultGeneration: () => plugin.metadataVaultGeneration,
+    isVaultTransitionPending: () => plugin.metadataReconcileTransitionPending(),
+    getVaultId: () => currentSetupMetadata(plugin)?.vaultId,
     vault: plugin.app.vault,
     fileManager: plugin.app.fileManager,
     lastMaterialized: plugin.lastMaterialized,
     materializedPaths: plugin.materializedPaths,
+    materializedPathOwners: plugin.materializedPathOwners,
     pendingRemoteTextFiles: plugin.pendingRemoteTextFiles,
+    pendingRemoteTextFileOwners: plugin.pendingRemoteTextFileOwners,
     pendingFsRenames: plugin.pendingFsRenames,
     activeRemoteDeletedFileIds: plugin.activeRemoteDeletedFileIds,
     getActiveFile: () => plugin.activeFile,
@@ -1796,7 +2395,8 @@ function metadataMaterializationPort(plugin: KuroflareSpikePlugin): MetadataMate
     clearTextDeletionEvidenceRequest: (docId) =>
       clearTextDeletionEvidenceRequest(metadataReconcilePort(plugin), docId),
     requestMissingRemoteTextFile: (value) => requestMissingRemoteTextFile(plugin, value),
-    openLocalStoreDatabase: (vaultId) => openLocalStoreDatabase(plugin, vaultId),
+    openLocalStoreDatabase: (vaultId, isCurrent) =>
+      openLocalStoreDatabase(plugin, vaultId, isCurrent),
     readOutboxWorkerSnapshot: (db) => readOutboxWorkerSnapshot(db),
     putOutboxRecords: (db, records) => putOutboxRecords(db, records),
     runOutboxWorkerTick: (reason) => runOutboxWorkerTick(plugin, reason),

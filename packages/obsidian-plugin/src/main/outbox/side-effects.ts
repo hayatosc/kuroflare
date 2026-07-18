@@ -31,6 +31,7 @@ import {
   readBlobCacheBytes,
   writeBlobCacheBytes,
   blobBytesMatch,
+  cleanupCreatedAdapterFolders,
   ensureVaultParentFolders,
 } from './blob-cache'
 import { fetchJsonSideEffect, httpFailureResult } from './http'
@@ -213,7 +214,9 @@ async function runBlobMultipartPutSideEffect(
 export async function runBlobGetSideEffect(
   plugin: KuroflareSpikePlugin,
   sideEffect: OutboxWorkerBlobGetSideEffectPlan,
+  isCurrent: () => boolean = () => true,
 ): Promise<OutboxWorkerSideEffectResultEvidence> {
+  if (!isCurrent()) return { kind: 'network-error' }
   let response: Response
   try {
     response = await fetch(sideEffect.downloadRequest.url, {
@@ -232,6 +235,7 @@ export async function runBlobGetSideEffect(
   }
 
   const bytes = new Uint8Array(await response.arrayBuffer())
+  if (!isCurrent()) return { kind: 'network-error' }
   if (
     !(await blobBytesMatch(
       plugin,
@@ -242,17 +246,22 @@ export async function runBlobGetSideEffect(
   ) {
     return { kind: 'invalid-payload', code: 'blob-download-mismatch' }
   }
+  if (!isCurrent()) return { kind: 'network-error' }
   await writeBlobCacheBytes(plugin, sideEffect.writeLocalCache.key, bytes)
+  if (!isCurrent()) return { kind: 'network-error' }
   return { kind: 'success' }
 }
 
 export async function runMaterializeSideEffect(
   plugin: KuroflareSpikePlugin,
   sideEffect: OutboxWorkerMaterializeSideEffectPlan,
+  isCurrent: () => boolean = () => true,
 ): Promise<OutboxWorkerSideEffectResultEvidence> {
+  if (!isCurrent()) return { kind: 'network-error' }
   const chunks = new Map<NonNullable<LocalStoreOutboxRecord['blobSha256']>, Uint8Array>()
   for (const chunk of sideEffect.readChunks) {
     const bytes = await readBlobCacheBytes(plugin, chunk.key, chunk.sha256, chunk.expectedSize)
+    if (!isCurrent()) return { kind: 'network-error' }
     if (bytes === undefined) {
       return { kind: 'invalid-payload', code: 'materialize-cache-read-failed' }
     }
@@ -262,6 +271,7 @@ export async function runMaterializeSideEffect(
   let assembled: Uint8Array
   try {
     assembled = await assembleBlobBytes(sideEffect.manifest, chunks)
+    if (!isCurrent()) return { kind: 'network-error' }
   } catch {
     return { kind: 'invalid-payload', code: 'materialize-assembly-failed' }
   }
@@ -275,8 +285,10 @@ export async function runMaterializeSideEffect(
   ) {
     return { kind: 'invalid-payload', code: 'materialize-assembled-mismatch' }
   }
+  if (!isCurrent()) return { kind: 'network-error' }
 
   const existing = plugin.app.vault.getAbstractFileByPath(sideEffect.diskCas.path)
+  let previousDiskBytes: Uint8Array | undefined
   if (existing instanceof TFolder) {
     return { kind: 'local-conflict' }
   }
@@ -284,6 +296,8 @@ export async function runMaterializeSideEffect(
     const currentDiskBytes = new Uint8Array(
       await plugin.app.vault.adapter.readBinary(sideEffect.diskCas.path),
     )
+    previousDiskBytes = currentDiskBytes
+    if (!isCurrent()) return { kind: 'network-error' }
     const decision = decideMaterializeWrite({
       path: sideEffect.diskCas.path,
       activeFilePath: plugin.activeFile?.path,
@@ -293,19 +307,93 @@ export async function runMaterializeSideEffect(
     if (decision.action !== 'write') {
       return { kind: 'local-conflict' }
     }
-  } else if (!(await ensureVaultParentFolders(plugin, sideEffect.writeVaultFile.path))) {
+  } else if (existing !== null) {
     return { kind: 'local-conflict' }
   }
 
-  await plugin.app.vault.adapter.writeBinary(
-    sideEffect.writeVaultFile.path,
-    arrayBufferFromBytes(assembled),
-  )
-  plugin.lastMaterialized.set(sideEffect.writeVaultFile.path, {
-    diskHash: sideEffect.expectedContentSha256,
-    ydocHash: sideEffect.expectedContentSha256,
-    path: sideEffect.writeVaultFile.path,
-    writtenAt: Date.now(),
-  })
-  return { kind: 'success' }
+  const parentFolders =
+    existing === null
+      ? await ensureVaultParentFolders(plugin, sideEffect.writeVaultFile.path, isCurrent)
+      : { ok: true, createdPaths: [] }
+  if (!parentFolders.ok) {
+    await cleanupCreatedAdapterFolders(plugin, parentFolders.createdPaths)
+    return isCurrent() ? { kind: 'local-conflict' } : { kind: 'network-error' }
+  }
+
+  if (!isCurrent()) {
+    await cleanupCreatedAdapterFolders(plugin, parentFolders.createdPaths)
+    return { kind: 'network-error' }
+  }
+  const materializationOwner = {}
+  plugin.binaryMaterializationOwners.set(sideEffect.writeVaultFile.path, materializationOwner)
+  try {
+    await plugin.app.vault.adapter.writeBinary(
+      sideEffect.writeVaultFile.path,
+      arrayBufferFromBytes(assembled),
+    )
+    const writtenFile = plugin.app.vault.getAbstractFileByPath(sideEffect.writeVaultFile.path)
+    if (!isCurrent()) {
+      await compensateStaleMaterializeWrite(
+        plugin,
+        sideEffect.writeVaultFile.path,
+        sideEffect.expectedContentSha256,
+        assembled.byteLength,
+        existing instanceof TFile ? existing : null,
+        writtenFile instanceof TFile ? writtenFile : null,
+        previousDiskBytes,
+        parentFolders.createdPaths,
+        materializationOwner,
+      )
+      return { kind: 'network-error' }
+    }
+    plugin.lastMaterialized.set(sideEffect.writeVaultFile.path, {
+      diskHash: sideEffect.expectedContentSha256,
+      ydocHash: sideEffect.expectedContentSha256,
+      path: sideEffect.writeVaultFile.path,
+      writtenAt: Date.now(),
+    })
+    return { kind: 'success' }
+  } finally {
+    if (
+      plugin.binaryMaterializationOwners.get(sideEffect.writeVaultFile.path) ===
+      materializationOwner
+    ) {
+      plugin.binaryMaterializationOwners.delete(sideEffect.writeVaultFile.path)
+    }
+  }
+}
+
+async function compensateStaleMaterializeWrite(
+  plugin: KuroflareSpikePlugin,
+  path: string,
+  writtenSha256: NonNullable<LocalStoreOutboxRecord['blobSha256']>,
+  writtenSize: number,
+  previousFile: TFile | null,
+  writtenFile: TFile | null,
+  previousBytes: Uint8Array | undefined,
+  createdFolders: readonly string[],
+  materializationOwner: object,
+): Promise<void> {
+  try {
+    if (plugin.binaryMaterializationOwners.get(path) !== materializationOwner) return
+    const currentFile = plugin.app.vault.getAbstractFileByPath(path)
+    if (!(currentFile instanceof TFile)) return
+    if (writtenFile === null || currentFile !== writtenFile) return
+    if (previousFile !== null && currentFile !== previousFile) return
+    const currentBytes = new Uint8Array(await plugin.app.vault.adapter.readBinary(path))
+    if (!(await blobBytesMatch(plugin, currentBytes, writtenSha256, writtenSize))) return
+    if (plugin.binaryMaterializationOwners.get(path) !== materializationOwner) return
+    if (previousBytes === undefined) {
+      await plugin.app.vault.adapter.remove(path)
+    } else {
+      await plugin.app.vault.adapter.writeBinary(path, arrayBufferFromBytes(previousBytes))
+    }
+  } catch (error: unknown) {
+    console.warn('[kuroflare] failed to compensate a stale binary materialization', {
+      path,
+      error: safeLogError(error),
+    })
+  } finally {
+    await cleanupCreatedAdapterFolders(plugin, createdFolders)
+  }
 }

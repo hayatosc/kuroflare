@@ -2,6 +2,7 @@ import { makeSha256Hex, makeYDocId, type DocId, type MessageId } from '@kuroflar
 import * as Y from 'yjs'
 
 import type { FileDocId } from '../main-types'
+import { documentEpochMetadataKey } from '../recovery/epoch'
 import type { LocalSetupMetadata } from '../sync/engine/setup'
 import {
   commitLocalStoreIndexedDbDatabaseTransaction,
@@ -48,15 +49,21 @@ import { loadTextDoc, metaDocWritable, metadataWritesEnabled } from './meta'
 import { recoverLeasedOutboxAfterWebSocketFailure } from './outbox/completion'
 import { runOutboxWorkerTick, scheduleOutboxWorkerTick } from './outbox/tick'
 import type KuroflareSpikePlugin from './plugin'
-import { openLocalStoreDatabase, putOutboxRecord, readOutboxWorkerSnapshot } from './store'
+import {
+  deleteOutboxRecordIfMessageMatches,
+  openLocalStoreDatabase,
+  putOutboxRecord,
+  readOutboxWorkerSnapshot,
+} from './store'
 
 export async function sendDocUpdateToWorker(
   plugin: KuroflareSpikePlugin,
   docId: DocId,
   update: Uint8Array,
   reason: string,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
-  if (!plugin.startupSideEffectGate.canSendNetwork()) return
+  if (!plugin.startupSideEffectGate.canSendNetwork() || !isCurrent()) return
   if (docId.kind === 'meta' && !metadataWritesEnabled(plugin)) return
   const setup = currentSetupMetadata(plugin)
   if (setup === undefined) {
@@ -64,6 +71,7 @@ export async function sendDocUpdateToWorker(
   }
   const messageId = nextWorkerMessageId(plugin)
   const updateSha256 = makeSha256Hex(await sha256Hex(plugin, update))
+  if (!isCurrent()) return
   const updateBytesBase64 = encodeBase64(update)
 
   const record: LocalStoreOutboxRecord = {
@@ -80,8 +88,13 @@ export async function sendDocUpdateToWorker(
     createdAt: Date.now(),
   } as LocalStoreOutboxRecord
   try {
-    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId, isCurrent)
+    if (!isCurrent()) return
     await putOutboxRecord(db, record)
+    if (!isCurrent()) {
+      await deleteOutboxRecordIfMessageMatches(db, record)
+      return
+    }
   } catch (error: unknown) {
     console.error('[kuroflare] failed to persist outbound update before send', {
       reason,
@@ -91,6 +104,7 @@ export async function sendDocUpdateToWorker(
     })
     return
   }
+  if (!isCurrent()) return
   const socketState = plugin.workerWebSocketSession.snapshot().readyState
   if (socketState !== WebSocket.OPEN && socketState !== WebSocket.CONNECTING) {
     try {
@@ -102,6 +116,7 @@ export async function sendDocUpdateToWorker(
       })
     }
   }
+  if (!isCurrent()) return
   void runOutboxWorkerTick(plugin, reason)
   scheduleOutboxWorkerTick(plugin, 250, `queued:${reason}`)
   console.info('[kuroflare] enqueued worker sync update', {
@@ -118,18 +133,31 @@ export async function sendCurrentYDocToWorker(
 ): Promise<void> {
   const loaded = plugin.activeTextDoc
   if (loaded === null) return
-  await sendDocUpdateToWorker(plugin, loaded.docId, Y.encodeStateAsUpdate(loaded.doc), reason)
+  const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+  const isCurrent = () => plugin.loadedTextDocStillCurrent(loaded, owner)
+  if (!isCurrent()) return
+  await sendDocUpdateToWorker(
+    plugin,
+    loaded.docId,
+    Y.encodeStateAsUpdate(loaded.doc),
+    reason,
+    isCurrent,
+  )
 }
 
 export async function sendMetaDocToWorker(
   plugin: KuroflareSpikePlugin,
   reason: string,
 ): Promise<void> {
+  const context = plugin.captureVaultOperationContext()
+  const metaDoc = plugin.metaDoc
+  if (context === undefined) return
   await sendDocUpdateToWorker(
     plugin,
     META_SYNC_DOC_ID,
-    Y.encodeStateAsUpdate(plugin.metaDoc),
+    Y.encodeStateAsUpdate(metaDoc),
     reason,
+    () => plugin.vaultOperationStillCurrent(context) && plugin.metaDoc === metaDoc,
   )
 }
 
@@ -175,9 +203,11 @@ export function wireLocalAwarenessBroadcast(plugin: KuroflareSpikePlugin): void 
     ) {
       return
     }
-    const docId = plugin.activeTextDoc?.docId
-    if (docId === undefined) return
-    sendLocalAwarenessUpdate(plugin, docId, localId, plugin.awareness.getLocalState())
+    const loaded = plugin.activeTextDoc
+    if (loaded === null) return
+    const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+    if (!plugin.loadedTextDocStillCurrent(loaded, owner)) return
+    sendLocalAwarenessUpdate(plugin, loaded.docId, localId, plugin.awareness.getLocalState())
   })
 }
 
@@ -196,8 +226,9 @@ export async function requestDocFromWorker(
   docId: DocId,
   stateVector: Uint8Array,
   reason: string,
+  isCurrent: () => boolean = () => true,
 ): Promise<boolean> {
-  if (!plugin.startupSideEffectGate.canSendNetwork()) return false
+  if (!plugin.startupSideEffectGate.canSendNetwork() || !isCurrent()) return false
   if (
     !plugin.workerHelloAccepted ||
     plugin.workerWebSocketSession.snapshot().readyState !== WebSocket.OPEN
@@ -205,6 +236,7 @@ export async function requestDocFromWorker(
     return false
   }
   const setup = requireSetupMetadata(plugin)
+  if (!isCurrent()) return false
   const sender = createSyncRuntimeWebSocketSyncRequestSendPort({
     session: plugin.workerWebSocketSession,
   })
@@ -215,6 +247,7 @@ export async function requestDocFromWorker(
     docId,
     stateVector,
   })
+  if (!isCurrent()) return false
   plugin.pendingSyncRequestMessageIds.add(sent.message.messageId)
   console.info('[kuroflare] requested worker sync state', {
     reason,
@@ -230,14 +263,32 @@ export async function requestActiveFileFromWorker(
 ): Promise<void> {
   const loaded = plugin.activeTextDoc
   if (loaded === null) return
-  await requestDocFromWorker(plugin, loaded.docId, Y.encodeStateVector(loaded.doc), reason)
+  const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+  const isCurrent = () => plugin.loadedTextDocStillCurrent(loaded, owner)
+  if (!isCurrent()) return
+  await requestDocFromWorker(
+    plugin,
+    loaded.docId,
+    Y.encodeStateVector(loaded.doc),
+    reason,
+    isCurrent,
+  )
 }
 
 export async function requestMetaDocFromWorker(
   plugin: KuroflareSpikePlugin,
   reason: string,
 ): Promise<void> {
-  await requestDocFromWorker(plugin, META_SYNC_DOC_ID, Y.encodeStateVector(plugin.metaDoc), reason)
+  const context = plugin.captureVaultOperationContext()
+  const metaDoc = plugin.metaDoc
+  if (context === undefined) return
+  await requestDocFromWorker(
+    plugin,
+    META_SYNC_DOC_ID,
+    Y.encodeStateVector(metaDoc),
+    reason,
+    () => plugin.vaultOperationStillCurrent(context) && plugin.metaDoc === metaDoc,
+  )
 }
 
 export async function requestPendingRemoteTextFilesFromWorker(
@@ -247,7 +298,10 @@ export async function requestPendingRemoteTextFilesFromWorker(
   for (const ydocId of plugin.pendingRemoteTextFiles.keys()) {
     const docId: FileDocId = { kind: 'file', ydocId: makeYDocId(ydocId) }
     const loaded = await loadTextDoc(plugin, docId)
-    await requestDocFromWorker(plugin, docId, Y.encodeStateVector(loaded.doc), reason)
+    const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
+    const isCurrent = () => plugin.loadedTextDocStillCurrent(loaded, owner)
+    if (!isCurrent()) return
+    await requestDocFromWorker(plugin, docId, Y.encodeStateVector(loaded.doc), reason, isCurrent)
   }
 }
 
@@ -435,15 +489,33 @@ export async function handleWorkerInboundMessage(
   message: SyncRuntimeWebSocketInboundMessage,
 ): Promise<void> {
   if (!plugin.startupSideEffectGate.canSendNetwork()) return
+  if (
+    message.ok &&
+    message.message.type === 'sync-update' &&
+    plugin.documentReplacementInProgress.has(documentEpochMetadataKey(message.message.docId))
+  ) {
+    return
+  }
+  const context = plugin.captureVaultOperationContext()
+  const metaDoc = plugin.metaDoc
+  if (context === undefined) return
+  const isCurrent = () =>
+    plugin.startupSideEffectGate.canSendNetwork() &&
+    plugin.vaultOperationStillCurrent(context) &&
+    plugin.metaDoc === metaDoc
   const setup = requireSetupMetadata(plugin)
   const vaultId = setup.vaultId
-  const db = await openLocalStoreDatabase(plugin, vaultId)
+  const db = await openLocalStoreDatabase(plugin, vaultId, isCurrent)
+  if (!isCurrent()) return
   const registry = {
     getYDoc: (docId: DocId) => {
-      if (docId.kind === 'meta') return plugin.metaDoc
+      if (!isCurrent()) return undefined
+      if (docId.kind === 'meta') return metaDoc
       if (docId.kind !== 'file') return undefined
       if (docId.ydocId === undefined) return undefined
-      return plugin.loadedTextDocs.get(docId.ydocId)?.doc
+      const loaded = plugin.loadedTextDocs.get(docId.ydocId)
+      if (loaded === undefined) return undefined
+      return plugin.loadedTextDocStillCurrent(loaded, context) ? loaded.doc : undefined
     },
   }
   const dispatched = await dispatchSyncRuntimeWebSocketInboundMessage({
@@ -498,6 +570,7 @@ export async function handleWorkerInboundMessage(
       },
     },
   })
+  if (!isCurrent()) return
   if (dispatched.route.action === 'apply-remote-update') {
     await plugin.handleWorkerSyncUpdate(dispatched.route.message)
   } else if (

@@ -40,14 +40,28 @@ test('blob head evidence without an exact size is not restorable evidence', () =
 
 test('remote rename guards are consumed and cleared after the operation settles', () => {
   const pending = new Set<string>()
-  const target = markPendingFsRename(pending, 'Folder/Note.md')
+  const firstOwner = markPendingFsRename(pending, 'Folder/Note.md')
 
-  assert.equal(target, 'folder/note.md')
+  assert.equal(firstOwner.path, 'folder/note.md')
   assert.equal(consumePendingFsRename(pending, 'folder/note.md'), true)
   assert.equal(pending.size, 0)
 
-  markPendingFsRename(pending, 'Folder/Note.md')
-  clearPendingFsRename(pending, 'FOLDER/NOTE.md')
+  const secondOwner = markPendingFsRename(pending, 'Folder/Note.md')
+  clearPendingFsRename(pending, secondOwner)
+  assert.equal(pending.size, 0)
+})
+
+test('overlapping remote rename guards cannot clear each other', () => {
+  const pending = new Set<string>()
+  const firstOwner = markPendingFsRename(pending, 'Folder/Note.md')
+  const secondOwner = markPendingFsRename(pending, 'folder/note.md')
+
+  clearPendingFsRename(pending, firstOwner)
+  assert.equal(pending.has('folder/note.md'), true)
+  assert.equal(consumePendingFsRename(pending, 'FOLDER/NOTE.md'), true)
+  assert.equal(pending.size, 0)
+
+  clearPendingFsRename(pending, secondOwner)
   assert.equal(pending.size, 0)
 })
 

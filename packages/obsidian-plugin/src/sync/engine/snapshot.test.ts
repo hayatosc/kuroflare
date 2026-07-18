@@ -430,6 +430,10 @@ class DeferredSnapshotApplyRemoteCursorStore implements FullSnapshotApplyRemoteC
   }[] = []
   readonly #requests: DeferredIndexedDbRequest<IDBValidKey>[] = []
 
+  get(_key: IDBValidKey): LocalStoreIndexedDbRequest<unknown> {
+    throw new Error('unexpected remote cursor read without a CAS precondition')
+  }
+
   put(
     value: FullSnapshotApplyRemoteCursorRecord,
     key: IDBValidKey,

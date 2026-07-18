@@ -18,7 +18,7 @@ import {
   waitForIndexedDbRequest,
   waitForIndexedDbTransaction,
 } from '../main/helpers'
-import { metaPersistenceDatabaseName } from '../main/runtime-guards'
+import { filePersistenceDatabaseName, metaPersistenceDatabaseName } from '../main/runtime-guards'
 import { readOutboxWorkerSnapshot } from '../main/store'
 import type { LocalSetupMetadata } from '../sync/engine/setup'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
@@ -119,7 +119,7 @@ export async function recoverDocumentEpochsAtStartup(
       const providerDbName =
         document.docId.kind === 'meta'
           ? metaPersistenceDatabaseName(setup.vaultId)
-          : `kuroflare-file:${document.docId.ydocId}`
+          : filePersistenceDatabaseName(setup.vaultId, document.docId.ydocId)
       const provider = await host.probeProvider(providerDbName)
       if (!provider.ok) {
         host.recoveryRequired.add(documentEpochMetadataKey(document.docId))

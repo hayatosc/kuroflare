@@ -23,6 +23,7 @@ import {
   hasLegacyDeletedTombstones,
   migrateLegacyMetaDoc,
   insertMetaFile,
+  legacyFilePersistenceMigrationIsOwned,
   metaDocWritable,
   metaDocEntriesRepresented,
   prepareDocumentProvider,
@@ -30,6 +31,7 @@ import {
   shouldPrepareMetadataMigration,
 } from './meta'
 import type KuroflareSpikePlugin from './plugin'
+import { legacyFilePersistenceDatabaseName } from './runtime-guards'
 
 function createEvidenceReadDatabase(epoch: unknown): IDBDatabase {
   const metadata = new Map([[documentEpochMetadataKey({ kind: 'meta' }), epoch]])
@@ -88,6 +90,8 @@ test('active full-snapshot replacement rebinds editor, active doc, and disk to r
   oldText.insert(0, 'local')
   const oldLoaded: LoadedTextDoc = {
     docId: { kind: 'file', ydocId: 'file-snapshot-replacement' },
+    vaultId: 'test-vault',
+    vaultGeneration: 0,
     doc: oldDoc,
     text: oldText,
     persistence: null,
@@ -98,6 +102,8 @@ test('active full-snapshot replacement rebinds editor, active doc, and disk to r
   remoteText.insert(0, 'remote')
   const remoteLoaded: LoadedTextDoc = {
     docId: oldLoaded.docId,
+    vaultId: 'test-vault',
+    vaultGeneration: 0,
     doc: remoteDoc,
     text: remoteText,
     persistence: null,
@@ -156,6 +162,36 @@ test('active full-snapshot replacement rebinds editor, active doc, and disk to r
   editorView.destroy()
   oldDoc.destroy()
   remoteDoc.destroy()
+})
+
+test('legacy file provider migration requires an exact vault-scoped epoch ownership claim', () => {
+  const docId = { kind: 'file', ydocId: makeYDocId('legacy-owned-file') } as const
+  const legacyName = legacyFilePersistenceDatabaseName(docId.ydocId)
+  const owned = createReadyDocumentEpoch({
+    docId,
+    providerDbName: legacyName,
+    now: 1,
+    epochId: 'legacy-owned-epoch',
+  })
+
+  assert.equal(legacyFilePersistenceMigrationIsOwned(owned, docId, legacyName), true)
+  assert.equal(legacyFilePersistenceMigrationIsOwned(undefined, docId, legacyName), false)
+  assert.equal(
+    legacyFilePersistenceMigrationIsOwned(
+      { ...owned, providerDbName: 'kuroflare-file:another-vault:legacy-owned-file' },
+      docId,
+      legacyName,
+    ),
+    false,
+  )
+  assert.equal(
+    legacyFilePersistenceMigrationIsOwned(
+      { ...owned, docId: { kind: 'file', ydocId: makeYDocId('same-id-in-another-vault') } },
+      docId,
+      legacyName,
+    ),
+    false,
+  )
 })
 
 test('intentional provider replacement bypasses loss recovery while reopening the provider', async () => {

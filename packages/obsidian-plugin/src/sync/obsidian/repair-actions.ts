@@ -1,13 +1,13 @@
-import { canonicalizeVaultPath, isMetaFile, type MetaFile } from '@kuroflare/core'
+import { canonicalizeVaultPath, isMetaFile, type FileId, type MetaFile } from '@kuroflare/core'
 
 import type { KuroflareRepairLogEntry } from '../../main-types'
 
 export interface RemoteMaterializeBlockedRepairPorts {
   readonly getMetaEntry: (fileId: string) => unknown
   readonly requestMissingRemoteTextFile: (
-    entry: MetaFile & { readonly type: 'text' },
-  ) => Promise<void>
-  readonly enqueueMissingRemoteBinaryDownloads: (reason: string) => Promise<void>
+    entry: Extract<MetaFile, { readonly type: 'text'; readonly deleted: false }>,
+  ) => Promise<boolean>
+  readonly enqueueMissingRemoteBinaryDownloads: (reason: string) => Promise<ReadonlySet<FileId>>
   readonly removeRepairLogEntry: (entryId: string) => Promise<void>
   readonly showNotice: (message: string) => void
 }
@@ -133,7 +133,14 @@ export function planPathConflictAutoResolve(
 export async function retryRemoteMaterializeBlockedRepairEntryWithPorts(
   entry: KuroflareRepairLogEntry,
   ports: RemoteMaterializeBlockedRepairPorts,
-): Promise<'ignored-kind' | 'cleared-stale' | 'queued-text' | 'queued-binary'> {
+): Promise<
+  | 'ignored-kind'
+  | 'cleared-stale'
+  | 'queued-text'
+  | 'queued-binary'
+  | 'skipped-text'
+  | 'skipped-binary'
+> {
   if (entry.kind !== 'remote-materialize-blocked') {
     ports.showNotice('Kuroflare repair: only remote materialize entries can be retried here')
     return 'ignored-kind'
@@ -147,13 +154,23 @@ export async function retryRemoteMaterializeBlockedRepairEntryWithPorts(
   }
 
   if (current.type === 'text') {
-    await ports.requestMissingRemoteTextFile(current)
+    const requested = await ports.requestMissingRemoteTextFile(current)
+    if (!requested) {
+      ports.showNotice('Kuroflare repair: remote materialize retry skipped (stale or blocked)')
+      return 'skipped-text'
+    }
     await ports.removeRepairLogEntry(entry.id)
     ports.showNotice(`Kuroflare repair: remote materialize retry queued (${current.path})`)
     return 'queued-text'
   }
 
-  await ports.enqueueMissingRemoteBinaryDownloads('repair:remote-materialize-retry')
+  const completedFileIds = await ports.enqueueMissingRemoteBinaryDownloads(
+    'repair:remote-materialize-retry',
+  )
+  if (!completedFileIds.has(current.fileId)) {
+    ports.showNotice('Kuroflare repair: remote binary materialize retry skipped or blocked')
+    return 'skipped-binary'
+  }
   await ports.removeRepairLogEntry(entry.id)
   ports.showNotice(`Kuroflare repair: remote materialize retry queued (${current.path})`)
   return 'queued-binary'

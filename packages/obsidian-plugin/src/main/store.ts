@@ -1,4 +1,8 @@
-import { DEFAULT_LOCAL_STORE_OBJECT_STORES, type OutboxRunningLease } from '@kuroflare/core'
+import {
+  DEFAULT_LOCAL_STORE_OBJECT_STORES,
+  type DocId,
+  type OutboxRunningLease,
+} from '@kuroflare/core'
 
 import { type OutboxWorkerIndexedDbWriteTransaction } from '../sync/engine/worker'
 import {
@@ -18,7 +22,9 @@ import type KuroflareSpikePlugin from './plugin'
 export async function openLocalStoreDatabase(
   plugin: KuroflareSpikePlugin,
   vaultId: string,
+  isCurrent: () => boolean = () => true,
 ): Promise<IDBDatabase> {
+  if (!isCurrent()) throw new Error('local-store-vault-context-stale')
   const dbName = localStoreIndexedDbName(vaultId)
   if (plugin.localStoreDb !== null && plugin.localStoreDbName === dbName) {
     return plugin.localStoreDb
@@ -36,6 +42,10 @@ export async function openLocalStoreDatabase(
     }
   }
   const db = await waitForIndexedDbRequest(request)
+  if (!isCurrent()) {
+    db.close()
+    throw new Error('local-store-vault-context-stale')
+  }
   plugin.localStoreDb = db
   plugin.localStoreDbName = dbName
   return db
@@ -73,6 +83,25 @@ export async function readOutboxWorkerSnapshot(db: IDBDatabase): Promise<{
   }
 }
 
+export async function readRemoteCursorSeq(
+  db: IDBDatabase,
+  docId: DocId,
+): Promise<number | undefined> {
+  const transaction = db.transaction(['remote-cursors'], 'readonly')
+  const key = docId.kind === 'meta' ? 'meta' : `file:${docId.ydocId}`
+  const value: unknown = await waitForIndexedDbRequest(
+    transaction.objectStore('remote-cursors').get(key),
+  )
+  await waitForIndexedDbTransaction(transaction)
+  if (typeof value !== 'object' || value === null || !('remoteCursorSeq' in value)) {
+    return undefined
+  }
+  const remoteCursorSeq = value.remoteCursorSeq
+  return Number.isSafeInteger(remoteCursorSeq) && Number(remoteCursorSeq) >= 0
+    ? Number(remoteCursorSeq)
+    : undefined
+}
+
 export async function commitOutboxWorkerIndexedDbWriteTransaction(
   db: IDBDatabase,
   transaction: OutboxWorkerIndexedDbWriteTransaction,
@@ -90,6 +119,23 @@ export async function putOutboxRecord(
   const transaction = db.transaction(['outbox'], 'readwrite')
   const request = transaction.objectStore('outbox').put(record, record.id)
   await waitForIndexedDbRequest(request)
+  await waitForIndexedDbTransaction(transaction)
+}
+
+export async function deleteOutboxRecordIfMessageMatches(
+  db: IDBDatabase,
+  record: Pick<LocalStoreOutboxRecord, 'id' | 'messageId'>,
+): Promise<void> {
+  const transaction = db.transaction(['outbox'], 'readwrite')
+  const store = transaction.objectStore('outbox')
+  const current: unknown = await waitForIndexedDbRequest(store.get(record.id))
+  if (
+    isLocalStoreOutboxRecord(current) &&
+    current.messageId === record.messageId &&
+    current.id === record.id
+  ) {
+    await waitForIndexedDbRequest(store.delete(record.id))
+  }
   await waitForIndexedDbTransaction(transaction)
 }
 

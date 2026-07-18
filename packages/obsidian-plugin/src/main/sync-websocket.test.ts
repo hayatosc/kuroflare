@@ -147,8 +147,9 @@ test('wireLocalAwarenessBroadcast sends only local presence changes tied to the 
 
   plugin.activeTextDoc = v.parse(
     v.custom<KuroflareSpikePlugin['activeTextDoc']>((v) => typeof v === 'object' && v !== null),
-    { docId },
+    { docId, vaultId: awarenessSetup.vaultId, vaultGeneration: 1 },
   )
+  plugin.loadedTextDocStillCurrent = () => true
   awareness.setLocalStateField('cursor', { anchor: 2, head: 2 })
 
   assert.equal(sent.length, 1)

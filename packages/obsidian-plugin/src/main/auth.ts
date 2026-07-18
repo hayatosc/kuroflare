@@ -309,17 +309,28 @@ export async function ensureUsableAccessToken(
   plugin: KuroflareSpikePlugin,
   onRefreshRetry?: () => Promise<void>,
 ): Promise<boolean> {
+  const context = plugin.captureVaultOperationContext()
+  if (context === undefined) return false
+  const isCurrent = () => plugin.vaultOperationStillCurrent(context)
+  const assertCurrent = () => {
+    if (!isCurrent()) throw new Error('auth-vault-context-stale')
+  }
   const setup = currentSetupMetadata(plugin)
   if (setup === undefined) {
     return false
   }
 
   try {
-    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
-    const readMetadata = async () =>
-      await readLocalStoreIndexedDbMetadataSnapshot({
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId, isCurrent)
+    assertCurrent()
+    const readMetadata = async () => {
+      assertCurrent()
+      const snapshot = await readLocalStoreIndexedDbMetadataSnapshot({
         database: createLocalStoreIndexedDbMetadataDatabasePort(db),
       })
+      assertCurrent()
+      return snapshot
+    }
     const accessTokenSecretKey = accessTokenSecretKeyForSetup(setup)
 
     const readTrustedMetadata = async (): Promise<ClientAuthMetadata | undefined> => {
@@ -364,15 +375,17 @@ export async function ensureUsableAccessToken(
       )
 
     const metadata = await readTrustedMetadata()
+    assertCurrent()
     if (metadata === undefined) {
       return false
     }
     const recoveredMetadata = await recoverRefreshingMetadata(metadata)
+    assertCurrent()
     if (recoveredMetadata === undefined) {
       return false
     }
 
-    return await ensureUsableAccessTokenFromMetadata(
+    const usable = await ensureUsableAccessTokenFromMetadata(
       recoveredMetadata,
       await readAccessToken(plugin, accessTokenSecretKey),
       async (reason) => {
@@ -419,6 +432,7 @@ export async function ensureUsableAccessToken(
         }
       },
     )
+    return isCurrent() && usable
   } catch (error: unknown) {
     console.warn('[kuroflare] websocket auth preflight failed', { error: safeLogError(error) })
     return false
@@ -620,12 +634,25 @@ export async function runAuthRefreshRequest(
   if (request.action !== 'request-refresh' || !acquireAuthRefreshLock(plugin)) {
     return
   }
+  const context = plugin.captureVaultOperationContext()
+  if (context === undefined) {
+    releaseAuthRefreshLock(plugin)
+    return
+  }
+  let completeRefresh!: () => void
+  const completion = new Promise<void>((resolve) => {
+    completeRefresh = resolve
+  })
+  plugin.authRefreshCompletionPromise = completion
+  const isCurrent = () => plugin.vaultOperationStillCurrent(context)
   try {
     const setup = requireSetupMetadata(plugin)
-    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId, isCurrent)
+    if (!isCurrent()) return
     const metadataSnapshot = await readLocalStoreIndexedDbMetadataSnapshot({
       database: createLocalStoreIndexedDbMetadataDatabasePort(db),
     })
+    if (!isCurrent()) return
     if (!metadataSnapshot.ok) {
       console.warn('[kuroflare] auth refresh skipped without trusted metadata', {
         reason: metadataSnapshot.reason,
@@ -639,6 +666,7 @@ export async function runAuthRefreshRequest(
       request,
       metadataStore,
     })
+    if (!isCurrent()) return
     if (!start.ok) {
       console.warn('[kuroflare] auth refresh start rejected', { phase: start.phase })
       return
@@ -658,6 +686,7 @@ export async function runAuthRefreshRequest(
       }),
       metadataStore,
     })
+    if (!isCurrent()) return
     if (attempt.ok) {
       plugin.syncStoppedByAuth = null
       plugin.pendingOutboxResumeEvents.push(attempt.emitResumeEvent)
@@ -686,6 +715,10 @@ export async function runAuthRefreshRequest(
       )
     }
   } finally {
+    completeRefresh()
+    if (plugin.authRefreshCompletionPromise === completion) {
+      plugin.authRefreshCompletionPromise = null
+    }
     releaseAuthRefreshLock(plugin)
   }
 }

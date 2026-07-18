@@ -38,6 +38,29 @@ test('remote materialize blocked fake harness retries text materialize and clear
   ])
 })
 
+test('remote materialize blocked retry preserves its repair log when text request is skipped', async () => {
+  const fileId = makeFileId('remote-materialize-skipped-text-file')
+  const meta = textMeta(fileId, 'Remote/Skipped.md')
+  const harness = new FakeRemoteMaterializeBlockedHarness([[fileId, meta]])
+  const action = await retryRemoteMaterializeBlockedRepairEntryWithPorts(
+    repairEntry(fileId, 'path-collision'),
+    {
+      ...harness.ports,
+      requestMissingRemoteTextFile: async (entry) => {
+        harness.requestedText.push(entry)
+        return false
+      },
+    },
+  )
+
+  assert.equal(action, 'skipped-text')
+  assert.deepEqual(harness.requestedText, [meta])
+  assert.deepEqual(harness.removedRepairEntryIds, [])
+  assert.deepEqual(harness.notices, [
+    'Kuroflare repair: remote materialize retry skipped (stale or blocked)',
+  ])
+})
+
 test('remote materialize blocked fake harness retries binary materialize and clears repair log', async () => {
   const fileId = makeFileId('remote-materialize-binary-file')
   const meta = binaryMeta(fileId, 'Remote/Image.png')
@@ -56,6 +79,53 @@ test('remote materialize blocked fake harness retries binary materialize and cle
   assert.deepEqual(harness.notices, [
     'Kuroflare repair: remote materialize retry queued (Remote/Image.png)',
   ])
+})
+
+test('remote materialize blocked retry preserves its repair log when binary enqueue is skipped', async () => {
+  const fileId = makeFileId('remote-materialize-skipped-binary-file')
+  const meta = binaryMeta(fileId, 'Remote/Skipped.png')
+  const harness = new FakeRemoteMaterializeBlockedHarness([[fileId, meta]])
+  const action = await retryRemoteMaterializeBlockedRepairEntryWithPorts(
+    repairEntry(fileId, 'parent-collision'),
+    {
+      ...harness.ports,
+      enqueueMissingRemoteBinaryDownloads: async (reason) => {
+        harness.binaryReasons.push(reason)
+        return new Set()
+      },
+    },
+  )
+
+  assert.equal(action, 'skipped-binary')
+  assert.deepEqual(harness.binaryReasons, ['repair:remote-materialize-retry'])
+  assert.deepEqual(harness.removedRepairEntryIds, [])
+  assert.deepEqual(harness.notices, [
+    'Kuroflare repair: remote binary materialize retry skipped or blocked',
+  ])
+})
+
+test('remote materialize blocked retry keeps A repair when only binary B succeeds', async () => {
+  const fileIdA = makeFileId('remote-materialize-binary-file-a')
+  const fileIdB = makeFileId('remote-materialize-binary-file-b')
+  const metaA = binaryMeta(fileIdA, 'Remote/A.png')
+  const metaB = binaryMeta(fileIdB, 'Remote/B.png')
+  const harness = new FakeRemoteMaterializeBlockedHarness([
+    [fileIdA, metaA],
+    [fileIdB, metaB],
+  ])
+  const action = await retryRemoteMaterializeBlockedRepairEntryWithPorts(
+    repairEntry(fileIdA, 'parent-collision'),
+    {
+      ...harness.ports,
+      enqueueMissingRemoteBinaryDownloads: async (reason) => {
+        harness.binaryReasons.push(reason)
+        return new Set([fileIdB])
+      },
+    },
+  )
+
+  assert.equal(action, 'skipped-binary')
+  assert.deepEqual(harness.removedRepairEntryIds, [])
 })
 
 test('remote materialize blocked fake harness clears stale entries without enqueueing work', async () => {
@@ -167,9 +237,15 @@ class FakeRemoteMaterializeBlockedHarness {
     getMetaEntry: (fileId) => this.meta.get(fileId),
     requestMissingRemoteTextFile: async (entry) => {
       this.requestedText.push(entry)
+      return true
     },
     enqueueMissingRemoteBinaryDownloads: async (reason) => {
       this.binaryReasons.push(reason)
+      return new Set(
+        [...this.meta.values()]
+          .filter((entry) => !entry.deleted && entry.type === 'binary')
+          .map((entry) => entry.fileId),
+      )
     },
     removeRepairLogEntry: async (entryId) => {
       this.removedRepairEntryIds.push(entryId)

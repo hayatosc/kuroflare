@@ -58,7 +58,20 @@ export type FileDocId = Extract<DocId, { readonly kind: 'file' }>
 
 export interface LoadedTextDoc {
   readonly docId: FileDocId
+  readonly vaultId: string
+  readonly vaultGeneration: number
   readonly doc: Y.Doc
   readonly text: Y.Text
   persistence: IndexeddbPersistence | null
+}
+
+export interface TextDocumentOwner {
+  readonly vaultId: string
+  readonly generation: number
+}
+
+/** Identifies the generation and operation that currently owns a transient map marker. */
+export interface GenerationMarkerOwner {
+  readonly generation: number
+  readonly token: object
 }

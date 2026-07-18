@@ -95,6 +95,8 @@ export interface FullSnapshotApplyYDocObjectStorePort {
 
 /** Object store surface required for snapshot remote cursor writes. */
 export interface FullSnapshotApplyRemoteCursorObjectStorePort {
+  /** Reads the current remote cursor before any snapshot writes are queued. */
+  get(key: IDBValidKey): LocalStoreIndexedDbRequest<unknown>
   /** Stores one remote cursor record by the runtime's stable document key. */
   put(
     value: FullSnapshotApplyRemoteCursorRecord,
@@ -127,6 +129,9 @@ export interface FullSnapshotApplyIndexedDbDatabasePort {
 export interface FullSnapshotApplyIndexedDbCommitInput {
   readonly transaction: FullSnapshotApplyIndexedDbWriteTransaction
   readonly database: FullSnapshotApplyIndexedDbDatabasePort
+  readonly remoteCursorCas?: {
+    readonly expectedRemoteCursorSeq: number | undefined
+  }
 }
 
 /** Successful full snapshot apply plan with local YDoc and outbox release effects. */
@@ -276,8 +281,15 @@ export function createFullSnapshotApplyIndexedDbDatabasePort(
  */
 export async function commitFullSnapshotApplyIndexedDbTransaction(
   input: FullSnapshotApplyIndexedDbCommitInput,
-): Promise<void> {
+): Promise<boolean> {
   const transaction = input.database.openFullSnapshotApplyTransaction()
+  if (input.remoteCursorCas !== undefined) {
+    const currentCursor: unknown = await waitForSnapshotApplyIndexedDbRequest(
+      transaction.stores.remoteCursors.get(input.transaction.remoteCursorWrite.key),
+    )
+    const currentRemoteCursorSeq = remoteCursorSeq(currentCursor)
+    if (currentRemoteCursorSeq !== input.remoteCursorCas.expectedRemoteCursorSeq) return false
+  }
   const ydocRequest = queueFullSnapshotApplyYDocWrite(
     transaction.stores,
     input.transaction.ydocWrite,
@@ -299,6 +311,13 @@ export async function commitFullSnapshotApplyIndexedDbTransaction(
     ),
   )
   await waitForSnapshotApplyIndexedDbTransaction(transaction.lifecycle)
+  return true
+}
+
+function remoteCursorSeq(value: unknown): number | undefined {
+  if (typeof value !== 'object' || value === null || !('remoteCursorSeq' in value)) return undefined
+  const sequence = value.remoteCursorSeq
+  return Number.isSafeInteger(sequence) && Number(sequence) >= 0 ? Number(sequence) : undefined
 }
 
 function fullSnapshotApplyYDocWrite(

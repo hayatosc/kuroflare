@@ -167,11 +167,14 @@ function createTestPlugin(db: IDBDatabase, setup: Record<string, unknown>): Kuro
     documentReplacementInProgress: new Set<string>(),
     kuroflareSettings: { setupToken: '', setupVaultId: '' },
     loadedTextDocs: new Map(),
+    loadingTextDocs: new Map(),
     localStoreDb: db,
     localStoreDbName: 'integration-local-store',
     metaDoc: new Y.Doc(),
     metaPersistence: null,
     metaPersistenceName: null,
+    metadataSetupStagingCount: 0,
+    metadataVaultGeneration: 0,
     pendingSetupResponse: null,
     startupSideEffectGate: createStartupSideEffectGate(),
     syncStoppedByAuth: null,
@@ -234,7 +237,6 @@ test('real fake-indexeddb + y-indexeddb recovery lifecycle survives provider cra
   vi.stubGlobal('indexedDB', fakeIndexedDB)
   vi.stubGlobal('IDBKeyRange', IDBKeyRange)
   const suffix = `epoch-recovery-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  const providerName = `kuroflare-file:${docId.ydocId}`
   const localStoreName = `kuroflare-local:${suffix}`
   const setup = {
     endpoint: 'https://worker.example.test',
@@ -244,6 +246,7 @@ test('real fake-indexeddb + y-indexeddb recovery lifecycle survives provider cra
     bootstrapMode: 'new-vault' as const,
     tokenVersion: 1,
   }
+  const providerName = `kuroflare-file:${setup.vaultId}:${docId.ydocId}`
   let localStoreDb: IDBDatabase | undefined
   let restartedLocalStoreDb: IDBDatabase | undefined
   let provider: IndexeddbPersistence | undefined

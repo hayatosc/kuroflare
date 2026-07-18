@@ -52,30 +52,51 @@ export async function ensureAdapterParentFolders(
 export async function ensureVaultParentFolders(
   plugin: KuroflareSpikePlugin,
   path: string,
-): Promise<boolean> {
+  isCurrent: () => boolean = () => true,
+): Promise<{ readonly ok: boolean; readonly createdPaths: readonly string[] }> {
+  const createdPaths: string[] = []
   const segments = path.split('/').slice(0, -1)
   let current = ''
   for (const segment of segments) {
+    if (!isCurrent()) return { ok: false, createdPaths }
     current = current.length === 0 ? segment : `${current}/${segment}`
     const existing = plugin.app.vault.getAbstractFileByPath(current)
     if (existing instanceof TFolder) {
       continue
     }
     if (existing !== null) {
-      return false
+      return { ok: false, createdPaths }
     }
     if (await plugin.app.vault.adapter.exists(current)) {
+      if (!isCurrent()) return { ok: false, createdPaths }
       continue
     }
+    if (!isCurrent()) return { ok: false, createdPaths }
     try {
       await plugin.app.vault.adapter.mkdir(current)
+      createdPaths.push(current)
+      if (!isCurrent()) return { ok: false, createdPaths }
     } catch {
       if (!(await plugin.app.vault.adapter.exists(current))) {
-        return false
+        return { ok: false, createdPaths }
       }
+      if (!isCurrent()) return { ok: false, createdPaths }
     }
   }
-  return true
+  return { ok: true, createdPaths }
+}
+
+export async function cleanupCreatedAdapterFolders(
+  plugin: KuroflareSpikePlugin,
+  paths: readonly string[],
+): Promise<void> {
+  for (const path of [...paths].reverse()) {
+    try {
+      await plugin.app.vault.adapter.rmdir(path, false)
+    } catch {
+      // A non-empty or concurrently claimed folder must be preserved.
+    }
+  }
 }
 
 export async function blobBytesMatch(

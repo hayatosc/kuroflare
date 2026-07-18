@@ -13,12 +13,13 @@ import {
   type BinaryMetaFile,
   type DeviceId,
   type FileId,
+  type MetaFile,
 } from '@kuroflare/core'
 import { Notice, TFile } from 'obsidian'
 import * as v from 'valibot'
 import * as Y from 'yjs'
 
-import type { FileDocId } from '../main-types'
+import type { FileDocId, GenerationMarkerOwner, LoadedTextDoc } from '../main-types'
 import { applyFileCreate, applyFileDelete, applyFileRename } from '../sync/meta/tree'
 import { type LocalStoreOutboxRecord } from '../sync/store/store'
 import {
@@ -49,7 +50,12 @@ import {
 import { writeBlobCacheBytes } from './outbox/blob-cache'
 import { runOutboxWorkerTick } from './outbox/tick'
 import type KuroflareSpikePlugin from './plugin'
-import { consumePendingFsRename } from './runtime-guards'
+import {
+  clearOwnedPathMarker,
+  consumePendingFsRename,
+  deletePathMarker,
+  setOwnedPathMarker,
+} from './runtime-guards'
 import { openLocalStoreDatabase, putOutboxRecords } from './store'
 import { requestDocFromWorker } from './sync-websocket'
 
@@ -76,6 +82,8 @@ export interface VaultCreatePlugin extends SetupMetadataSource {
   readonly metaDoc: Y.Doc
   readonly metadataAccess?: 'read-only' | 'read-write'
   readonly materializedPaths: Map<FileId, string>
+  readonly materializedPathOwners: Map<FileId, GenerationMarkerOwner>
+  readonly metadataVaultGeneration: number
   readonly activeFile: { readonly path: string } | null
   readonly app: {
     readonly workspace: {
@@ -154,7 +162,7 @@ export async function handleVaultCreate(
     now: Date.now(),
     origin: FILE_TREE_ORIGIN,
   })
-  plugin.materializedPaths.set(fileId, file.path)
+  setMaterializedPath(plugin, fileId, file.path)
 }
 
 function handleVaultRename(plugin: KuroflareSpikePlugin, file: TFile, oldPath: string): void {
@@ -168,7 +176,7 @@ function handleVaultRename(plugin: KuroflareSpikePlugin, file: TFile, oldPath: s
     origin: FILE_TREE_ORIGIN,
   })
   if (result.action === 'renamed') {
-    plugin.materializedPaths.set(result.fileId, file.path)
+    setMaterializedPath(plugin, result.fileId, file.path)
   }
 }
 
@@ -179,19 +187,29 @@ export async function handleVaultDelete(plugin: KuroflareSpikePlugin, file: TFil
   const current = readMetaFile(metaMap(plugin), fileId)
   if (current === undefined || current.deleted) return
 
-  const deletedContentVersion =
-    current.type === 'text'
-      ? await (async () => {
-          const loaded = await loadTextDoc(plugin, { kind: 'file', ydocId: current.ydocId })
-          return {
-            kind: 'text' as const,
-            stateVectorBase64: encodeBase64(Y.encodeStateVector(loaded.doc)),
-            contentSha256: makeSha256Hex(await hashCanonicalText(loaded.text.toJSON())),
-          }
-        })()
-      : { kind: 'binary' as const, blobManifestHash: current.blobManifestHash }
+  let textContext: RemoteTextRequestContext | undefined
+  let deletedContentVersion:
+    | { readonly kind: 'text'; readonly stateVectorBase64: string; readonly contentSha256: string }
+    | { readonly kind: 'binary'; readonly blobManifestHash: string }
+  if (current.type === 'text') {
+    textContext = captureRemoteTextRequestContext(plugin)
+    if (textContext === undefined) return
+    const loaded = await loadTextDoc(plugin, { kind: 'file', ydocId: current.ydocId })
+    if (!loadedRemoteTextRequestContextStillStable(plugin, textContext, loaded)) return
+    const contentSha256 = makeSha256Hex(await hashCanonicalText(loaded.text.toJSON()))
+    if (!loadedRemoteTextRequestContextStillStable(plugin, textContext, loaded)) return
+    deletedContentVersion = {
+      kind: 'text',
+      stateVectorBase64: encodeBase64(Y.encodeStateVector(loaded.doc)),
+      contentSha256,
+    }
+  } else {
+    if (current.blobManifestHash === undefined) return
+    deletedContentVersion = { kind: 'binary', blobManifestHash: current.blobManifestHash }
+  }
 
   if (!plugin.startupSideEffectGate.canRun() || !canWriteMetadata(plugin)) return
+  if (textContext !== undefined && !remoteTextRequestContextStillStable(plugin, textContext)) return
   if (plugin.app.vault.getAbstractFileByPath(file.path) !== null) return
   if (findActiveFileId(plugin, file.path) !== fileId) return
   const result = applyFileDelete(metaMap(plugin), {
@@ -202,7 +220,7 @@ export async function handleVaultDelete(plugin: KuroflareSpikePlugin, file: TFil
     origin: FILE_TREE_ORIGIN,
   })
   if (result.action === 'deleted') {
-    plugin.materializedPaths.delete(result.fileId)
+    deleteMaterializedPath(plugin, result.fileId)
   } else if (result.action === 'deferred') {
     console.warn('[kuroflare] deferred vault delete until deletion evidence is available', {
       fileId: result.fileId,
@@ -234,7 +252,7 @@ async function handleBinaryVaultRename(
     origin: FILE_TREE_ORIGIN,
   })
   if (result.action === 'renamed') {
-    plugin.materializedPaths.set(result.fileId, file.path)
+    setMaterializedPath(plugin, result.fileId, file.path)
   }
 }
 
@@ -342,7 +360,7 @@ export async function createLocalMetaYDocFromStartupScan(
       now,
       origin: FILE_TREE_ORIGIN,
     })
-    plugin.materializedPaths.set(fileId, file.path)
+    setMaterializedPath(plugin, fileId, file.path)
     await importFileTextIntoDoc(plugin, file, docId, text)
     created += 1
   }
@@ -370,7 +388,7 @@ export async function adoptLocalFilesAfterRemoteMeta(plugin: KuroflareSpikePlugi
       now,
       origin: FILE_TREE_ORIGIN,
     })
-    plugin.materializedPaths.set(fileId, file.path)
+    setMaterializedPath(plugin, fileId, file.path)
     await importFileTextIntoDocAndSend(
       plugin,
       file,
@@ -404,12 +422,31 @@ async function queueJoinAdoptionHashCheck(
   file: TFile,
   fileId: FileId,
 ): Promise<void> {
+  const filePath = file.path
   const value = readMetaFile(metaMap(plugin), fileId)
   if (value === undefined || value.deleted || value.type !== 'text') return
-  plugin.materializedPaths.set(fileId, file.path)
+  const context = captureRemoteTextRequestContext(plugin)
+  if (context === undefined) return
   const docId: FileDocId = { kind: 'file', ydocId: value.ydocId }
-  await loadTextDoc(plugin, docId)
-  plugin.pendingRemoteTextFiles.set(docId.ydocId, file.path)
+  const loaded = await loadTextDoc(plugin, docId)
+  if (!loadedRemoteTextRequestContextStillStable(plugin, context, loaded)) return
+  const current = readMetaFile(metaMap(plugin), fileId)
+  if (
+    !activeTextIdentityMatches(current, value) ||
+    current.path !== filePath ||
+    file.path !== filePath ||
+    hasCompetingActiveMetaPath(plugin, current)
+  ) {
+    return
+  }
+  setMaterializedPath(plugin, fileId, filePath)
+  setOwnedPathMarker(
+    plugin.pendingRemoteTextFiles,
+    plugin.pendingRemoteTextFileOwners,
+    docId.ydocId,
+    filePath,
+    context.generation,
+  )
 }
 
 export async function enqueueBinaryUploadFromVaultFile(
@@ -538,19 +575,160 @@ export async function enqueueBinaryUploadFromVaultFile(
 
 export async function requestMissingRemoteTextFile(
   plugin: KuroflareSpikePlugin,
-  value: { readonly type: unknown; readonly path: string; readonly ydocId?: unknown },
-): Promise<void> {
-  if (!plugin.startupSideEffectGate.canSendNetwork()) return
-  if (value.type !== 'text' || typeof value.ydocId !== 'string') return
-  if (!v.is(VaultRelativePathSchema, value.path)) return
-  if (plugin.app.vault.getAbstractFileByPath(value.path) instanceof TFile) return
+  value: Extract<MetaFile, { type: 'text'; deleted: false }>,
+): Promise<boolean> {
+  const initial = readMetaFile(metaMap(plugin), value.fileId)
+  if (!activeTextIdentityMatches(initial, value)) return false
+  if (!v.is(VaultRelativePathSchema, initial.path)) return false
+  if (hasCompetingActiveMetaPath(plugin, initial)) return false
+  const context = captureRemoteTextRequestContext(plugin)
+  if (context === undefined) return false
   const docId: FileDocId = { kind: 'file', ydocId: makeYDocId(value.ydocId) }
   const loaded = await loadTextDoc(plugin, docId)
-  plugin.pendingRemoteTextFiles.set(docId.ydocId, value.path)
-  await requestDocFromWorker(
+  if (!loadedRemoteTextRequestContextStillStable(plugin, context, loaded)) return false
+  const current = readMetaFile(metaMap(plugin), value.fileId)
+  if (!activeTextIdentityMatches(current, value) || hasCompetingActiveMetaPath(plugin, current)) {
+    return false
+  }
+  const markerOwner = setOwnedPathMarker(
+    plugin.pendingRemoteTextFiles,
+    plugin.pendingRemoteTextFileOwners,
+    docId.ydocId,
+    current.path,
+    context.generation,
+  )
+  if (!loadedRemoteTextRequestContextStillStable(plugin, context, loaded)) {
+    clearOwnedPathMarker(
+      plugin.pendingRemoteTextFiles,
+      plugin.pendingRemoteTextFileOwners,
+      docId.ydocId,
+      current.path,
+      markerOwner,
+    )
+    return false
+  }
+  const requested = await requestDocFromWorker(
     plugin,
     docId,
     Y.encodeStateVector(loaded.doc),
     'meta-missing-text-file',
+    () => loadedRemoteTextRequestContextStillStable(plugin, context, loaded),
   )
+  const latest = readMetaFile(metaMap(plugin), value.fileId)
+  const stillCurrent =
+    loadedRemoteTextRequestContextStillStable(plugin, context, loaded) &&
+    activeTextIdentityMatches(latest, current) &&
+    !hasCompetingActiveMetaPath(plugin, current)
+  if (!requested || !stillCurrent) {
+    clearOwnedPathMarker(
+      plugin.pendingRemoteTextFiles,
+      plugin.pendingRemoteTextFileOwners,
+      docId.ydocId,
+      current.path,
+      markerOwner,
+    )
+  }
+  return requested && stillCurrent
+}
+
+function hasCompetingActiveMetaPath(
+  plugin: KuroflareSpikePlugin,
+  expected: Extract<MetaFile, { type: 'text'; deleted: false }>,
+): boolean {
+  for (const [fileId] of metaMap(plugin).entries()) {
+    if (fileId === expected.fileId) continue
+    const current = readMetaFile(metaMap(plugin), fileId)
+    if (
+      current !== undefined &&
+      !current.deleted &&
+      (current.path === expected.path || current.canonicalPath === expected.canonicalPath)
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+interface RemoteTextRequestContext {
+  readonly metaDoc: Y.Doc
+  readonly generation: number
+  readonly vaultId: string
+}
+
+function captureRemoteTextRequestContext(
+  plugin: KuroflareSpikePlugin,
+): RemoteTextRequestContext | undefined {
+  if (plugin.metadataReconcileTransitionPending()) return undefined
+  const setup = currentSetupMetadata(plugin)
+  if (setup === undefined || !plugin.startupSideEffectGate.canSendNetwork()) return undefined
+  return {
+    metaDoc: plugin.metaDoc,
+    generation: plugin.metadataVaultGeneration,
+    vaultId: setup.vaultId,
+  }
+}
+
+function remoteTextRequestContextStillStable(
+  plugin: KuroflareSpikePlugin,
+  context: RemoteTextRequestContext,
+): boolean {
+  return (
+    !plugin.metadataReconcileTransitionPending() &&
+    plugin.metaDoc === context.metaDoc &&
+    plugin.metadataVaultGeneration === context.generation &&
+    currentSetupMetadata(plugin)?.vaultId === context.vaultId &&
+    plugin.startupSideEffectGate.canSendNetwork()
+  )
+}
+
+function loadedRemoteTextRequestContextStillStable(
+  plugin: KuroflareSpikePlugin,
+  context: RemoteTextRequestContext,
+  loaded: LoadedTextDoc,
+): boolean {
+  return (
+    remoteTextRequestContextStillStable(plugin, context) &&
+    plugin.loadedTextDocStillCurrent(loaded, {
+      vaultId: context.vaultId,
+      generation: context.generation,
+    })
+  )
+}
+
+function activeTextIdentityMatches(
+  current: MetaFile | undefined,
+  expected: Extract<MetaFile, { type: 'text'; deleted: false }>,
+): current is Extract<MetaFile, { type: 'text'; deleted: false }> {
+  return (
+    current !== undefined &&
+    !current.deleted &&
+    current.type === 'text' &&
+    current.fileId === expected.fileId &&
+    current.ydocId === expected.ydocId &&
+    current.path === expected.path
+  )
+}
+
+function setMaterializedPath(
+  plugin: Pick<
+    VaultCreatePlugin,
+    'materializedPaths' | 'materializedPathOwners' | 'metadataVaultGeneration'
+  >,
+  fileId: FileId,
+  path: string,
+): void {
+  setOwnedPathMarker(
+    plugin.materializedPaths,
+    plugin.materializedPathOwners,
+    fileId,
+    path,
+    plugin.metadataVaultGeneration,
+  )
+}
+
+function deleteMaterializedPath(
+  plugin: Pick<VaultCreatePlugin, 'materializedPaths' | 'materializedPathOwners'>,
+  fileId: FileId,
+): void {
+  deletePathMarker(plugin.materializedPaths, plugin.materializedPathOwners, fileId)
 }
