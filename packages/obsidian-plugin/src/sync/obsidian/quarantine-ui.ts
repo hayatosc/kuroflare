@@ -32,7 +32,10 @@ const QUARANTINE_PAGE_SIZE = 20
  * @param plugin Plugin instance providing trusted setup metadata and SecretStorage access.
  * @returns Nothing; controls are appended to the supplied settings container.
  */
-export function renderQuarantineAdmin(containerEl: HTMLElement, plugin: KuroflareSpikePlugin): void {
+export function renderQuarantineAdmin(
+  containerEl: HTMLElement,
+  plugin: KuroflareSpikePlugin,
+): void {
   containerEl.createEl('h3', { text: 'Quarantine admin' })
   const sectionEl = containerEl.createEl('div', { cls: 'kuroflare-quarantine' })
   const statusEl = sectionEl.createEl('p', { attr: { role: 'status', 'aria-live': 'polite' } })
@@ -46,13 +49,21 @@ export function renderQuarantineAdmin(containerEl: HTMLElement, plugin: Kuroflar
   let loading = false
   let entries: readonly QuarantinedUpdateEntry[] = []
   let nextCursor: string | undefined
-  let prepared: { readonly id: string; readonly action: QuarantineAdminAction; readonly dryRun: QuarantinedUpdateActionDryRunResponse } | undefined
+  let prepared:
+    | {
+        readonly id: string
+        readonly action: QuarantineAdminAction
+        readonly dryRun: QuarantinedUpdateActionDryRunResponse
+      }
+    | undefined
   let auditLoading = false
   let auditEntries: readonly QuarantineAuditEntry[] = []
   let auditNextCursor: string | undefined
 
   const hasSetupMetadata = setupMetadataAvailable(plugin)
-  const http = { fetch: async (url: string, init?: RequestInit): Promise<Response> => await fetch(url, init) }
+  const http = {
+    fetch: async (url: string, init?: RequestInit): Promise<Response> => await fetch(url, init),
+  }
 
   new Setting(sectionEl).setName('Quarantined updates').addButton((button) => {
     button
@@ -206,7 +217,9 @@ export function renderQuarantineAdmin(containerEl: HTMLElement, plugin: Kuroflar
       }
       entries = [...entries, ...result.response.items]
       nextCursor = result.response.nextCursor
-      setStatus(`Success: loaded ${entries.length} quarantined ${entries.length === 1 ? 'update' : 'updates'}.`)
+      setStatus(
+        `Success: loaded ${entries.length} quarantined ${entries.length === 1 ? 'update' : 'updates'}.`,
+      )
     } catch {
       setError('Quarantine list request failed unexpectedly.')
       setStatus('Error loading quarantined updates.')
@@ -337,8 +350,14 @@ function setupMetadataAvailable(plugin: KuroflareSpikePlugin): boolean {
   }
 }
 
-async function quarantineAuth(plugin: KuroflareSpikePlugin): Promise<
-  | { readonly ok: true; readonly setup: ReturnType<typeof requireSetupMetadata>; readonly accessToken: string }
+async function quarantineAuth(
+  plugin: KuroflareSpikePlugin,
+): Promise<
+  | {
+      readonly ok: true
+      readonly setup: ReturnType<typeof requireSetupMetadata>
+      readonly accessToken: string
+    }
   | { readonly ok: false; readonly message: string }
 > {
   try {

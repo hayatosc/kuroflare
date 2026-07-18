@@ -29,7 +29,11 @@ import {
   recoverOrphanedCheckpointRuns,
   readCheckpointableDocIds,
 } from './checkpoint'
-import { ADMIN_SETUP_TOKEN_PATH, ADMIN_SNAPSHOT_SEED_PATH, CHECKPOINT_ALARM_DOC_LIMIT } from './constants'
+import {
+  ADMIN_SETUP_TOKEN_PATH,
+  ADMIN_SNAPSHOT_SEED_PATH,
+  CHECKPOINT_ALARM_DOC_LIMIT,
+} from './constants'
 import {
   handleAdminSetupTokenIssue,
   handleAdminSnapshotSeed,

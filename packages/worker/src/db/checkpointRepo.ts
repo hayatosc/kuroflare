@@ -399,14 +399,16 @@ export async function getSnapshotRetentionEvents(
   limit: number,
   cursor: number | undefined,
 ): Promise<readonly SnapshotRetentionEventRow[]> {
-  const query = db.selectFrom('snapshot_retention_events').select((eb) => [
-    eb.ref('id').as('id'),
-    eb.ref('doc_id').as('docId'),
-    eb.ref('snapshot_key').as('snapshotKey'),
-    'action',
-    'error',
-    eb.ref('attempted_at').as('attemptedAt'),
-  ])
+  const query = db
+    .selectFrom('snapshot_retention_events')
+    .select((eb) => [
+      eb.ref('id').as('id'),
+      eb.ref('doc_id').as('docId'),
+      eb.ref('snapshot_key').as('snapshotKey'),
+      'action',
+      'error',
+      eb.ref('attempted_at').as('attemptedAt'),
+    ])
   return (cursor === undefined ? query : query.where('id', '<', cursor))
     .orderBy('id', 'desc')
     .limit(limit)
@@ -564,19 +566,21 @@ export async function getQuarantineAuditEvents(
   limit: number,
   cursor: number | undefined,
 ): Promise<readonly QuarantineAuditEventRow[]> {
-  const query = db.selectFrom('quarantine_audit_events').select((eb) => [
-    eb.ref('id').as('id'),
-    eb.ref('quarantine_id').as('quarantineId'),
-    eb.ref('doc_id').as('docId'),
-    eb.ref('message_id').as('messageId'),
-    eb.ref('device_id').as('deviceId'),
-    'reason',
-    'action',
-    'actor',
-    eb.ref('applied_seq').as('appliedSeq'),
-    eb.ref('quarantined_at').as('quarantinedAt'),
-    eb.ref('resolved_at').as('resolvedAt'),
-  ])
+  const query = db
+    .selectFrom('quarantine_audit_events')
+    .select((eb) => [
+      eb.ref('id').as('id'),
+      eb.ref('quarantine_id').as('quarantineId'),
+      eb.ref('doc_id').as('docId'),
+      eb.ref('message_id').as('messageId'),
+      eb.ref('device_id').as('deviceId'),
+      'reason',
+      'action',
+      'actor',
+      eb.ref('applied_seq').as('appliedSeq'),
+      eb.ref('quarantined_at').as('quarantinedAt'),
+      eb.ref('resolved_at').as('resolvedAt'),
+    ])
   return (cursor === undefined ? query : query.where('id', '<', cursor))
     .orderBy('id', 'desc')
     .limit(limit)

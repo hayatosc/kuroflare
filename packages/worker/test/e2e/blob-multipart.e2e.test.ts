@@ -7,8 +7,8 @@ import {
   signHs256DeviceToken,
 } from '@kuroflare/core'
 import { env, runInDurableObject } from 'cloudflare:test'
-import { expect, test } from 'vitest'
 import * as v from 'valibot'
+import { expect, test } from 'vitest'
 
 import { createDb } from '../../src/db/db'
 import { SCHEMA_MIGRATIONS } from '../../src/db/schema'

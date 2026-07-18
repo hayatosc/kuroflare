@@ -269,7 +269,14 @@ export async function handleBlobPartPut(room: VaultRoom, c: Context): Promise<Re
   const uploaded = await bucket
     .resumeMultipartUpload(blobObjectKey(vaultId, hash), uploadId)
     .uploadPart(partNumber, bytes)
-  await persistBlobMultipartPart(room, uploadId, partNumber, uploaded.etag, bytes.byteLength, partSha256)
+  await persistBlobMultipartPart(
+    room,
+    uploadId,
+    partNumber,
+    uploaded.etag,
+    bytes.byteLength,
+    partSha256,
+  )
   return c.json({ status: 'stored', partNumber, etag: uploaded.etag, size: bytes.byteLength }, 200)
 }
 
@@ -293,7 +300,10 @@ export async function handleBlobMultipartComplete(room: VaultRoom, c: Context): 
 
   const upload = await readBlobMultipartUpload(room, body.uploadId)
   if (upload === undefined || upload.sha256 !== hash)
-    return c.json(apiErrorBody('request/not-found', 'blob-multipart-complete:upload-not-found'), 404)
+    return c.json(
+      apiErrorBody('request/not-found', 'blob-multipart-complete:upload-not-found'),
+      404,
+    )
 
   const key = blobObjectKey(vaultId, hash)
   const multipartUpload = bucket.resumeMultipartUpload(key, body.uploadId)
@@ -355,7 +365,10 @@ export async function handleBlobMultipartAbort(room: VaultRoom, c: Context): Pro
   // row left, and retrying abort against it should still report success.
   const upload = await readBlobMultipartUpload(room, body.uploadId)
   if (upload !== undefined && upload.sha256 === hash) {
-    const multipartUpload = bucket.resumeMultipartUpload(blobObjectKey(vaultId, hash), body.uploadId)
+    const multipartUpload = bucket.resumeMultipartUpload(
+      blobObjectKey(vaultId, hash),
+      body.uploadId,
+    )
     await abortBlobMultipartUpload(room, multipartUpload, body.uploadId)
   }
   return c.json({ status: 'aborted', sha256: hash }, 200)

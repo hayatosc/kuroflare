@@ -352,23 +352,23 @@ Implemented contract:
 Acceptance evidence:
 
 - [x] `packages/core/src/sync/messages.test.ts` ("validates binary meta files") asserts
-  `isMetaFile({ ...entry, blobChunks: [] }, fileId)` is now valid.
+      `isMetaFile({ ...entry, blobChunks: [] }, fileId)` is now valid.
 - [x] `packages/core/src/sync/manifest.test.ts` ("empty-file manifests match binary meta
-  entries with no chunks") proves `blobManifestMatchesMetaFile` accepts a chunkless meta
-  entry against the chunkless manifest that `buildBlobManifest` produces for zero bytes
-  ("buildBlobManifest handles empty files").
+      entries with no chunks") proves `blobManifestMatchesMetaFile` accepts a chunkless meta
+      entry against the chunkless manifest that `buildBlobManifest` produces for zero bytes
+      ("buildBlobManifest handles empty files").
 - [x] That same match function gates both the upload dedup check
-  (`packages/obsidian-plugin/src/main/file-tree.ts`, `enqueueBinaryUploadFromVaultFile`)
-  and the delete-vs-edit binary-restore evidence check
-  (`packages/obsidian-plugin/src/main/plugin.ts`), so upload and restore share one
-  invariant check.
+      (`packages/obsidian-plugin/src/main/file-tree.ts`, `enqueueBinaryUploadFromVaultFile`)
+      and the delete-vs-edit binary-restore evidence check
+      (`packages/obsidian-plugin/src/main/plugin.ts`), so upload and restore share one
+      invariant check.
 - [x] The pre-existing `packages/core/src/outbox.test.ts` test "binary plan builders
-  support zero chunk manifests without hidden dependencies" shows the upload and
-  download/materialize outbox plan builders were already chunk-count-agnostic; only the
-  meta schema and the plugin's manual skip blocked an empty file from reaching that
-  machinery.
+      support zero chunk manifests without hidden dependencies" shows the upload and
+      download/materialize outbox plan builders were already chunk-count-agnostic; only the
+      meta schema and the plugin's manual skip blocked an empty file from reaching that
+      machinery.
 - [x] The plugin's silent skip of empty binary uploads is removed
-  (`packages/obsidian-plugin/src/main/file-tree.ts`).
+      (`packages/obsidian-plugin/src/main/file-tree.ts`).
 
 This evidence is at the schema/invariant/plan-builder unit level plus removal of the
 workaround; no dedicated end-to-end test drives an actual empty-file
@@ -400,21 +400,21 @@ Implemented contract:
 Acceptance evidence:
 
 - [x] `packages/core/src/sync/meta.test.ts` covers reserved names, control/forbidden
-  characters, trailing space/dot, and 255-byte truncation, and proves
-  `portablePath(portablePath(path).path).path === portablePath(path).path` for every
-  vector ("portablePath is idempotent: re-sanitizing an already-sanitized path is a
-  no-op").
+      characters, trailing space/dot, and 255-byte truncation, and proves
+      `portablePath(portablePath(path).path).path === portablePath(path).path` for every
+      vector ("portablePath is idempotent: re-sanitizing an already-sanitized path is a
+      no-op").
 - [x] `packages/core/src/sync/reconcile.test.ts` ("planPortablePathRepairs renames a
-  Windows reserved device name", "planPortablePathRepairs ignores deleted entries and
-  already-portable paths") and `packages/obsidian-plugin/src/sync/meta/reconcile.test.ts`
-  ("reconcileMetaDoc sanitizes a Windows reserved device name and is a no-op on rescan",
-  "reconcileMetaDoc resolves a portable-path collision through the existing path-conflict
-  repair") prove a sanitized alias is stable on rescan and that a collision introduced by
-  sanitization converges through the existing conflict-suffix mechanism.
+      Windows reserved device name", "planPortablePathRepairs ignores deleted entries and
+      already-portable paths") and `packages/obsidian-plugin/src/sync/meta/reconcile.test.ts`
+      ("reconcileMetaDoc sanitizes a Windows reserved device name and is a no-op on rescan",
+      "reconcileMetaDoc resolves a portable-path collision through the existing path-conflict
+      repair") prove a sanitized alias is stable on rescan and that a collision introduced by
+      sanitization converges through the existing conflict-suffix mechanism.
 - [x] Because `portablePath` is one deterministic function with no OS-specific branch
-  that every client evaluates identically, "Linux, macOS, and Windows adapters produce
-  the same portable alias for the shared vectors" holds by construction rather than by
-  separately exercising three OS adapters.
+      that every client evaluates identically, "Linux, macOS, and Windows adapters produce
+      the same portable alias for the shared vectors" holds by construction rather than by
+      separately exercising three OS adapters.
 
 The recommended contract's OS-only local conflict copy for restrictions that still
 cannot be expressed portably (kept out of shared meta state) is not implemented; the

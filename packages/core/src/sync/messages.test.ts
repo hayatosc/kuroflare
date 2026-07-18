@@ -677,10 +677,7 @@ test('validates quarantined update admin response bodies', () => {
   assert.equal(v.is(QuarantinedUpdateEntrySchema, { ...entry, updateBytesLength: 0 }), false)
 
   assert.equal(v.is(QuarantinedUpdateListResponseSchema, { items: [entry] }), true)
-  assert.equal(
-    v.is(QuarantinedUpdateListResponseSchema, { items: [{ ...entry, id: '' }] }),
-    false,
-  )
+  assert.equal(v.is(QuarantinedUpdateListResponseSchema, { items: [{ ...entry, id: '' }] }), false)
 
   assert.equal(
     v.is(QuarantinedUpdateDetailResponseSchema, {

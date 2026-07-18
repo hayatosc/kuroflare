@@ -8,9 +8,7 @@ const packageDir = resolve(pluginDir, '..')
 function requireVaultPath(): string {
   const raw = process.argv[2] ?? process.env.KUROFLARE_VAULT_PATH
   if (raw === undefined || raw.length === 0) {
-    throw new Error(
-      'vault path is required: pass it as an argument or set KUROFLARE_VAULT_PATH',
-    )
+    throw new Error('vault path is required: pass it as an argument or set KUROFLARE_VAULT_PATH')
   }
   const vaultPath = resolve(raw)
   if (!existsSync(join(vaultPath, '.obsidian'))) {

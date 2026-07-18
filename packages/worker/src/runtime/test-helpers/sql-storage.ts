@@ -1029,7 +1029,10 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       })
       return []
     }
-    if (normalized.includes('from blob_multipart_uploads') && normalized.includes('expires_at <=')) {
+    if (
+      normalized.includes('from blob_multipart_uploads') &&
+      normalized.includes('expires_at <=')
+    ) {
       const now = expectNumber(bindings[0])
       const limit = expectNumber(bindings[1])
       const rows = [...this.blobMultipartUploads.values()]

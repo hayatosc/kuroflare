@@ -208,7 +208,9 @@ export class FakeR2Bucket implements R2BucketBinding {
   ): void {
     const parts = this.multipartUploads.get(uploadId)
     if (parts === undefined) throw new Error(`unknown multipart upload: ${uploadId}`)
-    const orderedParts = [...uploadedParts].sort((left, right) => left.partNumber - right.partNumber)
+    const orderedParts = [...uploadedParts].sort(
+      (left, right) => left.partNumber - right.partNumber,
+    )
     const partBytes: Uint8Array[] = []
     let totalLength = 0
     for (const part of orderedParts) {
@@ -228,7 +230,8 @@ export class FakeR2Bucket implements R2BucketBinding {
   }
 
   abortMultipartUpload(uploadId: string): void {
-    if (!this.multipartUploads.has(uploadId)) throw new Error(`unknown multipart upload: ${uploadId}`)
+    if (!this.multipartUploads.has(uploadId))
+      throw new Error(`unknown multipart upload: ${uploadId}`)
     this.multipartUploads.delete(uploadId)
   }
 }

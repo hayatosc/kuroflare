@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { makeDeviceId, makeMessageId, makeSha256Hex, makeVaultId, makeYDocId } from '@kuroflare/core'
+import {
+  makeDeviceId,
+  makeMessageId,
+  makeSha256Hex,
+  makeVaultId,
+  makeYDocId,
+} from '@kuroflare/core'
 import { assert, beforeEach, describe, test, vi } from 'vitest'
 
 import type KuroflareSpikePlugin from '../../main'

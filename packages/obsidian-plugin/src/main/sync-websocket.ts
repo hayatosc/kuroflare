@@ -145,7 +145,13 @@ export function sendLocalAwarenessUpdate(
   if (setup === undefined) return
   createSyncRuntimeWebSocketAwarenessSendPort({
     session: plugin.workerWebSocketSession,
-  }).sendAwarenessUpdate({ vaultId: setup.vaultId, deviceId: setup.deviceId, docId, clientId, state })
+  }).sendAwarenessUpdate({
+    vaultId: setup.vaultId,
+    deviceId: setup.deviceId,
+    docId,
+    clientId,
+    state,
+  })
 }
 
 /**

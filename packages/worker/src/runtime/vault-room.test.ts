@@ -7229,7 +7229,9 @@ test('POST /admin/quarantine/:id/force-apply merges the update, advances the op 
   assert.equal(dryRun.status, 200)
   const dryRunBody = await dryRun.json()
   assert.equal(dryRunBody.confirmationRequired, true)
-  assert.deepEqual(dryRunBody.effects, [{ kind: 'quarantine-force-apply', count: 1, detail: 'seq=1' }])
+  assert.deepEqual(dryRunBody.effects, [
+    { kind: 'quarantine-force-apply', count: 1, detail: 'seq=1' },
+  ])
 
   const execute = await room.fetch(
     new Request('https://worker.example/admin/quarantine/q-force-apply/force-apply', {
@@ -7241,18 +7243,14 @@ test('POST /admin/quarantine/:id/force-apply merges the update, advances the op 
   assert.equal(execute.status, 200)
   const executeBody = await execute.json()
   assert.equal(executeBody.applied, true)
-  assert.deepEqual(executeBody.effects, [{ kind: 'quarantine-force-apply', count: 1, detail: 'seq=1' }])
+  assert.deepEqual(executeBody.effects, [
+    { kind: 'quarantine-force-apply', count: 1, detail: 'seq=1' },
+  ])
 
   assert.equal(storage.sql.quarantines.has('q-force-apply'), false)
   assert.equal(storage.sql.docs.get('file:force-apply-file')?.latestSeq, 1)
-  assert.equal(
-    storage.sql.opLog.has('file:force-apply-file:message-force-apply'),
-    true,
-  )
-  assert.equal(
-    storage.sql.messageDedup.has('file:force-apply-file:message-force-apply'),
-    true,
-  )
+  assert.equal(storage.sql.opLog.has('file:force-apply-file:message-force-apply'), true)
+  assert.equal(storage.sql.messageDedup.has('file:force-apply-file:message-force-apply'), true)
   assert.equal(room.docs.get('file:force-apply-file')?.getText('body').toJSON(), 'hello')
   assert.equal(storage.sql.quarantineAuditEvents.length, 1)
   const auditEvent = storage.sql.quarantineAuditEvents[0]

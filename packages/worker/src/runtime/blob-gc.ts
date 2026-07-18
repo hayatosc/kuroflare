@@ -32,7 +32,9 @@ export async function abortExpiredBlobMultipartUploads(
       continue
     }
     try {
-      await bucket.resumeMultipartUpload(blobObjectKey(vaultId, upload.sha256), upload.uploadId).abort()
+      await bucket
+        .resumeMultipartUpload(blobObjectKey(vaultId, upload.sha256), upload.uploadId)
+        .abort()
     } catch {
       // deliberate: R2 may have already garbage-collected or completed this session.
     }

@@ -601,9 +601,7 @@ export async function handleQuarantineAudit(room: VaultRoom, c: Context): Promis
   const rows = await getQuarantineAuditEvents(db, limit + 1, cursor)
   const page = rows.slice(0, limit)
   const lastRow = page.at(-1)
-  const items = page
-    .map(quarantineAuditEntryFromSqlRow)
-    .filter((entry) => entry !== undefined)
+  const items = page.map(quarantineAuditEntryFromSqlRow).filter((entry) => entry !== undefined)
 
   return c.json(
     {
@@ -684,14 +682,20 @@ async function revalidateQuarantineForceApply(
   try {
     await ensureDocHydrated(room, record.docId)
   } catch {
-    return { ok: false, code: 'server/error', status: 500, detail: 'quarantine-action-hydrate-failed' }
+    return {
+      ok: false,
+      code: 'server/error',
+      status: 500,
+      detail: 'quarantine-action-hydrate-failed',
+    }
   }
   const updateBytes = await readQuarantinedUpdateBytes(room, record.id)
   if (updateBytes === undefined) {
     return { ok: false, code: 'request/not-found', status: 404, detail: 'unknown-quarantine' }
   }
   const currentDoc = room.docs.get(docKey(record.docId))
-  const yjsApplySucceeded = currentDoc !== undefined && canApplyYjsUpdateToDoc(currentDoc, updateBytes)
+  const yjsApplySucceeded =
+    currentDoc !== undefined && canApplyYjsUpdateToDoc(currentDoc, updateBytes)
   // decideQuarantinedUpdateAdmin requires a definite boolean: `true` when the
   // meta-schema check does not apply (file docs, or the Yjs apply already
   // failed above and will reject regardless of this value).

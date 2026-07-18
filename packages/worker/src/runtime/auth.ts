@@ -267,7 +267,8 @@ export function readAwarenessAttachment(
   if (remembered !== undefined) return remembered
 
   const attachmentAwareness = readSocketAttachment(webSocket).awareness
-  if (attachmentAwareness !== undefined) room.awarenessByWebSocket.set(webSocket, attachmentAwareness)
+  if (attachmentAwareness !== undefined)
+    room.awarenessByWebSocket.set(webSocket, attachmentAwareness)
   return attachmentAwareness
 }
 

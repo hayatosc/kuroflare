@@ -198,14 +198,14 @@ response: { status: "ok" | "degraded", protocolVersion, checkedAt,
 
 すべての HTTP payload は `core` の guard（`sync/setup.ts`、`auth.ts`、`http/*`）で unknown から検証してから使う。
 
-| 対象                 | guard の規則                                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| URL                  | http(s) のみ。credential / fragment 付きを拒否。header 値に CR/LF 禁止                                             |
-| setup issue response | `kuroflare://setup?...` URI 内の endpoint / vaultId / setupToken が本体と一致しないものを拒否                      |
-| /blobs/head          | request hash と evidence の 1:1 対応（重複、未要求、欠落を拒否）。`found=true` は `size` 必須、`found=false` は `size` 禁止（[sync-model.md](sync-model.md) §5: size 不明を復活許可扱いにしない） |
-| snapshot response    | `snapshots/.../*.yupdate` 形式の key、update / SV の SHA-256、base64 本体。空 vault bootstrap 用に空 base64 は許可 |
-| quarantine           | list は bytes 本体なし。明示 inspect の detail だけが `updateBytesBase64` を返す                                   |
-| multipart part/complete/abort | scope `blob:write`、vault-scoped R2 key prefix、partNumber は計画済み part 数の範囲内、part 数上限 `MAX_BLOB_MULTIPART_PARTS`。complete の `parts` は DO 記録（part 数・etag）と完全一致必須 |
+| 対象                          | guard の規則                                                                                                                                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| URL                           | http(s) のみ。credential / fragment 付きを拒否。header 値に CR/LF 禁止                                                                                                                            |
+| setup issue response          | `kuroflare://setup?...` URI 内の endpoint / vaultId / setupToken が本体と一致しないものを拒否                                                                                                     |
+| /blobs/head                   | request hash と evidence の 1:1 対応（重複、未要求、欠落を拒否）。`found=true` は `size` 必須、`found=false` は `size` 禁止（[sync-model.md](sync-model.md) §5: size 不明を復活許可扱いにしない） |
+| snapshot response             | `snapshots/.../*.yupdate` 形式の key、update / SV の SHA-256、base64 本体。空 vault bootstrap 用に空 base64 は許可                                                                                |
+| quarantine                    | list は bytes 本体なし。明示 inspect の detail だけが `updateBytesBase64` を返す                                                                                                                  |
+| multipart part/complete/abort | scope `blob:write`、vault-scoped R2 key prefix、partNumber は計画済み part 数の範囲内、part 数上限 `MAX_BLOB_MULTIPART_PARTS`。complete の `parts` は DO 記録（part 数・etag）と完全一致必須      |
 
 **エラー形式**：公開エラーは 1 型に寄せ、client は `retryable` と `retryAfterMs` だけで backoff 判定する。
 
