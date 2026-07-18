@@ -318,7 +318,7 @@ Because immutable R2 bytes and SQLite authority evidence are combined, keep mult
   authoritative healthy rollback candidate がない限り quarantine を拒否する。
 
 実装: `worker/src/db/retention.ts` の `planSnapshotRetention`。R2 delete の成否は `snapshot_retention_events` に記録し、失敗は次回 cleanup で再試行する。
-`GET /admin/retention` (`worker/src/runtime/route-handlers.ts`) inspects those events, newest
+`GET /admin/retention` (`worker/src/room/http/admin-retention.ts`) inspects those events, newest
 first, paginated via `limit` (1-200, default 50) and `cursor` (the `id` of the previous page's
 last item) query params; see `docs/deployment.md`.
 
@@ -336,7 +336,7 @@ confirmation token は `quarantine:<action>:<id>` という subject に bind し
 admin endpoint は authenticated device の Bearer JWT と `sync:write` scope を要求し、監査 actor はその JWT の `deviceId` に固定する。
 
 `POST /admin/quarantine/:id/{discard,force-apply}` is a two-step dry-run/execute flow
-(`packages/worker/src/runtime/route-handlers.ts`). `{"mode":"dry-run"}` re-validates the
+(`packages/worker/src/room/http/admin-quarantine.ts`). `{"mode":"dry-run"}` re-validates the
 target (for `force-apply`, against a temporary candidate YDoc built from the current live
 document — never the live document itself) and returns an effects preview plus a
 server-issued, single-use `confirmationToken` (opaque, SHA-256-hashed at rest, 5-minute TTL).

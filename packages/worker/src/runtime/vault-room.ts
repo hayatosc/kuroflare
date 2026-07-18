@@ -9,6 +9,13 @@ import {
 import { Hono } from 'hono'
 import * as Y from 'yjs'
 
+import {
+  handleQuarantineList,
+  handleQuarantineDetail,
+  handleQuarantineAudit,
+  handleQuarantineAction,
+} from '../room/http/admin-quarantine'
+import { handleRetentionInspect } from '../room/http/admin-retention'
 import { acceptHello, broadcast, rememberVaultId } from './auth'
 import { broadcastAwarenessLeave, handleAwarenessUpdate } from './awareness'
 import { abortExpiredBlobMultipartUploads } from './blob-gc'
@@ -40,11 +47,6 @@ import {
   handleSetupExchange,
   handleAuthRefresh,
   handleDeviceRevoke,
-  handleQuarantineList,
-  handleQuarantineDetail,
-  handleQuarantineAudit,
-  handleQuarantineAction,
-  handleRetentionInspect,
   handleSnapshotHealthList,
   handleSnapshotHealthVerify,
   handleSnapshotHealthQuarantine,
