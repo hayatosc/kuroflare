@@ -10,6 +10,7 @@ import {
   makeVaultId,
   makeYDocId,
 } from '@kuroflare/core'
+import { indexedDB as fakeIndexedDB } from 'fake-indexeddb'
 import { TFile, TFolder } from 'obsidian'
 import { assert, test, vi } from 'vitest'
 import * as Y from 'yjs'
@@ -56,6 +57,15 @@ vi.mock('obsidian', () => {
 })
 
 import type { KuroflareSettings, LoadedTextDoc } from '../main-types'
+import { type MetadataMaterializationPort } from '../plugin/metadata-materialization'
+import {
+  findRestorableBinaryFileIdsForReconcile,
+  findTextDeletionEvidenceForReconcile,
+  enqueueMissingRemoteBinaryDownloads,
+  reconcileAndMaterializeMeta,
+  scheduleTextDeletionEvidenceRetry,
+  type MetadataReconcilePort,
+} from '../plugin/metadata-reconcile'
 import { applyFileDelete } from '../sync/meta/tree'
 import { insertMetaFile, metaMap, readMetaFile, updateMetaFile } from './meta'
 import KuroflareSpikePlugin from './plugin'
@@ -66,6 +76,94 @@ function createTestPlugin(): KuroflareSpikePlugin {
     throw new Error('failed to create test plugin')
   }
   return value
+}
+
+function createReconcilePort(plugin: KuroflareSpikePlugin): MetadataReconcilePort {
+  const value = plugin as KuroflareSpikePlugin & {
+    requestTextDeletionEvidence?: (loaded: LoadedTextDoc) => Promise<void>
+    fetchBlobManifestForMeta?: MetadataReconcilePort['fetchBlobManifestForMeta']
+    remoteBlobChunksExist?: MetadataReconcilePort['remoteBlobChunksExist']
+  }
+  const settings =
+    plugin.kuroflareSettings ??
+    ({
+      endpoint: '',
+      setupVaultId: '',
+      setupToken: '',
+      requestedDeviceName: '',
+      repairLog: [],
+    } satisfies KuroflareSettings)
+  const port: MetadataReconcilePort = {
+    canSendNetwork: () => true,
+    getMetaDoc: () => plugin.metaDoc,
+    getMetadataAccess: () => plugin.metadataAccess ?? 'read-write',
+    loadedTextDocs: plugin.loadedTextDocs ?? new Map(),
+    pendingTextDeletionEvidenceRequests: plugin.pendingTextDeletionEvidenceRequests ?? new Map(),
+    pendingTextDeletionEvidenceRetryTimers:
+      plugin.pendingTextDeletionEvidenceRetryTimers ?? new Map(),
+    loadTextDoc: async () => {
+      throw new Error('test fixture expected the text document to be loaded')
+    },
+    requestDocFromWorker: async (loaded) => {
+      if (value.requestTextDeletionEvidence !== undefined) {
+        await value.requestTextDeletionEvidence(loaded)
+        return false
+      }
+      return false
+    },
+    getSettings: () => plugin.kuroflareSettings ?? settings,
+    updateSettings: async (patch) => {
+      plugin.kuroflareSettings = { ...settings, ...plugin.kuroflareSettings, ...patch }
+    },
+    currentSetup: () => plugin.trustedSetupMetadata ?? undefined,
+    readAccessToken: async () => 'access-token',
+    setBinaryRestoreCheckDetail: () => undefined,
+  }
+  if (value.fetchBlobManifestForMeta !== undefined && value.remoteBlobChunksExist !== undefined) {
+    return {
+      ...port,
+      fetchBlobManifestForMeta: value.fetchBlobManifestForMeta,
+      remoteBlobChunksExist: value.remoteBlobChunksExist,
+    }
+  }
+  if (value.fetchBlobManifestForMeta !== undefined) {
+    return { ...port, fetchBlobManifestForMeta: value.fetchBlobManifestForMeta }
+  }
+  if (value.remoteBlobChunksExist !== undefined) {
+    return { ...port, remoteBlobChunksExist: value.remoteBlobChunksExist }
+  }
+  return port
+}
+
+function createMaterializationPort(
+  plugin: KuroflareSpikePlugin,
+  overrides: Partial<MetadataMaterializationPort> = {},
+): MetadataMaterializationPort {
+  const port: MetadataMaterializationPort = {
+    getMetaDoc: () => plugin.metaDoc,
+    vault: {
+      getAbstractFileByPath: () => null,
+      adapter: { readBinary: async () => new ArrayBuffer(0) },
+    },
+    fileManager: { renameFile: async () => undefined },
+    lastMaterialized: plugin.lastMaterialized ?? new Map(),
+    materializedPaths: plugin.materializedPaths ?? new Map(),
+    pendingRemoteTextFiles: plugin.pendingRemoteTextFiles ?? new Map(),
+    pendingFsRenames: plugin.pendingFsRenames ?? new Set(),
+    activeRemoteDeletedFileIds: plugin.activeRemoteDeletedFileIds ?? new Set(),
+    getActiveFile: () => plugin.activeFile ?? null,
+    setSyncStatusText: (text) => plugin.syncStatusEl?.setText(text),
+    notify: () => undefined,
+    clearTextDeletionEvidenceRequest: () => undefined,
+    requestMissingRemoteTextFile: async () => undefined,
+    openLocalStoreDatabase: async () => {
+      throw new Error('test fixture does not open IndexedDB')
+    },
+    readOutboxWorkerSnapshot: async () => ({ outboxRecords: [] }),
+    putOutboxRecords: async () => undefined,
+    runOutboxWorkerTick: async () => undefined,
+  }
+  return { ...port, ...overrides }
 }
 
 test('delayed text materialization does not create a file after a metadata tombstone', async () => {
@@ -240,7 +338,7 @@ test('text deletion evidence schedules one bounded retry after no response', asy
       },
     })
 
-    plugin.scheduleTextDeletionEvidenceRetry(loaded)
+    scheduleTextDeletionEvidenceRetry(createReconcilePort(plugin), loaded)
     await vi.advanceTimersByTimeAsync(9_999)
     assert.equal(retries, 0)
     await vi.advanceTimersByTimeAsync(1)
@@ -251,6 +349,188 @@ test('text deletion evidence schedules one bounded retry after no response', asy
   } finally {
     vi.useRealTimers()
   }
+})
+
+test('remote tombstone uses the active file observed after reconciliation awaits', async () => {
+  const metaDoc = new Y.Doc()
+  const activeFileId = makeFileId('active-file-race')
+  const activeYDocId = makeYDocId('active-file-race-doc')
+  const deletedFileId = makeFileId('deleted-file-race')
+  const deletedYDocId = makeYDocId('deleted-file-race-doc')
+  const deletedPath = 'Folder/Deleted.md'
+  const deletedDoc = new Y.Doc()
+  const deletedStateVectorBase64 = btoa(String.fromCharCode(...Y.encodeStateVector(deletedDoc)))
+  insertMetaFile(metaMap({ metaDoc }), {
+    schemaVersion: 1,
+    fileId: activeFileId,
+    path: 'Folder/Remote.md',
+    canonicalPath: 'folder/remote.md',
+    type: 'text',
+    ydocId: activeYDocId,
+    deleted: false,
+    createdAt: 1,
+    createdBy: makeDeviceId('active-file-race-creator'),
+    contentUpdatedAt: 1,
+    contentUpdatedBy: makeDeviceId('active-file-race-creator'),
+    updatedAt: 1,
+    updatedBy: makeDeviceId('active-file-race-creator'),
+    mtime: 1,
+  })
+  insertMetaFile(metaMap({ metaDoc }), {
+    schemaVersion: 1,
+    fileId: deletedFileId,
+    path: deletedPath,
+    canonicalPath: 'folder/deleted.md',
+    type: 'text',
+    ydocId: deletedYDocId,
+    deleted: true,
+    deletedAt: 2,
+    deletedBy: makeDeviceId('deleted-file-race-deleter'),
+    deletedContentVersion: {
+      kind: 'text',
+      stateVectorBase64: deletedStateVectorBase64,
+      contentSha256: makeSha256Hex('0'.repeat(64)),
+    },
+    createdAt: 1,
+    createdBy: makeDeviceId('deleted-file-race-creator'),
+    contentUpdatedAt: 1,
+    contentUpdatedBy: makeDeviceId('deleted-file-race-creator'),
+    updatedAt: 1,
+    updatedBy: makeDeviceId('deleted-file-race-creator'),
+    mtime: 1,
+  })
+  const plugin = createTestPlugin()
+  let activePath = 'Folder/Before.md'
+  let releaseRequest!: () => void
+  let requestStartedResolve!: () => void
+  const requestStarted = new Promise<void>((resolve) => {
+    requestStartedResolve = resolve
+  })
+  const requestRelease = new Promise<void>((resolve) => {
+    releaseRequest = resolve
+  })
+  const statusTexts: string[] = []
+  const notices: string[] = []
+  Object.assign(plugin, {
+    metaDoc,
+    metadataAccess: 'read-only',
+    pendingRemoteTextFiles: new Map(),
+    materializedPaths: new Map(),
+    pendingFsRenames: new Set(),
+    activeRemoteDeletedFileIds: new Set(),
+    lastMaterialized: new Map(),
+  })
+  const materialize = createMaterializationPort(plugin, {
+    getActiveFile: () => ({ path: activePath }),
+    setSyncStatusText: (text) => statusTexts.push(text),
+    notify: (message) => notices.push(message),
+    requestMissingRemoteTextFile: async () => {
+      requestStartedResolve()
+      await requestRelease
+    },
+  })
+  const pending = reconcileAndMaterializeMeta(createReconcilePort(plugin), materialize)
+  await requestStarted
+  activePath = deletedPath
+  releaseRequest()
+  await pending
+  assert.deepEqual(statusTexts, [`Kuroflare sync: remote tombstone ${deletedPath}`])
+  assert.deepEqual(notices, [
+    'Kuroflare sync: active file was deleted remotely; local editor kept open',
+  ])
+  deletedDoc.destroy()
+  metaDoc.destroy()
+})
+
+test('binary enqueue revalidates metadata after a manifest await', async () => {
+  const oldMetaDoc = new Y.Doc()
+  const fileId = makeFileId('manifest-meta-race')
+  const manifestHash = makeSha256Hex('a'.repeat(64))
+  const chunkHash = makeSha256Hex('b'.repeat(64))
+  const value: BinaryMetaFile = {
+    schemaVersion: 1,
+    fileId,
+    path: 'Folder/Race.bin',
+    canonicalPath: 'folder/race.bin',
+    type: 'binary',
+    blobManifestHash: manifestHash,
+    blobChunks: [chunkHash],
+    deleted: false,
+    createdAt: 1,
+    createdBy: makeDeviceId('manifest-meta-race-creator'),
+    contentUpdatedAt: 1,
+    contentUpdatedBy: makeDeviceId('manifest-meta-race-creator'),
+    updatedAt: 1,
+    updatedBy: makeDeviceId('manifest-meta-race-creator'),
+    mtime: 1,
+  }
+  insertMetaFile(metaMap({ metaDoc: oldMetaDoc }), value)
+  const plugin = createTestPlugin()
+  let releaseManifest!: () => void
+  let manifestStartedResolve!: () => void
+  const manifestStarted = new Promise<void>((resolve) => {
+    manifestStartedResolve = resolve
+  })
+  const manifestRelease = new Promise<void>((resolve) => {
+    releaseManifest = resolve
+  })
+  const records: unknown[] = []
+  Object.assign(plugin, {
+    metaDoc: oldMetaDoc,
+    trustedSetupMetadata: {
+      endpoint: 'https://worker.example.test',
+      vaultId: makeVaultId('manifest-meta-race-vault'),
+      deviceId: makeDeviceId('manifest-meta-race-device'),
+      protocolVersion: 1,
+      bootstrapMode: 'new-vault',
+      tokenVersion: 1,
+    },
+    pendingSetupResponse: null,
+    kuroflareSettings: { setupVaultId: '' },
+    lastMaterialized: new Map(),
+    materializedPaths: new Map(),
+    pendingRemoteTextFiles: new Map(),
+    pendingFsRenames: new Set(),
+    activeRemoteDeletedFileIds: new Set(),
+    fetchBlobManifestForMeta: async (): Promise<BlobManifest> => {
+      manifestStartedResolve()
+      await manifestRelease
+      return {
+        version: 1,
+        fileId,
+        contentSha256: makeSha256Hex('c'.repeat(64)),
+        size: 1,
+        chunks: [{ sha256: chunkHash, offset: 0, size: 1 }],
+        createdBy: makeDeviceId('manifest-meta-race-manifest'),
+        createdAt: 1,
+      }
+    },
+  })
+  const pending = enqueueMissingRemoteBinaryDownloads(
+    createReconcilePort(plugin),
+    createMaterializationPort(plugin, {
+      openLocalStoreDatabase: async () => {
+        const request = fakeIndexedDB.open('manifest-meta-race-test')
+        return await new Promise<IDBDatabase>((resolve, reject) => {
+          request.onerror = () => reject(request.error)
+          request.onsuccess = () => resolve(request.result)
+        })
+      },
+      putOutboxRecords: async (_db, nextRecords) => {
+        records.push(...nextRecords)
+      },
+    }),
+    'test:manifest-meta-race',
+  )
+  await manifestStarted
+  const currentMetaDoc = new Y.Doc()
+  plugin.metaDoc = currentMetaDoc
+  releaseManifest()
+  await pending
+  assert.deepEqual(records, [])
+  assert.equal(plugin.materializedPaths.has(fileId), false)
+  currentMetaDoc.destroy()
+  oldMetaDoc.destroy()
 })
 
 test('text deletion evidence is discarded when metadata changes during hashing', async () => {
@@ -315,7 +595,7 @@ test('text deletion evidence is discarded when metadata changes during hashing',
     pendingTextDeletionEvidenceRetryTimers: new Map(),
     kuroflareSettings: { repairLog: [] },
   })
-  const pending = plugin.findTextDeletionEvidenceForReconcile()
+  const pending = findTextDeletionEvidenceForReconcile(createReconcilePort(plugin))
   await digestStarted
   const current = readMetaFile(metaMap(plugin), fileId)
   assert(
@@ -409,7 +689,7 @@ test('binary deletion evidence is discarded when metadata changes during HEAD ve
       return true
     },
   })
-  const pending = plugin.findRestorableBinaryFileIdsForReconcile()
+  const pending = findRestorableBinaryFileIdsForReconcile(createReconcilePort(plugin))
   await headStarted
   const current = readMetaFile(metaMap(plugin), fileId)
   assert(current && current.type === 'binary' && current.deleted)
@@ -764,7 +1044,7 @@ test('text evidence final validation drops an earlier item changed while a later
     pendingTextDeletionEvidenceRetryTimers: new Map(),
     kuroflareSettings: { repairLog: [] },
   })
-  const pending = plugin.findTextDeletionEvidenceForReconcile()
+  const pending = findTextDeletionEvidenceForReconcile(createReconcilePort(plugin))
   await secondHashStarted
   const firstFileId = fileIds.at(0)
   const secondFileId = fileIds.at(1)
@@ -870,7 +1150,7 @@ test('binary evidence final validation drops an earlier item changed during late
       return true
     },
   })
-  const pending = plugin.findRestorableBinaryFileIdsForReconcile()
+  const pending = findRestorableBinaryFileIdsForReconcile(createReconcilePort(plugin))
   await secondHeadStarted
   const firstFileId = fileIds.at(0)
   const secondFileId = fileIds.at(1)

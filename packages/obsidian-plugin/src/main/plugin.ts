@@ -5,15 +5,9 @@ import {
   MetaLatestSnapshotResponseSchema,
   SnapshotImportResponseSchema,
   decodeFullSnapshotBytesFromResponse,
-  BlobHeadResponseSchema,
-  BlobManifestSchema,
-  blobManifestMatchesMetaFile,
-  buildBinaryDownloadOutboxPlan,
   canonicalizeTextForYText,
   decideJoinFileAdoption,
-  hashBytesSha256,
   hashCanonicalText,
-  makeSha256Hex,
   type DocId,
   type LastMaterializedRecord,
   type DocLatestSnapshotResponse,
@@ -25,13 +19,10 @@ import {
   type ClientAuthMetadata,
   type SetupExchangeResponse,
   type SyncUpdate,
-  type BinaryMetaFile,
   type MetaFile,
-  type BlobManifest,
   type MetadataAccess,
-  type TextDeletionEvidence,
 } from '@kuroflare/core'
-import { VaultRelativePathSchema, decodeMetaValue, type MetaRepair } from '@kuroflare/core'
+import { VaultRelativePathSchema, decodeMetaValue } from '@kuroflare/core'
 import { Notice, Plugin, TFile, TFolder, type EventRef } from 'obsidian'
 import * as v from 'valibot'
 import { IndexeddbPersistence } from 'y-indexeddb'
@@ -47,6 +38,16 @@ import type {
   LoadedTextDoc,
   KuroflareRepairLogEntry,
 } from '../main-types'
+import {
+  materializeMetaRenames,
+  type MetadataMaterializationPort,
+} from '../plugin/metadata-materialization'
+import {
+  clearTextDeletionEvidenceRequest,
+  enqueueMissingRemoteBinaryDownloads,
+  reconcileAndMaterializeMeta,
+  type MetadataReconcilePort,
+} from '../plugin/metadata-reconcile'
 import { probeIndexedDbProvider, documentEpochMetadataKey } from '../recovery/epoch'
 import { createYDocFromSnapshot } from '../recovery/epoch'
 import { commitDocumentRecoveryTransaction } from '../recovery/epoch-repair'
@@ -70,7 +71,6 @@ import {
   runNeedFullSnapshotRecovery,
   type VerifiedFullSnapshotBytes,
 } from '../sync/engine/snapshot'
-import { reconcileMetaDoc } from '../sync/meta/reconcile'
 import {
   createSyncRuntimeObsidianComposition,
   type SyncRuntimeObsidianComposition,
@@ -157,12 +157,10 @@ import {
 } from './guards'
 import {
   accessTokenSecretKeyForSetup,
-  binaryBlobCacheKey,
   createObsidianSecretStoragePort,
   encodeBase64,
   localSetupMetadataFromSetupResponse,
   mergeRepairLogEntries,
-  requireOutboxPlanItemId,
   safeLogError,
   sameDocId,
   hasPendingRunnableOutboxUpdate,
@@ -190,15 +188,7 @@ import {
 } from './meta'
 import { createFreshMetaDocForVaultSwitch } from './meta'
 import { runOutboxWorkerTick } from './outbox/tick'
-import {
-  blobHeadHashBatches,
-  blobHeadEntryMatchesChunk,
-  clearPendingFsRename,
-  markPendingFsRename,
-  metaPersistenceDatabaseName,
-  MAX_BLOB_HEAD_HASHES_PER_REQUEST,
-  deferStartupReplan,
-} from './runtime-guards'
+import { metaPersistenceDatabaseName, deferStartupReplan } from './runtime-guards'
 import { createRemoteSetupAccessTokenVerifier } from './setup-verifier'
 import { openLocalStoreDatabase, putOutboxRecords, readOutboxWorkerSnapshot } from './store'
 import { handleLifecycleResume } from './sync-bridge'
@@ -465,7 +455,10 @@ export default class KuroflareSpikePlugin extends Plugin {
         return
       }
       if (!this.startupSideEffectGate.canSendNetwork()) return
-      void this.reconcileAndMaterializeMeta()
+      void reconcileAndMaterializeMeta(
+        metadataReconcilePort(this),
+        metadataMaterializationPort(this),
+      )
     })
     this.metaDoc.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin === WORKER_ORIGIN || origin === BINARY_UPLOAD_ORIGIN) return
@@ -477,6 +470,31 @@ export default class KuroflareSpikePlugin extends Plugin {
   private metaPersistenceDatabaseName(): string | undefined {
     const vaultId = currentSetupVaultIdHint(this)
     return vaultId === undefined ? undefined : metaPersistenceDatabaseName(vaultId)
+  }
+
+  private async recordRemoteMaterializeBlocked(
+    loaded: LoadedTextDoc,
+    path: string,
+    reason: 'invalid-path' | 'path-collision' | 'parent-collision',
+  ): Promise<void> {
+    const fileId = findMetaFileIdForDoc(this, loaded.docId)
+    const entry: KuroflareRepairLogEntry = {
+      id: `remote-materialize-blocked:${loaded.docId.ydocId}:${reason}`,
+      kind: 'remote-materialize-blocked',
+      fileId: fileId ?? loaded.docId.ydocId,
+      path,
+      reason,
+      createdAt: Date.now(),
+    }
+    await this.updateSettings({
+      repairLog: mergeRepairLogEntries(this.kuroflareSettings.repairLog ?? [], [entry]),
+    })
+  }
+
+  private async removeRepairLogEntry(entryId: string): Promise<void> {
+    await this.updateSettings({
+      repairLog: (this.kuroflareSettings.repairLog ?? []).filter((entry) => entry.id !== entryId),
+    })
   }
 
   private async openMetaPersistence(): Promise<void> {
@@ -1250,525 +1268,19 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   private async enqueueMissingDownloads(): Promise<void> {
     if (!this.startupSideEffectGate.canSendNetwork()) return
-    await this.reconcileAndMaterializeMeta()
+    await reconcileAndMaterializeMeta(
+      metadataReconcilePort(this),
+      metadataMaterializationPort(this),
+    )
     await requestPendingRemoteTextFilesFromWorker(this, 'startup:enqueue-missing-downloads')
-    await this.enqueueMissingRemoteBinaryDownloads('startup:enqueue-missing-downloads')
+    await enqueueMissingRemoteBinaryDownloads(
+      metadataReconcilePort(this),
+      metadataMaterializationPort(this),
+      'startup:enqueue-missing-downloads',
+    )
     console.info('[kuroflare] enqueued missing remote text downloads', {
       pending: this.pendingRemoteTextFiles.size,
     })
-  }
-
-  private async reconcileAndMaterializeMeta(): Promise<void> {
-    if (!this.startupSideEffectGate.canSendNetwork()) return
-    if (metadataWritesEnabled(this)) {
-      const restorableBinaryFileIds = await this.findRestorableBinaryFileIdsForReconcile()
-      const textDeletionEvidence = await this.findTextDeletionEvidenceForReconcile()
-      const reconciled = reconcileMetaDoc(this.metaDoc.getMap<unknown>('meta'), {
-        updatedAt: Date.now(),
-        updatedBy: REPAIR_DEVICE,
-        restorableBinaryFileIds,
-        textDeletionEvidence,
-        origin: REPAIR_ORIGIN,
-      })
-      await this.recordMetaRepairLog(reconciled.repairs, reconciled.invalidFileIds)
-      await this.clearResolvedDeleteDeferrals(reconciled.repairs)
-    } else if (this.metadataAccess === 'read-write') {
-      const invalidFileIds: string[] = []
-      for (const [fileId, value] of metaMap(this).entries()) {
-        if (decodeMetaValue(value, fileId).disposition === 'invalid') {
-          invalidFileIds.push(fileId)
-        }
-      }
-      await this.recordMetaRepairLog([], invalidFileIds)
-    }
-    await this.materializeMetaRenames()
-    this.materializeMetaDeletes()
-    await this.enqueueMissingRemoteBinaryDownloads('meta-reconcile')
-  }
-
-  async findTextDeletionEvidenceForReconcile(): Promise<ReadonlyMap<FileId, TextDeletionEvidence>> {
-    const evidence = new Map<FileId, TextDeletionEvidence>()
-    const inspectedEntries = new Map<FileId, Extract<MetaFile, { type: 'text'; deleted: true }>>()
-    for (const [fileId] of metaMap(this).entries()) {
-      const value = readMetaFile(metaMap(this), fileId)
-      if (
-        value === undefined ||
-        !value.deleted ||
-        value.type !== 'text' ||
-        value.deletedContentVersion?.kind !== 'text'
-      ) {
-        continue
-      }
-      const wasLoaded = this.loadedTextDocs.has(value.ydocId)
-      let loaded = this.loadedTextDocs.get(value.ydocId)
-      if (loaded === undefined) {
-        loaded = await loadTextDoc(this, { kind: 'file', ydocId: value.ydocId })
-      }
-      if (!this.textDeletionEvidenceEntryMatches(fileId, value)) continue
-      if (!wasLoaded) {
-        await this.requestTextDeletionEvidence(loaded)
-        continue
-      }
-      const stateVectorBase64 = encodeBase64(Y.encodeStateVector(loaded.doc))
-      const contentSha256 = await hashCanonicalText(loaded.text.toJSON())
-      if (!this.textDeletionEvidenceEntryMatches(fileId, value)) continue
-      evidence.set(value.fileId, { stateVectorBase64, contentSha256 })
-      inspectedEntries.set(fileId, value)
-      if (!stateVectorDominates(loaded.doc, value.deletedContentVersion.stateVectorBase64)) {
-        await this.requestTextDeletionEvidence(loaded)
-      }
-    }
-    const validatedEvidence = new Map<FileId, TextDeletionEvidence>()
-    for (const [fileId, currentEvidence] of evidence) {
-      const inspected = inspectedEntries.get(fileId)
-      if (inspected !== undefined && this.textDeletionEvidenceEntryMatches(fileId, inspected)) {
-        validatedEvidence.set(fileId, currentEvidence)
-      }
-    }
-    return validatedEvidence
-  }
-
-  private textDeletionEvidenceEntryMatches(
-    fileId: FileId,
-    inspected: Extract<MetaFile, { type: 'text'; deleted: true }>,
-  ): boolean {
-    const current = readMetaFile(metaMap(this), fileId)
-    return (
-      current !== undefined &&
-      current.deleted &&
-      current.type === 'text' &&
-      current.ydocId === inspected.ydocId &&
-      JSON.stringify(current.deletedContentVersion) ===
-        JSON.stringify(inspected.deletedContentVersion)
-    )
-  }
-
-  private binaryDeletionEvidenceEntryMatches(
-    fileId: FileId,
-    inspected: Extract<MetaFile, { type: 'binary'; deleted: true }>,
-  ): boolean {
-    const current = readMetaFile(metaMap(this), fileId)
-    return (
-      current !== undefined &&
-      current.deleted &&
-      current.type === 'binary' &&
-      current.blobManifestHash === inspected.blobManifestHash &&
-      JSON.stringify(current.blobChunks) === JSON.stringify(inspected.blobChunks) &&
-      JSON.stringify(current.deletedContentVersion) ===
-        JSON.stringify(inspected.deletedContentVersion)
-    )
-  }
-
-  private async requestTextDeletionEvidence(loaded: LoadedTextDoc): Promise<void> {
-    const now = Date.now()
-    const expiresAt = this.pendingTextDeletionEvidenceRequests.get(loaded.docId.ydocId)
-    if (expiresAt !== undefined && expiresAt > now) return
-    if (expiresAt !== undefined) this.clearTextDeletionEvidenceRequest(loaded.docId.ydocId)
-    this.pendingTextDeletionEvidenceRequests.set(loaded.docId.ydocId, now + 10_000)
-    try {
-      const sent = await requestDocFromWorker(
-        this,
-        loaded.docId,
-        Y.encodeStateVector(loaded.doc),
-        'delete-reconcile-text-evidence',
-      )
-      if (!sent) {
-        this.clearTextDeletionEvidenceRequest(loaded.docId.ydocId)
-      } else {
-        this.scheduleTextDeletionEvidenceRetry(loaded)
-      }
-    } catch (error: unknown) {
-      this.clearTextDeletionEvidenceRequest(loaded.docId.ydocId)
-      console.warn('[kuroflare] failed to request text deletion evidence', {
-        docId: loaded.docId,
-        error: safeLogError(error),
-      })
-    }
-  }
-
-  scheduleTextDeletionEvidenceRetry(loaded: LoadedTextDoc): void {
-    const docId = loaded.docId.ydocId
-    if (!this.pendingTextDeletionEvidenceRequests.has(docId)) return
-    const existingTimer = this.pendingTextDeletionEvidenceRetryTimers.get(docId)
-    if (existingTimer !== undefined) window.clearTimeout(existingTimer)
-    const timer = window.setTimeout(() => {
-      this.pendingTextDeletionEvidenceRetryTimers.delete(docId)
-      if (!this.pendingTextDeletionEvidenceRequests.delete(docId)) return
-      const current = this.loadedTextDocs.get(docId)
-      if (current !== undefined) void this.requestTextDeletionEvidence(current)
-    }, 10_000)
-    this.pendingTextDeletionEvidenceRetryTimers.set(docId, timer)
-  }
-
-  private clearTextDeletionEvidenceRequest(docId: string): void {
-    this.pendingTextDeletionEvidenceRequests.delete(docId)
-    const timer = this.pendingTextDeletionEvidenceRetryTimers.get(docId)
-    if (timer !== undefined) {
-      window.clearTimeout(timer)
-      this.pendingTextDeletionEvidenceRetryTimers.delete(docId)
-    }
-  }
-
-  private async clearResolvedDeleteDeferrals(repairs: readonly MetaRepair[]): Promise<void> {
-    const pending = new Set(
-      repairs
-        .filter(
-          (repair): repair is Extract<MetaRepair, { action: 'defer-deletion' }> =>
-            'action' in repair && repair.action === 'defer-deletion',
-        )
-        .map((repair) => repair.fileId),
-    )
-    const current = this.kuroflareSettings.repairLog ?? []
-    const deferredReasons = new Set([
-      'legacy-deletion-tombstone',
-      'deletion-evidence-unavailable',
-      'deletion-base-not-dominated',
-      'invalid-deletion-evidence',
-    ])
-    const next = current.filter(
-      (entry) =>
-        !(
-          entry.kind === 'delete-vs-edit' &&
-          deferredReasons.has(entry.reason) &&
-          !pending.has(entry.fileId)
-        ),
-    )
-    if (next.length !== current.length) {
-      await this.updateSettings({ repairLog: next })
-    }
-  }
-
-  async findRestorableBinaryFileIdsForReconcile(): Promise<ReadonlySet<FileId>> {
-    const setup = currentSetupMetadata(this)
-    if (setup === undefined) return new Set()
-    const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
-    if (accessToken === undefined) return new Set()
-
-    const restorable = new Set<FileId>()
-    const inspectedEntries = new Map<FileId, Extract<MetaFile, { type: 'binary'; deleted: true }>>()
-    for (const [fileId] of metaMap(this).entries()) {
-      const value = readMetaFile(metaMap(this), fileId)
-      if (value === undefined || !value.deleted || value.type !== 'binary') continue
-      const manifest = await this.fetchBlobManifestForMeta(setup, accessToken, value)
-      if (!this.binaryDeletionEvidenceEntryMatches(fileId, value)) continue
-      if (
-        manifest !== undefined &&
-        (await this.remoteBlobChunksExist(setup, accessToken, manifest))
-      ) {
-        if (!this.binaryDeletionEvidenceEntryMatches(fileId, value)) continue
-        restorable.add(value.fileId)
-        inspectedEntries.set(fileId, value)
-      }
-    }
-    const validatedRestorable = new Set<FileId>()
-    for (const fileId of restorable) {
-      const inspected = inspectedEntries.get(fileId)
-      if (inspected !== undefined && this.binaryDeletionEvidenceEntryMatches(fileId, inspected)) {
-        validatedRestorable.add(fileId)
-      }
-    }
-    return validatedRestorable
-  }
-
-  private async enqueueMissingRemoteBinaryDownloads(reason: string): Promise<void> {
-    if (!this.startupSideEffectGate.canSendNetwork()) return
-    const setup = currentSetupMetadata(this)
-    if (setup === undefined) return
-    const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
-    if (accessToken === undefined) return
-
-    const db = await openLocalStoreDatabase(this, setup.vaultId)
-    const snapshot = await readOutboxWorkerSnapshot(db)
-    const records: LocalStoreOutboxRecord[] = []
-    const now = Date.now()
-    for (const [fileId] of metaMap(this).entries()) {
-      const value = readMetaFile(metaMap(this), fileId)
-      if (value === undefined || value.deleted || value.type !== 'binary') continue
-      if (!v.is(VaultRelativePathSchema, value.path)) continue
-      if (
-        snapshot.outboxRecords.some(
-          (record) =>
-            record.fileId === value.fileId &&
-            record.kind === 'materialize' &&
-            record.status !== 'done' &&
-            record.status !== 'failed',
-        )
-      )
-        continue
-
-      const manifest = await this.fetchBlobManifestForMeta(setup, accessToken, value)
-      if (manifest === undefined) continue
-      const existing = this.app.vault.getAbstractFileByPath(value.path)
-      if (existing instanceof TFolder) continue
-      if (existing instanceof TFile) {
-        const currentBytes = new Uint8Array(await this.app.vault.adapter.readBinary(value.path))
-        const currentHash = makeSha256Hex(await hashBytesSha256(currentBytes))
-        if (currentHash === manifest.contentSha256) {
-          this.lastMaterialized.set(value.path, {
-            diskHash: manifest.contentSha256,
-            ydocHash: manifest.contentSha256,
-            path: value.path,
-            writtenAt: now,
-          })
-          continue
-        }
-      }
-
-      const prefix = `binary-download-${value.fileId}-${value.blobManifestHash}`
-      const plan = buildBinaryDownloadOutboxPlan({
-        fileId: value.fileId,
-        expectedHash: manifest.contentSha256,
-        chunks: manifest.chunks.map((chunk, index) => ({
-          id: requireOutboxPlanItemId(`${prefix}-chunk-${index.toString(36)}`),
-          sha256: chunk.sha256,
-          localCacheKey: binaryBlobCacheKey(chunk.sha256),
-          size: chunk.size,
-        })),
-        materializeId: requireOutboxPlanItemId(`${prefix}-materialize`),
-      })
-      if (!plan.ok) continue
-      for (const item of plan.plan.items) {
-        const base = {
-          id: item.id,
-          kind: item.kind,
-          status: 'pending',
-          dependsOn: item.dependsOn,
-          nextAttemptAt: undefined,
-          fileId: item.fileId,
-          createdAt: now,
-        } as const
-        if (item.kind === 'blob-get') {
-          records.push({
-            ...base,
-            blobSha256: item.sha256,
-            localCacheKey: item.localCacheKey,
-            blobSize: item.size,
-          })
-        } else if (item.kind === 'materialize') {
-          records.push({
-            ...base,
-            blobManifestHash: value.blobManifestHash,
-            blobManifest: manifest,
-            materializeChunks: manifest.chunks.map((chunk) => ({
-              sha256: chunk.sha256,
-              localCacheKey: binaryBlobCacheKey(chunk.sha256),
-              size: chunk.size,
-            })),
-            expectedHash: item.expectedHash,
-            targetPath: value.path,
-            lastMaterialized:
-              existing instanceof TFile ? this.lastMaterialized.get(value.path) : undefined,
-          })
-        }
-      }
-      this.materializedPaths.set(value.fileId, value.path)
-    }
-    if (records.length === 0) return
-    await putOutboxRecords(db, records)
-    void runOutboxWorkerTick(this, reason)
-  }
-
-  private async fetchBlobManifestForMeta(
-    setup: LocalSetupMetadata,
-    accessToken: string,
-    value: BinaryMetaFile,
-  ): Promise<BlobManifest | undefined> {
-    const url = new URL(setup.endpoint)
-    url.pathname = `/blob-manifests/${encodeURIComponent(value.blobManifestHash)}.json`
-    let response: Response
-    try {
-      response = await fetch(url, { headers: { authorization: `Bearer ${accessToken}` } })
-    } catch {
-      this.binaryRestoreCheckDetail = {
-        fileId: value.fileId,
-        path: value.path,
-        checkedAt: Date.now(),
-        reason: 'manifest-unavailable',
-      }
-      return undefined
-    }
-    if (!response.ok) {
-      this.binaryRestoreCheckDetail = {
-        fileId: value.fileId,
-        path: value.path,
-        checkedAt: Date.now(),
-        reason: 'manifest-unavailable',
-      }
-      return undefined
-    }
-    const body: unknown = await response.json().catch(() => undefined)
-    if (!v.is(BlobManifestSchema, body) || !blobManifestMatchesMetaFile(body, value)) {
-      this.binaryRestoreCheckDetail = {
-        fileId: value.fileId,
-        path: value.path,
-        checkedAt: Date.now(),
-        reason: 'manifest-unavailable',
-      }
-      return undefined
-    }
-    return body
-  }
-
-  private async remoteBlobChunksExist(
-    setup: LocalSetupMetadata,
-    accessToken: string,
-    manifest: BlobManifest,
-  ): Promise<boolean> {
-    const hashes = manifest.chunks.map((chunk) => chunk.sha256)
-    for (const [batchIndex, batch] of blobHeadHashBatches(hashes).entries()) {
-      const start = batchIndex * MAX_BLOB_HEAD_HASHES_PER_REQUEST
-      const url = new URL(setup.endpoint)
-      url.pathname = '/blobs/head'
-      let response: Response
-      try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ hashes: batch }),
-        })
-      } catch {
-        return false
-      }
-      const body: unknown = await response.json().catch(() => undefined)
-      if (!response.ok || !v.is(BlobHeadResponseSchema, body)) return false
-      for (const chunk of manifest.chunks.slice(start, start + batch.length)) {
-        const entry = body.exists[chunk.sha256]
-        if (!blobHeadEntryMatchesChunk(entry, chunk.size)) {
-          return false
-        }
-      }
-    }
-    return true
-  }
-
-  private async recordMetaRepairLog(
-    repairs: readonly MetaRepair[],
-    invalidFileIds: readonly string[],
-  ): Promise<void> {
-    if (repairs.length === 0 && invalidFileIds.length === 0) return
-    const createdAt = Date.now()
-    const entries: KuroflareRepairLogEntry[] = [
-      ...repairs.map(
-        (repair): KuroflareRepairLogEntry => ({
-          id:
-            'action' in repair
-              ? `delete-vs-edit:${repair.fileId}:${repair.action}`
-              : 'reason' in repair
-                ? `portable-path:${repair.fileId}`
-                : `path-conflict:${repair.fileId}`,
-          kind:
-            'action' in repair
-              ? 'delete-vs-edit'
-              : 'reason' in repair
-                ? 'portable-path'
-                : 'path-conflict',
-          fileId: repair.fileId,
-          path: 'toPath' in repair ? repair.toPath : undefined,
-          reason:
-            'action' in repair
-              ? repair.action === 'keep-deleted'
-                ? 'missing-binary-content'
-                : repair.action === 'defer-deletion'
-                  ? repair.reason
-                  : 'concurrent-edit-after-delete'
-              : 'reason' in repair
-                ? repair.reason
-                : 'path-conflict-renamed',
-          createdAt,
-        }),
-      ),
-      ...invalidFileIds.map(
-        (fileId): KuroflareRepairLogEntry => ({
-          id: `invalid-meta:${fileId}`,
-          kind: 'invalid-meta',
-          fileId,
-          reason: 'meta-schema-invalid',
-          createdAt,
-        }),
-      ),
-    ]
-    await this.updateSettings({
-      repairLog: mergeRepairLogEntries(this.kuroflareSettings.repairLog ?? [], entries),
-    })
-  }
-
-  private async recordRemoteMaterializeBlocked(
-    loaded: LoadedTextDoc,
-    path: string,
-    reason: 'invalid-path' | 'path-collision' | 'parent-collision',
-  ): Promise<void> {
-    const fileId = findMetaFileIdForDoc(this, loaded.docId)
-    const entry: KuroflareRepairLogEntry = {
-      id: `remote-materialize-blocked:${loaded.docId.ydocId}:${reason}`,
-      kind: 'remote-materialize-blocked',
-      fileId: fileId ?? loaded.docId.ydocId,
-      path,
-      reason,
-      createdAt: Date.now(),
-    }
-    await this.updateSettings({
-      repairLog: mergeRepairLogEntries(this.kuroflareSettings.repairLog ?? [], [entry]),
-    })
-  }
-
-  private async removeRepairLogEntry(entryId: string): Promise<void> {
-    await this.updateSettings({
-      repairLog: (this.kuroflareSettings.repairLog ?? []).filter((entry) => entry.id !== entryId),
-    })
-  }
-
-  private async materializeMetaRenames(): Promise<void> {
-    for (const [fileId] of metaMap(this).entries()) {
-      const value = readMetaFile(metaMap(this), fileId)
-      if (value === undefined || value.deleted) continue
-      this.activeRemoteDeletedFileIds.delete(value.fileId)
-      const known = this.materializedPaths.get(value.fileId)
-      if (known === value.path) continue
-      if (known === undefined) {
-        this.materializedPaths.set(value.fileId, value.path)
-        if (value.type === 'text') {
-          await requestMissingRemoteTextFile(this, value)
-        }
-        continue
-      }
-      const file = this.app.vault.getAbstractFileByPath(known)
-      if (!(file instanceof TFile)) {
-        this.materializedPaths.set(value.fileId, value.path)
-        if (value.type === 'text') {
-          await requestMissingRemoteTextFile(this, value)
-        }
-        continue
-      }
-      const target = markPendingFsRename(this.pendingFsRenames, value.path)
-      try {
-        await this.app.fileManager.renameFile(file, value.path)
-        this.materializedPaths.set(value.fileId, value.path)
-        clearPendingFsRename(this.pendingFsRenames, target)
-      } catch (error: unknown) {
-        clearPendingFsRename(this.pendingFsRenames, target)
-        console.warn('[kuroflare] failed to materialize meta rename', {
-          from: known,
-          to: value.path,
-          error: safeLogError(error),
-        })
-      }
-    }
-  }
-
-  private materializeMetaDeletes(): void {
-    for (const [fileId] of metaMap(this).entries()) {
-      const value = readMetaFile(metaMap(this), fileId)
-      if (value === undefined || !value.deleted) continue
-      if (value.type === 'text') {
-        this.pendingRemoteTextFiles.delete(value.ydocId)
-        this.clearTextDeletionEvidenceRequest(value.ydocId)
-      }
-      if (this.activeFile?.path !== value.path) continue
-      if (this.activeRemoteDeletedFileIds.has(value.fileId)) continue
-      this.activeRemoteDeletedFileIds.add(value.fileId)
-      this.syncStatusEl?.setText(`Kuroflare sync: remote tombstone ${value.path}`)
-      new Notice('Kuroflare sync: active file was deleted remotely; local editor kept open')
-    }
   }
 
   async resolvePendingRemoteTextFile(loaded: LoadedTextDoc): Promise<void> {
@@ -2037,14 +1549,20 @@ export default class KuroflareSpikePlugin extends Plugin {
   async handleWorkerSyncUpdate(message: SyncUpdate): Promise<void> {
     if (message.docId.kind === 'meta') {
       await this.startMetadataMigrationAfterHello()
-      await this.reconcileAndMaterializeMeta()
+      await reconcileAndMaterializeMeta(
+        metadataReconcilePort(this),
+        metadataMaterializationPort(this),
+      )
       await bindActiveMarkdownView(this, 'meta-update')
       return
     }
     const loaded = await loadTextDoc(this, message.docId)
-    this.clearTextDeletionEvidenceRequest(message.docId.ydocId)
+    clearTextDeletionEvidenceRequest(metadataReconcilePort(this), message.docId.ydocId)
     await this.resolvePendingRemoteTextFile(loaded)
-    await this.reconcileAndMaterializeMeta()
+    await reconcileAndMaterializeMeta(
+      metadataReconcilePort(this),
+      metadataMaterializationPort(this),
+    )
     if (sameDocId(message.docId, await activeDocId(this))) {
       await flushYTextToDisk(this, 'worker-update')
     }
@@ -2058,7 +1576,7 @@ export default class KuroflareSpikePlugin extends Plugin {
   async retryPathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
     if (entry.kind !== 'path-conflict' && entry.kind !== 'portable-path') return
     if (!metadataWritesEnabled(this)) return
-    await this.materializeMetaRenames()
+    await materializeMetaRenames(metadataMaterializationPort(this))
     if (this.workerWebSocketSession.snapshot().readyState !== WebSocket.OPEN) {
       await openWorkerWebSocket(this)
     }
@@ -2082,7 +1600,10 @@ export default class KuroflareSpikePlugin extends Plugin {
       return
     }
 
-    await this.reconcileAndMaterializeMeta()
+    await reconcileAndMaterializeMeta(
+      metadataReconcilePort(this),
+      metadataMaterializationPort(this),
+    )
     const reconciled = readMetaFile(metaMap(this), entry.fileId)
     if (reconciled === undefined || reconciled.deleted) return
     await this.removeRepairLogEntry(entry.id)
@@ -2109,7 +1630,7 @@ export default class KuroflareSpikePlugin extends Plugin {
           updatedBy: REPAIR_DEVICE,
         })
       }, REPAIR_ORIGIN)
-      await this.materializeMetaRenames()
+      await materializeMetaRenames(metadataMaterializationPort(this))
     }
     await this.removeRepairLogEntry(entry.id)
   }
@@ -2124,7 +1645,11 @@ export default class KuroflareSpikePlugin extends Plugin {
     if (current.type === 'text') {
       await requestMissingRemoteTextFile(this, current)
     } else {
-      await this.enqueueMissingRemoteBinaryDownloads('repair:remote-materialize-retry')
+      await enqueueMissingRemoteBinaryDownloads(
+        metadataReconcilePort(this),
+        metadataMaterializationPort(this),
+        'repair:remote-materialize-retry',
+      )
     }
     await this.removeRepairLogEntry(entry.id)
   }
@@ -2234,18 +1759,46 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 }
 
-function stateVectorDominates(doc: Y.Doc, base64: string): boolean {
-  try {
-    const binary = atob(base64)
-    const base = Y.decodeStateVector(
-      Uint8Array.from(binary, (character) => character.charCodeAt(0)),
-    )
-    const current = Y.decodeStateVector(Y.encodeStateVector(doc))
-    for (const [clientId, clock] of base) {
-      if ((current.get(clientId) ?? 0) < clock) return false
-    }
-    return true
-  } catch {
-    return false
+function metadataReconcilePort(plugin: KuroflareSpikePlugin): MetadataReconcilePort {
+  return {
+    canSendNetwork: () => plugin.startupSideEffectGate.canSendNetwork(),
+    getMetaDoc: () => plugin.metaDoc,
+    getMetadataAccess: () => plugin.metadataAccess,
+    loadedTextDocs: plugin.loadedTextDocs,
+    pendingTextDeletionEvidenceRequests: plugin.pendingTextDeletionEvidenceRequests,
+    pendingTextDeletionEvidenceRetryTimers: plugin.pendingTextDeletionEvidenceRetryTimers,
+    loadTextDoc: (ydocId) => loadTextDoc(plugin, { kind: 'file', ydocId }),
+    requestDocFromWorker: (loaded, stateVector, reason) =>
+      requestDocFromWorker(plugin, loaded.docId, stateVector, reason),
+    getSettings: () => plugin.kuroflareSettings,
+    updateSettings: (patch) => plugin.updateSettings(patch),
+    currentSetup: () => currentSetupMetadata(plugin),
+    readAccessToken: (setup) => readAccessToken(plugin, accessTokenSecretKeyForSetup(setup)),
+    setBinaryRestoreCheckDetail: (detail) => {
+      plugin.binaryRestoreCheckDetail = detail
+    },
+  }
+}
+
+function metadataMaterializationPort(plugin: KuroflareSpikePlugin): MetadataMaterializationPort {
+  return {
+    getMetaDoc: () => plugin.metaDoc,
+    vault: plugin.app.vault,
+    fileManager: plugin.app.fileManager,
+    lastMaterialized: plugin.lastMaterialized,
+    materializedPaths: plugin.materializedPaths,
+    pendingRemoteTextFiles: plugin.pendingRemoteTextFiles,
+    pendingFsRenames: plugin.pendingFsRenames,
+    activeRemoteDeletedFileIds: plugin.activeRemoteDeletedFileIds,
+    getActiveFile: () => plugin.activeFile,
+    setSyncStatusText: (text) => plugin.syncStatusEl?.setText(text),
+    notify: (message) => new Notice(message),
+    clearTextDeletionEvidenceRequest: (docId) =>
+      clearTextDeletionEvidenceRequest(metadataReconcilePort(plugin), docId),
+    requestMissingRemoteTextFile: (value) => requestMissingRemoteTextFile(plugin, value),
+    openLocalStoreDatabase: (vaultId) => openLocalStoreDatabase(plugin, vaultId),
+    readOutboxWorkerSnapshot: (db) => readOutboxWorkerSnapshot(db),
+    putOutboxRecords: (db, records) => putOutboxRecords(db, records),
+    runOutboxWorkerTick: (reason) => runOutboxWorkerTick(plugin, reason),
   }
 }
