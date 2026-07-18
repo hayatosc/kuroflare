@@ -18,7 +18,7 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 | DR-006 | P1       | Delete-versus-edit causality               | Closed: causal deletion witnesses and deferred reconciliation tested                 |
 | DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship                                    |
 | DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                                                      |
-| DR-009 | P1       | Quarantine and public error evidence       | HTTP envelope differs; guarded WS rejection implemented                              |
+| DR-009 | P1       | Quarantine and public error evidence       | Implemented: unified ApiError envelope and generalized WS reject evidence            |
 | DR-010 | P2       | Empty binary files                         | Closed: chunkless meta entries permitted and cross-checked against the manifest      |
 | DR-011 | P2       | Portable path materialization              | Closed: deterministic shared sanitizer replaces OS-specific repair                   |
 | DR-012 | P2       | Capability negotiation                     | Closed: opaque capability tokens with known-intersection negotiation                 |
