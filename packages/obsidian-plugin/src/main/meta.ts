@@ -12,7 +12,6 @@ import * as Y from 'yjs'
 import type { LocalAwareness } from '../editor/awareness'
 import { createYTextEditorExtension, dispatchFullDocumentReplace } from '../editor/editor-binding'
 import type { FileDocId, LoadedTextDoc } from '../main-types'
-import { DISK_ORIGIN, REMOTE_ORIGIN, WORKER_ORIGIN, SPIKE_TEXT_NAME } from './constants'
 import {
   classifyDocumentEpoch,
   createReadyDocumentEpoch,
@@ -20,7 +19,8 @@ import {
   isDocumentEpochRecord,
   probeIndexedDbProvider,
   type DocumentEpochRecord,
-} from './epoch-recovery'
+} from '../recovery/epoch'
+import { DISK_ORIGIN, REMOTE_ORIGIN, WORKER_ORIGIN, SPIKE_TEXT_NAME } from './constants'
 import {
   waitForIndexedDbDeleteDatabase,
   waitForIndexedDbRequest,

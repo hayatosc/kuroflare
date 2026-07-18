@@ -15,8 +15,8 @@ import * as Y from 'yjs'
 
 import { LocalAwareness } from '../editor/awareness'
 import type { LoadedTextDoc } from '../main-types'
+import { createReadyDocumentEpoch, documentEpochMetadataKey } from '../recovery/epoch'
 import { flushYTextToDisk } from './editor'
-import { createReadyDocumentEpoch, documentEpochMetadataKey } from './epoch-recovery'
 import {
   activateLoadedTextDoc,
   createFreshMetaDocForVaultSwitch,

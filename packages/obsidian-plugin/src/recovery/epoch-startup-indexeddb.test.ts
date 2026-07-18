@@ -13,23 +13,24 @@ import { assert, test, vi } from 'vitest'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
+import { createStartupSideEffectGate } from '../main/boot-guard'
+import { isLocalStoreOutboxRecord, isOutboxRunningLease } from '../main/guards'
+import {
+  encodeBase64,
+  waitForIndexedDbDeleteDatabase,
+  waitForIndexedDbRequest,
+  waitForIndexedDbTransaction,
+} from '../main/helpers'
+import KuroflareSpikePlugin from '../main/plugin'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
-import { createStartupSideEffectGate } from './boot-guard'
 import {
   createReadyDocumentEpoch,
   createRecoveringDocumentEpoch,
   documentEpochMetadataKey,
   isDocumentEpochRecord,
   probeIndexedDbProvider,
-} from './epoch-recovery'
-import { isLocalStoreOutboxRecord, isOutboxRunningLease } from './guards'
-import {
-  encodeBase64,
-  waitForIndexedDbDeleteDatabase,
-  waitForIndexedDbRequest,
-  waitForIndexedDbTransaction,
-} from './helpers'
-import KuroflareSpikePlugin, { recoverDocumentEpochsAtStartup } from './plugin'
+} from './epoch'
+import { recoverDocumentEpochsAtStartup } from './epoch-startup'
 
 vi.mock('obsidian', () => {
   class FakePlugin {}
@@ -398,9 +399,12 @@ test('real fake-indexeddb + y-indexeddb recovery lifecycle survives provider cra
     const activeFirstPlugin = firstPlugin
     await expectCrash(
       () =>
-        recoverDocumentEpochsAtStartup(activeFirstPlugin, activeLocalStoreDb, undefined, [
-          fileRecord,
-        ]),
+        recoverDocumentEpochsAtStartup(
+          activeFirstPlugin.createDocumentEpochRecoveryHost(),
+          activeLocalStoreDb,
+          undefined,
+          [fileRecord],
+        ),
       'crash:provider-synced',
     )
     IndexeddbPersistence.prototype.set = originalSet
@@ -416,9 +420,12 @@ test('real fake-indexeddb + y-indexeddb recovery lifecycle survives provider cra
     localStoreDb.close()
     restartedLocalStoreDb = await openDatabase(localStoreName)
     restartedPlugin = createTestPlugin(restartedLocalStoreDb, setup)
-    await recoverDocumentEpochsAtStartup(restartedPlugin, restartedLocalStoreDb, undefined, [
-      fileRecord,
-    ])
+    await recoverDocumentEpochsAtStartup(
+      restartedPlugin.createDocumentEpochRecoveryHost(),
+      restartedLocalStoreDb,
+      undefined,
+      [fileRecord],
+    )
     const recoveredLoaded = restartedPlugin.loadedTextDocs.get(docId.ydocId)
     assert.notEqual(recoveredLoaded, undefined)
     const recoveredActor = recoveredLoaded?.doc.clientID

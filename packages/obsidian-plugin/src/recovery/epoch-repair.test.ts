@@ -3,10 +3,10 @@ import * as v from 'valibot'
 import { assert, describe, test } from 'vitest'
 import * as Y from 'yjs'
 
+import { isLocalStoreOutboxRecord } from '../main/guards'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
-import { createReadyDocumentEpoch, documentEpochMetadataKey } from './epoch-recovery'
+import { createReadyDocumentEpoch, documentEpochMetadataKey } from './epoch'
 import { commitDocumentRecoveryTransaction, type DocumentRecoveryCommitInput } from './epoch-repair'
-import { isLocalStoreOutboxRecord } from './guards'
 
 type StoredValue = unknown
 

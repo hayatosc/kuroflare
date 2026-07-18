@@ -13,7 +13,7 @@ import {
   probeIndexedDbProvider,
   recoverDocumentEpoch,
   recoverDocumentEpochLifecycle,
-} from './epoch-recovery'
+} from './epoch'
 
 const metaDoc = { kind: 'meta' } as const
 
