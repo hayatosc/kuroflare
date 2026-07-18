@@ -1,13 +1,15 @@
 import {
+  QuarantineAuditListResponseSchema,
   QuarantinedUpdateActionDryRunResponseSchema,
   QuarantinedUpdateActionResponseSchema,
   QuarantinedUpdateDetailResponseSchema,
   QuarantinedUpdateListResponseSchema,
+  type QuarantineAuditListResponse,
   type QuarantinedUpdateActionDryRunResponse,
   type QuarantinedUpdateActionRequest,
   type QuarantinedUpdateActionResponse,
   type QuarantinedUpdateDetailResponse,
-  type QuarantinedUpdateEntry,
+  type QuarantinedUpdateListResponse,
 } from '@kuroflare/core'
 import * as v from 'valibot'
 
@@ -20,7 +22,15 @@ export interface QuarantineAdminHttpPort {
 }
 
 export type QuarantineAdminListResult =
-  | { readonly ok: true; readonly entries: readonly QuarantinedUpdateEntry[] }
+  | { readonly ok: true; readonly response: QuarantinedUpdateListResponse }
+  | {
+      readonly ok: false
+      readonly reason: 'http-failed' | 'invalid-response'
+      readonly status?: number
+    }
+
+export type QuarantineAdminAuditResult =
+  | { readonly ok: true; readonly response: QuarantineAuditListResponse }
   | {
       readonly ok: false
       readonly reason: 'http-failed' | 'invalid-response'
@@ -51,15 +61,18 @@ export type QuarantineAdminExecuteResult =
       readonly status?: number
     }
 
-/** Fetches the server-side quarantine list for settings-panel inspection. */
+/** Fetches one guarded page of the server-side quarantine list for settings-panel inspection. */
 export async function fetchQuarantineAdminEntries(input: {
   readonly setup: LocalSetupMetadata
   readonly accessToken: string
+  readonly limit?: number | undefined
+  readonly cursor?: string | undefined
   readonly http: QuarantineAdminHttpPort
 }): Promise<QuarantineAdminListResult> {
-  const response = await input.http.fetch(quarantineAdminUrl(input.setup), {
-    headers: authorizationHeaders(input.accessToken),
-  })
+  const response = await input.http.fetch(
+    quarantineAdminUrl(input.setup, undefined, input.limit, input.cursor),
+    { headers: authorizationHeaders(input.accessToken) },
+  )
   if (!response.ok) {
     return { ok: false, reason: 'http-failed', status: response.status }
   }
@@ -67,7 +80,35 @@ export async function fetchQuarantineAdminEntries(input: {
   if (!v.is(QuarantinedUpdateListResponseSchema, body)) {
     return { ok: false, reason: 'invalid-response' }
   }
-  return { ok: true, entries: body.entries }
+  return { ok: true, response: body }
+}
+
+/** Fetches one guarded page of the resolved-quarantine audit trail. */
+export async function fetchQuarantineAdminAudit(input: {
+  readonly setup: LocalSetupMetadata
+  readonly accessToken: string
+  readonly limit?: number | undefined
+  readonly cursor?: string | undefined
+  readonly http: QuarantineAdminHttpPort
+}): Promise<QuarantineAdminAuditResult> {
+  const url = new URL(input.setup.endpoint)
+  url.pathname = '/admin/quarantine/audit'
+  url.search = ''
+  url.hash = ''
+  if (input.limit !== undefined) url.searchParams.set('limit', String(input.limit))
+  if (input.cursor !== undefined) url.searchParams.set('cursor', input.cursor)
+
+  const response = await input.http.fetch(url.toString(), {
+    headers: authorizationHeaders(input.accessToken),
+  })
+  if (!response.ok) {
+    return { ok: false, reason: 'http-failed', status: response.status }
+  }
+  const body: unknown = await response.json().catch(() => undefined)
+  if (!v.is(QuarantineAuditListResponseSchema, body)) {
+    return { ok: false, reason: 'invalid-response' }
+  }
+  return { ok: true, response: body }
 }
 
 /** Fetches one quarantined update detail, including update bytes when the server allows it. */
@@ -153,12 +194,19 @@ export async function executeQuarantineAdminAction(input: {
   return { ok: true, response: body }
 }
 
-function quarantineAdminUrl(setup: LocalSetupMetadata, id?: string): string {
+function quarantineAdminUrl(
+  setup: LocalSetupMetadata,
+  id?: string,
+  limit?: number,
+  cursor?: string,
+): string {
   const url = new URL(setup.endpoint)
   url.pathname =
     id === undefined ? '/admin/quarantine' : `/admin/quarantine/${encodeURIComponent(id)}`
   url.search = ''
   url.hash = ''
+  if (limit !== undefined) url.searchParams.set('limit', String(limit))
+  if (cursor !== undefined) url.searchParams.set('cursor', cursor)
   return url.toString()
 }
 

@@ -13,6 +13,7 @@ import {
 import { readAccessToken, requireSetupMetadata } from '../main/auth'
 import { accessTokenSecretKeyForSetup, deviceRevokeUrl } from '../main/helpers'
 import { planLocalStoreRepairSettingsPresentation } from '../sync/obsidian/local-store-repair-presentation'
+import { renderQuarantineAdmin } from '../sync/obsidian/quarantine-ui'
 import {
   planRejectedUpdateRepairOutcomePresentation,
   planRejectedUpdateRepairSettingsPresentation,
@@ -302,56 +303,7 @@ export class KuroflareSettingTab extends PluginSettingTab {
         })
     }
 
-    containerEl.createEl('h3', { text: 'Quarantine admin' })
-    new Setting(containerEl)
-      .setName('Quarantined updates')
-      .setDesc('Fetch server-side quarantined update entries for inspection.')
-      .addButton((button) => {
-        button.setButtonText('Refresh').onClick(() => {
-          new Notice('Kuroflare: quarantine admin under refactoring')
-        })
-      })
-    const quarantine = {
-      entries: this.plugin.quarantineAdminEntries,
-      detail: this.plugin.quarantineAdminDetail,
-    }
-    if (quarantine.entries.length === 0) {
-      containerEl.createEl('p', { text: 'No quarantined updates loaded.' })
-    }
-    for (const entry of quarantine.entries.slice(0, 10)) {
-      new Setting(containerEl)
-        .setName(`${entry.id}: ${entry.reason}`)
-        .setDesc(
-          `${docIdLabel(entry.docId)} ${entry.messageId} ${entry.updateSha256} ${new Date(
-            entry.createdAt,
-          ).toISOString()}`,
-        )
-        .addButton((button) => {
-          button.setButtonText('Inspect').onClick(() => {
-            new Notice('Kuroflare: quarantine admin under refactoring')
-          })
-        })
-        .addButton((button) => {
-          button.setButtonText('Prepare discard').onClick(() => {
-            new Notice('Kuroflare: quarantine admin under refactoring')
-          })
-        })
-        .addButton((button) => {
-          button.setButtonText('Prepare force apply').onClick(() => {
-            new Notice('Kuroflare: quarantine admin under refactoring')
-          })
-        })
-    }
-    const detail = quarantine.detail
-    if (detail !== null) {
-      new Setting(containerEl)
-        .setName(`Selected quarantine: ${detail.entry.id}`)
-        .setDesc(
-          `${docIdLabel(detail.entry.docId)} ${detail.entry.messageId} bytes=${
-            detail.entry.updateBytesLength
-          } updateBytesBase64=${detail.updateBytesBase64?.length ?? 0} chars`,
-        )
-    }
+    renderQuarantineAdmin(containerEl, this.plugin)
     renderSnapshotHealthAdmin(containerEl, this.plugin)
     containerEl.createEl('h3', { text: 'Repair log' })
     const invalidMetaIsolation = this.plugin.invalidMetaIsolationDetail

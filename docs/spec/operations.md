@@ -17,7 +17,7 @@ DO が plaintext を扱えるので DO 側コマンドとして素直に実装�
 
 テキスト本文の衝突は自動マージされ、手動解決は不要である。
 残るのは意味的衝突（削除 vs 編集、同 path 別 fileId、移動重複）だけなので、常設ダイアログではなく、たまに出る小さな「自動修復しました」レビューパネルで足りる。
-repair panel からは repair log の閲覧に加え、quarantine の inspect / discard、path conflict の resolve / retry、binary restore の再検証、staged import の resume を行う。
+repair panel からは repair log の閲覧に加え、quarantine の inspect / discard / force-apply（dry-run で server 発行の confirmation token と effects を確認してから execute）、resolved quarantine の audit trail 一覧、path conflict の resolve / retry、binary restore の再検証、staged import の resume を行う。
 
 ## 3. モバイル
 

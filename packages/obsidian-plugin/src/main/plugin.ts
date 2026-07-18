@@ -24,8 +24,6 @@ import {
   type OutboxResumeEvent,
   type ClientAuthMetadata,
   type SetupExchangeResponse,
-  type QuarantinedUpdateEntry,
-  type QuarantinedUpdateDetailResponse,
   type SyncUpdate,
   type BinaryMetaFile,
   type MetaFile,
@@ -254,8 +252,6 @@ export default class KuroflareSpikePlugin extends Plugin {
   syncRepairEntries: readonly SyncRuntimeObsidianRepairPresentation[] = []
   syncRejectedUpdateRepairEntries: readonly LocalStoreOutboxRecord[] = []
   syncRetryEnabled = false
-  quarantineAdminEntries: readonly QuarantinedUpdateEntry[] = []
-  quarantineAdminDetail: QuarantinedUpdateDetailResponse | null = null
   invalidMetaIsolationDetail: KuroflareInvalidMetaIsolationDetail | null = null
   binaryRestoreCheckDetail: KuroflareBinaryRestoreCheckDetail | null = null
   kuroflareSettings: KuroflareSettings = DEFAULT_SETTINGS
@@ -457,16 +453,6 @@ export default class KuroflareSpikePlugin extends Plugin {
       })
     }
     return result
-  }
-
-  getQuarantineAdminSnapshot(): {
-    readonly entries: readonly QuarantinedUpdateEntry[]
-    readonly detail: QuarantinedUpdateDetailResponse | null
-  } {
-    return {
-      entries: this.quarantineAdminEntries,
-      detail: this.quarantineAdminDetail,
-    }
   }
 
   getInvalidMetaIsolationSnapshot(): KuroflareInvalidMetaIsolationDetail | null {

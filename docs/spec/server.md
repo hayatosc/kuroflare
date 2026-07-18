@@ -335,6 +335,28 @@ admin repair は 3 種に絞る。
 confirmation token は `quarantine:<action>:<id>` という subject に bind し、missing / mismatch / expired を区別して拒否する。
 admin endpoint は authenticated device の Bearer JWT と `sync:write` scope を要求し、監査 actor はその JWT の `deviceId` に固定する。
 
+`POST /admin/quarantine/:id/{discard,force-apply}` is a two-step dry-run/execute flow
+(`packages/worker/src/runtime/route-handlers.ts`). `{"mode":"dry-run"}` re-validates the
+target (for `force-apply`, against a temporary candidate YDoc built from the current live
+document — never the live document itself) and returns an effects preview plus a
+server-issued, single-use `confirmationToken` (opaque, SHA-256-hashed at rest, 5-minute TTL).
+`{"mode":"execute","confirmationToken":"..."}` re-checks the hash and expiry, burns the token
+before mutating, and re-validates `force-apply` against the document state at execute time
+(not the state at dry-run time) so a document that changed between dry-run and execute fails
+closed with `request/conflict`.
+
+`GET /admin/quarantine` lists open quarantine rows, newest first, paginated via `limit`
+(1-200, default 50) and `cursor` (an opaque token encoding the previous page's last item)
+query params, returning `{"items": [...], "nextCursor"?: "..."}`.
+
+Resolving a quarantine row (discard or force-apply) deletes it from `quarantined_updates` and
+appends one row to `quarantine_audit_events` recording what was resolved (`quarantineId`,
+`docId`, `messageId`, the originating `deviceId`, and `reason`), when (`quarantinedAt`,
+`resolvedAt`), by whom (`actor`, the resolving admin's JWT `deviceId`), and — for
+`force-apply` — the resulting op-log `appliedSeq`. `GET /admin/quarantine/audit` exposes this
+append-only trail with the same `limit`/`cursor`/`{"items", "nextCursor"?}` pagination
+contract, newest first.
+
 これで「通常は最新へ進む」「壊れたら古い健全な世代へ戻る」「怪しい update は証拠として残る」を満たす。
 
 ### 9.1 Snapshot health administration

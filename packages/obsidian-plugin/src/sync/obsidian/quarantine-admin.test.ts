@@ -32,13 +32,13 @@ const entry = {
 
 test('quarantine admin fetches and guards list/detail responses', async () => {
   const http = new QueueHttpPort([
-    jsonResponse({ entries: [entry] }),
+    jsonResponse({ items: [entry] }),
     jsonResponse({ entry, updateBytesBase64: 'AQIDBA==' }),
   ])
 
   assert.deepEqual(
     await fetchQuarantineAdminEntries({ setup, accessToken: 'access-token', http }),
-    { ok: true, entries: [entry] },
+    { ok: true, response: { items: [entry] } },
   )
   assert.deepEqual(
     await fetchQuarantineAdminDetail({
