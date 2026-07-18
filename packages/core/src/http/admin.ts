@@ -103,10 +103,8 @@ export const QuarantinedUpdateEntrySchema = v.object({
 export type QuarantinedUpdateEntry = v.InferInput<typeof QuarantinedUpdateEntrySchema>
 
 export const QuarantinedUpdateListResponseSchema = v.object({
-  entries: v.pipe(
-    v.array(QuarantinedUpdateEntrySchema),
-    v.maxLength(MAX_QUARANTINED_UPDATE_ENTRIES),
-  ),
+  items: v.pipe(v.array(QuarantinedUpdateEntrySchema), v.maxLength(MAX_QUARANTINED_UPDATE_ENTRIES)),
+  nextCursor: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
 })
 export type QuarantinedUpdateListResponse = v.InferInput<typeof QuarantinedUpdateListResponseSchema>
 
@@ -184,3 +182,31 @@ export const QuarantinedUpdateActionHttpResponseSchema = v.union([
 export type QuarantinedUpdateActionHttpResponse = v.InferInput<
   typeof QuarantinedUpdateActionHttpResponseSchema
 >
+
+/** Terminal disposition recorded once an operator resolves a quarantined update. */
+export const QuarantineAuditActionSchema = v.union([
+  v.literal('discarded-by-admin'),
+  v.literal('force-applied-by-admin'),
+])
+export type QuarantineAuditAction = v.InferInput<typeof QuarantineAuditActionSchema>
+
+/** User-facing audit-trail row for one resolved quarantine action. */
+export const QuarantineAuditEntrySchema = v.object({
+  quarantineId: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_QUARANTINED_UPDATE_ID_LENGTH)),
+  docId: DocIdSchema,
+  messageId: MessageIdSchema,
+  deviceId: DeviceIdSchema,
+  reason: QuarantinedUpdateReasonSchema,
+  action: QuarantineAuditActionSchema,
+  actor: DeviceIdSchema,
+  appliedSeq: v.optional(PositiveSafeIntegerSchema),
+  quarantinedAt: NonNegativeSafeIntegerSchema,
+  resolvedAt: NonNegativeSafeIntegerSchema,
+})
+export type QuarantineAuditEntry = v.InferInput<typeof QuarantineAuditEntrySchema>
+
+export const QuarantineAuditListResponseSchema = v.object({
+  items: v.pipe(v.array(QuarantineAuditEntrySchema), v.maxLength(MAX_QUARANTINED_UPDATE_ENTRIES)),
+  nextCursor: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
+})
+export type QuarantineAuditListResponse = v.InferInput<typeof QuarantineAuditListResponseSchema>

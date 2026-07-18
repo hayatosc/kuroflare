@@ -120,6 +120,7 @@ export {
   buildQuarantinedUpdateDetailResponse,
   buildQuarantinedUpdateListResponse,
   decideQuarantineConfirmation,
+  effectFromAdminDecision,
   planQuarantinedUpdateActionHttp,
   quarantineConfirmationSubject,
   type QuarantineConfirmationDecision,

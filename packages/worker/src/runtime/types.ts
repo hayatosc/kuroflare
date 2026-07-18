@@ -51,6 +51,7 @@ export interface DurableObjectStorageBinding {
   readonly sql?: DurableObjectSqlStorageBinding
   get<T = unknown>(key: string): Promise<T | undefined>
   put<T>(key: string, value: T): Promise<void>
+  delete(key: string): Promise<boolean>
   setAlarm?(scheduledTime: number | Date): Promise<void>
   transaction<T>(closure: () => T | Promise<T>): Promise<T>
   transactionSync?<T>(closure: () => T): T

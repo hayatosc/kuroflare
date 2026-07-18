@@ -30,6 +30,11 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     name: 'blob-multipart-uploads',
     migrate: buildBlobMultipartUploads,
   },
+  {
+    version: 6,
+    name: 'quarantine-audit-events',
+    migrate: buildQuarantineAuditEvents,
+  },
 ]
 
 interface ExpectedColumn {
@@ -434,6 +439,25 @@ async function buildBlobMultipartUploads(db: Kysely<Database>): Promise<void> {
     .addColumn('size', 'integer', (col) => col.notNull())
     .addColumn('sha256', 'text', (col) => col.notNull())
     .addPrimaryKeyConstraint('blob_multipart_parts_pk', ['upload_id', 'part_number'])
+    .execute()
+}
+
+/** Append-only audit trail for resolved (discarded or force-applied) quarantined updates. */
+async function buildQuarantineAuditEvents(db: Kysely<Database>): Promise<void> {
+  await db.schema
+    .createTable('quarantine_audit_events')
+    .ifNotExists()
+    .addColumn('id', 'integer', (col) => col.primaryKey().autoIncrement())
+    .addColumn('quarantine_id', 'text', (col) => col.notNull())
+    .addColumn('doc_id', 'text', (col) => col.notNull())
+    .addColumn('message_id', 'text', (col) => col.notNull())
+    .addColumn('device_id', 'text', (col) => col.notNull())
+    .addColumn('reason', 'text', (col) => col.notNull())
+    .addColumn('action', 'text', (col) => col.notNull())
+    .addColumn('actor', 'text', (col) => col.notNull())
+    .addColumn('applied_seq', 'integer')
+    .addColumn('quarantined_at', 'integer', (col) => col.notNull())
+    .addColumn('resolved_at', 'integer', (col) => col.notNull())
     .execute()
 }
 

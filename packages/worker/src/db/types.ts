@@ -12,6 +12,7 @@ export interface Database {
   snapshot_retention_events: SnapshotRetentionEventTable
   connected_devices: ConnectedDeviceTable
   quarantined_updates: QuarantinedUpdateTable
+  quarantine_audit_events: QuarantineAuditEventTable
   snapshot_health_events: SnapshotHealthEventTable
   blob_multipart_uploads: BlobMultipartUploadTable
   blob_multipart_parts: BlobMultipartPartTable
@@ -115,6 +116,20 @@ export interface QuarantinedUpdateTable {
   update_sha256: string
   update_bytes: ArrayBuffer
   created_at: number
+}
+
+export interface QuarantineAuditEventTable {
+  id: Generated<number>
+  quarantine_id: string
+  doc_id: string
+  message_id: string
+  device_id: string
+  reason: string
+  action: string
+  actor: string
+  applied_seq: number | null
+  quarantined_at: number
+  resolved_at: number
 }
 
 export interface BlobMultipartUploadTable {

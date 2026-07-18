@@ -33,9 +33,9 @@ const record: QuarantinedUpdateRecord = {
 }
 
 test('quarantine HTTP builders produce protocol-guarded list and detail responses', () => {
-  const list = buildQuarantinedUpdateListResponse([record])
+  const list = buildQuarantinedUpdateListResponse([record], undefined)
   assert.equal(v.is(QuarantinedUpdateListResponseSchema, list), true)
-  const firstEntry = list.entries[0]
+  const firstEntry = list.items[0]
   if (!firstEntry) {
     throw new Error('Expected first entry to exist')
   }

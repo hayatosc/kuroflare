@@ -150,6 +150,7 @@ workerApp.post('/devices/:deviceId/revoke', async (c) => {
 })
 
 workerApp.get('/admin/quarantine', routeAuthorizedVaultRoom)
+workerApp.get('/admin/quarantine/audit', routeAuthorizedVaultRoom)
 workerApp.get('/admin/quarantine/:id', routeAuthorizedVaultRoom)
 workerApp.get('/admin/retention', routeAuthorizedVaultRoom)
 workerApp.get('/admin/snapshots', routeAuthorizedVaultRoom)

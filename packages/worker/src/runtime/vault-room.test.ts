@@ -1375,7 +1375,7 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
       query.includes('create table if not exists devices'),
     )
     assert.equal(created.length, 1)
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5, 6])
 
     await room.webSocketMessage(
       server,
@@ -1385,7 +1385,7 @@ test('VaultRoom applies pending schema migrations once before serving SQL traffi
     const insertedVersions = storage.sql.queries.filter((query) =>
       query.includes('insert into schema_migrations'),
     )
-    assert.equal(insertedVersions.length, 5)
+    assert.equal(insertedVersions.length, 6)
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)
@@ -1402,7 +1402,7 @@ test('ensureSchema coalesces concurrent cold-start migrations', async () => {
   await Promise.all([ensureSchema(room), ensureSchema(room)])
 
   assert.equal(room.schemaReady, true)
-  assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
+  assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5, 6])
   assert.equal(
     storage.sql.queries.filter((query) => query.includes('create table if not exists devices'))
       .length,
@@ -1540,7 +1540,7 @@ test('ensureSchema rolls back every device identity DDL boundary before retrying
     storage.sql.failAfterQueryIncludes = undefined
     await ensureSchema(room)
     assert.equal(room.schemaReady, true)
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5, 6])
     assert.deepEqual(storage.sql.tableColumns.get('devices'), [
       'device_id',
       'token_version',
@@ -1588,6 +1588,7 @@ test('ensureSchema rolls back every device identity DDL boundary before retrying
         ['schema_migrations', 0],
         ['blob_multipart_uploads', 0],
         ['blob_multipart_parts', 0],
+        ['quarantine_audit_events', 0],
       ]),
     )
     assert.deepEqual(storage.sql.tableRows.get('devices'), [['device-1', 1, null, 10, 11]])
@@ -1663,7 +1664,7 @@ test('VaultRoom upgrades an existing v1 schema before serving SQL traffic', asyn
     assert(server instanceof FakeSocket)
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
 
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5, 6])
     assert.equal(
       storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
       1,
@@ -1700,7 +1701,7 @@ test('VaultRoom retries v2 schema migration after ALTER succeeds before recordin
     storage.sql.failOnQueryIncludes = undefined
     await room.webSocketMessage(server, JSON.stringify(makeHello()))
 
-    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5])
+    assert.deepEqual([...storage.sql.migrationVersions], [1, 2, 3, 4, 5, 6])
     assert.equal(
       storage.sql.queries.filter((query) => query.includes('alter table message_dedup')).length,
       2,
@@ -7085,7 +7086,7 @@ test('VaultRoom exposes authenticated quarantine list and detail inspection', as
   const listBody = await listResponse.json()
   assert.equal(v.is(QuarantinedUpdateListResponseSchema, listBody), true)
   assert.deepEqual(listBody, {
-    entries: [
+    items: [
       {
         id: 'q-message-bad',
         docId: { kind: 'meta' },
@@ -7113,7 +7114,7 @@ test('VaultRoom exposes authenticated quarantine list and detail inspection', as
   const detailBody = await detailResponse.json()
   assert.equal(v.is(QuarantinedUpdateDetailResponseSchema, detailBody), true)
   assert.deepEqual(detailBody, {
-    entry: listBody.entries[0],
+    entry: listBody.items[0],
     updateBytesBase64: 'AQID',
   })
 
@@ -7132,6 +7133,252 @@ test('VaultRoom exposes authenticated quarantine list and detail inspection', as
     retryable: false,
     detail: 'unknown-quarantine',
   })
+})
+
+test('GET /admin/quarantine paginates newest-first with a cursor', async () => {
+  const storage = new SqlOnlyStorage()
+  for (let index = 1; index <= 3; index += 1) {
+    storage.sql.quarantines.set(`q-message-${index}`, {
+      id: `q-message-${index}`,
+      docId: 'meta',
+      messageId: `message-${index}`,
+      deviceId: 'device-1',
+      reason: 'yjs-apply-failed',
+      updateSha256: 'a'.repeat(64),
+      updateBytes: Uint8Array.from([index]),
+      createdAt: index,
+    })
+  }
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+  const authHeader = {
+    Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, { tokenVersion: 1 })}`,
+  }
+
+  const firstPage = await room.fetch(
+    new Request('https://worker.example/admin/quarantine?limit=2', { headers: authHeader }),
+  )
+  assert.equal(firstPage.status, 200)
+  const firstBody = await firstPage.json()
+  assert.equal(v.is(QuarantinedUpdateListResponseSchema, firstBody), true)
+  assert.deepEqual(
+    firstBody.items.map((entry: { id: string }) => entry.id),
+    ['q-message-3', 'q-message-2'],
+  )
+  assert.equal(firstBody.nextCursor, '2:q-message-2')
+
+  const secondPage = await room.fetch(
+    new Request(`https://worker.example/admin/quarantine?limit=2&cursor=${firstBody.nextCursor}`, {
+      headers: authHeader,
+    }),
+  )
+  assert.equal(secondPage.status, 200)
+  const secondBody = await secondPage.json()
+  assert.deepEqual(
+    secondBody.items.map((entry: { id: string }) => entry.id),
+    ['q-message-1'],
+  )
+  assert.equal(secondBody.nextCursor, undefined)
+
+  const invalidLimit = await room.fetch(
+    new Request('https://worker.example/admin/quarantine?limit=0', { headers: authHeader }),
+  )
+  assert.equal(invalidLimit.status, 400)
+  assert.equal(v.is(ApiErrorSchema, await invalidLimit.json()), true)
+})
+
+test('POST /admin/quarantine/:id/force-apply merges the update, advances the op log, and records an audit entry', async () => {
+  const storage = new SqlOnlyStorage()
+  const state = new FakeState(storage)
+  const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+  storage.sql.docs.set('file:force-apply-file', {
+    kind: 'file',
+    latestSeq: 0,
+    latestSnapshotSeq: 0,
+    latestSnapshotKey: undefined,
+    minRetainedSeq: 0,
+    horizonStateVector: undefined,
+    updatedAt: 1,
+  })
+  const source = new Y.Doc()
+  source.getText('body').insert(0, 'hello')
+  const updateBytes = Y.encodeStateAsUpdate(source)
+  storage.sql.quarantines.set('q-force-apply', {
+    id: 'q-force-apply',
+    docId: 'file:force-apply-file',
+    messageId: 'message-force-apply',
+    deviceId: 'device-2',
+    reason: 'yjs-apply-failed',
+    updateSha256: 'a'.repeat(64),
+    updateBytes,
+    createdAt: 100,
+  })
+  const authHeader = {
+    Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, { tokenVersion: 1 })}`,
+  }
+
+  const dryRun = await room.fetch(
+    new Request('https://worker.example/admin/quarantine/q-force-apply/force-apply', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'dry-run' }),
+    }),
+  )
+  assert.equal(dryRun.status, 200)
+  const dryRunBody = await dryRun.json()
+  assert.equal(dryRunBody.confirmationRequired, true)
+  assert.deepEqual(dryRunBody.effects, [{ kind: 'quarantine-force-apply', count: 1, detail: 'seq=1' }])
+
+  const execute = await room.fetch(
+    new Request('https://worker.example/admin/quarantine/q-force-apply/force-apply', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'execute', confirmationToken: dryRunBody.confirmationToken }),
+    }),
+  )
+  assert.equal(execute.status, 200)
+  const executeBody = await execute.json()
+  assert.equal(executeBody.applied, true)
+  assert.deepEqual(executeBody.effects, [{ kind: 'quarantine-force-apply', count: 1, detail: 'seq=1' }])
+
+  assert.equal(storage.sql.quarantines.has('q-force-apply'), false)
+  assert.equal(storage.sql.docs.get('file:force-apply-file')?.latestSeq, 1)
+  assert.equal(
+    storage.sql.opLog.has('file:force-apply-file:message-force-apply'),
+    true,
+  )
+  assert.equal(
+    storage.sql.messageDedup.has('file:force-apply-file:message-force-apply'),
+    true,
+  )
+  assert.equal(room.docs.get('file:force-apply-file')?.getText('body').toJSON(), 'hello')
+  assert.equal(storage.sql.quarantineAuditEvents.length, 1)
+  const auditEvent = storage.sql.quarantineAuditEvents[0]
+  assert(auditEvent !== undefined)
+  assert.deepEqual(auditEvent, {
+    id: 1,
+    quarantineId: 'q-force-apply',
+    docId: 'file:force-apply-file',
+    messageId: 'message-force-apply',
+    deviceId: 'device-2',
+    reason: 'yjs-apply-failed',
+    action: 'force-applied-by-admin',
+    actor: 'device-1',
+    appliedSeq: 1,
+    quarantinedAt: 100,
+    resolvedAt: auditEvent.resolvedAt,
+  })
+
+  // The confirmation token is single-use; replaying it must fail closed.
+  const replay = await room.fetch(
+    new Request('https://worker.example/admin/quarantine/q-force-apply/force-apply', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'execute', confirmationToken: dryRunBody.confirmationToken }),
+    }),
+  )
+  assert.equal(replay.status, 404)
+  source.destroy()
+})
+
+test('POST /admin/quarantine/:id/discard removes the row and records an audit entry without touching the op log', async () => {
+  const storage = new SqlOnlyStorage()
+  storage.sql.quarantines.set('q-discard', {
+    id: 'q-discard',
+    docId: 'meta',
+    messageId: 'message-discard',
+    deviceId: 'device-2',
+    reason: 'hash-mismatch',
+    updateSha256: 'a'.repeat(64),
+    updateBytes: Uint8Array.from([9]),
+    createdAt: 200,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+  const authHeader = {
+    Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, { tokenVersion: 1 })}`,
+  }
+
+  const dryRun = await room.fetch(
+    new Request('https://worker.example/admin/quarantine/q-discard/discard', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'dry-run' }),
+    }),
+  )
+  assert.equal(dryRun.status, 200)
+  const dryRunBody = await dryRun.json()
+
+  const execute = await room.fetch(
+    new Request('https://worker.example/admin/quarantine/q-discard/discard', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'execute', confirmationToken: dryRunBody.confirmationToken }),
+    }),
+  )
+  assert.equal(execute.status, 200)
+
+  assert.equal(storage.sql.quarantines.has('q-discard'), false)
+  assert.equal(storage.sql.opLog.size, 0)
+  assert.equal(storage.sql.quarantineAuditEvents.length, 1)
+  assert.equal(storage.sql.quarantineAuditEvents[0]?.action, 'discarded-by-admin')
+  assert.equal(storage.sql.quarantineAuditEvents[0]?.actor, 'device-1')
+  assert.equal(storage.sql.quarantineAuditEvents[0]?.appliedSeq, undefined)
+})
+
+test('GET /admin/quarantine/audit paginates the resolved-quarantine trail newest-first', async () => {
+  const storage = new SqlOnlyStorage()
+  for (let index = 1; index <= 3; index += 1) {
+    storage.sql.quarantineAuditEvents.push({
+      id: index,
+      quarantineId: `q-${index}`,
+      docId: 'meta',
+      messageId: `message-${index}`,
+      deviceId: 'device-2',
+      reason: 'hash-mismatch',
+      action: 'discarded-by-admin',
+      actor: 'device-1',
+      appliedSeq: undefined,
+      quarantinedAt: index,
+      resolvedAt: index + 100,
+    })
+  }
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+  const authHeader = {
+    Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, { tokenVersion: 1 })}`,
+  }
+
+  const firstPage = await room.fetch(
+    new Request('https://worker.example/admin/quarantine/audit?limit=2', { headers: authHeader }),
+  )
+  assert.equal(firstPage.status, 200)
+  const firstBody = await firstPage.json()
+  assert.deepEqual(
+    firstBody.items.map((entry: { quarantineId: string }) => entry.quarantineId),
+    ['q-3', 'q-2'],
+  )
+  assert.equal(firstBody.nextCursor, '2')
+
+  const secondPage = await room.fetch(
+    new Request(
+      `https://worker.example/admin/quarantine/audit?limit=2&cursor=${firstBody.nextCursor}`,
+      { headers: authHeader },
+    ),
+  )
+  assert.equal(secondPage.status, 200)
+  const secondBody = await secondPage.json()
+  assert.deepEqual(
+    secondBody.items.map((entry: { quarantineId: string }) => entry.quarantineId),
+    ['q-1'],
+  )
+  assert.equal(secondBody.nextCursor, undefined)
 })
 
 test('VaultRoom serves the latest meta snapshot from the production HTTP route', async () => {

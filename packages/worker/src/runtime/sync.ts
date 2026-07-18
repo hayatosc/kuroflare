@@ -1,6 +1,7 @@
 import {
   CURRENT_PROTOCOL_VERSION,
   makeSha256Hex,
+  type DeviceId,
   type DocId,
   type SyncRequest,
   type SyncUpdate,
@@ -8,16 +9,24 @@ import {
 import * as Y from 'yjs'
 
 import {
+  deleteQuarantinedUpdate,
   getLatestSnapshotHealthEvent,
   getAllLatestSnapshotHealthEvents,
   getSnapshotRetentionCheckpointRuns,
   insertQuarantinedUpdate,
+  insertQuarantineAuditEvent,
   insertSnapshotHealthEvent,
 } from '../db/checkpointRepo'
 import type { SnapshotHealthEventRow } from '../db/checkpointRepo'
 import { getOpLogUpdatesBetween, getOpLogUpdatesSince } from '../db/docRepo'
 import { insertOpLog, upsertDocClock, upsertMessageDedup } from '../db/docRepo'
 import { readSqlUpdateBytes } from '../db/helpers'
+import type {
+  QuarantinedUpdateDeletePatch,
+  QuarantinedUpdateForceApplyDocPatch,
+  QuarantinedUpdateForceApplyOpLogAppend,
+  QuarantinedUpdateRecord,
+} from '../quarantine'
 import { decideSyncRequest, type SyncRequestDocState } from '../sync/request'
 import {
   verifySnapshotObject,
@@ -489,14 +498,112 @@ async function persistAppend(
   })
 }
 
-function applyUpdate(room: VaultRoom, docId: DocId, updateBytes: Uint8Array): void {
+/** Discards a quarantined update: deletes the row and records the resolution audit trail. */
+export async function persistQuarantineDiscard(
+  room: VaultRoom,
+  record: QuarantinedUpdateRecord,
+  deletePatch: QuarantinedUpdateDeletePatch,
+  actor: DeviceId,
+): Promise<void> {
+  const db = getDb(room)
+  if (db === undefined) throw new Error('sql-unavailable')
+
+  await withSqlTransaction(room, async () => {
+    await deleteQuarantinedUpdate(db, deletePatch.id)
+    await insertQuarantineAuditEvent(
+      db,
+      record.id,
+      docKey(record.docId),
+      record.messageId,
+      record.deviceId,
+      record.reason,
+      deletePatch.reason,
+      actor,
+      null,
+      record.createdAt,
+      deletePatch.deletedAt,
+    )
+  })
+  logEvent('quarantine-resolved', {
+    vaultId: room.vaultId,
+    docId: record.docId,
+    quarantineId: record.id,
+    action: deletePatch.reason,
+    actor,
+  })
+}
+
+/**
+ * Force-applies a quarantined update: appends it to the op log and document clock,
+ * registers message dedup (so a later resend of the same messageId acks normally),
+ * deletes the quarantine row, and records the resolution audit trail.
+ */
+export async function persistQuarantineForceApply(
+  room: VaultRoom,
+  record: QuarantinedUpdateRecord,
+  updateBytes: Uint8Array,
+  opLogAppend: QuarantinedUpdateForceApplyOpLogAppend,
+  docPatch: QuarantinedUpdateForceApplyDocPatch,
+  deletePatch: QuarantinedUpdateDeletePatch,
+  actor: DeviceId,
+): Promise<void> {
+  const db = getDb(room)
+  if (db === undefined) throw new Error('sql-unavailable')
+
+  const docId = docKey(record.docId)
+  await withSqlTransaction(room, async () => {
+    await insertOpLog(
+      db,
+      docId,
+      opLogAppend.seq,
+      opLogAppend.messageId,
+      opLogAppend.deviceId,
+      updateBytes,
+      opLogAppend.updateSha256,
+      opLogAppend.createdAt,
+    )
+    await upsertDocClock(db, docId, record.docId.kind, docPatch.latestSeq, docPatch.updatedAt)
+    await upsertMessageDedup(
+      db,
+      docId,
+      opLogAppend.messageId,
+      opLogAppend.seq,
+      opLogAppend.updateSha256,
+      opLogAppend.createdAt,
+    )
+    await deleteQuarantinedUpdate(db, deletePatch.id)
+    await insertQuarantineAuditEvent(
+      db,
+      record.id,
+      docId,
+      record.messageId,
+      record.deviceId,
+      record.reason,
+      deletePatch.reason,
+      actor,
+      opLogAppend.seq,
+      record.createdAt,
+      deletePatch.deletedAt,
+    )
+  })
+  logEvent('quarantine-resolved', {
+    vaultId: room.vaultId,
+    docId: record.docId,
+    quarantineId: record.id,
+    action: deletePatch.reason,
+    actor,
+    appliedSeq: opLogAppend.seq,
+  })
+}
+
+export function applyUpdate(room: VaultRoom, docId: DocId, updateBytes: Uint8Array): void {
   const key = docKey(docId)
   const doc = room.docs.get(key) ?? new Y.Doc()
   room.docs.set(key, doc)
   Y.applyUpdate(doc, updateBytes)
 }
 
-async function rehydrateAfterApplyFailure(room: VaultRoom, docId: DocId): Promise<void> {
+export async function rehydrateAfterApplyFailure(room: VaultRoom, docId: DocId): Promise<void> {
   const key = docKey(docId)
   const current = room.docs.get(key)
   room.docs.delete(key)
@@ -529,7 +636,7 @@ export async function rehydrateAfterDocPointer(room: VaultRoom, docId: DocId): P
   await ensureDocHydrated(room, docId)
 }
 
-function metaSchemaValidAfterUpdate(room: VaultRoom, updateBytes: Uint8Array): boolean {
+export function metaSchemaValidAfterUpdate(room: VaultRoom, updateBytes: Uint8Array): boolean {
   const doc = room.docs.get(docKey({ kind: 'meta' }))
   if (doc === undefined) return false
   const currentDisposition = metaYDocSchemaDisposition(doc)
@@ -874,7 +981,7 @@ export async function listR2Objects(
   }
 }
 
-async function scheduleCheckpointAfterAppend(
+export async function scheduleCheckpointAfterAppend(
   room: VaultRoom,
   docId: DocId,
   latestSeq: number,

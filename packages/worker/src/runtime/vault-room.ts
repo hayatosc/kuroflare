@@ -38,6 +38,8 @@ import {
   handleDeviceRevoke,
   handleQuarantineList,
   handleQuarantineDetail,
+  handleQuarantineAudit,
+  handleQuarantineAction,
   handleRetentionInspect,
   handleSnapshotHealthList,
   handleSnapshotHealthVerify,
@@ -88,7 +90,12 @@ export class VaultRoom {
       .post('/auth/refresh', (c) => handleAuthRefresh(this, c))
       .post('/devices/:deviceId/revoke', (c) => handleDeviceRevoke(this, c))
       .get('/admin/quarantine', (c) => handleQuarantineList(this, c))
+      .get('/admin/quarantine/audit', (c) => handleQuarantineAudit(this, c))
       .get('/admin/quarantine/:id', (c) => handleQuarantineDetail(this, c))
+      .post('/admin/quarantine/:id/discard', (c) => handleQuarantineAction(this, c, 'discard'))
+      .post('/admin/quarantine/:id/force-apply', (c) =>
+        handleQuarantineAction(this, c, 'force-apply'),
+      )
       .get('/admin/retention', (c) => handleRetentionInspect(this, c))
       .get('/admin/snapshots', (c) => handleSnapshotHealthList(this, c))
       .post('/admin/snapshots/verify', (c) => handleSnapshotHealthVerify(this, c))

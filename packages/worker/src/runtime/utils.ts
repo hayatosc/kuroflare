@@ -16,6 +16,8 @@ import {
   type ApiErrorCode,
   type DeviceId,
   type DocId,
+  type QuarantineAuditAction,
+  type QuarantineAuditEntry,
   type Sha256Hex,
   type SyncUpdate,
   type MetaValueDisposition,
@@ -26,7 +28,7 @@ import * as v from 'valibot'
 import * as Y from 'yjs'
 
 import { type CheckpointRunStatus } from '../checkpoint/checkpoint'
-import { type QuarantinedUpdateRow } from '../db/checkpointRepo'
+import { type QuarantineAuditEventRow, type QuarantinedUpdateRow } from '../db/checkpointRepo'
 import { readSqlUpdateBytes } from '../db/helpers'
 import type { QuarantinedUpdateRecord } from '../quarantine'
 import { type SnapshotCandidate } from '../sync/snapshots'
@@ -230,6 +232,42 @@ export function isQuarantineReason(value: unknown): value is QuarantinedUpdateRe
   return (
     value === 'hash-mismatch' || value === 'yjs-apply-failed' || value === 'meta-schema-invalid'
   )
+}
+
+export function isQuarantineAuditAction(value: unknown): value is QuarantineAuditAction {
+  return value === 'discarded-by-admin' || value === 'force-applied-by-admin'
+}
+
+export function quarantineAuditEntryFromSqlRow(
+  row: QuarantineAuditEventRow,
+): QuarantineAuditEntry | undefined {
+  const docId = docIdFromKey(row.docId)
+  if (
+    docId === undefined ||
+    !v.is(MessageIdSchema, row.messageId) ||
+    !v.is(DeviceIdSchema, row.deviceId) ||
+    !isQuarantineReason(row.reason) ||
+    !isQuarantineAuditAction(row.action) ||
+    !v.is(DeviceIdSchema, row.actor) ||
+    !v.is(NonNegIntSchema, row.quarantinedAt) ||
+    !v.is(NonNegIntSchema, row.resolvedAt) ||
+    (row.appliedSeq !== null && !v.is(PosIntSchema, row.appliedSeq))
+  ) {
+    return undefined
+  }
+
+  return {
+    quarantineId: row.quarantineId,
+    docId,
+    messageId: row.messageId,
+    deviceId: row.deviceId,
+    reason: row.reason,
+    action: row.action,
+    actor: row.actor,
+    ...(row.appliedSeq === null ? {} : { appliedSeq: row.appliedSeq }),
+    quarantinedAt: row.quarantinedAt,
+    resolvedAt: row.resolvedAt,
+  }
 }
 
 export function isStoredQuarantineConfirmation(value: unknown): value is {

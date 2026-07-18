@@ -69,6 +69,10 @@ export class MemoryStorage implements DurableObjectStorageBinding {
     this.values.set(key, value)
   }
 
+  async delete(key: string): Promise<boolean> {
+    return this.values.delete(key)
+  }
+
   async setAlarm(scheduledTime: number | Date): Promise<void> {
     this.alarms.push(scheduledTime)
   }
@@ -240,6 +244,10 @@ export class SqlOnlyStorage implements DurableObjectStorageBinding {
 
   async put<T>(key: string, value: T): Promise<void> {
     this.values.set(key, value)
+  }
+
+  async delete(key: string): Promise<boolean> {
+    return this.values.delete(key)
   }
 
   async setAlarm(scheduledTime: number | Date): Promise<void> {

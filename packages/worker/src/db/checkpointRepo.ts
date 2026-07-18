@@ -506,3 +506,79 @@ export async function getQuarantinedUpdateBytes(
 export async function deleteQuarantinedUpdate(db: Kysely<Database>, id: string): Promise<void> {
   await db.deleteFrom('quarantined_updates').where('id', '=', id).execute()
 }
+
+/** One append-only audit row recorded when an operator resolves a quarantined update. */
+export interface QuarantineAuditEventRow {
+  readonly id: number
+  readonly quarantineId: string
+  readonly docId: string
+  readonly messageId: string
+  readonly deviceId: string
+  readonly reason: string
+  readonly action: string
+  readonly actor: string
+  readonly appliedSeq: number | null
+  readonly quarantinedAt: number
+  readonly resolvedAt: number
+}
+
+export async function insertQuarantineAuditEvent(
+  db: Kysely<Database>,
+  quarantineId: string,
+  docKey: string,
+  messageId: string,
+  deviceId: string,
+  reason: string,
+  action: string,
+  actor: string,
+  appliedSeq: number | null,
+  quarantinedAt: number,
+  resolvedAt: number,
+): Promise<void> {
+  await db
+    .insertInto('quarantine_audit_events')
+    .values({
+      quarantine_id: quarantineId,
+      doc_id: docKey,
+      message_id: messageId,
+      device_id: deviceId,
+      reason,
+      action,
+      actor,
+      applied_seq: appliedSeq,
+      quarantined_at: quarantinedAt,
+      resolved_at: resolvedAt,
+    })
+    .execute()
+}
+
+/**
+ * Lists quarantine audit events newest-first, keyed by the autoincrement row `id`
+ * (unique and insertion-ordered, unlike `resolved_at` which can tie).
+ *
+ * @param cursor When set, only returns events with `id` strictly below it —
+ *   i.e. the `id` of the last item from the previous page.
+ */
+export async function getQuarantineAuditEvents(
+  db: Kysely<Database>,
+  limit: number,
+  cursor: number | undefined,
+): Promise<readonly QuarantineAuditEventRow[]> {
+  const query = db.selectFrom('quarantine_audit_events').select((eb) => [
+    eb.ref('id').as('id'),
+    eb.ref('quarantine_id').as('quarantineId'),
+    eb.ref('doc_id').as('docId'),
+    eb.ref('message_id').as('messageId'),
+    eb.ref('device_id').as('deviceId'),
+    'reason',
+    'action',
+    'actor',
+    eb.ref('applied_seq').as('appliedSeq'),
+    eb.ref('quarantined_at').as('quarantinedAt'),
+    eb.ref('resolved_at').as('resolvedAt'),
+  ])
+  return (cursor === undefined ? query : query.where('id', '<', cursor))
+    .orderBy('id', 'desc')
+    .limit(limit)
+    .execute()
+}

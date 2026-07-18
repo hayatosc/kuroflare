@@ -613,3 +613,106 @@ test('real SQLite snapshot health queries select latest events per generation', 
     ],
   })
 })
+
+test('force-applying a quarantined update against real SQLite appends it and records an audit entry', async () => {
+  await seedDevices([DEVICE_A])
+  const ydocId = makeYDocId('ydoc-quarantine-force-apply')
+  const docKey = `file:${ydocId}`
+  const source = new Y.Doc()
+  source.getText('body').insert(0, 'hello')
+  const updateBytes = Y.encodeStateAsUpdate(source)
+  source.destroy()
+
+  await runInDurableObject(roomStub(), async (_instance, state) => {
+    const sql = state.storage.sql
+    const db = createDb(sql)
+    for (const migration of SCHEMA_MIGRATIONS) {
+      await migration.migrate(db)
+    }
+    const now = Date.now()
+    sql.exec(
+      'insert into docs (doc_id, kind, latest_seq, latest_snapshot_seq, min_retained_seq, updated_at) values (?, ?, ?, ?, ?, ?)',
+      docKey,
+      'file',
+      0,
+      0,
+      0,
+      now,
+    )
+    sql.exec(
+      'insert into quarantined_updates (id, doc_id, message_id, device_id, reason, update_sha256, update_bytes, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+      'q-force-apply-e2e',
+      docKey,
+      'message-force-apply-e2e',
+      DEVICE_A.deviceId,
+      'yjs-apply-failed',
+      'a'.repeat(64),
+      updateBytes,
+      now,
+    )
+  })
+
+  const token = await mintAccessToken(DEVICE_A.deviceId)
+  const dryRun = await roomStub().fetch(
+    new Request('https://kuroflare.test/admin/quarantine/q-force-apply-e2e/force-apply', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'dry-run' }),
+    }),
+  )
+  expect(dryRun.status).toBe(200)
+  const dryRunBody: { readonly confirmationToken: string } = await dryRun.json()
+
+  const execute = await roomStub().fetch(
+    new Request('https://kuroflare.test/admin/quarantine/q-force-apply-e2e/force-apply', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'execute',
+        confirmationToken: dryRunBody.confirmationToken,
+      }),
+    }),
+  )
+  expect(execute.status).toBe(200)
+  expect(await execute.json()).toMatchObject({ applied: true })
+
+  await runInDurableObject(roomStub(), async (_instance, state) => {
+    const sql = state.storage.sql
+    const [remainingQuarantine] = [
+      ...sql.exec<{ readonly count: number }>('select count(*) as count from quarantined_updates'),
+    ]
+    expect(remainingQuarantine?.count).toBe(0)
+    const [doc] = [
+      ...sql.exec<{ readonly latestSeq: number }>(
+        'select latest_seq as latestSeq from docs where doc_id = ?',
+        docKey,
+      ),
+    ]
+    expect(doc?.latestSeq).toBe(1)
+    const [opLogRow] = [
+      ...sql.exec<{ readonly count: number }>(
+        'select count(*) as count from op_log where doc_id = ? and seq = ?',
+        docKey,
+        1,
+      ),
+    ]
+    expect(opLogRow?.count).toBe(1)
+  })
+
+  const auditResponse = await roomStub().fetch(
+    new Request('https://kuroflare.test/admin/quarantine/audit', {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  )
+  expect(auditResponse.status).toBe(200)
+  expect(await auditResponse.json()).toMatchObject({
+    items: [
+      {
+        quarantineId: 'q-force-apply-e2e',
+        action: 'force-applied-by-admin',
+        actor: DEVICE_A.deviceId,
+        appliedSeq: 1,
+      },
+    ],
+  })
+})

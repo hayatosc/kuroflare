@@ -12,6 +12,7 @@ export const BLOB_MULTIPART_THRESHOLD_BYTES = 16 * 1024 * 1024
 export const BLOB_SINGLE_PUT_MAX_BYTES = BLOB_MULTIPART_THRESHOLD_BYTES - 1
 export const BLOB_MANIFEST_MAX_BYTES = 1024 * 1024
 export const BLOB_UPLOAD_URL_TTL_MS = 10 * 60 * 1_000
+export const QUARANTINE_CONFIRMATION_TTL_MS = 5 * 60 * 1_000
 export const VAULT_ID_STORAGE_KEY = 'vault:id'
 // deliberate: the DO runtime doesn't expose byte-level heap accounting, so
 // resident file-doc count is used as a coarse memory-pressure proxy instead of

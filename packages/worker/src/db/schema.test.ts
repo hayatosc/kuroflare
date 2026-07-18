@@ -13,7 +13,7 @@ test('bundled schema migrations are accepted by the migration decision', () => {
     {
       action: 'apply-migrations',
       fromVersion: 0,
-      toVersion: 5,
+      toVersion: 6,
       migrations: SCHEMA_MIGRATIONS,
     },
   )
@@ -27,14 +27,14 @@ test('bundled schema migrations are accepted by the migration decision', () => {
     {
       action: 'apply-migrations',
       fromVersion: 1,
-      toVersion: 5,
+      toVersion: 6,
       migrations: SCHEMA_MIGRATIONS.slice(1),
     },
   )
 })
 
 test('initial schema migration has correct metadata', () => {
-  assert.equal(SCHEMA_MIGRATIONS.length, 5)
+  assert.equal(SCHEMA_MIGRATIONS.length, 6)
 
   const [initialMigration] = SCHEMA_MIGRATIONS
   assert.ok(initialMigration)
@@ -65,4 +65,10 @@ test('initial schema migration has correct metadata', () => {
   assert.equal(blobMultipartMigration.version, 5)
   assert.equal(blobMultipartMigration.name, 'blob-multipart-uploads')
   assert.equal(typeof blobMultipartMigration.migrate, 'function')
+
+  const quarantineAuditMigration = SCHEMA_MIGRATIONS[5]
+  if (quarantineAuditMigration === undefined) throw new Error('missing quarantine audit migration')
+  assert.equal(quarantineAuditMigration.version, 6)
+  assert.equal(quarantineAuditMigration.name, 'quarantine-audit-events')
+  assert.equal(typeof quarantineAuditMigration.migrate, 'function')
 })

@@ -90,13 +90,18 @@ export function quarantineConfirmationSubject(
 /**
  * Builds a quarantine list response without including update bytes.
  *
- * @param records Quarantine rows from storage.
+ * @param records Page of quarantine rows from storage, newest first.
+ * @param nextCursor Cursor for the next page, when more rows remain.
  * @returns Protocol response for the list endpoint.
  */
 export function buildQuarantinedUpdateListResponse(
   records: readonly QuarantinedUpdateRecord[],
+  nextCursor: string | undefined,
 ): QuarantinedUpdateListResponse {
-  return { entries: records.map(quarantinedUpdateEntryFromRecord) }
+  return {
+    items: records.map(quarantinedUpdateEntryFromRecord),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  }
 }
 
 /**
@@ -214,7 +219,13 @@ function quarantinedUpdateEntryFromRecord(record: QuarantinedUpdateRecord): Quar
   }
 }
 
-function effectFromAdminDecision(
+/**
+ * Builds the `AdminOperationEffect` preview/result entry for a discard or force-apply decision.
+ *
+ * @param decision Resolved discard or force-apply admin decision.
+ * @returns The single effect describing the mutation.
+ */
+export function effectFromAdminDecision(
   decision: Extract<QuarantinedUpdateAdminDecision, { readonly action: 'discard' | 'force-apply' }>,
 ): AdminOperationEffect {
   if (decision.action === 'discard') {

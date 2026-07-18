@@ -105,6 +105,20 @@ export interface RecordedSnapshotRetentionEventRow {
   readonly attemptedAt: number
 }
 
+export interface RecordedQuarantineAuditEventRow {
+  readonly id: number
+  readonly quarantineId: string
+  readonly docId: string
+  readonly messageId: string
+  readonly deviceId: string
+  readonly reason: string
+  readonly action: string
+  readonly actor: string
+  readonly appliedSeq: number | undefined
+  readonly quarantinedAt: number
+  readonly resolvedAt: number
+}
+
 export interface RecordedSnapshotHealthEventRow {
   readonly id: number
   readonly docId: string
@@ -148,6 +162,7 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
   readonly quarantines = new Map<string, RecordedQuarantineRow>()
   readonly checkpointRuns = new Map<string, RecordedCheckpointRunRow>()
   readonly snapshotRetentionEvents: RecordedSnapshotRetentionEventRow[] = []
+  readonly quarantineAuditEvents: RecordedQuarantineAuditEventRow[] = []
   readonly snapshotHealthEvents: RecordedSnapshotHealthEventRow[] = []
   readonly setupTokens = new Map<string, RecordedSetupTokenRow>()
   readonly refreshTokens = new Map<string, RecordedRefreshTokenRow>()
@@ -837,6 +852,10 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       })
       return []
     }
+    if (normalized.includes('delete from quarantined_updates')) {
+      this.quarantines.delete(expectString(bindings[0]))
+      return []
+    }
     if (normalized.includes('from quarantined_updates') && normalized.includes('where id')) {
       const id = expectString(bindings[0])
       const row = this.quarantines.get(id)
@@ -847,6 +866,45 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       const rows = [...this.quarantines.values()]
         .sort((left, right) => left.createdAt - right.createdAt)
         .map(quarantineSqlRow)
+      return rows as Iterable<T>
+    }
+    if (normalized.includes('insert into quarantine_audit_events')) {
+      this.quarantineAuditEvents.push({
+        id: this.quarantineAuditEvents.length + 1,
+        quarantineId: expectString(bindings[0]),
+        docId: expectString(bindings[1]),
+        messageId: expectString(bindings[2]),
+        deviceId: expectString(bindings[3]),
+        reason: expectString(bindings[4]),
+        action: expectString(bindings[5]),
+        actor: expectString(bindings[6]),
+        appliedSeq: bindings[7] === null ? undefined : expectNumber(bindings[7]),
+        quarantinedAt: expectNumber(bindings[8]),
+        resolvedAt: expectNumber(bindings[9]),
+      })
+      return []
+    }
+    if (normalized.includes('from quarantine_audit_events')) {
+      const hasCursor = normalized.includes('where id <')
+      const cursor = hasCursor ? expectNumber(bindings[0]) : undefined
+      const limit = expectNumber(bindings[hasCursor ? 1 : 0])
+      const rows = [...this.quarantineAuditEvents]
+        .filter((event) => cursor === undefined || event.id < cursor)
+        .sort((left, right) => right.id - left.id)
+        .slice(0, limit)
+        .map((event) => ({
+          id: event.id,
+          quarantineId: event.quarantineId,
+          docId: event.docId,
+          messageId: event.messageId,
+          deviceId: event.deviceId,
+          reason: event.reason,
+          action: event.action,
+          actor: event.actor,
+          appliedSeq: event.appliedSeq ?? null,
+          quarantinedAt: event.quarantinedAt,
+          resolvedAt: event.resolvedAt,
+        }))
       return rows as Iterable<T>
     }
     if (normalized.includes('insert into checkpoint_runs')) {
