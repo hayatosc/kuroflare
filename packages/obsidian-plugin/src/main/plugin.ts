@@ -70,11 +70,6 @@ import {
   runNeedFullSnapshotRecovery,
   type VerifiedFullSnapshotBytes,
 } from '../sync/engine/snapshot'
-import {
-  createSyncRuntimeWebSocketSession,
-  type SyncRuntimeWebSocketSessionPort,
-  type SyncRuntimeWebSocketStartupStepPort,
-} from '../sync/engine/websocket'
 import { reconcileMetaDoc } from '../sync/meta/reconcile'
 import {
   createSyncRuntimeObsidianComposition,
@@ -112,6 +107,11 @@ import {
   LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
 } from '../sync/store/schema'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
+import {
+  createSyncRuntimeWebSocketSession,
+  type SyncRuntimeWebSocketSessionPort,
+} from '../sync/transport/socket'
+import type { SyncRuntimeWebSocketStartupStepPort } from '../sync/transport/startup'
 import {
   activeDocId,
   cancelAuthRefreshStartupRetry,

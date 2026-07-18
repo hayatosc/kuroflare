@@ -1,17 +1,63 @@
-import { CURRENT_PROTOCOL_VERSION, type ClientCapability, type ClientHello } from '@kuroflare/core'
+import {
+  CURRENT_PROTOCOL_VERSION,
+  type ClientCapability,
+  type ClientHello,
+  type HelloAccepted,
+} from '@kuroflare/core'
 
-import { type SyncRuntimeStartupStepEffect } from '../../engine/actuation'
-import { type LocalSetupMetadata } from '../../engine/setup'
+import { type SyncRuntimeStartupStepEffect } from '../engine/actuation'
+import { type SyncRuntimeWebSocketStepPort } from '../engine/actuation.types'
+import { type LocalSetupMetadata } from '../engine/setup'
 import {
-  type SyncRuntimeWebSocketConnection,
-  type SyncRuntimeWebSocketStartupStepPort,
-  type SyncRuntimeWebSocketStepPortInput,
-} from '../../engine/websocket.types'
-import {
+  type SyncRuntimeWebSocketInboundMessageHandler,
   attachSyncRuntimeWebSocketInboundMessageHandler,
   planSyncRuntimeWebSocketHelloAdmission,
 } from './inbound'
-import { buildSyncRuntimeWebSocketProtocols, buildSyncRuntimeWebSocketUrl } from './url'
+import {
+  type SyncRuntimeWebSocketConnection,
+  type SyncRuntimeWebSocketAccessTokenReaderPort,
+  type SyncRuntimeWebSocketFactoryPort,
+  type SyncRuntimeWebSocketSessionPort,
+} from './socket'
+import { buildSyncRuntimeWebSocketProtocols, buildSyncRuntimeWebSocketUrl } from './socket'
+
+/** Trusted startup metadata needed to open the authenticated sync WebSocket. */
+export interface SyncRuntimeWebSocketStartupMetadata {
+  readonly setup: LocalSetupMetadata
+  readonly accessTokenSecretKey: string
+}
+
+/** Input for creating the startup WebSocket step port. */
+export interface SyncRuntimeWebSocketStepPortInput {
+  readonly metadata: SyncRuntimeWebSocketStartupMetadata
+  readonly tokenReader: SyncRuntimeWebSocketAccessTokenReaderPort
+  readonly webSocket: SyncRuntimeWebSocketFactoryPort
+  readonly capabilities?: readonly ClientCapability[] | undefined
+  readonly onInboundMessage?: SyncRuntimeWebSocketInboundMessageHandler | undefined
+  readonly onHelloAccepted?: ((message: HelloAccepted) => void) | undefined
+  /** Notifies the host when an authenticated connection closes or errors. */
+  readonly onConnectionIssue?:
+    | ((issue: {
+        readonly kind: 'close' | 'error'
+        readonly code?: number | undefined
+        readonly reason?: string | undefined
+      }) => void)
+    | undefined
+  readonly session?: SyncRuntimeWebSocketSessionPort | undefined
+}
+
+/** Observable state captured by the WebSocket startup step port. */
+export interface SyncRuntimeWebSocketStepPortState {
+  readonly connectionUrl: string | undefined
+  readonly hello: ClientHello | undefined
+  readonly socketReadyState: number | undefined
+}
+
+/** WebSocket step port plus observable state for tests and lifecycle logging. */
+export interface SyncRuntimeWebSocketStartupStepPort extends SyncRuntimeWebSocketStepPort {
+  /** Returns current WebSocket startup state without exposing token material. */
+  snapshot(): SyncRuntimeWebSocketStepPortState
+}
 
 /**
  * Creates the concrete startup WebSocket step port used by the Obsidian runtime.

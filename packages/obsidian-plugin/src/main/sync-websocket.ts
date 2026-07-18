@@ -4,27 +4,35 @@ import * as Y from 'yjs'
 import type { FileDocId } from '../main-types'
 import type { LocalSetupMetadata } from '../sync/engine/setup'
 import {
-  createSyncRuntimeWebSocketStartupStepPort,
-  createBrowserSyncRuntimeWebSocketFactory,
-  createSyncRuntimeWebSocketAwarenessApplyPort,
-  createSyncRuntimeWebSocketAwarenessSendPort,
-  createSyncRuntimeWebSocketSyncRequestSendPort,
-  createSyncRuntimeWebSocketOutboxCompletionPort,
-  createSyncRuntimeWebSocketRemoteUpdateApplyPort,
-  createSyncRuntimeWebSocketYjsRemoteUpdateApplyPort,
-  createSyncRuntimeWebSocketRemoteUpdateIndexedDbCommitPort,
-  createSyncRuntimeWebSocketRemoteUpdateIndexedDbDatabasePort,
-  createSyncRuntimeWebSocketSyncRequestAnswerPort,
-  dispatchSyncRuntimeWebSocketInboundMessage,
-  type SyncRuntimeWebSocketStartupStepPort,
-  type SyncRuntimeWebSocketSessionPort,
-  type SyncRuntimeWebSocketInboundMessage,
-} from '../sync/engine/websocket'
-import {
   commitLocalStoreIndexedDbDatabaseTransaction,
   createLocalStoreIndexedDbDatabasePort,
 } from '../sync/store/indexeddb'
 import { type LocalStoreOutboxRecord } from '../sync/store/store'
+import {
+  createSyncRuntimeWebSocketAwarenessApplyPort,
+  createSyncRuntimeWebSocketOutboxCompletionPort,
+  dispatchSyncRuntimeWebSocketInboundMessage,
+  type SyncRuntimeWebSocketInboundMessage,
+} from '../sync/transport/inbound'
+import {
+  createSyncRuntimeWebSocketAwarenessSendPort,
+  createSyncRuntimeWebSocketSyncRequestAnswerPort,
+  createSyncRuntimeWebSocketSyncRequestSendPort,
+} from '../sync/transport/outbound'
+import {
+  createSyncRuntimeWebSocketRemoteUpdateApplyPort,
+  createSyncRuntimeWebSocketYjsRemoteUpdateApplyPort,
+  createSyncRuntimeWebSocketRemoteUpdateIndexedDbCommitPort,
+  createSyncRuntimeWebSocketRemoteUpdateIndexedDbDatabasePort,
+} from '../sync/transport/remote-update'
+import {
+  createBrowserSyncRuntimeWebSocketFactory,
+  type SyncRuntimeWebSocketSessionPort,
+} from '../sync/transport/socket'
+import {
+  createSyncRuntimeWebSocketStartupStepPort,
+  type SyncRuntimeWebSocketStartupStepPort,
+} from '../sync/transport/startup'
 import {
   currentSetupMetadata,
   ensureUsableAccessToken,

@@ -14,8 +14,8 @@ import { LocalAwareness } from '../editor/awareness'
 import {
   createBrowserSyncRuntimeWebSocketFactory,
   createSyncRuntimeWebSocketSession,
-  createSyncRuntimeWebSocketStartupStepPort,
-} from '../sync/engine/websocket'
+} from '../sync/transport/socket'
+import { createSyncRuntimeWebSocketStartupStepPort } from '../sync/transport/startup'
 import type KuroflareSpikePlugin from './plugin'
 import {
   openWorkerWebSocket,

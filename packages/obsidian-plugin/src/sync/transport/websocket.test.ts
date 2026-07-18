@@ -16,46 +16,52 @@ import {
 import { assert, expect, test } from 'vitest'
 import * as Y from 'yjs'
 
+import { type LocalStoreOutboxRecord } from '../store/store'
 import {
   attachSyncRuntimeWebSocketInboundMessageHandler,
-  buildSyncRuntimeWebSocketProtocols,
-  buildSyncRuntimeWebSocketUrl,
   createSyncRuntimeWebSocketAwarenessApplyPort,
-  createSyncRuntimeWebSocketAwarenessSendPort,
   createSyncRuntimeWebSocketOutboxCompletionPort,
-  createSyncRuntimeWebSocketOutboxSendPort,
-  createSyncRuntimeWebSocketRemoteUpdateApplyPort,
-  createSyncRuntimeWebSocketSession,
-  createSyncRuntimeWebSocketStartupStepPort,
-  createSyncRuntimeWebSocketSyncRequestAnswerPort,
-  createSyncRuntimeWebSocketSyncRequestSendPort,
-  createSyncRuntimeWebSocketYjsRemoteUpdateApplyPort,
-  decodeSyncRuntimeWebSocketRemoteUpdate,
   dispatchSyncRuntimeWebSocketInboundMessage,
   parseSyncRuntimeWebSocketMessage,
   planSyncRuntimeWebSocketHelloAdmission,
   planSyncRuntimeWebSocketInboundRoute,
   planSyncRuntimeWebSocketOutboxCompletion,
-  planSyncRuntimeWebSocketOutboxSend,
-  planSyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction,
-  planSyncRuntimeWebSocketAwarenessSend,
-  planSyncRuntimeWebSocketSyncRequestAnswer,
-  planSyncRuntimeWebSocketSyncRequestSend,
-  type SyncRuntimeWebSocketAccessTokenReaderPort,
-  type SyncRuntimeWebSocketAppliedYDocState,
-  type SyncRuntimeWebSocketConnection,
-  type SyncRuntimeWebSocketFactoryPort,
   type SyncRuntimeWebSocketInboundRoutePorts,
   type SyncRuntimeWebSocketOutboxCompletionCommitPort,
   type SyncRuntimeWebSocketOutboxCompletionSnapshotReaderPort,
+} from './inbound'
+import {
+  createSyncRuntimeWebSocketAwarenessSendPort,
+  createSyncRuntimeWebSocketOutboxSendPort,
+  createSyncRuntimeWebSocketSyncRequestAnswerPort,
+  createSyncRuntimeWebSocketSyncRequestSendPort,
+  planSyncRuntimeWebSocketAwarenessSend,
+  planSyncRuntimeWebSocketOutboxSend,
+  planSyncRuntimeWebSocketSyncRequestAnswer,
+  planSyncRuntimeWebSocketSyncRequestSend,
+  type SyncRuntimeWebSocketSyncRequestAnswerRejectPort,
+} from './outbound'
+import {
+  createSyncRuntimeWebSocketRemoteUpdateApplyPort,
+  createSyncRuntimeWebSocketYjsRemoteUpdateApplyPort,
+  decodeSyncRuntimeWebSocketRemoteUpdate,
+  planSyncRuntimeWebSocketRemoteUpdateIndexedDbWriteTransaction,
+  type SyncRuntimeWebSocketAppliedYDocState,
   type SyncRuntimeWebSocketRemoteUpdateApplyInput,
   type SyncRuntimeWebSocketRemoteUpdateCommitPort,
   type SyncRuntimeWebSocketRemoteUpdateRejectPort,
   type SyncRuntimeWebSocketRemoteUpdateYDocApplyPort,
-  type SyncRuntimeWebSocketSyncRequestAnswerRejectPort,
   type SyncRuntimeWebSocketYDocRegistryPort,
-} from '../engine/websocket'
-import { type LocalStoreOutboxRecord } from '../store/store'
+} from './remote-update'
+import {
+  buildSyncRuntimeWebSocketProtocols,
+  buildSyncRuntimeWebSocketUrl,
+  createSyncRuntimeWebSocketSession,
+  type SyncRuntimeWebSocketAccessTokenReaderPort,
+  type SyncRuntimeWebSocketConnection,
+  type SyncRuntimeWebSocketFactoryPort,
+} from './socket'
+import { createSyncRuntimeWebSocketStartupStepPort } from './startup'
 
 const vaultId = makeVaultId('websocket-vault-1')
 const deviceId = makeDeviceId('websocket-device-1')

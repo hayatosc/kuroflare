@@ -1,12 +1,67 @@
-import {
-  type SyncRuntimeBrowserWebSocketConstructor,
-  type SyncRuntimeWebSocketConnection,
-  type SyncRuntimeWebSocketFactoryPort,
-  type SyncRuntimeWebSocketSessionPort,
-  type SyncRuntimeWebSocketUrlInput,
-} from '../../engine/websocket.types'
+import { type LocalSetupMetadata } from '../engine/setup'
 
 const OPEN_READY_STATE = 1
+
+/** Minimal WebSocket surface needed by startup transport steps. */
+export interface SyncRuntimeWebSocketConnection {
+  readonly readyState: number
+  onopen: ((event: Event) => void) | null
+  onerror: ((event: Event) => void) | null
+  onclose: ((event: CloseEvent) => void) | null
+  onmessage: ((event: MessageEvent) => void) | null
+  /** Sends one control or binary frame to the worker. */
+  send(data: string | ArrayBuffer): void
+  /** Closes the socket when startup is torn down or retried. */
+  close(code?: number, reason?: string): void
+}
+
+/** Factory for browser or fake WebSocket connections. */
+export interface SyncRuntimeWebSocketFactoryPort {
+  /**
+   * Opens a WebSocket for the given URL.
+   *
+   * @param url Browser-compatible WebSocket URL.
+   * @param protocols Optional WebSocket subprotocols sent during upgrade.
+   * @returns A connection whose open/error events can be observed by the runtime.
+   */
+  connect(url: string, protocols?: string | string[]): SyncRuntimeWebSocketConnection
+}
+
+/** Browser WebSocket constructor accepted by the concrete runtime factory. */
+export interface SyncRuntimeBrowserWebSocketConstructor {
+  /** Creates a browser WebSocket for the given URL. */
+  new (url: string, protocols?: string | string[]): SyncRuntimeWebSocketConnection
+}
+
+/** SecretStorage reader used to obtain the current access token without exposing refresh tokens. */
+export interface SyncRuntimeWebSocketAccessTokenReaderPort {
+  /** Reads the current device access token for the trusted secret key. */
+  getAccessToken(key: string): Promise<string | undefined>
+}
+
+/** Input for building a browser-compatible worker WebSocket URL. */
+export interface SyncRuntimeWebSocketUrlInput {
+  readonly endpoint: string
+  readonly vaultId: LocalSetupMetadata['vaultId']
+}
+
+/** Snapshot of the active WebSocket session shared by startup, outbox, and inbound runtime ports. */
+export interface SyncRuntimeWebSocketSessionSnapshot {
+  readonly hasConnection: boolean
+  readonly readyState: number | undefined
+}
+
+/** Shared active WebSocket session boundary used after startup opens the transport. */
+export interface SyncRuntimeWebSocketSessionPort {
+  /** Attaches the current WebSocket connection to the shared sync session. */
+  attach(connection: SyncRuntimeWebSocketConnection): void
+  /** Sends one frame over the active sync WebSocket. */
+  send(data: string | ArrayBuffer): void
+  /** Closes the attached connection and clears the shared session. */
+  close(code?: number, reason?: string): void
+  /** Returns connection presence and readyState without exposing token material. */
+  snapshot(): SyncRuntimeWebSocketSessionSnapshot
+}
 
 /**
  * Builds the browser-compatible worker WebSocket URL for one vault.

@@ -6,7 +6,6 @@ import {
 import type { Doc } from 'yjs'
 
 import { planOutboundQueueTick } from '../../sync/engine/queue'
-import { createSyncRuntimeWebSocketOutboxSendPort } from '../../sync/engine/websocket'
 import {
   planOutboxWorkerSideEffect,
   planOutboxWorkerTick,
@@ -17,6 +16,7 @@ import {
   createLocalStoreIndexedDbMetadataDatabasePort,
 } from '../../sync/store/indexeddb'
 import type { LocalStoreOutboxRecord } from '../../sync/store/store'
+import { createSyncRuntimeWebSocketOutboxSendPort } from '../../sync/transport/outbound'
 import {
   requireSetupMetadata,
   readAccessToken,
