@@ -28,13 +28,13 @@ import { VaultRoom } from '../runtime'
 import { MAX_HYDRATED_FILE_DOCS } from '../runtime/constants'
 import { ensureSchema } from '../runtime/storage'
 import { ensureDocHydrated } from '../runtime/sync'
+import { encodeBase64 } from '../runtime/utils'
 import {
   metaIdentityImmutable,
   metaRootMutationAllowed,
   metaYDocSchemaDisposition,
   metaYDocWritable,
-  encodeBase64,
-} from '../runtime/utils'
+} from '../runtime/yjs-validation'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,

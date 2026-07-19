@@ -41,7 +41,6 @@ import {
 } from '../../runtime/sync'
 import {
   apiErrorBody,
-  canApplyYjsUpdateToDoc,
   compareCodeUnitString,
   docKey,
   encodeOptionalBase64,
@@ -55,6 +54,7 @@ import {
   timingSafeEqualString,
 } from '../../runtime/utils'
 import type { VaultRoom } from '../../runtime/vault-room'
+import { canApplyYjsUpdateToDoc } from '../../runtime/yjs-validation'
 
 export async function handleQuarantineList(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)

@@ -36,20 +36,22 @@ import {
 import { AdminSnapshotSeedRequestSchema } from '../../runtime/types'
 import {
   apiErrorBody,
-  canApplyYjsUpdate,
-  canApplyYjsUpdateToDoc,
   decodeBase64,
   docKey,
   encodeBase64,
   logEvent,
-  metaIdentityImmutable,
-  metaRootMutationAllowed,
-  metaYDocSchemaDisposition,
-  metaYDocWritable,
   retentionErrorMessage,
   sha256Hex,
 } from '../../runtime/utils'
 import type { VaultRoom } from '../../runtime/vault-room'
+import {
+  canApplyYjsUpdate,
+  canApplyYjsUpdateToDoc,
+  metaIdentityImmutable,
+  metaRootMutationAllowed,
+  metaYDocSchemaDisposition,
+  metaYDocWritable,
+} from '../../runtime/yjs-validation'
 import { SNAPSHOT_HEALTH_SYSTEM_ACTORS, verifySnapshotObject } from '../../sync/snapshot-health'
 import { makeSnapshotObjectKey } from '../../sync/snapshots'
 

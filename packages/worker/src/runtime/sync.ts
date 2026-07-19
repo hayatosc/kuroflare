@@ -67,13 +67,6 @@ import {
   docKey,
   makeQuarantineId,
   snapshotCandidateFromKey,
-  stateVectorCoversHorizon,
-  canApplyYjsUpdateToDoc,
-  isEmptyYjsUpdate,
-  metaYDocSchemaDisposition,
-  metaYDocWritable,
-  metaIdentityImmutable,
-  metaRootMutationAllowed,
   decodeBase64,
   encodeBase64,
   sha256Hex,
@@ -81,6 +74,15 @@ import {
   retentionErrorMessage,
 } from './utils'
 import type { VaultRoom } from './vault-room'
+import {
+  stateVectorCoversHorizon,
+  canApplyYjsUpdateToDoc,
+  isEmptyYjsUpdate,
+  metaYDocSchemaDisposition,
+  metaYDocWritable,
+  metaIdentityImmutable,
+  metaRootMutationAllowed,
+} from './yjs-validation'
 
 export async function handleSyncRequest(
   room: VaultRoom,

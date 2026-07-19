@@ -43,12 +43,11 @@ import {
   apiErrorBody,
   docKey,
   logEvent,
-  metaIdentityImmutable,
-  metaYDocWritable,
   retentionErrorMessage,
   sha256Text,
 } from '../../runtime/utils'
 import type { VaultRoom } from '../../runtime/vault-room'
+import { metaIdentityImmutable, metaYDocWritable } from '../../runtime/yjs-validation'
 import { verifySnapshotObject } from '../../sync/snapshot-health'
 import {
   makeSnapshotListPrefix,

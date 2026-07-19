@@ -2,7 +2,7 @@ import { hashBytesSha256, type DocId } from '@kuroflare/core'
 import * as Y from 'yjs'
 
 import type { R2BucketBinding } from '../runtime/types'
-import { metaYDocSchemaDisposition } from '../runtime/utils'
+import { metaYDocSchemaDisposition } from '../runtime/yjs-validation'
 
 /** Stable server identities used for automatically generated health events. */
 export const SNAPSHOT_HEALTH_SYSTEM_ACTORS = {
