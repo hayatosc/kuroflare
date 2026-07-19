@@ -9,7 +9,7 @@ import {
   type NeedFullSnapshot,
   type SyncUpdate,
 } from '@kuroflare/core'
-import { assert, expect, test } from 'vitest'
+import { assert, expect, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { VaultRoom } from '../../../runtime'
@@ -97,6 +97,43 @@ test('VaultRoom checkpoints an active document to R2 and advances the SQL snapsh
       action: 'skipped',
       reason: 'no-new-ops',
     })
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom logs a structured event with the checkpoint duration', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-cp-duration'))),
+    )
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await room.checkpointDoc({ kind: 'meta' }, 99)
+    const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+    logSpy.mockRestore()
+
+    const durationEvent = events.find((event) => event.event === 'checkpoint-duration')
+    assert(durationEvent)
+    assert.deepEqual(durationEvent.docId, { kind: 'meta' })
+    assert.equal(durationEvent.upperSeq, 1)
+    assert.equal(typeof durationEvent.durationMs, 'number')
+    assert(durationEvent.durationMs >= 0)
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)

@@ -1,5 +1,5 @@
 import { makeMessageId, makeVaultId, makeYDocId } from '@kuroflare/core'
-import { assert, test } from 'vitest'
+import { assert, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { VaultRoom } from '../../runtime'
@@ -256,6 +256,154 @@ test('VaultRoom hydrates active Y.Doc from R2 snapshot plus residual SQL op_log'
     assert.deepEqual(bucket.gets, [snapshotKey, snapshotKey])
     assert.equal(storage.sql.docs.get('meta')?.latestSeq, 3)
     assert.equal(storage.sql.opLog.get('meta:message-after-snapshot')?.seq, 3)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom logs the cold-start restore source for a brand-new document', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-empty-restore'))),
+    )
+    const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+    logSpy.mockRestore()
+
+    assert.deepEqual(
+      events.filter((event) => event.event === 'doc-restore-source'),
+      [
+        {
+          event: 'doc-restore-source',
+          vaultId: makeVaultId('vault-1'),
+          docId: { kind: 'meta' },
+          source: 'empty',
+        },
+      ],
+    )
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom logs the cold-start restore source as op-log-replay after a Durable Object restart', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const request = await makeAuthenticatedWebSocketRequest()
+
+    const firstState = new FakeState(storage)
+    const firstRoom = new VaultRoom(
+      firstState,
+      makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+    )
+    void firstRoom.fetch(request)
+    const firstServer = firstState.accepted[0]
+    assert(firstServer instanceof FakeSocket)
+    await firstRoom.webSocketMessage(firstServer, JSON.stringify(makeHello()))
+    await firstRoom.webSocketMessage(
+      firstServer,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-before-restart-restore'))),
+    )
+
+    const secondState = new FakeState(storage)
+    const secondRoom = new VaultRoom(
+      secondState,
+      makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+    )
+    void secondRoom.fetch(request)
+    const secondServer = secondState.accepted[0]
+    assert(secondServer instanceof FakeSocket)
+    await secondRoom.webSocketMessage(secondServer, JSON.stringify(makeHello()))
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await secondRoom.webSocketMessage(
+      secondServer,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-after-restart-restore'))),
+    )
+    const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+    logSpy.mockRestore()
+
+    assert.deepEqual(
+      events.filter((event) => event.event === 'doc-restore-source'),
+      [
+        {
+          event: 'doc-restore-source',
+          vaultId: makeVaultId('vault-1'),
+          docId: { kind: 'meta' },
+          source: 'op-log-replay',
+        },
+      ],
+    )
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom logs the cold-start restore source as r2-snapshot when a snapshot is replayed', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const bucket = new FakeR2Bucket()
+    const snapshotKey = 'snapshots/vault-1/meta/1.yupdate'
+    const snapshotBytes = makeYjsUpdateBytes(makeMessageId('message-snapshot-restore'))
+    bucket.set(snapshotKey, snapshotBytes)
+    await seedVerifiedSnapshotEvidence(storage, snapshotKey, 'meta', snapshotBytes)
+    storage.sql.docs.set('meta', {
+      kind: 'meta',
+      latestSeq: 1,
+      latestSnapshotSeq: 1,
+      latestSnapshotKey: snapshotKey,
+      minRetainedSeq: 1,
+      horizonStateVector: undefined,
+      updatedAt: 1,
+    })
+
+    const state = new FakeState(storage)
+    const room = new VaultRoom(
+      state,
+      makeEnvWithSnapshotBucketAndDeviceTokenSecret(bucket, TEST_DEVICE_TOKEN_SECRET),
+    )
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-after-snapshot-restore'))),
+    )
+    const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+    logSpy.mockRestore()
+
+    assert.deepEqual(
+      events.filter((event) => event.event === 'doc-restore-source'),
+      [
+        {
+          event: 'doc-restore-source',
+          vaultId: makeVaultId('vault-1'),
+          docId: { kind: 'meta' },
+          source: 'r2-snapshot',
+        },
+      ],
+    )
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)

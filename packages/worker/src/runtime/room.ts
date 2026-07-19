@@ -69,7 +69,13 @@ import type {
   WebSocketAwarenessAttachment,
   WebSocketResponseInit,
 } from './types'
-import { encodeBase64, extractWebSocketBearerToken, makeArrayBuffer, apiErrorBody } from './utils'
+import {
+  encodeBase64,
+  extractWebSocketBearerToken,
+  makeArrayBuffer,
+  apiErrorBody,
+  logEvent,
+} from './utils'
 
 declare const WebSocketPair: RuntimeWebSocketPairConstructor | undefined
 
@@ -142,6 +148,7 @@ export class VaultRoom {
     this.state.acceptWebSocket(server)
     this.sessions.add(server)
     rememberSocketToken(this, server, extractWebSocketBearerToken(c.req.raw))
+    logEvent('connection-open', { vaultId: this.vaultId, connectionCount: this.sessions.size })
 
     const upgradeInit: WebSocketResponseInit = {
       status: 101,
@@ -218,6 +225,7 @@ export class VaultRoom {
     this.sessions.delete(webSocket)
     this.sessionStates.delete(webSocket)
     this.socketTokens.delete(webSocket)
+    logEvent('connection-close', { vaultId: this.vaultId, connectionCount: this.sessions.size })
   }
 
   webSocketError(webSocket: RuntimeWebSocket): void {
@@ -225,6 +233,7 @@ export class VaultRoom {
     this.sessions.delete(webSocket)
     this.sessionStates.delete(webSocket)
     this.socketTokens.delete(webSocket)
+    logEvent('connection-close', { vaultId: this.vaultId, connectionCount: this.sessions.size })
   }
 
   checkpointDoc(docId: DocId, now?: number): Promise<RuntimeCheckpointResult> {

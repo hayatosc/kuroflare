@@ -180,6 +180,7 @@ export async function checkpointDoc(
   const expectedStateVectorSha256 = makeSha256Hex(await hashBytesSha256(stateVector))
 
   logEvent('checkpoint-start', { vaultId, docId, upperSeq: decision.upperSeq })
+  const startedAt = Date.now()
   try {
     let existingVerification: Awaited<ReturnType<typeof verifySnapshotObject>> | undefined
     if ((await bucket.head(decision.snapshotKey)) !== null) {
@@ -351,6 +352,12 @@ export async function checkpointDoc(
     const { compact, retention } = compaction
 
     logEvent('checkpoint-complete', { vaultId, docId, upperSeq: decision.upperSeq })
+    logEvent('checkpoint-duration', {
+      vaultId,
+      docId,
+      upperSeq: decision.upperSeq,
+      durationMs: Date.now() - startedAt,
+    })
     return {
       action: 'checkpointed',
       snapshotKey: decision.snapshotKey,

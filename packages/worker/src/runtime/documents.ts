@@ -206,6 +206,16 @@ async function hydrateDoc(room: VaultRoom, docId: DocId, key: string): Promise<v
     room.docs.set(key, doc)
     room.hydratedDocs.add(key)
     installed = true
+    logEvent('doc-restore-source', {
+      vaultId: room.vaultId,
+      docId,
+      source:
+        snapshot !== undefined
+          ? 'r2-snapshot'
+          : persisted !== undefined
+            ? 'op-log-replay'
+            : 'empty',
+    })
   } finally {
     if (!installed) doc.destroy()
   }

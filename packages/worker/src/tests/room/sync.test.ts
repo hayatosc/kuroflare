@@ -13,7 +13,7 @@ import {
   type NeedFullSnapshot,
   type SyncUpdate,
 } from '@kuroflare/core'
-import { assert, expect, test } from 'vitest'
+import { assert, expect, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { VaultRoom } from '../../runtime'
@@ -1296,6 +1296,114 @@ test('VaultRoom requires hello before sync updates', async () => {
     await room.webSocketMessage(server, JSON.stringify(makeSyncUpdate(makeMessageId('message-1'))))
 
     assert.equal(server.closed, true)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom logs structured connection-open and connection-close events with a live count', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const first = state.accepted[0]
+    const second = state.accepted[1]
+    assert(first instanceof FakeSocket)
+    assert(second instanceof FakeSocket)
+
+    room.webSocketClose(first)
+
+    const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+    logSpy.mockRestore()
+
+    assert.deepEqual(
+      events.filter((event) => event.event === 'connection-open'),
+      [
+        { event: 'connection-open', vaultId: makeVaultId('vault-1'), connectionCount: 1 },
+        { event: 'connection-open', vaultId: makeVaultId('vault-1'), connectionCount: 2 },
+      ],
+    )
+    assert.deepEqual(
+      events.filter((event) => event.event === 'connection-close'),
+      [{ event: 'connection-close', vaultId: makeVaultId('vault-1'), connectionCount: 1 }],
+    )
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom logs a structured event with the durable op-append latency', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await room.webSocketMessage(
+      server,
+      JSON.stringify(makeSyncUpdate(makeMessageId('message-append-latency'))),
+    )
+    const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+    logSpy.mockRestore()
+
+    const latencyEvent = events.find((event) => event.event === 'op-append-latency')
+    assert(latencyEvent)
+    assert.equal(latencyEvent.vaultId, makeVaultId('vault-1'))
+    assert.deepEqual(latencyEvent.docId, { kind: 'meta' })
+    assert.equal(typeof latencyEvent.durationMs, 'number')
+    assert(latencyEvent.durationMs >= 0)
+  } finally {
+    restoreResponse(previousResponse)
+    restoreWebSocketPair(previousPair)
+  }
+})
+
+test('VaultRoom logs a structured event when an identical duplicate update is ignored', async () => {
+  const previousPair = installFakeWebSocketPair()
+  const previousResponse = installFakeUpgradeResponse()
+  try {
+    const storage = new SqlOnlyStorage()
+    const state = new FakeState(storage)
+    const room = new VaultRoom(state, makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET))
+    void room.fetch(await makeAuthenticatedWebSocketRequest())
+    const server = state.accepted[0]
+    assert(server instanceof FakeSocket)
+    await room.webSocketMessage(server, JSON.stringify(makeHello()))
+
+    const update = makeSyncUpdate(makeMessageId('message-duplicate-ignored'))
+    await room.webSocketMessage(server, JSON.stringify(update))
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await room.webSocketMessage(server, JSON.stringify(update))
+    const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+    logSpy.mockRestore()
+
+    assert.deepEqual(
+      events.filter((event) => event.event === 'sync-duplicate-ignored'),
+      [
+        {
+          event: 'sync-duplicate-ignored',
+          vaultId: makeVaultId('vault-1'),
+          docId: { kind: 'meta' },
+          messageId: update.messageId,
+          durableSeq: 1,
+        },
+      ],
+    )
   } finally {
     restoreResponse(previousResponse)
     restoreWebSocketPair(previousPair)

@@ -254,6 +254,12 @@ async function handleSyncUpdateSerialized(
       largeUpdateThresholdBytes: LARGE_UPDATE_THRESHOLD_BYTES,
     })
     if (duplicateDecision.action === 'ack-duplicate') {
+      logEvent('sync-duplicate-ignored', {
+        vaultId: room.vaultId,
+        docId: update.docId,
+        messageId: update.messageId,
+        durableSeq: duplicate.durableSeq,
+      })
       webSocket.send(JSON.stringify(duplicateDecision.ack))
       return { action: 'stop' }
     }
@@ -470,6 +476,7 @@ async function persistAppend(
   if (db === undefined) throw new Error('sql-unavailable')
 
   const docId = docKey(update.docId)
+  const startedAt = Date.now()
   await withSqlTransaction(room, async () => {
     await insertOpLog(
       db,
@@ -483,6 +490,11 @@ async function persistAppend(
     )
     await upsertDocClock(db, docId, update.docId.kind, docPatch.latestSeq, docPatch.updatedAt)
     await upsertMessageDedup(db, docId, update.messageId, seq, updateSha256, now)
+  })
+  logEvent('op-append-latency', {
+    vaultId: room.vaultId,
+    docId: update.docId,
+    durationMs: Date.now() - startedAt,
   })
 }
 
