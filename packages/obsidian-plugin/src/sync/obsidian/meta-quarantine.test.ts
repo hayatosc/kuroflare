@@ -9,7 +9,7 @@ import {
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
-import type { KuroflareRepairLogEntry } from '../../main-types'
+import type { KuroflareRepairLogEntry } from '../../types'
 import { canDiscardInvalidMetaRepairEntry, planInvalidMetaIsolationDetail } from './meta-quarantine'
 
 const fileId = makeFileId('invalid-meta-file-1')

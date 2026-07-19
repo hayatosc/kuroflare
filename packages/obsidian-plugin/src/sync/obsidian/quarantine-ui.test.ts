@@ -10,7 +10,7 @@ import {
 import * as v from 'valibot'
 import { assert, beforeEach, describe, test, vi } from 'vitest'
 
-import type KuroflareSpikePlugin from '../../main'
+import type KuroflareSpikePlugin from '../../host/plugin'
 import type { LocalSetupMetadata } from '../engine/setup'
 import type * as QuarantineUi from './quarantine-ui'
 

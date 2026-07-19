@@ -11,7 +11,7 @@ import {
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { insertMetaFile, readMetaFile } from '../../main/meta'
+import { insertMetaFile, readMetaFile } from '../../host/meta'
 import { reconcileMetaDoc } from '../meta/reconcile'
 
 const REPAIR = makeDeviceId('repair')

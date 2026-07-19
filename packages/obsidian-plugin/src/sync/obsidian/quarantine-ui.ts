@@ -5,15 +5,15 @@ import type {
 } from '@kuroflare/core'
 import { Setting, type ButtonComponent } from 'obsidian'
 
-import type KuroflareSpikePlugin from '../../main'
-import { readAccessToken, requireSetupMetadata } from '../../main/auth'
+import { readAccessToken, requireSetupMetadata } from '../../host/auth'
 import {
   accessTokenSecretKeyForSetup,
   docIdLabel,
   quarantineActionConfirmationText,
   quarantineActionLabel,
   redactSecretText,
-} from '../../main/helpers'
+} from '../../host/helpers'
+import type KuroflareSpikePlugin from '../../host/plugin'
 import {
   executeQuarantineAdminAction,
   fetchQuarantineAdminAudit,

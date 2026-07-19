@@ -9,7 +9,7 @@ import {
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { insertMetaFile, readMetaFile, updateMetaFile, updateMetaGroup } from '../../main/meta'
+import { insertMetaFile, readMetaFile, updateMetaFile, updateMetaGroup } from '../../host/meta'
 import { reconcileMetaDoc } from '../meta/reconcile'
 import { applyFileCreate, applyFileDelete, applyFileRename } from '../meta/tree'
 

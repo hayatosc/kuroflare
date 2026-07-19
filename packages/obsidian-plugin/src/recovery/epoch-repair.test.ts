@@ -3,7 +3,7 @@ import * as v from 'valibot'
 import { assert, describe, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { isLocalStoreOutboxRecord } from '../main/guards'
+import { isLocalStoreOutboxRecord } from '../host/guards'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import { createReadyDocumentEpoch, documentEpochMetadataKey } from './epoch'
 import { commitDocumentRecoveryTransaction, type DocumentRecoveryCommitInput } from './epoch-repair'

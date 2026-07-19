@@ -8,7 +8,7 @@
  * not an installed dependency, so this implements just enough of that surface:
  * `setLocalState*` tracks this client's own presence, and `applyRemoteState`
  * feeds in the peer state received over the wire (see
- * `main/sync-websocket.ts`), both funneled through the same `states` map and
+ * `host/socket.ts`), both funneled through the same `states` map and
  * `change` event `y-codemirror.next`'s remote-selections plugin renders from.
  *
  * The local state starts as an empty object rather than `null`: y-codemirror.next

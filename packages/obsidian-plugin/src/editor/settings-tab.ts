@@ -1,17 +1,20 @@
 import { parseSetupUri } from '@kuroflare/core'
 import { type App, Notice, PluginSettingTab, Setting } from 'obsidian'
 
-import type KuroflareSpikePlugin from '../main'
+import { readAccessToken, requireSetupMetadata } from '../host/auth'
 import {
   DEVICE_REVOKE_CONFIRMATION,
-  docIdLabel,
   INVALID_META_DISCARD_CONFIRMATION,
   LOCAL_STORE_DISCARD_CONFIRMATION,
   LOCAL_STORE_REBUILD_CONFIRMATION,
+} from '../host/constants'
+import {
+  accessTokenSecretKeyForSetup,
+  deviceRevokeUrl,
+  docIdLabel,
   repairLogDescription,
-} from '../main'
-import { readAccessToken, requireSetupMetadata } from '../main/auth'
-import { accessTokenSecretKeyForSetup, deviceRevokeUrl } from '../main/helpers'
+} from '../host/helpers'
+import type KuroflareSpikePlugin from '../host/plugin'
 import { renderQuarantineAdmin } from '../sync/obsidian/quarantine-ui'
 import {
   planRejectedUpdateRepairOutcomePresentation,

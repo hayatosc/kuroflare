@@ -10,7 +10,7 @@ import {
 import * as v from 'valibot'
 import * as Y from 'yjs'
 
-import { insertMetaFile, readMetaEntries, updateMetaGroup } from '../../main/meta'
+import { insertMetaFile, readMetaEntries, updateMetaGroup } from '../../host/meta'
 
 /** Input for registering a newly created text file in the meta YDoc. */
 export interface FileCreateInput {

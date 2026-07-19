@@ -9,17 +9,17 @@ import {
 import * as v from 'valibot'
 import type { Doc as YDoc } from 'yjs'
 
-import type { StartupSideEffectGate } from '../main/boot-guard'
-import { META_SYNC_DOC_ID } from '../main/constants'
-import { isDocIdLike, isStoredYDocRecord } from '../main/guards'
+import type { StartupSideEffectGate } from '../host/boot'
+import { META_SYNC_DOC_ID } from '../host/constants'
+import { isDocIdLike, isStoredYDocRecord } from '../host/guards'
+import { filePersistenceDatabaseName, metaPersistenceDatabaseName } from '../host/guards'
 import {
   encodeBase64,
   sameDocId,
   waitForIndexedDbRequest,
   waitForIndexedDbTransaction,
-} from '../main/helpers'
-import { filePersistenceDatabaseName, metaPersistenceDatabaseName } from '../main/runtime-guards'
-import { readOutboxWorkerSnapshot } from '../main/store'
+} from '../host/helpers'
+import { readOutboxWorkerSnapshot } from '../host/store'
 import type { LocalSetupMetadata } from '../sync/engine/setup'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import {

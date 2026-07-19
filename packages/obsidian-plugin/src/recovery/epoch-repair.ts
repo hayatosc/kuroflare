@@ -1,8 +1,8 @@
 import type { OutboxRunningLease, DocId } from '@kuroflare/core'
 import * as Y from 'yjs'
 
-import { WORKER_ORIGIN } from '../main/constants'
-import { encodeBase64, waitForIndexedDbRequest, waitForIndexedDbTransaction } from '../main/helpers'
+import { WORKER_ORIGIN } from '../host/constants'
+import { encodeBase64, waitForIndexedDbRequest, waitForIndexedDbTransaction } from '../host/helpers'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import { documentEpochMetadataKey, type DocumentEpochRecord } from './epoch'
 import { createYDocFromSnapshot } from './epoch'

@@ -13,15 +13,15 @@ import { assert, test, vi } from 'vitest'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
-import { createStartupSideEffectGate } from '../main/boot-guard'
-import { isLocalStoreOutboxRecord, isOutboxRunningLease } from '../main/guards'
+import { createStartupSideEffectGate } from '../host/boot'
+import { isLocalStoreOutboxRecord, isOutboxRunningLease } from '../host/guards'
 import {
   encodeBase64,
   waitForIndexedDbDeleteDatabase,
   waitForIndexedDbRequest,
   waitForIndexedDbTransaction,
-} from '../main/helpers'
-import KuroflareSpikePlugin from '../main/plugin'
+} from '../host/helpers'
+import KuroflareSpikePlugin from '../host/plugin'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import {
   createReadyDocumentEpoch,

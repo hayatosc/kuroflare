@@ -12,7 +12,7 @@ import {
 } from '@kuroflare/core'
 import type * as Y from 'yjs'
 
-import { insertMetaFile, readMetaFile, updateMetaFile } from '../../main/meta'
+import { insertMetaFile, readMetaFile, updateMetaFile } from '../../host/meta'
 
 const NO_RESTORABLE_BINARIES: ReadonlySet<FileId> = new Set()
 

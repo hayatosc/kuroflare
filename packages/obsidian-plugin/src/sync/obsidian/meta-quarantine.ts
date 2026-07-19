@@ -1,7 +1,7 @@
 import { decodeMetaValue } from '@kuroflare/core'
 
-import type { KuroflareInvalidMetaIsolationDetail, KuroflareRepairLogEntry } from '../../main-types'
-import { INVALID_META_DISCARD_CONFIRMATION } from '../../main/constants'
+import { INVALID_META_DISCARD_CONFIRMATION } from '../../host/constants'
+import type { KuroflareInvalidMetaIsolationDetail, KuroflareRepairLogEntry } from '../../types'
 
 const DEFAULT_INVALID_META_JSON_LIMIT = 4_000
 

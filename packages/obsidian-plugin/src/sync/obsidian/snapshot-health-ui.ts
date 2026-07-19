@@ -7,9 +7,9 @@ import {
 import { Setting, type ButtonComponent } from 'obsidian'
 import * as v from 'valibot'
 
-import type KuroflareSpikePlugin from '../../main'
-import { readAccessToken, requireSetupMetadata } from '../../main/auth'
-import { accessTokenSecretKeyForSetup, redactSecretText } from '../../main/helpers'
+import { readAccessToken, requireSetupMetadata } from '../../host/auth'
+import { accessTokenSecretKeyForSetup, redactSecretText } from '../../host/helpers'
+import type KuroflareSpikePlugin from '../../host/plugin'
 import {
   fetchSnapshotHealthEntries,
   quarantineSnapshotHealthEntry,

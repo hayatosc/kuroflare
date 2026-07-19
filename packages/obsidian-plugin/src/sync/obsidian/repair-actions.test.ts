@@ -8,7 +8,7 @@ import {
 } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
-import type { KuroflareRepairLogEntry } from '../../main-types'
+import type { KuroflareRepairLogEntry } from '../../types'
 import {
   planPathConflictAutoResolve,
   planRemoteMaterializeBlockedAutoResolve,

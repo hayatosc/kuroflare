@@ -1,6 +1,6 @@
 import { canonicalizeVaultPath, isMetaFile, type FileId, type MetaFile } from '@kuroflare/core'
 
-import type { KuroflareRepairLogEntry } from '../../main-types'
+import type { KuroflareRepairLogEntry } from '../../types'
 
 export interface RemoteMaterializeBlockedRepairPorts {
   readonly getMetaEntry: (fileId: string) => unknown

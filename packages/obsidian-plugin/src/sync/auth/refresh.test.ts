@@ -9,7 +9,7 @@ import {
 } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
-import { createRemoteSetupAccessTokenVerifier } from '../../main/setup-verifier'
+import { createRemoteSetupAccessTokenVerifier } from '../../host/auth'
 import {
   createAuthRefreshIndexedDbMetadataPort,
   persistAuthRefreshStart,

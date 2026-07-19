@@ -4,7 +4,7 @@ import { makeDeviceId, makeVaultId, makeYDocId } from '@kuroflare/core'
 import * as v from 'valibot'
 import { assert, beforeEach, describe, test, vi } from 'vitest'
 
-import type KuroflareSpikePlugin from '../../main'
+import type KuroflareSpikePlugin from '../../host/plugin'
 import type { LocalSetupMetadata } from '../engine/setup'
 import type * as SnapshotHealthUi from './snapshot-health-ui'
 

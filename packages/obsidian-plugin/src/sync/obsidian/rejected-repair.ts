@@ -9,8 +9,8 @@ import {
 } from '@kuroflare/core'
 import * as v from 'valibot'
 
-import { isLocalStoreOutboxRecord } from '../../main/guards'
-import { waitForIndexedDbRequest, waitForIndexedDbTransaction } from '../../main/helpers'
+import { isLocalStoreOutboxRecord } from '../../host/guards'
+import { waitForIndexedDbRequest, waitForIndexedDbTransaction } from '../../host/helpers'
 import {
   planOutboundQueueSyncUpdateRejectedRepair,
   type OutboundQueueSyncUpdateRejectedRepairPlan,
