@@ -22,7 +22,7 @@ import {
   type MetaFile,
   type MetadataAccess,
 } from '@kuroflare/core'
-import { VaultRelativePathSchema, decodeMetaValue } from '@kuroflare/core'
+import { VaultRelativePathSchema } from '@kuroflare/core'
 import { Notice, Plugin, TFile, TFolder, type EventRef } from 'obsidian'
 import * as v from 'valibot'
 import type { IndexeddbPersistence } from 'y-indexeddb'
@@ -72,20 +72,12 @@ import {
   type SyncRuntimeObsidianComposition,
 } from '../sync/obsidian/composition'
 import { createSyncRuntimeObsidianResumePort } from '../sync/obsidian/lifecycle'
-import {
-  canDiscardInvalidMetaRepairEntry,
-  planInvalidMetaIsolationDetail,
-} from '../sync/obsidian/meta-quarantine'
 import type { SyncRuntimeObsidianRepairPresentation } from '../sync/obsidian/presentation'
 import {
   listPausedRejectedUpdates,
   repairPausedRejectedUpdate,
   type RejectedUpdateRepairResult,
 } from '../sync/obsidian/rejected-repair'
-import {
-  planPathConflictAutoResolve,
-  planRemoteMaterializeBlockedAutoResolve,
-} from '../sync/obsidian/repair-actions'
 import { createSyncRuntimeObsidianSetupExchangeEvidenceReader } from '../sync/obsidian/settings'
 import { createEvidenceBackedHttpSyncRuntimeSetupExchangePort } from '../sync/setup-exchange-http'
 import { createBrowserLocalStoreIndexedDbFactoryPort } from '../sync/store/indexeddb'
@@ -113,7 +105,6 @@ import {
   WORKER_ORIGIN,
   BINARY_UPLOAD_ORIGIN,
   REPAIR_ORIGIN,
-  REPAIR_DEVICE,
   DEFAULT_SETTINGS,
   NEED_FULL_SNAPSHOT_RECOVERY_BACKOFF_MS,
 } from './constants'
@@ -158,6 +149,17 @@ import {
   updateMetaFile,
 } from './meta'
 import { runOutboxWorkerTick } from './outbox/tick'
+import {
+  clearRepairLogEntry as clearRepairLogEntryCommand,
+  discardInvalidMetaRepairEntry as discardInvalidMetaRepairEntryCommand,
+  inspectInvalidMetaRepairEntry as inspectInvalidMetaRepairEntryCommand,
+  resolvePathConflictRepairEntry as resolvePathConflictRepairEntryCommand,
+  resolveRemoteMaterializeBlockedRepairEntry as resolveRemoteMaterializeBlockedRepairEntryCommand,
+  retryKeepDeletedRepairEntry as retryKeepDeletedRepairEntryCommand,
+  retryPathConflictRepairEntry as retryPathConflictRepairEntryCommand,
+  retryRemoteMaterializeBlockedRepairEntry as retryRemoteMaterializeBlockedRepairEntryCommand,
+  type RepairCommandsPort,
+} from './repair-commands'
 import { claimOwnedPathMarker, clearOwnedPathMarker, deferStartupReplan } from './runtime-guards'
 import {
   openLocalStoreDatabase,
@@ -1606,205 +1608,39 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   async clearRepairLogEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    const context = this.captureMetadataMaterializationContext()
-    if (context === undefined) return
-    if (await this.removeRepairLogEntry(entry.id, context)) {
-      new Notice(`Kuroflare repair: cleared ${entry.kind}`)
-    }
+    await clearRepairLogEntryCommand(entry, repairCommandsPort(this))
   }
 
   async retryPathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    if (entry.kind !== 'path-conflict' && entry.kind !== 'portable-path') return
-    if (!metadataWritesEnabled(this)) return
-    if (this.metadataReconcileTransitionPending()) return
-    const context = this.captureMetadataMaterializationContext()
-    if (context === undefined) return
-    if (!(await materializeMetaRenames(metadataMaterializationPort(this)))) return
-    if (this.workerWebSocketSession.snapshot().readyState !== WebSocket.OPEN) {
-      await openWorkerWebSocket(this)
-    }
-    // The rename that produced this entry already synced incrementally through
-    // metaDoc's own `update` listener; resending the full doc here duplicated
-    // that update and could quarantine the sync-update on the server, because
-    // `Y.encodeStateAsUpdate(doc)` re-emits every delete this device has ever
-    // observed (including ones from other actors this device hasn't durably
-    // synced yet), not just what changed since the last send.
-    await waitForOutboundUpdates(this, 120_000)
-    await this.removeRepairLogEntry(entry.id, context)
+    await retryPathConflictRepairEntryCommand(entry, repairCommandsPort(this))
   }
 
   async retryKeepDeletedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    if (entry.kind !== 'delete-vs-edit' || entry.reason !== 'missing-binary-content') return
-    if (!metadataWritesEnabled(this)) return
-    const context = this.captureMetadataMaterializationContext()
-    if (context === undefined) return
-
-    const current = readMetaFile(metaMap(this), entry.fileId)
-    if (current === undefined || !current.deleted || current.type !== 'binary') {
-      await this.removeRepairLogEntry(entry.id, context)
-      return
-    }
-
-    await reconcileAndMaterializeMeta(
-      metadataReconcilePort(this),
-      metadataMaterializationPort(this),
-    )
-    const reconciled = readMetaFile(metaMap(this), entry.fileId)
-    if (reconciled === undefined || reconciled.deleted) return
-    await this.removeRepairLogEntry(entry.id, context)
+    await retryKeepDeletedRepairEntryCommand(entry, repairCommandsPort(this))
   }
 
   async resolvePathConflictRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    if (entry.kind !== 'path-conflict' && entry.kind !== 'portable-path') return
-    if (!metadataWritesEnabled(this)) return
-    if (this.metadataReconcileTransitionPending()) return
-    const context = this.captureMetadataMaterializationContext()
-    if (context === undefined) return
-    if (!metadataReconcileWriteContextStillStable(this, context)) return
-    const current = readMetaFile(metaMap(this), entry.fileId)
-    const plan = planPathConflictAutoResolve({
-      entry,
-      current,
-      isPathAvailable: (path) => this.app.vault.getAbstractFileByPath(path) === null,
-    })
-    if (plan.action === 'rename-meta-path') {
-      if (!metadataReconcileWriteContextStillStable(this, context)) return
-      const contextMeta = metaMap({ metaDoc: context.metaDoc })
-      context.metaDoc.transact(() => {
-        const value = readMetaFile(contextMeta, entry.fileId)
-        if (value === undefined) return
-        updateMetaFile(contextMeta, {
-          ...value,
-          path: plan.toPath,
-          canonicalPath: plan.toCanonicalPath,
-          updatedAt: Date.now(),
-          updatedBy: REPAIR_DEVICE,
-        })
-      }, REPAIR_ORIGIN)
-      if (!metadataReconcileWriteContextStillStable(this, context)) return
-      if (!(await materializeMetaRenames(metadataMaterializationPort(this)))) return
-    }
-    await this.removeRepairLogEntry(entry.id, context)
+    await resolvePathConflictRepairEntryCommand(entry, repairCommandsPort(this))
   }
 
   async retryRemoteMaterializeBlockedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    if (entry.kind !== 'remote-materialize-blocked') return
-    const context = this.captureMetadataMaterializationContext()
-    if (context === undefined) return
-    const current = readMetaFile(metaMap(this), entry.fileId)
-    if (current === undefined || current.deleted) {
-      await this.removeRepairLogEntry(entry.id, context)
-      return
-    }
-    if (current.type === 'text') {
-      if (!(await requestMissingRemoteTextFile(this, current))) return
-    } else {
-      const completedFileIds = await enqueueMissingRemoteBinaryDownloads(
-        metadataReconcilePort(this),
-        metadataMaterializationPort(this),
-        'repair:remote-materialize-retry',
-      )
-      if (!completedFileIds.has(current.fileId)) return
-    }
-    await this.removeRepairLogEntry(entry.id, context)
+    await retryRemoteMaterializeBlockedRepairEntryCommand(entry, repairCommandsPort(this))
   }
 
   async resolveRemoteMaterializeBlockedRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    if (entry.kind !== 'remote-materialize-blocked') return
-    if (!metadataWritesEnabled(this)) return
-    if (this.metadataReconcileTransitionPending()) return
-    const context = this.captureMetadataMaterializationContext()
-    if (context === undefined) return
-    if (!metadataReconcileWriteContextStillStable(this, context)) return
-    const current = readMetaFile(metaMap(this), entry.fileId)
-    const plan = planRemoteMaterializeBlockedAutoResolve({
-      entry,
-      current,
-      isPathAvailable: (path) => this.app.vault.getAbstractFileByPath(path) === null,
-    })
-    if (
-      plan.action === 'rename-meta-path' &&
-      current !== undefined &&
-      !current.deleted &&
-      current.type === 'text'
-    ) {
-      if (!metadataReconcileWriteContextStillStable(this, context)) return
-      const contextMeta = metaMap({ metaDoc: context.metaDoc })
-      context.metaDoc.transact(() => {
-        const value = readMetaFile(contextMeta, entry.fileId)
-        if (value === undefined) return
-        updateMetaFile(contextMeta, {
-          ...value,
-          path: plan.toPath,
-          canonicalPath: plan.toCanonicalPath,
-          updatedAt: Date.now(),
-          updatedBy: REPAIR_DEVICE,
-        })
-      }, REPAIR_ORIGIN)
-      if (!metadataReconcileWriteContextStillStable(this, context)) return
-      const updated = readMetaFile(contextMeta, entry.fileId)
-      if (updated !== undefined && !updated.deleted && updated.type === 'text') {
-        if (!(await requestMissingRemoteTextFile(this, updated))) return
-      }
-    } else {
-      return
-    }
-    await this.removeRepairLogEntry(entry.id, context)
+    await resolveRemoteMaterializeBlockedRepairEntryCommand(entry, repairCommandsPort(this))
   }
 
   async inspectInvalidMetaRepairEntry(entry: KuroflareRepairLogEntry): Promise<void> {
-    if (entry.kind !== 'invalid-meta') return
-    const plan = planInvalidMetaIsolationDetail({
-      entry,
-      current: metaMap(this).get(entry.fileId),
-      inspectedAt: Date.now(),
-    })
-    if (plan.action === 'isolate') {
-      this.invalidMetaIsolationDetail = plan.detail
-    }
+    await inspectInvalidMetaRepairEntryCommand(entry, repairCommandsPort(this))
   }
 
   async discardInvalidMetaRepairEntry(
     entry: KuroflareRepairLogEntry,
     confirmation: string,
   ): Promise<void> {
-    if (entry.kind !== 'invalid-meta') return
-    const context = this.captureMetadataMaterializationContext()
-    if (context === undefined) return
-    const current = metaMap(this).get(entry.fileId)
-    if (
-      !canDiscardInvalidMetaRepairEntry({
-        metadataAccess: this.metadataAccess,
-        fileId: entry.fileId,
-        current,
-        confirmation,
-      })
-    ) {
-      return
-    }
-    const decoded = decodeMetaValue(current, entry.fileId)
-    if (current === undefined || decoded.disposition !== 'invalid') {
-      if (this.invalidMetaIsolationDetail?.fileId === entry.fileId) {
-        this.invalidMetaIsolationDetail = null
-      }
-      await this.removeRepairLogEntry(entry.id, context)
-      return
-    }
-    // This transaction's own `update` event already syncs the deletion
-    // incrementally (see `attachMetaDocObservers`); resending the full doc
-    // here duplicated that update and could quarantine the sync-update on
-    // the server, because `Y.encodeStateAsUpdate(doc)` re-emits every delete
-    // this device has ever observed, not just what changed since the last send.
-    if (!metadataReconcileWriteContextStillStable(this, context)) return
-    const contextMeta = metaMap({ metaDoc: context.metaDoc })
-    context.metaDoc.transact(() => {
-      contextMeta.delete(entry.fileId)
-    }, REPAIR_ORIGIN)
-    if (!metadataReconcileWriteContextStillStable(this, context)) return
-    if (this.invalidMetaIsolationDetail?.fileId === entry.fileId) {
-      this.invalidMetaIsolationDetail = null
-    }
-    await this.removeRepairLogEntry(entry.id, context)
+    await discardInvalidMetaRepairEntryCommand(entry, confirmation, repairCommandsPort(this))
+    return
   }
 
   /** Reads one normalized metadata entry for concrete integration adapters. */
@@ -1824,6 +1660,52 @@ export default class KuroflareSpikePlugin extends Plugin {
 
   setStatus(status: string): void {
     this.statusEl?.setText(`Kuroflare: ${status}`)
+  }
+}
+
+function repairCommandsPort(plugin: KuroflareSpikePlugin): RepairCommandsPort {
+  return {
+    captureContext: () => {
+      if (plugin.metadataReconcileTransitionPending()) return undefined
+      const setup = currentSetupMetadata(plugin)
+      if (setup === undefined || !plugin.startupSideEffectGate.canSendNetwork()) {
+        return undefined
+      }
+      return {
+        metaDoc: plugin.metaDoc,
+        generation: plugin.metadataVaultGeneration,
+        vaultId: setup.vaultId,
+      }
+    },
+    contextStillStable: (context) => metadataReconcileWriteContextStillStable(plugin, context),
+    metadataWritesEnabled: () => metadataWritesEnabled(plugin),
+    metadataReconcileTransitionPending: () => plugin.metadataReconcileTransitionPending(),
+    metadataMaterializationPort: () => metadataMaterializationPort(plugin),
+    metadataReconcilePort: () => metadataReconcilePort(plugin),
+    getMetaValue: (fileId) => metaMap(plugin).get(fileId),
+    getMetaEntry: (fileId) => readMetaFile(metaMap(plugin), fileId),
+    getMetadataAccess: () => plugin.metadataAccess,
+    isPathAvailable: (path) => plugin.app.vault.getAbstractFileByPath(path) === null,
+    materializeMetaRenames,
+    reconcileAndMaterializeMeta,
+    requestMissingRemoteTextFile: (value) => requestMissingRemoteTextFile(plugin, value),
+    enqueueMissingRemoteBinaryDownloads: (reconcile, materialize, reason) =>
+      enqueueMissingRemoteBinaryDownloads(reconcile, materialize, reason),
+    websocketReadyState: () => plugin.workerWebSocketSession.snapshot().readyState ?? -1,
+    openWorkerWebSocket: () => openWorkerWebSocket(plugin),
+    waitForOutboundUpdates: (timeoutMs) => waitForOutboundUpdates(plugin, timeoutMs),
+    removeRepairLogEntry: (entryId, context) =>
+      plugin.updateMetadataReconcileSettings(
+        (current) => ({
+          repairLog: (current.repairLog ?? []).filter((entry) => entry.id !== entryId),
+        }),
+        context,
+      ),
+    notify: (message) => new Notice(message),
+    getInvalidMetaIsolationDetail: () => plugin.invalidMetaIsolationDetail,
+    setInvalidMetaIsolationDetail: (detail) => {
+      plugin.invalidMetaIsolationDetail = detail
+    },
   }
 }
 
