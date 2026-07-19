@@ -27,6 +27,10 @@ import { getOpLogUpdatesBetween } from '../../db/docRepo'
 import { readSqlUpdateBytes } from '../../db/helpers'
 import { authorizeHttpRequestWithClaims } from '../../runtime/auth'
 import {
+  appendSnapshotVerificationEventPreservingLogical,
+  rehydrateAfterDocPointer,
+} from '../../runtime/document-hydration'
+import {
   getDb,
   ensureSchema,
   readDocClock,
@@ -34,11 +38,7 @@ import {
   readSyncRequestDocState,
   withSqlTransaction,
 } from '../../runtime/storage'
-import {
-  appendSnapshotVerificationEventPreservingLogical,
-  rehydrateAfterDocPointer,
-  withDocWriteQueue,
-} from '../../runtime/sync'
+import { withDocWriteQueue } from '../../runtime/sync'
 import {
   apiErrorBody,
   docKey,

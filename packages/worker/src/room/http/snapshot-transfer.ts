@@ -21,18 +21,18 @@ import {
 import { insertDoc } from '../../db/docRepo'
 import { authorizeHttpRequest } from '../../runtime/auth'
 import {
+  admitDocLoad,
+  appendSnapshotVerificationEventPreservingLogical,
+  ensureDocHydrated,
+} from '../../runtime/document-hydration'
+import {
   getDb,
   ensureSchema,
   readDocClock,
   readSnapshotPointer,
   withSqlTransaction,
 } from '../../runtime/storage'
-import {
-  admitDocLoad,
-  appendSnapshotVerificationEventPreservingLogical,
-  ensureDocHydrated,
-  withDocWriteQueue,
-} from '../../runtime/sync'
+import { withDocWriteQueue } from '../../runtime/sync'
 import { AdminSnapshotSeedRequestSchema } from '../../runtime/types'
 import {
   apiErrorBody,

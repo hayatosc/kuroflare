@@ -15,13 +15,14 @@ import {
   insertSnapshotHealthEvent,
 } from '../../db/checkpointRepo'
 import { insertDoc } from '../../db/docRepo'
+import { rehydrateAfterDocPointer } from '../../runtime/document-hydration'
 import {
   getDb,
   readSnapshotPointer,
   readSyncRequestDocState,
   withSqlTransaction,
 } from '../../runtime/storage'
-import { rehydrateAfterDocPointer, withDocWriteQueue } from '../../runtime/sync'
+import { withDocWriteQueue } from '../../runtime/sync'
 import { apiErrorBody, docKey } from '../../runtime/utils'
 import type { VaultRoom } from '../../runtime/vault-room'
 import {

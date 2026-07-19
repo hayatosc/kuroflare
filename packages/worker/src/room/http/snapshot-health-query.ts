@@ -15,12 +15,15 @@ import {
 } from '../../db/checkpointRepo'
 import { authorizeHttpRequest } from '../../runtime/auth'
 import {
+  appendSnapshotVerificationEventPreservingLogical,
+  listR2Objects,
+} from '../../runtime/document-hydration'
+import {
   getDb,
   ensureSchema,
   readSnapshotPointer,
   readSyncRequestDocState,
 } from '../../runtime/storage'
-import { appendSnapshotVerificationEventPreservingLogical, listR2Objects } from '../../runtime/sync'
 import { apiErrorBody, docKey } from '../../runtime/utils'
 import type { VaultRoom } from '../../runtime/vault-room'
 import {

@@ -37,6 +37,12 @@ import {
 import { makeSnapshotObjectKey, type SnapshotCandidate } from '../sync/snapshots'
 import { makeSnapshotListPrefix } from '../sync/snapshots'
 import { EVICTION_IDLE_THRESHOLD_MS, SNAPSHOT_RETENTION_MIN_GENERATIONS } from './constants'
+import {
+  appendSnapshotVerificationEventPreservingLogical,
+  ensureDocHydrated,
+  listR2Objects,
+  rehydrateAfterDocPointer,
+} from './document-hydration'
 import { decideDocEviction } from './eviction'
 import {
   getDb,
@@ -47,13 +53,7 @@ import {
   ensureSchema,
   withSqlTransaction,
 } from './storage'
-import {
-  appendSnapshotVerificationEventPreservingLogical,
-  ensureDocHydrated,
-  listR2Objects,
-  rehydrateAfterDocPointer,
-  withDocWriteQueue,
-} from './sync'
+import { withDocWriteQueue } from './sync'
 import { PosIntSchema, NonNegIntSchema, type WorkerEnv } from './types'
 import type {
   RuntimeCheckpointResult,

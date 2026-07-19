@@ -21,6 +21,11 @@ import { decideQuarantinedUpdateAdmin, type QuarantinedUpdateRecord } from '../.
 import { authorizeHttpRequest, authorizeHttpRequestWithClaims } from '../../runtime/auth'
 import { QUARANTINE_CONFIRMATION_TTL_MS } from '../../runtime/constants'
 import {
+  admitDocLoad,
+  ensureDocHydrated,
+  rehydrateAfterApplyFailure,
+} from '../../runtime/document-hydration'
+import {
   getDb,
   ensureSchema,
   readQuarantinedUpdates,
@@ -29,13 +34,10 @@ import {
   readDocClock,
 } from '../../runtime/storage'
 import {
-  admitDocLoad,
   applyUpdate,
-  ensureDocHydrated,
   metaSchemaValidAfterUpdate,
   persistQuarantineDiscard,
   persistQuarantineForceApply,
-  rehydrateAfterApplyFailure,
   scheduleCheckpointAfterAppend,
   withDocWriteQueue,
 } from '../../runtime/sync'

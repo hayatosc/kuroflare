@@ -26,8 +26,8 @@ import * as Y from 'yjs'
 
 import { VaultRoom } from '../runtime'
 import { MAX_HYDRATED_FILE_DOCS } from '../runtime/constants'
+import { ensureDocHydrated } from '../runtime/document-hydration'
 import { ensureSchema } from '../runtime/storage'
-import { ensureDocHydrated } from '../runtime/sync'
 import { encodeBase64 } from '../runtime/utils'
 import {
   metaIdentityImmutable,
