@@ -1,9 +1,6 @@
 import { Compartment } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import {
-  canonicalizeTextForYText,
-  decideJoinFileAdoption,
-  hashCanonicalText,
   type DocId,
   type LastMaterializedRecord,
   type DocLatestSnapshotResponse,
@@ -18,14 +15,11 @@ import {
   type MetaFile,
   type MetadataAccess,
 } from '@kuroflare/core'
-import { VaultRelativePathSchema } from '@kuroflare/core'
-import { Notice, Plugin, TFile, TFolder, type EventRef } from 'obsidian'
-import * as v from 'valibot'
+import { Notice, Plugin, type EventRef, type TFile } from 'obsidian'
 import type { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
 import { LocalAwareness } from '../editor/awareness'
-import { replaceYText } from '../editor/editor-binding'
 import { KuroflareSettingTab } from '../editor/settings-tab'
 import { clearTextDeletionEvidenceRequest } from '../metadata/evidence'
 import type { MetadataReconcilePort, MetadataReconcileWriteContext } from '../metadata/evidence'
@@ -76,15 +70,12 @@ import {
   cancelAuthRefreshStartupRetry,
   currentSetupDeviceId,
   currentSetupMetadata,
-  findActiveFileId,
-  findMetaFileIdForDoc,
   readAccessToken,
   requireSetupMetadata,
 } from './auth'
 import { createStartupSideEffectGate } from './boot'
 import {
   SPIKE_TEXT_NAME,
-  DISK_ORIGIN,
   META_SYNC_DOC_ID,
   WORKER_ORIGIN,
   BINARY_UPLOAD_ORIGIN,
@@ -106,14 +97,9 @@ import {
   scanLocalVaultForStartup,
 } from './files'
 import { registerFileTreeWatcher } from './files'
-import { claimOwnedPathMarker, clearOwnedPathMarker, deferStartupReplan } from './guards'
-import {
-  accessTokenSecretKeyForSetup,
-  encodeBase64,
-  mergeRepairLogEntries,
-  safeLogError,
-  sameDocId,
-} from './helpers'
+import { deferStartupReplan } from './guards'
+import { accessTokenSecretKeyForSetup, encodeBase64, safeLogError, sameDocId } from './helpers'
+import { resolveJoinAdoptionHashCheck, resolvePendingRemoteTextFile } from './materialize'
 import {
   establishInitialDocumentEpoch,
   loadTextDoc,
@@ -524,30 +510,6 @@ export default class KuroflareSpikePlugin extends Plugin {
         () => this.vaultOperationStillCurrent(context) && this.metaDoc === observedMetaDoc,
       )
     })
-  }
-
-  private async recordRemoteMaterializeBlocked(
-    loaded: LoadedTextDoc,
-    path: string,
-    reason: 'invalid-path' | 'path-collision' | 'parent-collision',
-    context: MetadataReconcileWriteContext,
-  ): Promise<void> {
-    if (!metadataReconcileWriteContextStillStable(this, context)) return
-    const fileId = findMetaFileIdForDoc(this, loaded.docId)
-    const entry: KuroflareRepairLogEntry = {
-      id: `remote-materialize-blocked:${loaded.docId.ydocId}:${reason}`,
-      kind: 'remote-materialize-blocked',
-      fileId: fileId ?? loaded.docId.ydocId,
-      path,
-      reason,
-      createdAt: Date.now(),
-    }
-    await this.updateMetadataReconcileSettings(
-      (current) => ({
-        repairLog: mergeRepairLogEntries(current.repairLog ?? [], [entry]),
-      }),
-      context,
-    )
   }
 
   private async removeRepairLogEntry(
@@ -985,358 +947,11 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   resolvePendingRemoteTextFile(loaded: LoadedTextDoc): Promise<void> {
-    const operation = this.resolvePendingRemoteTextFileOperation(loaded)
-    this.remoteTextMaterializationOperations.add(operation)
-    void operation.then(
-      () => this.remoteTextMaterializationOperations.delete(operation),
-      () => this.remoteTextMaterializationOperations.delete(operation),
-    )
-    return operation
-  }
-
-  private async resolvePendingRemoteTextFileOperation(loaded: LoadedTextDoc): Promise<void> {
-    const context = this.captureMetadataMaterializationContext()
-    if (context === undefined) return
-    if (!this.loadedTextDocMatchesMetadataContext(loaded, context)) return
-    const path = this.pendingRemoteTextFiles.get(loaded.docId.ydocId)
-    if (path === undefined) return
-    if (!metadataReconcileWriteContextStillStable(this, context)) return
-    const markerOwner = claimOwnedPathMarker(
-      this.pendingRemoteTextFiles,
-      this.pendingRemoteTextFileOwners,
-      loaded.docId.ydocId,
-      path,
-      this.metadataVaultGeneration,
-    )
-    if (markerOwner === undefined) return
-    if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
-      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-      return
-    }
-    if (!v.is(VaultRelativePathSchema, path)) {
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'invalid-path', context)
-      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-      return
-    }
-    const existing = this.app.vault.getAbstractFileByPath(path)
-    if (existing instanceof TFile) {
-      await this.resolveJoinAdoptionHashCheck(existing, loaded)
-      return
-    }
-    if (existing !== null) {
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
-      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-      return
-    }
-    const createdFolders: string[] = []
-    const slash = path.lastIndexOf('/')
-    if (slash !== -1) {
-      const parts = path.slice(0, slash).split('/')
-      let current = ''
-      for (const part of parts) {
-        current = current.length === 0 ? part : `${current}/${part}`
-        if (this.app.vault.getAbstractFileByPath(current) === null) {
-          if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
-            this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-            return
-          }
-          try {
-            await this.app.vault.createFolder(current)
-            createdFolders.push(current)
-            if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
-              this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-              await this.cleanupRemoteMaterializeFolders(createdFolders)
-              return
-            }
-          } catch {
-            const existingFolder = this.app.vault.getAbstractFileByPath(current)
-            if (!(existingFolder instanceof TFolder)) {
-              await this.recordRemoteMaterializeBlocked(loaded, path, 'parent-collision', context)
-              this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-              await this.cleanupRemoteMaterializeFolders(createdFolders)
-              return
-            }
-            if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
-              this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-              await this.cleanupRemoteMaterializeFolders(createdFolders)
-              return
-            }
-          }
-        } else if (!(this.app.vault.getAbstractFileByPath(current) instanceof TFolder)) {
-          await this.recordRemoteMaterializeBlocked(loaded, path, 'parent-collision', context)
-          this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-          return
-        }
-      }
-    }
-    if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
-      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-      await this.cleanupRemoteMaterializeFolders(createdFolders)
-      return
-    }
-    const content = loaded.text.toJSON()
-    const contentHash = await hashCanonicalText(content)
-    if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
-      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-      await this.cleanupRemoteMaterializeFolders(createdFolders)
-      return
-    }
-    let createdFile: TFile
-    try {
-      createdFile = await this.app.vault.create(path, content)
-    } catch (error: unknown) {
-      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-      try {
-        await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
-      } catch (repairError: unknown) {
-        console.warn('[kuroflare] failed to record a remote materialization collision', {
-          path,
-          error: safeLogError(repairError),
-        })
-      }
-      await this.cleanupRemoteMaterializeFolders(createdFolders)
-      console.warn('[kuroflare] remote text materialization collided with a local file', {
-        path,
-        competingPathPresent: this.app.vault.getAbstractFileByPath(path) !== null,
-        error: safeLogError(error),
-      })
-      return
-    }
-    if (!this.pendingRemoteTextMatchesMeta(loaded, path, markerOwner, context)) {
-      await this.compensateRemoteTextMaterialization(
-        loaded,
-        path,
-        contentHash,
-        createdFolders,
-        createdFile,
-        markerOwner,
-        context,
-      )
-      return
-    }
-    this.lastMaterialized.set(path, {
-      diskHash: contentHash,
-      ydocHash: contentHash,
-      path,
-      writtenAt: Date.now(),
-    })
-    this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-  }
-
-  private async cleanupRemoteMaterializeFolders(paths: readonly string[]): Promise<void> {
-    for (const path of [...paths].reverse()) {
-      const folder = this.app.vault.getAbstractFileByPath(path)
-      if (!(folder instanceof TFolder) || folder.children.length !== 0) continue
-      try {
-        await this.app.vault.delete(folder)
-      } catch (error: unknown) {
-        console.warn('[kuroflare] failed to clean up an empty materialization folder', {
-          path,
-          error: safeLogError(error),
-        })
-      }
-    }
-  }
-
-  private async compensateRemoteTextMaterialization(
-    loaded: LoadedTextDoc,
-    path: string,
-    expectedHash: string,
-    createdFolders: readonly string[],
-    createdFile: TFile,
-    markerOwner: GenerationMarkerOwner,
-    context: MetadataReconcileWriteContext,
-  ): Promise<void> {
-    const stillOwnsMarker = () =>
-      this.pendingRemoteTextFiles.get(loaded.docId.ydocId) === path &&
-      this.pendingRemoteTextFileOwners.get(loaded.docId.ydocId) === markerOwner
-    if (!stillOwnsMarker() || this.app.vault.getAbstractFileByPath(path) !== createdFile) {
-      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-      return
-    }
-    let actualHash: string
-    try {
-      actualHash = await hashCanonicalText(await this.app.vault.read(createdFile))
-    } catch (error: unknown) {
-      console.warn('[kuroflare] could not verify a raced remote text materialization', {
-        path,
-        error: safeLogError(error),
-      })
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
-      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-      return
-    }
-
-    if (
-      !stillOwnsMarker() ||
-      this.app.vault.getAbstractFileByPath(path) !== createdFile ||
-      actualHash !== expectedHash
-    ) {
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
-      new Notice(
-        `Kuroflare sync: preserved a raced local edit at ${path}; resolve the remote materialization repair manually.`,
-      )
-      this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-      return
-    }
-
-    this.pendingFsDeletes.add(path)
-    try {
-      await this.app.vault.delete(createdFile)
-    } catch (error: unknown) {
-      this.pendingFsDeletes.delete(path)
-      console.warn('[kuroflare] failed to compensate a raced remote text materialization', {
-        path,
-        error: safeLogError(error),
-      })
-      await this.recordRemoteMaterializeBlocked(loaded, path, 'path-collision', context)
-    } finally {
-      this.pendingFsDeletes.delete(path)
-    }
-    this.clearPendingRemoteTextFile(loaded, path, markerOwner)
-    await this.cleanupRemoteMaterializeFolders(createdFolders)
-  }
-
-  private clearPendingRemoteTextFile(
-    loaded: LoadedTextDoc,
-    path: string,
-    markerOwner: GenerationMarkerOwner,
-  ): void {
-    clearOwnedPathMarker(
-      this.pendingRemoteTextFiles,
-      this.pendingRemoteTextFileOwners,
-      loaded.docId.ydocId,
-      path,
-      markerOwner,
-    )
-  }
-
-  private captureMetadataMaterializationContext(): MetadataReconcileWriteContext | undefined {
-    if (this.metadataReconcileTransitionPending()) return undefined
-    const setup = currentSetupMetadata(this)
-    if (setup === undefined || !this.startupSideEffectGate.canSendNetwork()) return undefined
-    return {
-      metaDoc: this.metaDoc,
-      generation: this.metadataVaultGeneration,
-      vaultId: setup.vaultId,
-    }
-  }
-
-  private pendingRemoteTextMatchesMeta(
-    loaded: LoadedTextDoc,
-    path: string,
-    markerOwner: GenerationMarkerOwner,
-    context: MetadataReconcileWriteContext,
-  ): boolean {
-    if (!metadataReconcileWriteContextStillStable(this, context)) return false
-    if (!this.loadedTextDocMatchesMetadataContext(loaded, context)) return false
-    if (this.pendingRemoteTextFileOwners.get(loaded.docId.ydocId) !== markerOwner) return false
-    const fileId = findMetaFileIdForDoc(this, loaded.docId)
-    if (fileId === undefined) return false
-    const value = readMetaFile(metaMap(this), fileId)
-    return (
-      value !== undefined &&
-      !value.deleted &&
-      value.type === 'text' &&
-      value.ydocId === loaded.docId.ydocId &&
-      value.path === path
-    )
-  }
-
-  private loadedTextDocMatchesMetadataContext(
-    loaded: LoadedTextDoc,
-    context: MetadataReconcileWriteContext,
-  ): boolean {
-    if (context.vaultId === undefined) return false
-    return this.loadedTextDocStillCurrent(loaded, {
-      vaultId: context.vaultId,
-      generation: context.generation,
-    })
+    return resolvePendingRemoteTextFile(this, loaded)
   }
 
   async resolveJoinAdoptionHashCheck(file: TFile, loaded: LoadedTextDoc): Promise<void> {
-    const context = this.captureMetadataMaterializationContext()
-    if (context === undefined) return
-    if (!this.loadedTextDocMatchesMetadataContext(loaded, context)) return
-    const markerPath = this.pendingRemoteTextFiles.get(loaded.docId.ydocId)
-    if (markerPath === undefined) return
-    if (!metadataReconcileWriteContextStillStable(this, context)) return
-    const markerOwner = claimOwnedPathMarker(
-      this.pendingRemoteTextFiles,
-      this.pendingRemoteTextFileOwners,
-      loaded.docId.ydocId,
-      markerPath,
-      this.metadataVaultGeneration,
-    )
-    if (markerOwner === undefined) return
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) {
-      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
-      return
-    }
-    const fileId = findActiveFileId(this, file.path)
-    if (fileId === undefined) {
-      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
-      return
-    }
-
-    const remoteContentHash = await hashCanonicalText(loaded.text.toJSON())
-    const localContentHash = await hashCanonicalText(await this.app.vault.read(file))
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) {
-      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
-      return
-    }
-    const decision = decideJoinFileAdoption({
-      remoteEntry: { fileId, contentHash: remoteContentHash },
-      localContentHash,
-    })
-    if (decision.action === 'adopt-matching-content') {
-      this.lastMaterialized.set(file.path, {
-        diskHash: localContentHash,
-        ydocHash: remoteContentHash,
-        path: file.path,
-        writtenAt: Date.now(),
-        diskMtimeMs: file.stat.mtime,
-        diskSize: file.stat.size,
-      })
-      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
-      return
-    }
-    try {
-      await this.importJoinAdoptionTextIfActive(file, loaded, markerOwner, context)
-    } finally {
-      this.clearPendingRemoteTextFile(loaded, markerPath, markerOwner)
-    }
-  }
-
-  private async importJoinAdoptionTextIfActive(
-    file: TFile,
-    loaded: LoadedTextDoc,
-    markerOwner: GenerationMarkerOwner,
-    context: MetadataReconcileWriteContext,
-  ): Promise<void> {
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) return
-    const diskText = await this.app.vault.read(file)
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) return
-    const canonicalText = canonicalizeTextForYText(diskText)
-    const textHash = await hashCanonicalText(canonicalText)
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) return
-    replaceYText(loaded.doc, loaded.text, canonicalText, DISK_ORIGIN)
-    this.lastMaterialized.set(file.path, {
-      diskHash: textHash,
-      ydocHash: textHash,
-      path: file.path,
-      writtenAt: Date.now(),
-      diskMtimeMs: file.stat.mtime,
-      diskSize: file.stat.size,
-    })
-    if (!this.pendingRemoteTextMatchesMeta(loaded, file.path, markerOwner, context)) return
-    await sendDocUpdateToWorker(
-      this,
-      loaded.docId,
-      Y.encodeStateAsUpdate(loaded.doc),
-      'join-adoption-hash-mismatch',
-      () => this.loadedTextDocMatchesMetadataContext(loaded, context),
-    )
+    await resolveJoinAdoptionHashCheck(this, file, loaded)
   }
 
   async handleWorkerSyncUpdate(message: SyncUpdate): Promise<void> {
@@ -1497,7 +1112,7 @@ function metadataReconcilePort(plugin: KuroflareSpikePlugin): MetadataReconcileP
   }
 }
 
-function metadataReconcileWriteContextStillStable(
+export function metadataReconcileWriteContextStillStable(
   plugin: KuroflareSpikePlugin,
   context: MetadataReconcileWriteContext,
 ): boolean {
