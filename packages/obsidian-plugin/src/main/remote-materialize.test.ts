@@ -58,10 +58,8 @@ import {
   materializeMetaRenames,
   type MetadataMaterializationPort,
 } from '../plugin/metadata-materialization'
-import {
-  reconcileAndMaterializeMeta,
-  type MetadataReconcilePort,
-} from '../plugin/metadata-reconcile'
+import { reconcileAndMaterializeMeta } from '../plugin/metadata-reconcile'
+import type { MetadataReconcilePort } from '../plugin/metadata-reconcile-context'
 import { applyFileDelete } from '../sync/meta/tree'
 import { requestMissingRemoteTextFile } from './file-tree'
 import { insertMetaFile, metaMap, updateMetaFile } from './meta'

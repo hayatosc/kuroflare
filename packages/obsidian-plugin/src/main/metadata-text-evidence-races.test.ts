@@ -57,12 +57,12 @@ vi.mock('obsidian', () => {
 
 import type { KuroflareSettings, LoadedTextDoc } from '../main-types'
 import { type MetadataMaterializationPort } from '../plugin/metadata-materialization'
+import { reconcileAndMaterializeMeta } from '../plugin/metadata-reconcile'
+import type { MetadataReconcilePort } from '../plugin/metadata-reconcile-context'
 import {
   findTextDeletionEvidenceForReconcile,
-  reconcileAndMaterializeMeta,
   scheduleTextDeletionEvidenceRetry,
-  type MetadataReconcilePort,
-} from '../plugin/metadata-reconcile'
+} from '../plugin/metadata-text-evidence'
 import { BINARY_UPLOAD_ORIGIN } from './constants'
 import { insertMetaFile, metaMap, readMetaFile, updateMetaFile } from './meta'
 import KuroflareSpikePlugin from './plugin'

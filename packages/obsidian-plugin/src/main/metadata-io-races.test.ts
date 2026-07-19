@@ -56,13 +56,13 @@ vi.mock('obsidian', () => {
 })
 
 import type { KuroflareSettings, LoadedTextDoc } from '../main-types'
-import { type MetadataMaterializationPort } from '../plugin/metadata-materialization'
 import {
   findRestorableBinaryFileIdsForReconcile,
   enqueueMissingRemoteBinaryDownloads,
-  reconcileAndMaterializeMeta,
-  type MetadataReconcilePort,
-} from '../plugin/metadata-reconcile'
+} from '../plugin/metadata-binary-restore'
+import { type MetadataMaterializationPort } from '../plugin/metadata-materialization'
+import { reconcileAndMaterializeMeta } from '../plugin/metadata-reconcile'
+import type { MetadataReconcilePort } from '../plugin/metadata-reconcile-context'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import { requestMissingRemoteTextFile } from './file-tree'
 import { insertMetaFile, metaMap, readMetaFile, updateMetaFile } from './meta'

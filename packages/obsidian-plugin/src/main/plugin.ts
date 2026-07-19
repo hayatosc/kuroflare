@@ -40,17 +40,17 @@ import type {
   GenerationMarkerOwner,
   TextDocumentOwner,
 } from '../main-types'
+import { enqueueMissingRemoteBinaryDownloads } from '../plugin/metadata-binary-restore'
 import {
   materializeMetaRenames,
   type MetadataMaterializationPort,
 } from '../plugin/metadata-materialization'
 import {
-  clearTextDeletionEvidenceRequest,
-  enqueueMissingRemoteBinaryDownloads,
   reconcileAndMaterializeMeta,
   type MetadataReconcilePort,
   type MetadataReconcileWriteContext,
 } from '../plugin/metadata-reconcile'
+import { clearTextDeletionEvidenceRequest } from '../plugin/metadata-text-evidence'
 import { documentEpochMetadataKey } from '../recovery/epoch'
 import type { DocumentEpochRecoveryHost } from '../recovery/epoch-startup'
 import {

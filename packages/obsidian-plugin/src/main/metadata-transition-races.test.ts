@@ -48,10 +48,8 @@ vi.mock('obsidian', () => {
 
 import type { KuroflareSettings, LoadedTextDoc } from '../main-types'
 import type { MetadataMaterializationPort } from '../plugin/metadata-materialization'
-import {
-  reconcileAndMaterializeMeta,
-  type MetadataReconcilePort,
-} from '../plugin/metadata-reconcile'
+import { reconcileAndMaterializeMeta } from '../plugin/metadata-reconcile'
+import type { MetadataReconcilePort } from '../plugin/metadata-reconcile-context'
 import { insertMetaFile, metaMap } from './meta'
 import KuroflareSpikePlugin from './plugin'
 import { setOwnedPathMarker } from './runtime-guards'
