@@ -458,7 +458,7 @@ export default class KuroflareSpikePlugin extends Plugin {
     update: (current: KuroflareSettings) => Partial<KuroflareSettings>,
     context: MetadataReconcileWriteContext,
   ): Promise<boolean> {
-    return enqueueSettingsWrite(this, async () => {
+    return this.enqueueSettingsWrite(async () => {
       if (!metadataReconcileWriteContextStillStable(this, context)) return false
       const previousRepairLog = this.kuroflareSettings.repairLog
       const patch = update(this.kuroflareSettings)
