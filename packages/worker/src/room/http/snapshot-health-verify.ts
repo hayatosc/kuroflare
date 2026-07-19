@@ -15,7 +15,8 @@ import {
   insertSnapshotHealthEvent,
 } from '../../db/checkpointRepo'
 import { insertDoc } from '../../db/docRepo'
-import { rehydrateAfterDocPointer } from '../../runtime/document-hydration'
+import { rehydrateAfterDocPointer } from '../../runtime/documents'
+import type { VaultRoom } from '../../runtime/room'
 import {
   getDb,
   readSnapshotPointer,
@@ -24,7 +25,6 @@ import {
 } from '../../runtime/storage'
 import { withDocWriteQueue } from '../../runtime/sync'
 import { apiErrorBody, docKey } from '../../runtime/utils'
-import type { VaultRoom } from '../../runtime/vault-room'
 import {
   SNAPSHOT_HEALTH_SYSTEM_ACTORS,
   type SnapshotVerificationExpectedEvidence,

@@ -2,9 +2,9 @@ import { makeMessageId, makeVaultId, makeYDocId } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { VaultRoom } from '../runtime'
-import { ensureDocHydrated } from '../runtime/document-hydration'
-import { encodeBase64 } from '../runtime/utils'
+import { VaultRoom } from '../../runtime'
+import { ensureDocHydrated } from '../../runtime/documents'
+import { encodeBase64 } from '../../runtime/utils'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -23,8 +23,8 @@ import {
   makeAuthenticatedWebSocketRequest,
   makeYjsUpdateBytes,
   FakeR2Bucket,
-} from './test-helpers'
-import { seedVerifiedSnapshotEvidence } from './test-helpers/snapshot-fixtures'
+} from '../support'
+import { seedVerifiedSnapshotEvidence } from '../support'
 
 test('VaultRoom seeds an admin snapshot and records verified evidence', async () => {
   const storage = new SqlOnlyStorage()

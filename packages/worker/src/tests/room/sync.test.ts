@@ -16,15 +16,11 @@ import {
 import { assert, expect, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { VaultRoom } from '../runtime'
-import { MAX_HYDRATED_FILE_DOCS } from '../runtime/constants'
-import { ensureDocHydrated } from '../runtime/document-hydration'
-import { ensureSchema } from '../runtime/storage'
-import {
-  metaIdentityImmutable,
-  metaRootMutationAllowed,
-  metaYDocWritable,
-} from '../runtime/yjs-validation'
+import { VaultRoom } from '../../runtime'
+import { MAX_HYDRATED_FILE_DOCS } from '../../runtime/constants'
+import { ensureDocHydrated } from '../../runtime/documents'
+import { ensureSchema } from '../../runtime/storage'
+import { metaIdentityImmutable, metaRootMutationAllowed, metaYDocWritable } from '../../sync/yjs'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -54,7 +50,7 @@ import {
   stringMessageAt,
   findAckForMessage,
   makeArrayBuffer,
-} from './test-helpers'
+} from '../support'
 
 test('VaultRoom appends JSON sync updates, acks the sender, and broadcasts to peers', async () => {
   const previousPair = installFakeWebSocketPair()

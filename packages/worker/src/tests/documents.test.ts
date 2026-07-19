@@ -5,7 +5,7 @@ import {
   decideDocLoadAdmission,
   type DocEvictionInput,
   type DocLoadAdmissionInput,
-} from './eviction'
+} from '../runtime/documents'
 
 function input(overrides: Partial<DocEvictionInput>): DocEvictionInput {
   return {

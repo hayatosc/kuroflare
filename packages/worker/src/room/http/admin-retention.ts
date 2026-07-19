@@ -2,9 +2,9 @@ import { type Context } from 'hono'
 
 import { getSnapshotRetentionEvents } from '../../db/checkpointRepo'
 import { authorizeHttpRequest } from '../../runtime/auth'
+import type { VaultRoom } from '../../runtime/room'
 import { getDb, ensureSchema } from '../../runtime/storage'
 import { apiErrorBody } from '../../runtime/utils'
-import type { VaultRoom } from '../../runtime/vault-room'
 
 export async function handleRetentionInspect(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)

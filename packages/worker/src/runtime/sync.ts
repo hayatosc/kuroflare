@@ -1,6 +1,7 @@
 import {
   CURRENT_PROTOCOL_VERSION,
   makeSha256Hex,
+  type AwarenessUpdate,
   type DeviceId,
   type DocId,
   type SyncRequest,
@@ -26,13 +27,29 @@ import {
   decideSyncUpdateQuarantine,
   makeSyncUpdateRejected,
 } from '../sync/update'
-import { readSession, messageMatchesSession } from './auth'
+import {
+  stateVectorCoversHorizon,
+  canApplyYjsUpdateToDoc,
+  isEmptyYjsUpdate,
+  metaYDocSchemaDisposition,
+  metaYDocWritable,
+  metaIdentityImmutable,
+  metaRootMutationAllowed,
+} from '../sync/yjs'
+import {
+  broadcast,
+  messageMatchesSession,
+  readAwarenessAttachment,
+  readSession,
+  rememberAwarenessAttachment,
+} from './auth'
 import {
   CHECKPOINT_OP_THRESHOLD,
   CHECKPOINT_ALARM_DELAY_MS,
   LARGE_UPDATE_THRESHOLD_BYTES,
 } from './constants'
-import { admitDocLoad, ensureDocHydrated, rehydrateAfterApplyFailure } from './document-hydration'
+import { admitDocLoad, ensureDocHydrated, rehydrateAfterApplyFailure } from './documents'
+import type { VaultRoom } from './room'
 import {
   getDb,
   readDocClock,
@@ -52,16 +69,6 @@ import {
   logEvent,
   retentionErrorMessage,
 } from './utils'
-import type { VaultRoom } from './vault-room'
-import {
-  stateVectorCoversHorizon,
-  canApplyYjsUpdateToDoc,
-  isEmptyYjsUpdate,
-  metaYDocSchemaDisposition,
-  metaYDocWritable,
-  metaIdentityImmutable,
-  metaRootMutationAllowed,
-} from './yjs-validation'
 
 export async function handleSyncRequest(
   room: VaultRoom,
@@ -619,4 +626,41 @@ export async function scheduleCheckpointAfterAppend(
   const snapshotSeq = await readSnapshotSeq(room, docId)
   const delay = latestSeq - snapshotSeq >= CHECKPOINT_OP_THRESHOLD ? 0 : CHECKPOINT_ALARM_DELAY_MS
   await scheduleCheckpointAlarm(room, now + delay)
+}
+
+/** Broadcasts an awareness frame to every other authenticated socket in the vault. */
+export function handleAwarenessUpdate(
+  room: VaultRoom,
+  webSocket: RuntimeWebSocket,
+  update: AwarenessUpdate,
+): void {
+  const session = readSession(room, webSocket)
+  if (session === undefined) {
+    webSocket.close(1008, 'hello-required')
+    return
+  }
+  if (!messageMatchesSession(session, update)) {
+    webSocket.close(1008, 'session-mismatch')
+    return
+  }
+  rememberAwarenessAttachment(room, webSocket, { docId: update.docId, clientId: update.clientId })
+  broadcast(room, webSocket, JSON.stringify(update))
+}
+
+/** Broadcasts a synthetic leave frame when a connection closes. */
+export function broadcastAwarenessLeave(room: VaultRoom, webSocket: RuntimeWebSocket): void {
+  const session = readSession(room, webSocket)
+  const awareness = readAwarenessAttachment(room, webSocket)
+  room.awarenessByWebSocket.delete(webSocket)
+  if (session === undefined || awareness === undefined) return
+
+  const leave: AwarenessUpdate = {
+    type: 'awareness-update',
+    vaultId: session.vaultId,
+    deviceId: session.deviceId,
+    docId: awareness.docId,
+    clientId: awareness.clientId,
+    state: null,
+  }
+  broadcast(room, webSocket, JSON.stringify(leave))
 }

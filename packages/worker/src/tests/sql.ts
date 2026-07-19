@@ -1,5 +1,5 @@
-import type { DurableObjectSqlStorageBinding } from '..'
-import { expectString, expectNumber, expectUint8Array, quarantineSqlRow } from './helpers'
+import type { DurableObjectSqlStorageBinding } from '../runtime'
+import { expectString, expectNumber, expectUint8Array, quarantineSqlRow } from './support'
 
 export interface RecordedDocRow {
   readonly kind: string

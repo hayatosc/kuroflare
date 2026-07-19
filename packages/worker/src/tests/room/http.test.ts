@@ -12,8 +12,8 @@ import * as v from 'valibot'
 import { assert, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
-import { VaultRoom } from '../runtime'
-import { MAX_HYDRATED_FILE_DOCS } from '../runtime/constants'
+import { VaultRoom } from '../../runtime'
+import { MAX_HYDRATED_FILE_DOCS } from '../../runtime/constants'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -32,7 +32,7 @@ import {
   makeAuthenticatedWebSocketRequest,
   makeYjsUpdateBytes,
   FakeR2Bucket,
-} from './test-helpers'
+} from '../support'
 
 test('VaultRoom serves the latest meta snapshot from the production HTTP route', async () => {
   const storage = new SqlOnlyStorage()

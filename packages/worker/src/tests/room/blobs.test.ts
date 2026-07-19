@@ -1,7 +1,7 @@
 import { encodeBlobManifestJson, makeDeviceId, makeSha256Hex, makeVaultId } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
-import { VaultRoom } from '../runtime'
+import { VaultRoom } from '../../runtime'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeR2Bucket,
@@ -12,7 +12,7 @@ import {
   makeDeviceToken,
   makeEnvWithSnapshotBucketAndDeviceTokenSecret,
   testBlobManifest,
-} from './test-helpers'
+} from '../support'
 
 test('VaultRoom serves authenticated blob head, upload, and download proxy requests', async () => {
   const secret = TEST_DEVICE_TOKEN_SECRET

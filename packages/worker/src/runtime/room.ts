@@ -36,8 +36,7 @@ import {
   handleMetaSnapshotImport,
 } from '../room/http/snapshot-transfer'
 import { acceptHello, broadcast, rememberSocketToken, rememberVaultId } from './auth'
-import { broadcastAwarenessLeave, handleAwarenessUpdate } from './awareness'
-import { abortExpiredBlobMultipartUploads } from './blob-gc'
+import { abortExpiredBlobMultipartUploads } from './blobs'
 import {
   handleBlobHead,
   handleBlobUploadUrl,
@@ -48,9 +47,9 @@ import {
   handleBlobMultipartAbort,
   handleBlobManifestGet,
   handleBlobManifestPut,
-} from './blob-handlers'
-import { checkpointDoc, evictIdleDocs, readCheckpointableDocIds } from './checkpoint'
-import { recoverOrphanedCheckpointRuns } from './checkpoint-recovery'
+} from './blobs'
+import { checkpointDoc, evictIdleDocs, readCheckpointableDocIds } from './checkpoints'
+import { recoverOrphanedCheckpointRuns } from './checkpoints'
 import {
   ADMIN_SETUP_TOKEN_PATH,
   ADMIN_SNAPSHOT_SEED_PATH,
@@ -58,6 +57,7 @@ import {
   WEBSOCKET_UPGRADE,
 } from './constants'
 import { ensureSchema } from './storage'
+import { broadcastAwarenessLeave, handleAwarenessUpdate } from './sync'
 import { handleSyncRequest, handleSyncUpdate } from './sync'
 import type {
   WorkerEnv,

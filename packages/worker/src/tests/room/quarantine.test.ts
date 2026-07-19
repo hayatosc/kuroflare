@@ -13,9 +13,9 @@ import * as v from 'valibot'
 import { assert, test, vi } from 'vitest'
 import * as Y from 'yjs'
 
-import { VaultRoom } from '../runtime'
-import { ensureDocHydrated } from '../runtime/document-hydration'
-import { metaYDocSchemaDisposition } from '../runtime/yjs-validation'
+import { VaultRoom } from '../../runtime'
+import { ensureDocHydrated } from '../../runtime/documents'
+import { metaYDocSchemaDisposition } from '../../sync/yjs'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -36,8 +36,8 @@ import {
   makeAuthenticatedWebSocketRequest,
   decodeTestBase64,
   stringMessageAt,
-} from './test-helpers'
-import { makePoisonedMetaDoc } from './test-helpers/yjs-fixtures'
+} from '../support'
+import { makePoisonedMetaDoc } from '../support'
 
 test('VaultRoom quarantines a live delta with a missing predecessor without appending it', async () => {
   const previousPair = installFakeWebSocketPair()

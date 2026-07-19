@@ -32,6 +32,7 @@ import {
   SETUP_ACCESS_TOKEN_TTL_MS,
   SETUP_REFRESH_TOKEN_TTL_MS,
 } from '../../runtime/constants'
+import type { VaultRoom } from '../../runtime/room'
 import {
   getDb,
   ensureSchema,
@@ -53,7 +54,6 @@ import {
   makeOpaqueToken,
   sha256Text,
 } from '../../runtime/utils'
-import type { VaultRoom } from '../../runtime/vault-room'
 
 export async function handleAdminSetupTokenIssue(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)

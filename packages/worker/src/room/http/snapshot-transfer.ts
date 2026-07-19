@@ -24,7 +24,8 @@ import {
   admitDocLoad,
   appendSnapshotVerificationEventPreservingLogical,
   ensureDocHydrated,
-} from '../../runtime/document-hydration'
+} from '../../runtime/documents'
+import type { VaultRoom } from '../../runtime/room'
 import {
   getDb,
   ensureSchema,
@@ -43,7 +44,8 @@ import {
   retentionErrorMessage,
   sha256Hex,
 } from '../../runtime/utils'
-import type { VaultRoom } from '../../runtime/vault-room'
+import { SNAPSHOT_HEALTH_SYSTEM_ACTORS, verifySnapshotObject } from '../../sync/snapshot-health'
+import { makeSnapshotObjectKey } from '../../sync/snapshots'
 import {
   canApplyYjsUpdate,
   canApplyYjsUpdateToDoc,
@@ -51,9 +53,7 @@ import {
   metaRootMutationAllowed,
   metaYDocSchemaDisposition,
   metaYDocWritable,
-} from '../../runtime/yjs-validation'
-import { SNAPSHOT_HEALTH_SYSTEM_ACTORS, verifySnapshotObject } from '../../sync/snapshot-health'
-import { makeSnapshotObjectKey } from '../../sync/snapshots'
+} from '../../sync/yjs'
 
 export async function handleAdminSnapshotSeed(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)

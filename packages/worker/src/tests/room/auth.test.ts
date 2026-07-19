@@ -1,7 +1,7 @@
 import { CURRENT_PROTOCOL_VERSION, makeDeviceId, makeMessageId } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
-import { VaultRoom } from '../runtime'
+import { VaultRoom } from '../../runtime'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -19,7 +19,7 @@ import {
   hashTestText,
   makeDeviceToken,
   makeAuthenticatedWebSocketRequest,
-} from './test-helpers'
+} from '../support'
 
 test('VaultRoom accepts websocket upgrades and rejects malformed binary frames', async () => {
   const previousPair = installFakeWebSocketPair()

@@ -5,7 +5,7 @@ import workerEntrypoint, {
   type DurableObjectIdBinding,
   type DurableObjectStubBinding,
 } from '../runtime'
-import { makeEnv, makeDeviceToken, makeEnvWithDeviceTokenSecret } from './test-helpers'
+import { makeEnv, makeDeviceToken, makeEnvWithDeviceTokenSecret } from './support'
 
 test('worker entrypoint keeps the admin setup token issuance endpoint degraded without a secret', async () => {
   const response = await workerEntrypoint.fetch(

@@ -57,6 +57,7 @@ import type { QuarantinedUpdateRecord } from '../quarantine'
 import type { SyncRequestDocState } from '../sync/request'
 import type { SyncUpdateDocClock, SyncUpdateDuplicateEvidence } from '../sync/update'
 import { VAULT_ID_STORAGE_KEY } from './constants'
+import type { VaultRoom } from './room'
 import {
   PosIntSchema,
   NonNegIntSchema,
@@ -65,7 +66,6 @@ import {
   type RuntimeSnapshotPointerRecord,
 } from './types'
 import { docKey, quarantinedUpdateRecordFromSqlRow } from './utils'
-import type { VaultRoom } from './vault-room'
 
 export function getDb(room: VaultRoom): Kysely<Database> | undefined {
   const sql = room.state.storage.sql

@@ -16,7 +16,7 @@ import {
   migrateLegacyMetaDoc,
   canApplyYjsUpdateToDoc,
   hasUnresolvedYjsState,
-} from './yjs-validation'
+} from '../sync/yjs'
 
 const DEVICE = makeDeviceId('device-v2')
 

@@ -3,8 +3,8 @@ import * as v from 'valibot'
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { VaultRoom } from '../runtime'
-import { ensureSchema } from '../runtime/storage'
+import { VaultRoom } from '../../../runtime'
+import { ensureSchema } from '../../../runtime/storage'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -27,8 +27,8 @@ import {
   makeStateVectorBase64,
   decodeTestBase64,
   FakeR2Bucket,
-} from './test-helpers'
-import { seedVerifiedSnapshotEvidence } from './test-helpers/snapshot-fixtures'
+} from '../../support'
+import { seedVerifiedSnapshotEvidence } from '../../support'
 
 interface RetentionAdminResponse {
   readonly items: readonly RetentionAdminEvent[]

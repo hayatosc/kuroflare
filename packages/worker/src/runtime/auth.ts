@@ -13,6 +13,7 @@ import * as v from 'valibot'
 
 import { decideClientHelloRegistry, type DeviceRegistryEntry } from '../devices'
 import { decideAuthAdmission, type AuthAdmissionDecision } from '../http/auth'
+import type { VaultRoom } from './room'
 import { readDeviceRegistryEntry, persistVaultId } from './storage'
 import type {
   RuntimeWebSocket,
@@ -21,7 +22,6 @@ import type {
   WebSocketAwarenessAttachment,
 } from './types'
 import { apiErrorBody, logEvent, extractBearerToken, isWebSocketAttachment } from './utils'
-import type { VaultRoom } from './vault-room'
 
 export async function acceptHello(
   room: VaultRoom,

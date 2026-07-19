@@ -2,8 +2,8 @@ import { makeMessageId, makeVaultId, makeYDocId } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { VaultRoom } from '../runtime'
-import { ensureDocHydrated } from '../runtime/document-hydration'
+import { VaultRoom } from '../../runtime'
+import { ensureDocHydrated } from '../../runtime/documents'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -26,8 +26,8 @@ import {
   decodeTestBase64,
   FakeR2Bucket,
   findAckForMessage,
-} from './test-helpers'
-import { seedVerifiedSnapshotEvidence } from './test-helpers/snapshot-fixtures'
+} from '../support'
+import { seedVerifiedSnapshotEvidence } from '../support'
 
 test('VaultRoom rehydrates committed state after an active YDoc apply failure', async () => {
   const previousPair = installFakeWebSocketPair()

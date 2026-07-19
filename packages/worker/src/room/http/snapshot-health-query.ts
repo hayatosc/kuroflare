@@ -17,7 +17,8 @@ import { authorizeHttpRequest } from '../../runtime/auth'
 import {
   appendSnapshotVerificationEventPreservingLogical,
   listR2Objects,
-} from '../../runtime/document-hydration'
+} from '../../runtime/documents'
+import type { VaultRoom } from '../../runtime/room'
 import {
   getDb,
   ensureSchema,
@@ -25,7 +26,6 @@ import {
   readSyncRequestDocState,
 } from '../../runtime/storage'
 import { apiErrorBody, docKey } from '../../runtime/utils'
-import type { VaultRoom } from '../../runtime/vault-room'
 import {
   verifySnapshotObject,
   type SnapshotVerificationExpectedEvidence,

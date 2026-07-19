@@ -12,9 +12,9 @@ import {
 import { assert, expect, test } from 'vitest'
 import * as Y from 'yjs'
 
-import { VaultRoom } from '../runtime'
-import { ensureDocHydrated } from '../runtime/document-hydration'
-import { metaYDocSchemaDisposition } from '../runtime/yjs-validation'
+import { VaultRoom } from '../../../runtime'
+import { ensureDocHydrated } from '../../../runtime/documents'
+import { metaYDocSchemaDisposition } from '../../../sync/yjs'
 import {
   TEST_DEVICE_TOKEN_SECRET,
   FakeSocket,
@@ -40,8 +40,8 @@ import {
   decodeTestBase64,
   FakeR2Bucket,
   findAckForMessage,
-} from './test-helpers'
-import { makePoisonedMetaDoc } from './test-helpers/yjs-fixtures'
+} from '../../support'
+import { makePoisonedMetaDoc } from '../../support'
 
 test('VaultRoom checkpoints an active document to R2 and advances the SQL snapshot pointer', async () => {
   const previousPair = installFakeWebSocketPair()

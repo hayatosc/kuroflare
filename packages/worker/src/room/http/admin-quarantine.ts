@@ -24,7 +24,8 @@ import {
   admitDocLoad,
   ensureDocHydrated,
   rehydrateAfterApplyFailure,
-} from '../../runtime/document-hydration'
+} from '../../runtime/documents'
+import type { VaultRoom } from '../../runtime/room'
 import {
   getDb,
   ensureSchema,
@@ -55,8 +56,7 @@ import {
   sha256Text,
   timingSafeEqualString,
 } from '../../runtime/utils'
-import type { VaultRoom } from '../../runtime/vault-room'
-import { canApplyYjsUpdateToDoc } from '../../runtime/yjs-validation'
+import { canApplyYjsUpdateToDoc } from '../../sync/yjs'
 
 export async function handleQuarantineList(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)

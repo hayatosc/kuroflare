@@ -29,7 +29,8 @@ import { authorizeHttpRequestWithClaims } from '../../runtime/auth'
 import {
   appendSnapshotVerificationEventPreservingLogical,
   rehydrateAfterDocPointer,
-} from '../../runtime/document-hydration'
+} from '../../runtime/documents'
+import type { VaultRoom } from '../../runtime/room'
 import {
   getDb,
   ensureSchema,
@@ -46,14 +47,13 @@ import {
   retentionErrorMessage,
   sha256Text,
 } from '../../runtime/utils'
-import type { VaultRoom } from '../../runtime/vault-room'
-import { metaIdentityImmutable, metaYDocWritable } from '../../runtime/yjs-validation'
 import { verifySnapshotObject } from '../../sync/snapshot-health'
 import {
   makeSnapshotListPrefix,
   makeSnapshotObjectKey,
   type SnapshotCandidate,
 } from '../../sync/snapshots'
+import { metaIdentityImmutable, metaYDocWritable } from '../../sync/yjs'
 import {
   getLatestSnapshotHealthEventForEntry,
   readSnapshotHealthActionContext,
