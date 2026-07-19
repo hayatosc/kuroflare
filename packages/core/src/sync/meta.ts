@@ -2,7 +2,7 @@ import * as v from 'valibot'
 
 import { isRecord } from '../auth/validation'
 import { DeviceIdSchema, FileIdSchema, YDocIdSchema } from '../utils/ids'
-import { NonEmptyBase64Schema } from '../utils/shared'
+import { NonEmptyBase64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
 
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/
 const FORBIDDEN_PATH_SEGMENTS = new Set(['', '.', '..'])
@@ -26,7 +26,7 @@ export const VaultRelativePathSchema = v.pipe(
   }, 'Invalid vault relative path'),
 )
 
-export const TimestampSchema = v.pipe(v.number(), v.integer(), v.minValue(0))
+export const TimestampSchema = NonNegativeSafeIntegerSchema
 
 export const MetaFileBaseSchema = v.object({
   schemaVersion: v.literal(1),

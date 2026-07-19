@@ -1,3 +1,5 @@
+import * as v from 'valibot'
+
 import {
   type OutboxPlanItemId,
   type BinaryUploadOutboxPlanInput,
@@ -6,13 +8,14 @@ import {
   type BinaryUploadOutboxPlanBuildResult,
   type BinaryDownloadOutboxPlanBuildResult,
 } from './types'
-import { validateBinaryChunks, hasDuplicateIds } from './validation'
+import { OutboxPlanItemIdSchema, validateBinaryChunks, hasDuplicateIds } from './validation'
 
 /**
  * Brands a caller-assigned outbox item ID after checking it is non-empty.
  */
 export function makeOutboxPlanItemId(value: string): OutboxPlanItemId | null {
-  return value.length === 0 ? null : value
+  const result = v.safeParse(OutboxPlanItemIdSchema, value)
+  return result.success ? result.output : null
 }
 
 /**

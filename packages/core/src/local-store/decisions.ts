@@ -1,6 +1,7 @@
+import * as v from 'valibot'
+
 import type { LocalOutboxRepairExportEntry } from '../local-store/repair'
 import type { DocId } from '../utils/ids'
-import { isPositiveSafeInteger, isNonNegativeSafeInteger } from '../utils/shared'
 import type {
   LocalStoreObjectStore,
   LocalStoreSchemaDecisionInput,
@@ -14,6 +15,13 @@ import type {
   LocalOutboxRepairResumeInput,
   LocalOutboxRepairResumeDecision,
 } from './types'
+import {
+  LocalOutboxRepairDurableMessagesSchema,
+  LocalStoreCurrentVersionSchema,
+  LocalStorePendingOutboxCountSchema,
+  LocalStoreRepairDecisionInputSchema,
+  LocalStoreVersionEvidenceSchema,
+} from './validation'
 
 /**
  * Decides how the plugin should handle its local IndexedDB schema before sync starts.
@@ -21,28 +29,38 @@ import type {
 export function decideLocalStoreSchema(
   input: LocalStoreSchemaDecisionInput,
 ): LocalStoreSchemaDecision {
-  if (
-    !isPositiveSafeInteger(input.targetVersion) ||
-    !isPositiveSafeInteger(input.minimumReadableVersion)
-  ) {
+  const versionResult = v.safeParse(LocalStoreVersionEvidenceSchema, {
+    targetVersion: input.targetVersion,
+    minimumReadableVersion: input.minimumReadableVersion,
+  })
+  if (!versionResult.success) {
     return { action: 'reject', reason: 'invalid-version' }
   }
-  if (input.minimumReadableVersion > input.targetVersion) {
+  const { targetVersion, minimumReadableVersion } = versionResult.output
+  if (minimumReadableVersion > targetVersion) {
     return { action: 'reject', reason: 'invalid-version' }
   }
-  if (input.currentVersion !== undefined && !isPositiveSafeInteger(input.currentVersion)) {
+  const currentVersionResult = v.safeParse(LocalStoreCurrentVersionSchema, {
+    currentVersion: input.currentVersion,
+  })
+  if (!currentVersionResult.success) {
     return { action: 'reject', reason: 'invalid-version' }
   }
-  if (!Number.isSafeInteger(input.pendingOutboxCount) || input.pendingOutboxCount < 0) {
+  const { currentVersion } = currentVersionResult.output
+  const pendingResult = v.safeParse(LocalStorePendingOutboxCountSchema, {
+    pendingOutboxCount: input.pendingOutboxCount,
+  })
+  if (!pendingResult.success) {
     return { action: 'reject', reason: 'invalid-pending-outbox-count' }
   }
+  const { pendingOutboxCount } = pendingResult.output
   if (hasDuplicateStore(input.presentStores) || hasDuplicateStore(input.requiredStores)) {
     return { action: 'reject', reason: 'duplicate-store-name' }
   }
   if (
-    (!input.dbExists && input.currentVersion !== undefined) ||
+    (!input.dbExists && currentVersion !== undefined) ||
     (!input.dbExists && input.presentStores.length > 0) ||
-    (!input.dbExists && input.pendingOutboxCount > 0)
+    (!input.dbExists && pendingOutboxCount > 0)
   ) {
     return { action: 'reject', reason: 'inconsistent-local-store-evidence' }
   }
@@ -51,47 +69,46 @@ export function decideLocalStoreSchema(
   if (!input.dbExists) {
     return {
       action: 'create',
-      version: input.targetVersion,
+      version: targetVersion,
       createStores: requiredStores,
     }
   }
 
-  const currentVersion = input.currentVersion
   if (currentVersion === undefined) {
     return { action: 'reject', reason: 'inconsistent-local-store-evidence' }
   }
-  if (currentVersion > input.targetVersion) {
+  if (currentVersion > targetVersion) {
     return { action: 'degraded', reason: 'local-store-too-new' }
   }
-  if (currentVersion < input.minimumReadableVersion) {
-    if (input.pendingOutboxCount > 0) {
+  if (currentVersion < minimumReadableVersion) {
+    if (pendingOutboxCount > 0) {
       return { action: 'degraded', reason: 'store-version-too-old-with-pending-outbox' }
     }
     return {
       action: 'rebuild',
       reason: 'store-version-too-old',
-      targetVersion: input.targetVersion,
+      targetVersion,
       pendingOutboxCount: 0,
     }
   }
 
   const missingStores = missingRequiredStores(input.presentStores, input.requiredStores)
-  if (currentVersion < input.targetVersion) {
+  if (currentVersion < targetVersion) {
     return {
       action: 'upgrade',
       fromVersion: currentVersion,
-      toVersion: input.targetVersion,
+      toVersion: targetVersion,
       createStores: missingStores,
     }
   }
   if (missingStores.length > 0) {
-    if (input.pendingOutboxCount > 0) {
+    if (pendingOutboxCount > 0) {
       return { action: 'degraded', reason: 'missing-required-store-with-pending-outbox' }
     }
     return {
       action: 'rebuild',
       reason: 'missing-required-store',
-      targetVersion: input.targetVersion,
+      targetVersion,
       pendingOutboxCount: 0,
     }
   }
@@ -105,15 +122,16 @@ export function decideLocalStoreSchema(
 export function decideLocalStoreRepair(
   input: LocalStoreRepairDecisionInput,
 ): LocalStoreRepairDecision {
-  if (!Number.isSafeInteger(input.pendingOutboxCount) || input.pendingOutboxCount < 0) {
-    return { action: 'reject', reason: 'invalid-pending-outbox-count' }
-  }
-  if (!isPositiveSafeInteger(input.targetVersion)) {
-    return { action: 'reject', reason: 'invalid-target-version' }
-  }
-  if (!Number.isSafeInteger(input.now) || input.now < 0) {
+  const result = v.safeParse(LocalStoreRepairDecisionInputSchema, input)
+  if (!result.success) {
+    const field = result.issues[0]?.path?.at(-1)?.key
+    if (field === 'pendingOutboxCount') {
+      return { action: 'reject', reason: 'invalid-pending-outbox-count' }
+    }
+    if (field === 'targetVersion') return { action: 'reject', reason: 'invalid-target-version' }
     return { action: 'reject', reason: 'invalid-now' }
   }
+  const { pendingOutboxCount, targetVersion, now } = result.output
   if (input.schemaDecision.action !== 'degraded') {
     if (
       input.schemaDecision.action === 'create' ||
@@ -132,29 +150,29 @@ export function decideLocalStoreRepair(
     case 'export-pending-outbox':
       return {
         action: 'export-pending-outbox',
-        exportName: makeLocalStoreRepairExportName(input.now),
+        exportName: makeLocalStoreRepairExportName(now),
         includeOutbox: true,
         includeMetadata: true,
       }
     case 'rebuild-after-export':
-      if (input.pendingOutboxCount > 0 && !input.exportCompleted) {
+      if (pendingOutboxCount > 0 && !input.exportCompleted) {
         return { action: 'reject', reason: 'export-required' }
       }
       return {
         action: 'rebuild',
-        reason: input.pendingOutboxCount > 0 ? 'outbox-exported' : 'empty-outbox',
-        targetVersion: input.targetVersion,
-        clearPendingOutbox: input.pendingOutboxCount > 0,
+        reason: pendingOutboxCount > 0 ? 'outbox-exported' : 'empty-outbox',
+        targetVersion,
+        clearPendingOutbox: pendingOutboxCount > 0,
       }
     case 'discard-and-rebuild':
-      if (input.pendingOutboxCount > 0 && !input.discardConfirmed) {
+      if (pendingOutboxCount > 0 && !input.discardConfirmed) {
         return { action: 'reject', reason: 'discard-confirmation-required' }
       }
       return {
         action: 'rebuild',
-        reason: input.pendingOutboxCount > 0 ? 'outbox-discarded' : 'empty-outbox',
-        targetVersion: input.targetVersion,
-        clearPendingOutbox: input.pendingOutboxCount > 0,
+        reason: pendingOutboxCount > 0 ? 'outbox-discarded' : 'empty-outbox',
+        targetVersion,
+        clearPendingOutbox: pendingOutboxCount > 0,
       }
   }
 }
@@ -178,16 +196,18 @@ export function planLocalOutboxRepairImport(
   if (hasDuplicateString(input.exportFile.entries.map((entry) => entry.id))) {
     return { action: 'reject', reason: 'duplicate-export-id' }
   }
-  if (input.durableMessages.some((message) => !isNonNegativeSafeInteger(message.durableSeq))) {
+  const durableResult = v.safeParse(LocalOutboxRepairDurableMessagesSchema, input.durableMessages)
+  if (!durableResult.success) {
     return { action: 'reject', reason: 'invalid-durable-seq' }
   }
+  const validatedInput = { ...input, durableMessages: durableResult.output }
 
   const imports: LocalOutboxRepairImportedYUpdate[] = []
   const skipped: LocalOutboxRepairImportSkip[] = []
   const existingIds = new Set(input.existingOutboxIds)
 
   for (const entry of input.exportFile.entries) {
-    const skipReason = decideLocalOutboxRepairImportSkip(entry, input, existingIds)
+    const skipReason = decideLocalOutboxRepairImportSkip(entry, validatedInput, existingIds)
     if (skipReason !== null) {
       skipped.push({ id: entry.id, reason: skipReason })
       continue
@@ -230,14 +250,16 @@ export function planLocalOutboxRepairImport(
 export function decideLocalOutboxRepairResume(
   input: LocalOutboxRepairResumeInput,
 ): LocalOutboxRepairResumeDecision {
-  if (input.durableMessages.some((message) => !isNonNegativeSafeInteger(message.durableSeq))) {
+  const durableResult = v.safeParse(LocalOutboxRepairDurableMessagesSchema, input.durableMessages)
+  if (!durableResult.success) {
     return { action: 'reject', reason: 'invalid-durable-seq' }
   }
+  const durableMessages = durableResult.output
   if (!input.userConfirmed) {
     return { action: 'wait', reason: 'confirmation-required' }
   }
   if (
-    input.durableMessages.some(
+    durableMessages.some(
       (message) =>
         sameDocId(message.docId, input.item.docId) && message.messageId === input.item.messageId,
     )

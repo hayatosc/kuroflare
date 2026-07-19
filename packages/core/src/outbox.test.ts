@@ -1172,6 +1172,30 @@ test('outbox scheduler auth gate rejects invalid token timing evidence', () => {
   )
 })
 
+test('outbox scheduler auth gate prioritizes duplicate estimates over malformed duplicates', () => {
+  const duplicate = outboxId('duplicate-estimate')
+
+  assert.deepEqual(
+    planOutboxSchedulerTick({
+      now: 100,
+      profile: 'desktop',
+      resumeEvents: [],
+      leases: [],
+      maxStarts: 1,
+      auth: {
+        tokenExpiresAt: 10_000,
+        refreshMarginMs: 200,
+        estimates: [
+          { id: duplicate, estimatedDurationMs: 10 },
+          { id: duplicate, estimatedDurationMs: -1 },
+        ],
+      },
+      items: [],
+    }),
+    { ok: false, reason: 'duplicate-auth-estimate', id: duplicate },
+  )
+})
+
 test('outbox auth refresh request schedules one refresh for blocked starts', () => {
   const expired = outboxId('expired')
   const expiringSoon = outboxId('expiring-soon')
@@ -1277,6 +1301,21 @@ test('outbox auth refresh request rejects corrupted local refresh evidence', () 
       refreshBlocks: [
         authRefreshBlock(yUpdate, 'y-update', 'token-expiring-soon', 100, 300),
         authRefreshBlock(yUpdate, 'y-update', 'token-expiring-soon', 100, 300),
+      ],
+    }),
+    { action: 'reject', reason: 'duplicate-refresh-block', id: yUpdate },
+  )
+
+  assert.deepEqual(
+    decideOutboxAuthRefreshRequest({
+      now: 1_000,
+      refreshState: { status: 'idle' },
+      refreshBlocks: [
+        authRefreshBlock(yUpdate, 'y-update', 'token-expiring-soon', 100, 300),
+        {
+          ...authRefreshBlock(yUpdate, 'y-update', 'token-expiring-soon', 100, 300),
+          requiredRemainingMs: -1,
+        },
       ],
     }),
     { action: 'reject', reason: 'duplicate-refresh-block', id: yUpdate },
@@ -1548,6 +1587,16 @@ test('outbox lease release requires matching owner', () => {
 
   assert.deepEqual(
     decideOutboxLeaseRelease({
+      itemId: '',
+      ownerId: 'worker-1',
+      now: 1_000,
+      existingLease: undefined,
+    }),
+    { action: 'reject', reason: 'missing-lease' },
+  )
+
+  assert.deepEqual(
+    decideOutboxLeaseRelease({
       itemId: item,
       ownerId: 'worker-1',
       now: 2_000,
@@ -1609,6 +1658,18 @@ test('outbox lease renew extends only active owned leases', () => {
       existingLease: lease(item, 'blob-put', 'worker-1', 2_000),
     }),
     { action: 'reject', reason: 'lease-kind-mismatch' },
+  )
+
+  assert.deepEqual(
+    decideOutboxLeaseRenew({
+      itemId: '',
+      kind: 'blob-put',
+      ownerId: 'worker-1',
+      now: 1_000,
+      leaseDurationMs: 30_000,
+      existingLease: undefined,
+    }),
+    { action: 'reject', reason: 'missing-lease' },
   )
 })
 

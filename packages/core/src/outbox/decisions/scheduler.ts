@@ -1,3 +1,5 @@
+import * as v from 'valibot'
+
 import { decideClientAuthStart } from '../../auth'
 import {
   type OutboxSchedulerItem,
@@ -9,7 +11,7 @@ import {
   type OutboxSchedulerStart,
 } from '../types'
 import {
-  isNonNegativeSafeInteger,
+  OutboxSchedulerTickInputSchema,
   validateOutboxSchedulerAuthGate,
   mapAuthStartRejectReason,
 } from '../validation'
@@ -27,13 +29,18 @@ import {
  * Plans one outbound queue scan without performing side effects.
  */
 export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): OutboxSchedulerTickPlan {
-  if (!isNonNegativeSafeInteger(input.now)) {
-    return { ok: false, reason: 'invalid-clock' }
+  const inputResult = v.safeParse(OutboxSchedulerTickInputSchema, {
+    now: input.now,
+    maxStarts: input.maxStarts,
+  })
+  if (!inputResult.success) {
+    const field = inputResult.issues[0]?.path?.at(-1)?.key
+    return field === 'maxStarts'
+      ? { ok: false, reason: 'invalid-max-starts' }
+      : { ok: false, reason: 'invalid-clock' }
   }
-  if (!isNonNegativeSafeInteger(input.maxStarts)) {
-    return { ok: false, reason: 'invalid-max-starts' }
-  }
-  const authGate = validateOutboxSchedulerAuthGate(input.auth, input.now)
+  const { now, maxStarts } = inputResult.output
+  const authGate = validateOutboxSchedulerAuthGate(input.auth, now)
   if (!authGate.ok) {
     return authGate
   }
@@ -51,7 +58,7 @@ export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): Outbox
   }
 
   const byId = new Map(resumedItems.map((item) => [item.id, item]))
-  const leasePlan = planEffectiveLeases(input.leases, byId, input.now)
+  const leasePlan = planEffectiveLeases(input.leases, byId, now)
   if (!leasePlan.ok) {
     return leasePlan
   }
@@ -78,7 +85,7 @@ export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): Outbox
   const authRefreshBlocks: OutboxAuthStartRefreshBlock[] = []
 
   for (const item of resumedItems) {
-    if (starts.length >= input.maxStarts) {
+    if (starts.length >= maxStarts) {
       break
     }
 
@@ -95,7 +102,7 @@ export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): Outbox
       status,
       dependencies,
       nextAttemptAt: item.nextAttemptAt,
-      now: input.now,
+      now,
     })
     if (runDecision.action !== 'run') {
       continue
@@ -114,7 +121,7 @@ export function planOutboxSchedulerTick(input: OutboxSchedulerTickInput): Outbox
 
     if (outboxKindRequiresAuth(item.kind) && authGate.auth !== undefined) {
       const authDecision = decideClientAuthStart({
-        now: input.now,
+        now,
         tokenExpiresAt: authGate.auth.tokenExpiresAt,
         refreshMarginMs: authGate.auth.refreshMarginMs,
         estimatedDurationMs:

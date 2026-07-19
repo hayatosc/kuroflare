@@ -1,5 +1,8 @@
+import * as v from 'valibot'
+
 import { type SetupBootstrapMode, type SetupExchangeResponse } from '../sync/setup'
 import { type VaultId } from '../utils/ids'
+import { NonNegativeSafeIntegerSchema } from '../utils/shared'
 
 /** User-visible startup path requested by the plugin shell. */
 export type ClientStartupIntent = 'setup-new-vault' | 'join-existing-vault' | 'reconnect'
@@ -134,6 +137,12 @@ const RESTORE_LOCAL_META_STEPS = [
   'resume-background-queues',
 ] as const satisfies readonly ClientStartupStep[]
 
+const ClientStartupLocalValidationSchema = v.object({
+  pendingOutboxCount: NonNegativeSafeIntegerSchema,
+  supportedSchemaVersion: NonNegativeSafeIntegerSchema,
+  schemaVersion: v.optional(NonNegativeSafeIntegerSchema),
+})
+
 /**
  * Plans the first sync path after plugin startup or setup exchange.
  *
@@ -141,16 +150,11 @@ const RESTORE_LOCAL_META_STEPS = [
  * @returns A side-effect-free startup plan that keeps bootstrap, join, and reconnect paths separate.
  */
 export function planClientStartup(input: ClientStartupPlanInput): ClientStartupPlan {
-  if (!Number.isSafeInteger(input.local.pendingOutboxCount) || input.local.pendingOutboxCount < 0) {
-    return { action: 'reject', reason: 'invalid-pending-outbox-count' }
-  }
-  if (
-    !Number.isSafeInteger(input.local.supportedSchemaVersion) ||
-    input.local.supportedSchemaVersion < 0 ||
-    (input.local.schemaVersion !== undefined &&
-      (!Number.isSafeInteger(input.local.schemaVersion) || input.local.schemaVersion < 0))
-  ) {
-    return { action: 'degraded', reason: 'invalid-local-schema' }
+  const localResult = v.safeParse(ClientStartupLocalValidationSchema, input.local)
+  if (!localResult.success) {
+    return String(localResult.issues[0]?.path?.[0]?.key) === 'pendingOutboxCount'
+      ? { action: 'reject', reason: 'invalid-pending-outbox-count' }
+      : { action: 'degraded', reason: 'invalid-local-schema' }
   }
   if (
     input.local.schemaVersion !== undefined &&

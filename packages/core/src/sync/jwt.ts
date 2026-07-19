@@ -1,9 +1,14 @@
 import * as v from 'valibot'
 
-import { isRecord } from '../auth/validation'
 import { DeviceTokenClaimsSchema, type DeviceTokenClaims } from '../sync/schemas'
 
 const base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+const DeviceTokenSecretSchema = v.pipe(v.string(), v.minLength(1))
+const JwtHeaderSchema = v.object({
+  alg: v.literal('HS256'),
+  typ: v.literal('JWT'),
+})
 
 /** Input for signing worker-issued device access-token claims. */
 export interface SignHs256DeviceTokenInput {
@@ -25,7 +30,7 @@ export interface VerifyHs256DeviceTokenInput {
  * @throws When the secret is empty or the claims fail the device-token claims guard.
  */
 export async function signHs256DeviceToken(input: SignHs256DeviceTokenInput): Promise<string> {
-  if (input.secret.length === 0) {
+  if (!v.is(DeviceTokenSecretSchema, input.secret)) {
     throw new Error('empty-device-token-secret')
   }
   if (!v.is(DeviceTokenClaimsSchema, input.claims)) {
@@ -49,7 +54,7 @@ export async function signHs256DeviceToken(input: SignHs256DeviceTokenInput): Pr
 export async function verifyHs256DeviceToken(
   input: VerifyHs256DeviceTokenInput,
 ): Promise<DeviceTokenClaims | undefined> {
-  if (input.secret.length === 0) {
+  if (!v.is(DeviceTokenSecretSchema, input.secret)) {
     return undefined
   }
 
@@ -67,7 +72,7 @@ export async function verifyHs256DeviceToken(
   }
 
   const header = decodeBase64UrlJson(encodedHeader)
-  if (!isRecord(header) || header.alg !== 'HS256' || header.typ !== 'JWT') {
+  if (!v.is(JwtHeaderSchema, header)) {
     return undefined
   }
 

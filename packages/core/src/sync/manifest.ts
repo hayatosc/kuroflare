@@ -1,7 +1,10 @@
+import * as v from 'valibot'
+
 import { encodeBlobManifestJson, type BlobManifest } from '../sync/blob'
 import { makeSha256Hex, type Sha256Hex } from '../sync/meta'
 import { hashBytesSha256 } from '../utils/hashing'
 import { type DeviceId, type FileId } from '../utils/ids'
+import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema } from '../utils/shared'
 
 export interface ChunkingOptions {
   readonly minSize?: number
@@ -52,6 +55,24 @@ export const DEFAULT_CHUNKING_OPTIONS = {
   avgSize: 256 * 1024,
   maxSize: 1024 * 1024,
 } as const satisfies Required<ChunkingOptions>
+
+const NormalizedChunkingOptionsSchema = v.pipe(
+  v.object({
+    minSize: v.number(),
+    avgSize: v.number(),
+    maxSize: v.number(),
+  }),
+  v.check(({ avgSize }) => isPositivePowerOfTwo(avgSize), 'invalid-average-size'),
+  v.check(({ minSize }) => v.is(PositiveSafeIntegerSchema, minSize), 'invalid-minimum-size'),
+  v.check(
+    ({ minSize, maxSize }) => v.is(PositiveSafeIntegerSchema, maxSize) && maxSize >= minSize,
+    'invalid-maximum-size',
+  ),
+  v.check(
+    ({ minSize, avgSize, maxSize }) => avgSize >= minSize && avgSize <= maxSize,
+    'average-size-out-of-range',
+  ),
+)
 
 /**
  * Splits bytes into deterministic content-defined chunks.
@@ -119,8 +140,8 @@ export async function buildBlobManifest(
   createdAt: number,
   options: ChunkingOptions = {},
 ): Promise<BuiltBlobManifest> {
-  if (!Number.isSafeInteger(createdAt) || createdAt < 0) {
-    throw new Error(`Invalid manifest timestamp: ${createdAt}`)
+  if (!v.is(NonNegativeSafeIntegerSchema, createdAt)) {
+    throw new Error(`Invalid manifest timestamp: ${String(createdAt)}`)
   }
 
   const chunkByteSlices = chunkBytes(bytes, options)
@@ -207,20 +228,31 @@ function normalizeChunkingOptions(options: ChunkingOptions): Required<ChunkingOp
   const avgSize = options.avgSize ?? DEFAULT_CHUNKING_OPTIONS.avgSize
   const maxSize = options.maxSize ?? DEFAULT_CHUNKING_OPTIONS.maxSize
 
-  if (!isPositivePowerOfTwo(avgSize)) {
-    throw new Error(`avgSize must be a positive power of two: ${avgSize}`)
-  }
-  if (!Number.isSafeInteger(minSize) || minSize <= 0) {
-    throw new Error(`Invalid minSize: ${minSize}`)
-  }
-  if (!Number.isSafeInteger(maxSize) || maxSize < minSize) {
-    throw new Error(`Invalid maxSize: ${maxSize}`)
-  }
-  if (avgSize < minSize || avgSize > maxSize) {
-    throw new Error(`avgSize must be between minSize and maxSize: ${avgSize}`)
+  const result = v.safeParse(NormalizedChunkingOptionsSchema, { minSize, avgSize, maxSize })
+  if (!result.success) {
+    const invalidField = String(result.issues[0]?.path?.[0]?.key)
+    if (invalidField === 'avgSize') {
+      throw new Error(`avgSize must be a positive power of two: ${String(avgSize)}`)
+    }
+    if (invalidField === 'minSize') {
+      throw new Error(`Invalid minSize: ${String(minSize)}`)
+    }
+    if (invalidField === 'maxSize') {
+      throw new Error(`Invalid maxSize: ${String(maxSize)}`)
+    }
+    switch (result.issues[0]?.message) {
+      case 'invalid-average-size':
+        throw new Error(`avgSize must be a positive power of two: ${String(avgSize)}`)
+      case 'invalid-minimum-size':
+        throw new Error(`Invalid minSize: ${String(minSize)}`)
+      case 'invalid-maximum-size':
+        throw new Error(`Invalid maxSize: ${String(maxSize)}`)
+      default:
+        throw new Error(`avgSize must be between minSize and maxSize: ${String(avgSize)}`)
+    }
   }
 
-  return { minSize, avgSize, maxSize }
+  return result.output
 }
 
 function isPositivePowerOfTwo(value: number): boolean {

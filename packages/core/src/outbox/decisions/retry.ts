@@ -1,3 +1,6 @@
+import * as v from 'valibot'
+
+import { NonNegativeSafeIntegerSchema } from '../../utils/shared'
 import {
   type OutboxRetryKind,
   type OutboxRetryPolicy,
@@ -15,24 +18,30 @@ import {
   BLOB_RETRY_POLICY,
   MATERIALIZE_RETRY_POLICY,
 } from '../types'
-import { isNonNegativeSafeInteger } from '../validation'
+import {
+  OutboxConcurrencyInputSchema,
+  OutboxRetryCountSchema,
+  OutboxRunClockSchema,
+} from '../validation'
 
 /**
  * Decides whether an outbox failure should retry, pause, or fail permanently.
  */
 export function decideOutboxRetry(input: OutboxRetryDecisionInput): OutboxRetryDecision {
-  if (input.retryCount < 0 || !Number.isSafeInteger(input.retryCount)) {
+  const result = v.safeParse(OutboxRetryCountSchema, { retryCount: input.retryCount })
+  if (!result.success) {
     return { action: 'pause', reason: 'manual-intervention-required', resumeOn: 'manual' }
   }
+  const retryCount = result.output.retryCount
 
   switch (input.error.kind) {
     case 'network':
     case 'timeout':
     case 'offline':
-      return retryWithPolicy(input.kind, input.retryCount, undefined)
+      return retryWithPolicy(input.kind, retryCount, undefined)
     case 'api':
       return input.error.retryable
-        ? retryWithPolicy(input.kind, input.retryCount, input.error.retryAfterMs)
+        ? retryWithPolicy(input.kind, retryCount, input.error.retryAfterMs)
         : { action: 'dead-letter', reason: 'non-retryable-api-error' }
     case 'local-conflict':
       return {
@@ -59,7 +68,8 @@ export function decideOutboxRetry(input: OutboxRetryDecisionInput): OutboxRetryD
 export function transitionOutboxFailure(
   input: OutboxFailureTransitionInput,
 ): OutboxFailureTransition {
-  if (!isNonNegativeSafeInteger(input.now)) {
+  const clockResult = v.safeParse(OutboxRunClockSchema, { now: input.now })
+  if (!clockResult.success) {
     return {
       status: 'paused',
       retryCount: input.retryCount,
@@ -77,7 +87,7 @@ export function transitionOutboxFailure(
       return {
         status: 'retrying',
         retryCount: input.retryCount + 1,
-        nextAttemptAt: input.now + retryDecision.delayMs + retryJitterMs,
+        nextAttemptAt: clockResult.output.now + retryDecision.delayMs + retryJitterMs,
         lastError: input.error,
       }
     case 'pause':
@@ -105,9 +115,11 @@ export function transitionOutboxFailure(
  * Decides whether an outbox item may execute at the current time.
  */
 export function decideOutboxRun(input: OutboxRunDecisionInput): OutboxRunDecision {
-  if (!isNonNegativeSafeInteger(input.now)) {
+  const clockResult = v.safeParse(OutboxRunClockSchema, { now: input.now })
+  if (!clockResult.success) {
     return { action: 'wait', reason: 'invalid-clock' }
   }
+  const now = clockResult.output.now
 
   switch (input.status) {
     case 'done':
@@ -124,7 +136,7 @@ export function decideOutboxRun(input: OutboxRunDecisionInput): OutboxRunDecisio
 
   if (
     input.nextAttemptAt !== undefined &&
-    (!isNonNegativeSafeInteger(input.nextAttemptAt) || input.now < input.nextAttemptAt)
+    (!v.is(NonNegativeSafeIntegerSchema, input.nextAttemptAt) || now < input.nextAttemptAt)
   ) {
     return { action: 'wait', reason: 'not-due' }
   }
@@ -152,11 +164,14 @@ export function decideOutboxConcurrency(
 ): OutboxConcurrencyDecision {
   const lane = outboxConcurrencyLane(input.kind)
   const limit = outboxConcurrencyLimit(input.kind, input.profile)
-  if (!isNonNegativeSafeInteger(input.runningInLane)) {
+  const result = v.safeParse(OutboxConcurrencyInputSchema, {
+    runningInLane: input.runningInLane,
+  })
+  if (!result.success) {
     return { action: 'wait', reason: 'invalid-running-count', lane, limit }
   }
 
-  return input.runningInLane < limit
+  return result.output.runningInLane < limit
     ? { action: 'start', lane, limit }
     : { action: 'wait', reason: 'concurrency-limit-reached', lane, limit }
 }
@@ -224,7 +239,7 @@ function retryWithPolicy(
 
   const scheduledDelayMs =
     policy.scheduleMs[Math.min(retryCount, policy.scheduleMs.length - 1)] ?? policy.maxDelayMs
-  const retryAfterDelayMs = isNonNegativeSafeInteger(retryAfterMs) ? retryAfterMs : 0
+  const retryAfterDelayMs = v.is(NonNegativeSafeIntegerSchema, retryAfterMs) ? retryAfterMs : 0
   return {
     action: 'retry',
     delayMs: Math.max(scheduledDelayMs, retryAfterDelayMs),
@@ -236,7 +251,7 @@ function selectedRetryJitterMs(
   requestedJitterMs: number | undefined,
   retryDecision: Extract<OutboxRetryDecision, { readonly action: 'retry' }>,
 ): number {
-  if (!isNonNegativeSafeInteger(requestedJitterMs)) {
+  if (!v.is(NonNegativeSafeIntegerSchema, requestedJitterMs)) {
     return 0
   }
 

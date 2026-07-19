@@ -37,6 +37,26 @@ test('chunkBytes produces deterministic chunks that cover the input', () => {
   assert.deepEqual(chunks, chunkBytes(bytes, { minSize: 4, avgSize: 8, maxSize: 10 }))
 })
 
+test('manifest inputs reject unsafe integers through shared schemas', async () => {
+  const fileId = makeFileId('file-unsafe-integer')
+  const createdBy = makeDeviceId('device-unsafe-integer')
+  const bytes = new Uint8Array([1])
+
+  await expect(
+    buildBlobManifest(fileId, bytes, createdBy, Number.MAX_SAFE_INTEGER + 1),
+  ).rejects.toThrow(/Invalid manifest timestamp/)
+  expect(() =>
+    chunkBytes(bytes, {
+      minSize: Number.MAX_SAFE_INTEGER + 1,
+      avgSize: 8,
+      maxSize: Number.MAX_SAFE_INTEGER + 1,
+    }),
+  ).toThrow(/Invalid minSize/)
+  expect(() =>
+    Reflect.apply(chunkBytes, undefined, [bytes, { minSize: 'bad', avgSize: 8, maxSize: 16 }]),
+  ).toThrow(/Invalid minSize: bad/)
+})
+
 test('buildBlobManifest creates a canonical manifest and upload list', async () => {
   const fileId = makeFileId('file-1')
   const createdBy = makeDeviceId('device-1')

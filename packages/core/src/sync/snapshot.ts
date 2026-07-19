@@ -1,8 +1,10 @@
+import * as v from 'valibot'
+
 import { type DocLatestSnapshotResponse, type MetaLatestSnapshotResponse } from '../http/snapshot'
 import { makeSha256Hex, type Sha256Hex } from '../sync/meta'
 import { hashBytesSha256 } from '../utils/hashing'
 import { type DocId } from '../utils/ids'
-import { isNonNegativeSafeInteger } from '../utils/shared'
+import { NonNegativeSafeIntegerSchema } from '../utils/shared'
 
 /** Input for deciding whether a fetched full snapshot may replace local doc state. */
 export interface FullSnapshotApplyInput {
@@ -83,6 +85,16 @@ export type FullSnapshotBytesFromResponseResult =
         | 'invalid-size-limit'
     }
 
+const FullSnapshotSizeLimitsSchema = v.object({
+  maxUpdateBytes: v.optional(NonNegativeSafeIntegerSchema),
+  maxStateVectorBytes: v.optional(NonNegativeSafeIntegerSchema),
+})
+
+const FullSnapshotSequenceSchema = v.object({
+  snapshotSeq: NonNegativeSafeIntegerSchema,
+  currentSnapshotSeq: v.optional(NonNegativeSafeIntegerSchema),
+})
+
 /**
  * Decodes snapshot update bytes from a validated latest snapshot response and verifies its hash.
  *
@@ -92,16 +104,7 @@ export type FullSnapshotBytesFromResponseResult =
 export async function decodeFullSnapshotBytesFromResponse(
   input: FullSnapshotBytesFromResponseInput,
 ): Promise<FullSnapshotBytesFromResponseResult> {
-  if (
-    input.maxUpdateBytes !== undefined &&
-    (!Number.isSafeInteger(input.maxUpdateBytes) || input.maxUpdateBytes < 0)
-  ) {
-    return { ok: false, reason: 'invalid-size-limit' }
-  }
-  if (
-    input.maxStateVectorBytes !== undefined &&
-    (!Number.isSafeInteger(input.maxStateVectorBytes) || input.maxStateVectorBytes < 0)
-  ) {
+  if (!v.is(FullSnapshotSizeLimitsSchema, input)) {
     return { ok: false, reason: 'invalid-size-limit' }
   }
 
@@ -169,14 +172,11 @@ export function decideFullSnapshotApply(input: FullSnapshotApplyInput): FullSnap
   if (!sameDocId(input.requestedDocId, input.snapshotDocId)) {
     return { action: 'reject', reason: 'doc-mismatch' }
   }
-  if (!isNonNegativeSafeInteger(input.snapshotSeq)) {
-    return { action: 'reject', reason: 'invalid-snapshot-seq' }
-  }
-  if (
-    input.currentSnapshotSeq !== undefined &&
-    !isNonNegativeSafeInteger(input.currentSnapshotSeq)
-  ) {
-    return { action: 'reject', reason: 'invalid-current-snapshot-seq' }
+  const sequenceResult = v.safeParse(FullSnapshotSequenceSchema, input)
+  if (!sequenceResult.success) {
+    return String(sequenceResult.issues[0]?.path?.[0]?.key) === 'snapshotSeq'
+      ? { action: 'reject', reason: 'invalid-snapshot-seq' }
+      : { action: 'reject', reason: 'invalid-current-snapshot-seq' }
   }
   if (input.expectedUpdateSha256 !== input.actualUpdateSha256) {
     return { action: 'reject', reason: 'hash-mismatch' }

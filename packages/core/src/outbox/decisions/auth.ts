@@ -1,9 +1,15 @@
+import * as v from 'valibot'
+
 import {
   type OutboxPlanItemId,
   type OutboxAuthRefreshRequestInput,
   type OutboxAuthRefreshRequestDecision,
 } from '../types'
-import { isNonNegativeSafeInteger } from '../validation'
+import {
+  OutboxAuthRefreshBackoffSchema,
+  OutboxAuthRefreshBlockEvidenceSchema,
+  OutboxAuthRefreshRequestPrimitivesSchema,
+} from '../validation'
 
 /**
  * Decides whether auth-blocked scheduler starts should trigger a token refresh attempt.
@@ -11,14 +17,20 @@ import { isNonNegativeSafeInteger } from '../validation'
 export function decideOutboxAuthRefreshRequest(
   input: OutboxAuthRefreshRequestInput,
 ): OutboxAuthRefreshRequestDecision {
-  if (!isNonNegativeSafeInteger(input.now)) {
+  const result = v.safeParse(OutboxAuthRefreshRequestPrimitivesSchema, {
+    now: input.now,
+  })
+  if (!result.success) {
     return { action: 'reject', reason: 'invalid-clock' }
   }
-  if (
-    input.refreshState.status === 'backing-off' &&
-    !isNonNegativeSafeInteger(input.refreshState.nextAllowedRefreshAt)
-  ) {
-    return { action: 'reject', reason: 'invalid-refresh-backoff' }
+  const { now } = result.output
+  let nextAllowedRefreshAt: number | undefined
+  if (input.refreshState.status === 'backing-off') {
+    const backoffResult = v.safeParse(OutboxAuthRefreshBackoffSchema, input.refreshState)
+    if (!backoffResult.success) {
+      return { action: 'reject', reason: 'invalid-refresh-backoff' }
+    }
+    nextAllowedRefreshAt = backoffResult.output.nextAllowedRefreshAt
   }
 
   const refreshBlocks = input.refreshBlocks ?? []
@@ -33,11 +45,14 @@ export function decideOutboxAuthRefreshRequest(
       return { action: 'reject', reason: 'duplicate-refresh-block', id: block.id }
     }
     seen.add(block.id)
+    const blockResult = v.safeParse(OutboxAuthRefreshBlockEvidenceSchema, block)
+    if (!blockResult.success) {
+      return { action: 'reject', reason: 'invalid-refresh-block', id: block.id }
+    }
+    const validatedBlock = blockResult.output
     if (
-      !isNonNegativeSafeInteger(block.requiredRemainingMs) ||
-      !Number.isSafeInteger(block.remainingMs) ||
-      (block.reason === 'token-expired' && block.remainingMs > 0) ||
-      (block.reason === 'token-expiring-soon' && block.remainingMs <= 0)
+      (block.reason === 'token-expired' && validatedBlock.remainingMs > 0) ||
+      (block.reason === 'token-expiring-soon' && validatedBlock.remainingMs <= 0)
     ) {
       return { action: 'reject', reason: 'invalid-refresh-block', id: block.id }
     }
@@ -56,12 +71,13 @@ export function decideOutboxAuthRefreshRequest(
   }
   if (
     input.refreshState.status === 'backing-off' &&
-    input.now < input.refreshState.nextAllowedRefreshAt
+    nextAllowedRefreshAt !== undefined &&
+    now < nextAllowedRefreshAt
   ) {
     return {
       action: 'wait',
       reason: 'refresh-backoff',
-      nextAllowedRefreshAt: input.refreshState.nextAllowedRefreshAt,
+      nextAllowedRefreshAt,
       blockedItemIds,
     }
   }
@@ -69,7 +85,7 @@ export function decideOutboxAuthRefreshRequest(
   return {
     action: 'request-refresh',
     reason: strongestReason,
-    requestedAt: input.now,
+    requestedAt: now,
     blockedItemIds,
   }
 }

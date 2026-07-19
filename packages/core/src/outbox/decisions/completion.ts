@@ -1,3 +1,5 @@
+import * as v from 'valibot'
+
 import {
   type OutboxAckCompletionInput,
   type OutboxAckCompletionDecision,
@@ -11,7 +13,12 @@ import {
   type OutboxSyncUpdateRejectedRepairInput,
   type OutboxSyncUpdateRejectedRepairDecision,
 } from '../types'
-import { isNonNegativeSafeInteger, sameDocId } from '../validation'
+import {
+  OutboxAckSequenceEvidenceSchema,
+  OutboxFullSnapshotReleaseEvidenceSchema,
+  OutboxSyncUpdateRejectedRepairEvidenceSchema,
+  sameDocId,
+} from '../validation'
 
 /**
  * Decides whether a server ack-like message can complete an outbound Yjs update item.
@@ -55,14 +62,19 @@ export function decideOutboxAckCompletion(
   if (input.message.messageId !== input.messageId) {
     return { action: 'reject', reason: 'message-mismatch' }
   }
-  if (!isNonNegativeSafeInteger(input.message.durableSeq)) {
-    return { action: 'reject', reason: 'invalid-durable-seq' }
+  const sequenceResult = v.safeParse(OutboxAckSequenceEvidenceSchema, {
+    durableSeq: input.message.durableSeq,
+    minDurableSeqExclusive: input.minDurableSeqExclusive,
+  })
+  if (!sequenceResult.success) {
+    const field = sequenceResult.issues[0]?.path?.at(-1)?.key
+    return {
+      action: 'reject',
+      reason: field === 'minDurableSeqExclusive' ? 'stale-durable-seq' : 'invalid-durable-seq',
+    }
   }
-  if (
-    input.minDurableSeqExclusive !== undefined &&
-    (!isNonNegativeSafeInteger(input.minDurableSeqExclusive) ||
-      input.message.durableSeq <= input.minDurableSeqExclusive)
-  ) {
+  const { durableSeq, minDurableSeqExclusive } = sequenceResult.output
+  if (minDurableSeqExclusive !== undefined && durableSeq <= minDurableSeqExclusive) {
     return { action: 'reject', reason: 'stale-durable-seq' }
   }
 
@@ -71,7 +83,7 @@ export function decideOutboxAckCompletion(
     patch: {
       status: 'done',
       nextAttemptAt: undefined,
-      durableSeq: input.message.durableSeq,
+      durableSeq,
     },
   }
 }
@@ -189,11 +201,19 @@ export function decideOutboxSyncUpdateRejectedRepair(
   if (input.updateSha256 !== input.rejectionUpdateSha256) {
     return { action: 'reject', reason: 'hash-mismatch' }
   }
-  if (input.updateBytesBase64 === undefined || input.updateBytesBase64.length === 0) {
+  if (input.updateBytesBase64 === undefined) {
     return { action: 'reject', reason: 'missing-update-bytes' }
   }
-  if (!isNonNegativeSafeInteger(input.importedSnapshotSeq) || input.importedSnapshotSeq <= 0) {
-    return { action: 'reject', reason: 'invalid-snapshot-seq' }
+  const repairEvidenceResult = v.safeParse(OutboxSyncUpdateRejectedRepairEvidenceSchema, {
+    updateBytesBase64: input.updateBytesBase64,
+    importedSnapshotSeq: input.importedSnapshotSeq,
+  })
+  if (!repairEvidenceResult.success) {
+    const field = repairEvidenceResult.issues[0]?.path?.at(-1)?.key
+    return {
+      action: 'reject',
+      reason: field === 'updateBytesBase64' ? 'missing-update-bytes' : 'invalid-snapshot-seq',
+    }
   }
 
   return {
@@ -203,7 +223,7 @@ export function decideOutboxSyncUpdateRejectedRepair(
       status: 'done',
       nextAttemptAt: undefined,
       completedBy: 'sync-update-rejected-repair',
-      snapshotSeq: input.importedSnapshotSeq,
+      snapshotSeq: repairEvidenceResult.output.importedSnapshotSeq,
     },
   }
 }
@@ -216,7 +236,10 @@ export function decideOutboxSyncUpdateRejectedRepair(
 export function planOutboxFullSnapshotRelease(
   input: OutboxFullSnapshotReleaseInput,
 ): OutboxFullSnapshotReleasePlan {
-  if (!isNonNegativeSafeInteger(input.snapshotSeq)) {
+  const sequenceResult = v.safeParse(OutboxFullSnapshotReleaseEvidenceSchema, {
+    snapshotSeq: input.snapshotSeq,
+  })
+  if (!sequenceResult.success) {
     return { ok: false, reason: 'invalid-snapshot-seq' }
   }
 
@@ -237,7 +260,7 @@ export function planOutboxFullSnapshotRelease(
       status: 'done',
       nextAttemptAt: undefined,
       completedBy: 'full-snapshot-apply',
-      snapshotSeq: input.snapshotSeq,
+      snapshotSeq: sequenceResult.output.snapshotSeq,
     })
   }
 

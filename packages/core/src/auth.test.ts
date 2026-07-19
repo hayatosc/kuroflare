@@ -310,6 +310,26 @@ test('client auth refresh attempt backs off retryable failures', () => {
   )
 })
 
+test('client auth refresh attempt preserves fallback backoff for unknown status', () => {
+  const decision = Reflect.apply(decideClientAuthRefreshAttempt, undefined, [
+    {
+      now: 1_000,
+      retryCount: 1,
+      result: { status: 'unexpected-status', reason: 'network' },
+    },
+  ])
+
+  assert.deepEqual(decision, {
+    action: 'backoff',
+    patch: {
+      refreshState: 'backing-off',
+      retryCount: 2,
+      nextAllowedRefreshAt: 6_000,
+      reason: 'network',
+    },
+  })
+})
+
 test('client auth refresh start marks active metadata as refreshing', () => {
   assert.deepEqual(
     decideClientAuthRefreshStart({

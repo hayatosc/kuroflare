@@ -1,6 +1,5 @@
 import * as v from 'valibot'
 
-import { NonNegativeSafeIntegerSchema, PositiveSafeIntegerSchema, guard } from '../utils/shared'
 import type {
   ClientAuthRefreshDecisionInput,
   ClientAuthRefreshDecision,
@@ -20,7 +19,18 @@ import type {
   ClientAuthMetadataPatchDecision,
   ClientAuthMetadataRefreshAttemptPatchInput,
 } from './types'
-import { ClientAuthMetadataSchema } from './validation'
+import {
+  ClientAuthMetadataRefreshAttemptPatchSchema,
+  ClientAuthMetadataRevokePatchSchema,
+  ClientAuthRefreshAttemptAcceptedSchema,
+  ClientAuthRefreshAttemptInputSchema,
+  ClientAuthRefreshInputSchema,
+  ClientAuthRefreshStaleStartRecoveryInputSchema,
+  ClientAuthRefreshStartInputSchema,
+  ClientAuthStartInputSchema,
+  ClientDeviceRevokeEvidenceSchema,
+  SetupPersistInputSchema,
+} from './validation'
 
 /** Backoff policy for retrying client token refresh attempts. */
 export const CLIENT_AUTH_REFRESH_RETRY_POLICY = {
@@ -28,40 +38,28 @@ export const CLIENT_AUTH_REFRESH_RETRY_POLICY = {
   maxDelayMs: 300_000,
 } as const
 
-const ClientAuthStartInputSchema = v.object({
-  now: NonNegativeSafeIntegerSchema,
-  tokenExpiresAt: NonNegativeSafeIntegerSchema,
-  refreshMarginMs: NonNegativeSafeIntegerSchema,
-  estimatedDurationMs: v.optional(NonNegativeSafeIntegerSchema),
-})
-
-const SetupPersistInputSchema = v.object({
-  response: v.looseObject({
-    tokenVersion: PositiveSafeIntegerSchema,
-  }),
-  accessTokenExpiresAt: NonNegativeSafeIntegerSchema,
-  accessTokenSecretKey: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
-  refreshTokenSecretKey: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
-})
-
 /**
  * Decides whether the plugin may persist a refreshed access token and resume auth-paused work.
  */
 export function decideClientAuthRefresh(
   input: ClientAuthRefreshDecisionInput,
 ): ClientAuthRefreshDecision {
-  const nowResult = guard(NonNegativeSafeIntegerSchema, input.now, 'invalid-time')
-  if (!nowResult.ok) return { action: 'reject', reason: nowResult.reason }
-  const now = nowResult.value
-
-  if (input.previousTokenVersion !== undefined) {
-    const tv = guard(
-      PositiveSafeIntegerSchema,
-      input.previousTokenVersion,
-      'invalid-previous-token-version',
-    )
-    if (!tv.ok) return { action: 'reject', reason: tv.reason }
+  const result = v.safeParse(ClientAuthRefreshInputSchema, {
+    now: input.now,
+    previousTokenVersion: input.previousTokenVersion,
+  })
+  if (!result.success) {
+    switch (String(result.issues[0]?.path?.[0]?.key)) {
+      case 'now':
+        return { action: 'reject', reason: 'invalid-time' }
+      case 'previousTokenVersion':
+        return { action: 'reject', reason: 'invalid-previous-token-version' }
+      default:
+        return { action: 'reject', reason: 'invalid-time' }
+    }
   }
+  const { now, previousTokenVersion } = result.output
+
   if (input.claims.aud !== input.expectedVaultId) {
     return { action: 'reject', reason: 'vault-mismatch' }
   }
@@ -74,10 +72,7 @@ export function decideClientAuthRefresh(
   if (now >= input.claims.exp) {
     return { action: 'reject', reason: 'token-expired' }
   }
-  if (
-    input.previousTokenVersion !== undefined &&
-    input.claims.tokenVersion < input.previousTokenVersion
-  ) {
+  if (previousTokenVersion !== undefined && input.claims.tokenVersion < previousTokenVersion) {
     return { action: 'reject', reason: 'token-version-regressed' }
   }
   if (!hasRequiredScopes(input.claims.scope, input.requiredScopes)) {
@@ -144,41 +139,35 @@ export function decideClientAuthStart(
 export function decideClientAuthRefreshAttempt(
   input: ClientAuthRefreshAttemptInput,
 ): ClientAuthRefreshAttemptDecision {
-  const nowResult = guard(NonNegativeSafeIntegerSchema, input.now, 'invalid-time')
-  if (!nowResult.ok) return { action: 'reject', reason: nowResult.reason }
-  const now = nowResult.value
-
-  const rc = guard(NonNegativeSafeIntegerSchema, input.retryCount, 'invalid-retry-count')
-  if (!rc.ok) return { action: 'reject', reason: rc.reason }
-  const retryCount = rc.value
-
-  let retryAfterMs: number | undefined
-  if (input.retryAfterMs !== undefined) {
-    const ra = guard(NonNegativeSafeIntegerSchema, input.retryAfterMs, 'invalid-retry-after')
-    if (!ra.ok) return { action: 'reject', reason: ra.reason }
-    retryAfterMs = ra.value
+  const result = v.safeParse(ClientAuthRefreshAttemptInputSchema, input)
+  if (!result.success) {
+    const firstIssue = result.issues[0]
+    const firstKey = String(firstIssue?.path?.[0]?.key)
+    if (firstKey === 'now') return { action: 'reject', reason: 'invalid-time' }
+    if (firstKey === 'retryCount') return { action: 'reject', reason: 'invalid-retry-count' }
+    if (firstKey === 'retryAfterMs') return { action: 'reject', reason: 'invalid-retry-after' }
+    return { action: 'reject', reason: 'invalid-time' }
   }
 
+  const { now, retryCount, retryAfterMs } = result.output
+
   if (input.result.status === 'accepted') {
-    const tv = guard(
-      PositiveSafeIntegerSchema,
-      input.result.patch.tokenVersion,
-      'invalid-token-version',
-    )
-    if (!tv.ok) return { action: 'reject', reason: tv.reason }
-    const expiresAtResult = guard(
-      NonNegativeSafeIntegerSchema,
-      input.result.patch.expiresAt,
-      'invalid-token-expiry',
-    )
-    if (!expiresAtResult.ok) return { action: 'reject', reason: expiresAtResult.reason }
+    const acceptedResult = v.safeParse(ClientAuthRefreshAttemptAcceptedSchema, input.result)
+    if (!acceptedResult.success) {
+      const firstIssue = acceptedResult.issues[0]
+      const path = firstIssue?.path
+      const lastKey = String(path?.[path.length - 1]?.key)
+      if (lastKey === 'expiresAt') return { action: 'reject', reason: 'invalid-token-expiry' }
+      return { action: 'reject', reason: 'invalid-token-version' }
+    }
+    const { patch } = acceptedResult.output
     return {
       action: 'complete',
       patch: {
         refreshState: 'idle',
         retryCount: 0,
-        tokenVersion: tv.value,
-        expiresAt: expiresAtResult.value,
+        tokenVersion: patch.tokenVersion,
+        expiresAt: patch.expiresAt,
         emitResumeEvent: input.result.patch.emitResumeEvent,
       },
     }
@@ -218,13 +207,18 @@ export function decideClientAuthRefreshAttempt(
 export function decideClientAuthRefreshStart(
   input: ClientAuthRefreshStartInput,
 ): ClientAuthRefreshStartDecision {
-  const mdResult = guard(ClientAuthMetadataSchema, input.metadata, 'invalid-metadata')
-  if (!mdResult.ok) return { action: 'reject', reason: mdResult.reason }
-  const metadata = mdResult.value
-
-  const reqResult = guard(NonNegativeSafeIntegerSchema, input.requestedAt, 'invalid-requested-at')
-  if (!reqResult.ok) return { action: 'reject', reason: reqResult.reason }
-  const requestedAt = reqResult.value
+  const result = v.safeParse(ClientAuthRefreshStartInputSchema, input)
+  if (!result.success) {
+    switch (String(result.issues[0]?.path?.[0]?.key)) {
+      case 'metadata':
+        return { action: 'reject', reason: 'invalid-metadata' }
+      case 'requestedAt':
+        return { action: 'reject', reason: 'invalid-requested-at' }
+      default:
+        return { action: 'reject', reason: 'invalid-metadata' }
+    }
+  }
+  const { metadata, requestedAt } = result.output
 
   if (metadata.authState !== 'active') {
     return { action: 'reject', reason: 'device-not-active' }
@@ -265,17 +259,20 @@ export function decideClientAuthRefreshStart(
 export function decideClientAuthRefreshStaleStartRecovery(
   input: ClientAuthRefreshStaleStartRecoveryInput,
 ): ClientAuthRefreshStaleStartRecoveryDecision {
-  const mdResult = guard(ClientAuthMetadataSchema, input.metadata, 'invalid-metadata')
-  if (!mdResult.ok) return { action: 'reject', reason: mdResult.reason }
-  const metadata = mdResult.value
-
-  const nowResult = guard(NonNegativeSafeIntegerSchema, input.now, 'invalid-clock')
-  if (!nowResult.ok) return { action: 'reject', reason: nowResult.reason }
-  const now = nowResult.value
-
-  const saResult = guard(PositiveSafeIntegerSchema, input.staleAfterMs, 'invalid-stale-timeout')
-  if (!saResult.ok) return { action: 'reject', reason: saResult.reason }
-  const staleAfterMs = saResult.value
+  const result = v.safeParse(ClientAuthRefreshStaleStartRecoveryInputSchema, input)
+  if (!result.success) {
+    switch (String(result.issues[0]?.path?.[0]?.key)) {
+      case 'metadata':
+        return { action: 'reject', reason: 'invalid-metadata' }
+      case 'now':
+        return { action: 'reject', reason: 'invalid-clock' }
+      case 'staleAfterMs':
+        return { action: 'reject', reason: 'invalid-stale-timeout' }
+      default:
+        return { action: 'reject', reason: 'invalid-metadata' }
+    }
+  }
+  const { metadata, now, staleAfterMs } = result.output
 
   if (metadata.refreshState !== 'refreshing') {
     return { action: 'noop', reason: 'not-refreshing' }
@@ -359,22 +356,26 @@ export function decideClientDeviceRevoke(
   if (input.response.deviceId !== input.expectedDeviceId) {
     return { action: 'reject', reason: 'device-mismatch' }
   }
-  const tv = guard(PositiveSafeIntegerSchema, input.response.tokenVersion, 'invalid-token-version')
-  if (!tv.ok) return { action: 'reject', reason: tv.reason }
-  const ra = guard(NonNegativeSafeIntegerSchema, input.response.revokedAt, 'invalid-revoked-at')
-  if (!ra.ok) return { action: 'reject', reason: ra.reason }
-  if (input.previousTokenVersion !== undefined) {
-    const ptv = guard(
-      PositiveSafeIntegerSchema,
-      input.previousTokenVersion,
-      'invalid-token-version',
-    )
-    if (!ptv.ok) return { action: 'reject', reason: ptv.reason }
+  const result = v.safeParse(ClientDeviceRevokeEvidenceSchema, {
+    tokenVersion: input.response.tokenVersion,
+    revokedAt: input.response.revokedAt,
+    previousTokenVersion: input.previousTokenVersion,
+  })
+  if (!result.success) {
+    switch (String(result.issues[0]?.path?.[0]?.key)) {
+      case 'tokenVersion':
+        return { action: 'reject', reason: 'invalid-token-version' }
+      case 'revokedAt':
+        return { action: 'reject', reason: 'invalid-revoked-at' }
+      case 'previousTokenVersion':
+        return { action: 'reject', reason: 'invalid-token-version' }
+      default:
+        return { action: 'reject', reason: 'invalid-token-version' }
+    }
   }
-  if (
-    input.previousTokenVersion !== undefined &&
-    input.response.tokenVersion < input.previousTokenVersion
-  ) {
+  const { tokenVersion, revokedAt, previousTokenVersion } = result.output
+
+  if (previousTokenVersion !== undefined && tokenVersion < previousTokenVersion) {
     return { action: 'reject', reason: 'token-version-regressed' }
   }
 
@@ -382,8 +383,8 @@ export function decideClientDeviceRevoke(
     action: 'mark-revoked',
     patch: {
       authState: 'revoked',
-      tokenVersion: tv.value,
-      revokedAt: ra.value,
+      tokenVersion,
+      revokedAt,
       clearAccessToken: true,
       clearRefreshToken: true,
       stopSync: true,
@@ -398,9 +399,9 @@ export function decideClientDeviceRevoke(
 export function applyClientAuthMetadataRevokePatch(
   input: ClientAuthMetadataRevokePatchInput,
 ): ClientAuthMetadataPatchDecision {
-  const mdResult = guard(ClientAuthMetadataSchema, input.metadata, 'invalid-metadata')
-  if (!mdResult.ok) return { action: 'reject', reason: mdResult.reason }
-  const metadata = mdResult.value
+  const result = v.safeParse(ClientAuthMetadataRevokePatchSchema, input)
+  if (!result.success) return { action: 'reject', reason: 'invalid-metadata' }
+  const { metadata } = result.output
 
   if (metadata.authState !== 'active') {
     return { action: 'reject', reason: 'device-not-active' }
@@ -428,9 +429,9 @@ export function applyClientAuthMetadataRevokePatch(
 export function applyClientAuthMetadataRefreshAttemptPatch(
   input: ClientAuthMetadataRefreshAttemptPatchInput,
 ): ClientAuthMetadataPatchDecision {
-  const mdResult = guard(ClientAuthMetadataSchema, input.metadata, 'invalid-metadata')
-  if (!mdResult.ok) return { action: 'reject', reason: mdResult.reason }
-  const metadata = mdResult.value
+  const result = v.safeParse(ClientAuthMetadataRefreshAttemptPatchSchema, input)
+  if (!result.success) return { action: 'reject', reason: 'invalid-metadata' }
+  const metadata = result.output.metadata
 
   if (metadata.authState !== 'active') {
     return { action: 'reject', reason: 'device-not-active' }

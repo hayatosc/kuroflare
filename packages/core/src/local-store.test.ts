@@ -157,6 +157,15 @@ test('local store schema refuses newer stores and inconsistent browser evidence'
     }),
     { action: 'reject', reason: 'invalid-pending-outbox-count' },
   )
+
+  assert.deepEqual(
+    decideLocalStoreSchema({
+      ...baseInput,
+      minimumReadableVersion: 4,
+      pendingOutboxCount: -1,
+    }),
+    { action: 'reject', reason: 'invalid-version' },
+  )
 })
 
 test('local store repair exports degraded pending outbox before rebuild', () => {
@@ -260,6 +269,9 @@ test('local store repair handles empty outbox and invalid repair evidence', () =
     ...baseInput,
     currentVersion: 4,
   })
+  // Deliberately bypass the static request union to exercise malformed runtime input.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  const malformedRequest = 'invalid-request' as never
 
   assert.deepEqual(
     decideLocalStoreRepair({
@@ -303,6 +315,32 @@ test('local store repair handles empty outbox and invalid repair evidence', () =
       now: 1,
     }),
     { action: 'reject', reason: 'invalid-pending-outbox-count' },
+  )
+
+  assert.deepEqual(
+    decideLocalStoreRepair({
+      schemaDecision,
+      request: malformedRequest,
+      pendingOutboxCount: -1,
+      exportCompleted: false,
+      discardConfirmed: false,
+      targetVersion: 3,
+      now: 1,
+    }),
+    { action: 'reject', reason: 'invalid-pending-outbox-count' },
+  )
+
+  assert.equal(
+    decideLocalStoreRepair({
+      schemaDecision,
+      request: malformedRequest,
+      pendingOutboxCount: 0,
+      exportCompleted: false,
+      discardConfirmed: false,
+      targetVersion: 3,
+      now: 1,
+    }),
+    undefined,
   )
 })
 

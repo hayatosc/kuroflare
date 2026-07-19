@@ -1,3 +1,5 @@
+import * as v from 'valibot'
+
 import {
   type OutboxPlanItemId,
   type OutboxRunningLease,
@@ -11,7 +13,13 @@ import {
   type OutboxSchedulerTickPlan,
   type OutboxSchedulerItem,
 } from '../types'
-import { isNonNegativeSafeInteger, isPositiveSafeInteger } from '../validation'
+import {
+  OutboxLeaseAcquirePrimitivesSchema,
+  OutboxLeaseExpirySchema,
+  OutboxLeaseOwnerSchema,
+  OutboxLeaseReleasePrimitivesSchema,
+  OutboxLeaseRenewPrimitivesSchema,
+} from '../validation'
 
 /**
  * Decides whether a scheduler start can acquire or take over a running lease.
@@ -19,21 +27,28 @@ import { isNonNegativeSafeInteger, isPositiveSafeInteger } from '../validation'
 export function decideOutboxLeaseAcquire(
   input: OutboxLeaseAcquireInput,
 ): OutboxLeaseAcquireDecision {
-  if (input.ownerId.length === 0) {
-    return { action: 'reject', reason: 'empty-owner' }
+  const result = v.safeParse(OutboxLeaseAcquirePrimitivesSchema, {
+    ownerId: input.ownerId,
+    now: input.now,
+    leaseDurationMs: input.leaseDurationMs,
+  })
+  if (!result.success) {
+    const path = result.issues[0]?.path ?? []
+    const field = path[path.length - 1]?.key
+    if (path.length === 1 && field === 'ownerId') return { action: 'reject', reason: 'empty-owner' }
+    if (path.length === 1 && field === 'now') return { action: 'reject', reason: 'invalid-clock' }
+    if (path.length === 1 && field === 'leaseDurationMs') {
+      return { action: 'reject', reason: 'invalid-lease-duration' }
+    }
+    return { action: 'reject', reason: 'active-lease-exists' }
   }
-  if (!isNonNegativeSafeInteger(input.now)) {
-    return { action: 'reject', reason: 'invalid-clock' }
-  }
-  if (!isPositiveSafeInteger(input.leaseDurationMs)) {
-    return { action: 'reject', reason: 'invalid-lease-duration' }
-  }
+  const { ownerId, now, leaseDurationMs } = result.output
 
   const nextLease: OutboxRunningLease = {
     itemId: input.itemId,
     kind: input.kind,
-    ownerId: input.ownerId,
-    leaseExpiresAt: input.now + input.leaseDurationMs,
+    ownerId,
+    leaseExpiresAt: now + leaseDurationMs,
   }
 
   if (input.existingLease === undefined) {
@@ -45,10 +60,10 @@ export function decideOutboxLeaseAcquire(
   if (input.existingLease.kind !== input.kind) {
     return { action: 'reject', reason: 'lease-kind-mismatch' }
   }
-  if (
-    !isNonNegativeSafeInteger(input.existingLease.leaseExpiresAt) ||
-    input.existingLease.leaseExpiresAt > input.now
-  ) {
+  const expiryResult = v.safeParse(OutboxLeaseExpirySchema, {
+    leaseExpiresAt: input.existingLease.leaseExpiresAt,
+  })
+  if (!expiryResult.success || expiryResult.output.leaseExpiresAt > now) {
     return { action: 'reject', reason: 'active-lease-exists' }
   }
 
@@ -65,25 +80,31 @@ export function decideOutboxLeaseAcquire(
 export function decideOutboxLeaseRelease(
   input: OutboxLeaseReleaseInput,
 ): OutboxLeaseReleaseDecision {
-  if (input.ownerId.length === 0) {
-    return { action: 'reject', reason: 'empty-owner' }
-  }
-  if (!isNonNegativeSafeInteger(input.now)) {
+  const result = v.safeParse(OutboxLeaseReleasePrimitivesSchema, {
+    ownerId: input.ownerId,
+    now: input.now,
+  })
+  if (!result.success) {
+    const path = result.issues[0]?.path ?? []
+    const field = path[path.length - 1]?.key
+    if (path.length === 1 && field === 'ownerId') return { action: 'reject', reason: 'empty-owner' }
+    if (path.length === 1 && field === 'now') return { action: 'reject', reason: 'invalid-clock' }
     return { action: 'reject', reason: 'invalid-clock' }
   }
+  const { ownerId, now } = result.output
   if (input.existingLease === undefined) {
     return { action: 'reject', reason: 'missing-lease' }
   }
   if (input.existingLease.itemId !== input.itemId) {
     return { action: 'reject', reason: 'lease-item-mismatch' }
   }
-  if (input.existingLease.ownerId !== input.ownerId) {
+  if (input.existingLease.ownerId !== ownerId) {
     return { action: 'reject', reason: 'owner-mismatch' }
   }
-  if (
-    !isNonNegativeSafeInteger(input.existingLease.leaseExpiresAt) ||
-    input.existingLease.leaseExpiresAt <= input.now
-  ) {
+  const expiryResult = v.safeParse(OutboxLeaseExpirySchema, {
+    leaseExpiresAt: input.existingLease.leaseExpiresAt,
+  })
+  if (!expiryResult.success || expiryResult.output.leaseExpiresAt <= now) {
     return { action: 'reject', reason: 'lease-expired' }
   }
   return { action: 'release' }
@@ -93,15 +114,22 @@ export function decideOutboxLeaseRelease(
  * Decides whether a worker may extend a running lease it owns.
  */
 export function decideOutboxLeaseRenew(input: OutboxLeaseRenewInput): OutboxLeaseRenewDecision {
-  if (input.ownerId.length === 0) {
-    return { action: 'reject', reason: 'empty-owner' }
-  }
-  if (!isNonNegativeSafeInteger(input.now)) {
+  const result = v.safeParse(OutboxLeaseRenewPrimitivesSchema, {
+    ownerId: input.ownerId,
+    now: input.now,
+    leaseDurationMs: input.leaseDurationMs,
+  })
+  if (!result.success) {
+    const path = result.issues[0]?.path ?? []
+    const field = path[path.length - 1]?.key
+    if (path.length === 1 && field === 'ownerId') return { action: 'reject', reason: 'empty-owner' }
+    if (path.length === 1 && field === 'now') return { action: 'reject', reason: 'invalid-clock' }
+    if (path.length === 1 && field === 'leaseDurationMs') {
+      return { action: 'reject', reason: 'invalid-lease-duration' }
+    }
     return { action: 'reject', reason: 'invalid-clock' }
   }
-  if (!isPositiveSafeInteger(input.leaseDurationMs)) {
-    return { action: 'reject', reason: 'invalid-lease-duration' }
-  }
+  const { ownerId, now, leaseDurationMs } = result.output
   if (input.existingLease === undefined) {
     return { action: 'reject', reason: 'missing-lease' }
   }
@@ -111,13 +139,13 @@ export function decideOutboxLeaseRenew(input: OutboxLeaseRenewInput): OutboxLeas
   if (input.existingLease.kind !== input.kind) {
     return { action: 'reject', reason: 'lease-kind-mismatch' }
   }
-  if (input.existingLease.ownerId !== input.ownerId) {
+  if (input.existingLease.ownerId !== ownerId) {
     return { action: 'reject', reason: 'owner-mismatch' }
   }
-  if (
-    !isNonNegativeSafeInteger(input.existingLease.leaseExpiresAt) ||
-    input.existingLease.leaseExpiresAt <= input.now
-  ) {
+  const expiryResult = v.safeParse(OutboxLeaseExpirySchema, {
+    leaseExpiresAt: input.existingLease.leaseExpiresAt,
+  })
+  if (!expiryResult.success || expiryResult.output.leaseExpiresAt <= now) {
     return { action: 'reject', reason: 'lease-expired' }
   }
 
@@ -126,8 +154,8 @@ export function decideOutboxLeaseRenew(input: OutboxLeaseRenewInput): OutboxLeas
     lease: {
       itemId: input.itemId,
       kind: input.kind,
-      ownerId: input.ownerId,
-      leaseExpiresAt: input.now + input.leaseDurationMs,
+      ownerId,
+      leaseExpiresAt: now + leaseDurationMs,
     },
   }
 }
@@ -160,17 +188,22 @@ export function planEffectiveLeases(
     if (!items.has(lease.itemId)) {
       return { ok: false, reason: 'missing-lease-item', id: lease.itemId }
     }
-    if (lease.ownerId.length === 0) {
+    const ownerResult = v.safeParse(OutboxLeaseOwnerSchema, {
+      ownerId: lease.ownerId,
+    })
+    if (!ownerResult.success) {
       return { ok: false, reason: 'empty-lease-owner', id: lease.itemId }
     }
-    if (!isNonNegativeSafeInteger(lease.leaseExpiresAt)) {
+    const expiryResult = v.safeParse(OutboxLeaseExpirySchema, {
+      leaseExpiresAt: lease.leaseExpiresAt,
+    })
+    if (!expiryResult.success) {
       return { ok: false, reason: 'invalid-lease-expiry', id: lease.itemId }
     }
-
-    if (lease.leaseExpiresAt <= now) {
+    if (expiryResult.output.leaseExpiresAt <= now) {
       reclaimPatches.push({
         id: lease.itemId,
-        previousOwnerId: lease.ownerId,
+        previousOwnerId: ownerResult.output.ownerId,
         status: 'retrying',
         nextAttemptAt: undefined,
       })

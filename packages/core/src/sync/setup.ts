@@ -15,9 +15,11 @@ const MAX_DEVICE_NAME_LENGTH = 128
 const MAX_ACCESS_TOKEN_LENGTH = 16_384
 const MAX_REFRESH_TOKEN_LENGTH = 4096
 
+const SetupTokenSchema = v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_SETUP_TOKEN_LENGTH))
+
 export const SetupExchangeRequestSchema = v.object({
   vaultId: VaultIdSchema,
-  setupToken: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_SETUP_TOKEN_LENGTH)),
+  setupToken: SetupTokenSchema,
   requestedDeviceName: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_DEVICE_NAME_LENGTH)),
   existingDeviceId: v.optional(DeviceIdSchema),
 })
@@ -46,7 +48,7 @@ export const SetupTokenIssueResponseSchema = v.pipe(
   v.object({
     endpoint: HttpEndpointSchema,
     vaultId: VaultIdSchema,
-    setupToken: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_SETUP_TOKEN_LENGTH)),
+    setupToken: SetupTokenSchema,
     setupUri: v.pipe(v.string(), v.minLength(1), v.maxLength(4096)),
     issuedAt: NonNegativeSafeIntegerSchema,
     expiresAt: NonNegativeSafeIntegerSchema,
@@ -75,6 +77,12 @@ export interface ParsedSetupUri {
   readonly setupToken: string
 }
 
+const SetupUriQuerySchema = v.object({
+  endpoint: HttpEndpointSchema,
+  vaultId: VaultIdSchema,
+  setupToken: SetupTokenSchema,
+})
+
 /**
  * Parses a `kuroflare://setup?...` URI into setup fields used by clients.
  *
@@ -87,21 +95,15 @@ export function parseSetupUri(setupUri: string): ParsedSetupUri | undefined {
     if (url.protocol !== 'kuroflare:' || url.hostname !== 'setup') {
       return undefined
     }
-    const endpoint = url.searchParams.get('endpoint')
-    const vaultId = url.searchParams.get('vaultId')
-    const setupToken = url.searchParams.get('setupToken')
-    if (
-      endpoint === null ||
-      vaultId === null ||
-      setupToken === null ||
-      !v.is(HttpEndpointSchema, endpoint) ||
-      !v.is(VaultIdSchema, vaultId) ||
-      setupToken.length === 0 ||
-      setupToken.length > MAX_SETUP_TOKEN_LENGTH
-    ) {
+    const result = v.safeParse(SetupUriQuerySchema, {
+      endpoint: url.searchParams.get('endpoint'),
+      vaultId: url.searchParams.get('vaultId'),
+      setupToken: url.searchParams.get('setupToken'),
+    })
+    if (!result.success) {
       return undefined
     }
-    return { endpoint, vaultId, setupToken }
+    return result.output
   } catch {
     return undefined
   }

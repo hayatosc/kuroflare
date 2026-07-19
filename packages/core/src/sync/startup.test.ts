@@ -174,6 +174,14 @@ test('client startup degrades or requests setup when local evidence is not usabl
     }),
     { action: 'reject', reason: 'invalid-pending-outbox-count' },
   )
+
+  assert.deepEqual(
+    planClientStartup({
+      intent: 'reconnect',
+      local: { ...baseLocalState, pendingOutboxCount: Number.MAX_SAFE_INTEGER + 1 },
+    }),
+    { action: 'reject', reason: 'invalid-pending-outbox-count' },
+  )
 })
 
 test('client startup blocks revoked and reauth-required devices without setup exchange', () => {

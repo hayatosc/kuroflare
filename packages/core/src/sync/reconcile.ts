@@ -1,10 +1,14 @@
+import * as v from 'valibot'
+
 import {
   canonicalizeVaultPath,
   portablePath,
+  Sha256HexSchema,
   type MetaFile,
   type PortablePathRepairReason,
 } from '../sync/meta'
 import { type DeviceId, type FileId } from '../utils/ids'
+import { NonEmptyBase64Schema, NonNegativeSafeIntegerSchema } from '../utils/shared'
 
 export interface PathConflictRepair {
   readonly fileId: FileId
@@ -64,6 +68,17 @@ export interface TextDeletionEvidence {
   readonly contentSha256: string
 }
 
+const TextDeletionEvidenceSchema = v.object({
+  stateVectorBase64: NonEmptyBase64Schema,
+  contentSha256: Sha256HexSchema,
+})
+
+function assertValidRepairTimestamp(updatedAt: number): void {
+  if (!v.is(NonNegativeSafeIntegerSchema, updatedAt)) {
+    throw new Error(`Invalid repair timestamp: ${String(updatedAt)}`)
+  }
+}
+
 /**
  * Plans renames for active files that share the same folder path, resolving conflicts deterministically.
  */
@@ -72,9 +87,7 @@ export function planPathConflictRepairs(
   updatedAt: number,
   updatedBy: DeviceId,
 ): readonly PathConflictRepair[] {
-  if (!Number.isSafeInteger(updatedAt) || updatedAt < 0) {
-    throw new Error(`Invalid repair timestamp: ${updatedAt}`)
-  }
+  assertValidRepairTimestamp(updatedAt)
 
   const activeEntries = entries.filter((entry) => !entry.deleted)
   const reservedCanonicalPaths = new Set(activeEntries.map((entry) => entry.canonicalPath))
@@ -126,9 +139,7 @@ export function planPortablePathRepairs(
   updatedAt: number,
   updatedBy: DeviceId,
 ): readonly PortablePathRepair[] {
-  if (!Number.isSafeInteger(updatedAt) || updatedAt < 0) {
-    throw new Error(`Invalid repair timestamp: ${updatedAt}`)
-  }
+  assertValidRepairTimestamp(updatedAt)
 
   const repairs: PortablePathRepair[] = []
   for (const entry of entries) {
@@ -163,9 +174,7 @@ export function planDeleteVsEditRepairs(
   updatedBy: DeviceId,
   textDeletionEvidence: ReadonlyMap<FileId, TextDeletionEvidence> = new Map(),
 ): readonly DeleteVsEditRepair[] {
-  if (!Number.isSafeInteger(updatedAt) || updatedAt < 0) {
-    throw new Error(`Invalid repair timestamp: ${updatedAt}`)
-  }
+  assertValidRepairTimestamp(updatedAt)
 
   const repairs: DeleteVsEditRepair[] = []
   for (const entry of entries) {
@@ -324,15 +333,7 @@ function decideBinaryDeletion(
 }
 
 function isTextEvidence(value: TextDeletionEvidence): boolean {
-  return (
-    typeof value.stateVectorBase64 === 'string' &&
-    typeof value.contentSha256 === 'string' &&
-    vIsSha256(value.contentSha256)
-  )
-}
-
-function vIsSha256(value: string): boolean {
-  return /^[a-f0-9]{64}$/.test(value)
+  return v.is(TextDeletionEvidenceSchema, value)
 }
 
 function decodeStateVectorBase64(value: string): ReadonlyMap<number, number> | undefined {

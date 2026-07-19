@@ -99,6 +99,14 @@ test('full snapshot bytes reject untrusted response update payloads', async () =
     }),
     { ok: false, reason: 'invalid-size-limit' },
   )
+
+  assert.deepEqual(
+    await decodeFullSnapshotBytesFromResponse({
+      response,
+      maxUpdateBytes: Number.MAX_SAFE_INTEGER + 1,
+    }),
+    { ok: false, reason: 'invalid-size-limit' },
+  )
 })
 
 test('full snapshot apply accepts a newer verified inactive doc snapshot', () => {
@@ -124,6 +132,22 @@ test('full snapshot apply accepts a newer verified inactive doc snapshot', () =>
         clearPendingForDoc: true,
       },
     },
+  )
+})
+
+test('full snapshot apply rejects unsafe sequence integers', () => {
+  assert.deepEqual(
+    decideFullSnapshotApply({
+      requestedDocId: fileDocId,
+      snapshotDocId: fileDocId,
+      snapshotSeq: Number.MAX_SAFE_INTEGER + 1,
+      stateVectorBase64: 'AQID',
+      expectedUpdateSha256: firstHash,
+      actualUpdateSha256: firstHash,
+      hasPendingLocalUpdates: false,
+      activeEditorBound: false,
+    }),
+    { action: 'reject', reason: 'invalid-snapshot-seq' },
   )
 })
 

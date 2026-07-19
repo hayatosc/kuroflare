@@ -1,8 +1,8 @@
 import * as v from 'valibot'
 
-export const NonNegativeSafeIntegerSchema = v.pipe(v.number(), v.integer(), v.minValue(0))
+export const NonNegativeSafeIntegerSchema = v.pipe(v.number(), v.safeInteger(), v.minValue(0))
 
-export const PositiveSafeIntegerSchema = v.pipe(v.number(), v.integer(), v.minValue(1))
+export const PositiveSafeIntegerSchema = v.pipe(v.number(), v.safeInteger(), v.minValue(1))
 
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
@@ -16,20 +16,10 @@ export const NonEmptyBase64Schema = v.pipe(
   v.regex(BASE64_PATTERN, 'Invalid base64'),
 )
 
-export function guard<S extends v.GenericSchema, R extends string>(
-  schema: S,
-  value: unknown,
-  reason: R,
-): { ok: true; value: v.InferOutput<S> } | { ok: false; reason: R } {
-  const result = v.safeParse(schema, value)
-  if (!result.success) return { ok: false, reason }
-  return { ok: true, value: result.output }
-}
-
 export function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  return v.is(NonNegativeSafeIntegerSchema, value)
 }
 
 export function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+  return v.is(PositiveSafeIntegerSchema, value)
 }
