@@ -49,12 +49,8 @@ import {
   handleBlobManifestGet,
   handleBlobManifestPut,
 } from './blob-handlers'
-import {
-  checkpointDoc,
-  evictIdleDocs,
-  recoverOrphanedCheckpointRuns,
-  readCheckpointableDocIds,
-} from './checkpoint'
+import { checkpointDoc, evictIdleDocs, readCheckpointableDocIds } from './checkpoint'
+import { recoverOrphanedCheckpointRuns } from './checkpoint-recovery'
 import {
   ADMIN_SETUP_TOKEN_PATH,
   ADMIN_SNAPSHOT_SEED_PATH,
