@@ -61,6 +61,12 @@ function copyPlugin(vaultPath: string): void {
   for (const file of ['manifest.json', 'versions.json', 'main.js']) {
     copyFileSync(join(packageDir, file), join(targetDir, file))
   }
+  // Obsidian scans community plugins only at startup, so a plugin copied into
+  // a cold vault is invisible to plugin:enable until manifests are rescanned.
+  obsidian([
+    'eval',
+    "code=(async () => { await app.plugins.loadManifests(); return 'manifests-reloaded' })()",
+  ])
 }
 
 // Read the active (non-deleted) meta entry for a path, or null. fileId never changes across a rename.
