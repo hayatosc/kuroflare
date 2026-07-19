@@ -19,6 +19,7 @@
   "dependencies": {
     "@kuroflare/core": "workspace:*",
     "@kuroflare/worker": "workspace:*",
+    "@standard-schema/spec": "1.1.0",
     "hono": "^4.12.27",
     "valibot": "^1.4.1",
     "y-codemirror.next": "^0.3.5",

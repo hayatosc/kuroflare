@@ -10,25 +10,15 @@ import {
   type SnapshotHealthEntry,
   type SnapshotHealthListResponse,
   type SnapshotHealthMutationResponse,
-  type SnapshotHealthQuarantineRequest,
-  type SnapshotHealthVerifyRequest,
   type SnapshotRollbackResponse,
 } from '@kuroflare/core'
 import * as v from 'valibot'
 
+import type { WorkerClient } from '../api-client'
 import type { LocalSetupMetadata } from '../engine/setup'
 
 /** HTTP boundary used by snapshot health administration requests. */
-export interface SnapshotHealthAdminHttpPort {
-  /**
-   * Sends one request to the worker.
-   *
-   * @param url Absolute worker URL.
-   * @param init Request method, headers, and optional body.
-   * @returns Worker response.
-   */
-  fetch(url: string, init?: RequestInit): Promise<Response>
-}
+export type SnapshotHealthAdminHttpPort = WorkerClient
 
 /** Result of listing guarded snapshot health entries. */
 export type SnapshotHealthListResult =
@@ -89,12 +79,18 @@ export async function fetchSnapshotHealthEntries(
     return { ok: false, reason: 'invalid-request' }
   }
 
-  const url = snapshotHealthListUrl(input.setup, input.docId, limit, input.cursor)
+  const query: Record<string, string> = {
+    docId: snapshotHealthDocIdQueryValue(input.docId),
+    limit: String(limit),
+  }
+  if (input.cursor !== undefined) query.cursor = input.cursor
+
   let response: Response
   try {
-    response = await input.http.fetch(url, {
-      headers: authorizationHeaders(input.accessToken),
-    })
+    response = await input.http.admin.snapshots.$get(
+      { query },
+      { headers: authorizationHeaders(input.accessToken) },
+    )
   } catch {
     return { ok: false, reason: 'http-failed' }
   }
@@ -128,13 +124,23 @@ export async function verifySnapshotHealthEntry(input: {
   ) {
     return { ok: false, reason: 'invalid-request' }
   }
-  return await postSnapshotHealthMutation(
-    input.setup,
-    input.accessToken,
-    'verify',
-    request,
-    input.http,
-  )
+  let response: Response
+  try {
+    response = await input.http.admin.snapshots.verify.$post(
+      { json: request },
+      { headers: authorizationHeaders(input.accessToken) },
+    )
+  } catch {
+    return { ok: false, reason: 'http-failed' }
+  }
+  if (!response.ok) {
+    return { ok: false, reason: 'http-failed', status: response.status }
+  }
+  const body: unknown = await response.json().catch(() => undefined)
+  if (!v.is(SnapshotHealthMutationResponseSchema, body)) {
+    return { ok: false, reason: 'invalid-response' }
+  }
+  return { ok: true, response: body }
 }
 
 /**
@@ -157,13 +163,23 @@ export async function quarantineSnapshotHealthEntry(input: {
   ) {
     return { ok: false, reason: 'invalid-request' }
   }
-  return await postSnapshotHealthMutation(
-    input.setup,
-    input.accessToken,
-    'quarantine',
-    request,
-    input.http,
-  )
+  let response: Response
+  try {
+    response = await input.http.admin.snapshots.quarantine.$post(
+      { json: request },
+      { headers: authorizationHeaders(input.accessToken) },
+    )
+  } catch {
+    return { ok: false, reason: 'http-failed' }
+  }
+  if (!response.ok) {
+    return { ok: false, reason: 'http-failed', status: response.status }
+  }
+  const body: unknown = await response.json().catch(() => undefined)
+  if (!v.is(SnapshotHealthMutationResponseSchema, body)) {
+    return { ok: false, reason: 'invalid-response' }
+  }
+  return { ok: true, response: body }
 }
 
 /**
@@ -188,11 +204,10 @@ export async function rollbackSnapshotHealthEntry(input: {
   }
   let response: Response
   try {
-    response = await input.http.fetch(snapshotHealthMutationUrl(input.setup, 'rollback'), {
-      method: 'POST',
-      headers: jsonAuthorizationHeaders(input.accessToken),
-      body: JSON.stringify(request),
-    })
+    response = await input.http.admin.snapshots.rollback.$post(
+      { json: request },
+      { headers: authorizationHeaders(input.accessToken) },
+    )
   } catch {
     return { ok: false, reason: 'http-failed' }
   }
@@ -238,64 +253,6 @@ export function snapshotHealthEntryStatus(entry: SnapshotHealthEntry): string {
   return `${entry.physicalStatus}/${entry.logicalStatus}`
 }
 
-async function postSnapshotHealthMutation(
-  setup: LocalSetupMetadata,
-  accessToken: string,
-  action: 'verify' | 'quarantine',
-  request: SnapshotHealthVerifyRequest | SnapshotHealthQuarantineRequest,
-  http: SnapshotHealthAdminHttpPort,
-): Promise<SnapshotHealthMutationResult> {
-  let response: Response
-  try {
-    response = await http.fetch(snapshotHealthMutationUrl(setup, action), {
-      method: 'POST',
-      headers: jsonAuthorizationHeaders(accessToken),
-      body: JSON.stringify(request),
-    })
-  } catch {
-    return { ok: false, reason: 'http-failed' }
-  }
-  if (!response.ok) {
-    return { ok: false, reason: 'http-failed', status: response.status }
-  }
-  const body: unknown = await response.json().catch(() => undefined)
-  if (!v.is(SnapshotHealthMutationResponseSchema, body)) {
-    return { ok: false, reason: 'invalid-response' }
-  }
-  return { ok: true, response: body }
-}
-
-function snapshotHealthListUrl(
-  setup: LocalSetupMetadata,
-  docId: DocId,
-  limit: number,
-  cursor: string | undefined,
-): string {
-  const url = new URL(setup.endpoint)
-  url.pathname = '/admin/snapshots'
-  url.search = ''
-  url.hash = ''
-  url.searchParams.set('docId', snapshotHealthDocIdQueryValue(docId))
-  url.searchParams.set('limit', String(limit))
-  if (cursor !== undefined) url.searchParams.set('cursor', cursor)
-  return url.toString()
-}
-
-function snapshotHealthMutationUrl(
-  setup: LocalSetupMetadata,
-  action: 'verify' | 'quarantine' | 'rollback',
-): string {
-  const url = new URL(setup.endpoint)
-  url.pathname = `/admin/snapshots/${action}`
-  url.search = ''
-  url.hash = ''
-  return url.toString()
-}
-
-function authorizationHeaders(accessToken: string): HeadersInit {
+function authorizationHeaders(accessToken: string): Record<string, string> {
   return { Authorization: `Bearer ${accessToken}` }
-}
-
-function jsonAuthorizationHeaders(accessToken: string): HeadersInit {
-  return { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
 }

@@ -14,6 +14,7 @@ import {
   redactSecretText,
 } from '../../host/helpers'
 import type KuroflareSpikePlugin from '../../host/plugin'
+import { createWorkerClient, type WorkerClient } from '../api-client'
 import {
   executeQuarantineAdminAction,
   fetchQuarantineAdminAudit,
@@ -61,9 +62,7 @@ export function renderQuarantineAdmin(
   let auditNextCursor: string | undefined
 
   const hasSetupMetadata = setupMetadataAvailable(plugin)
-  const http = {
-    fetch: async (url: string, init?: RequestInit): Promise<Response> => await fetch(url, init),
-  }
+  const http: WorkerClient | null = quarantineCreateClient(plugin)
 
   new Setting(sectionEl).setName('Quarantined updates').addButton((button) => {
     button
@@ -208,7 +207,7 @@ export function renderQuarantineAdmin(
         accessToken: auth.accessToken,
         limit: QUARANTINE_PAGE_SIZE,
         cursor: nextCursor,
-        http,
+        http: quarantineClient(http),
       })
       if (!result.ok) {
         setError(quarantineRequestError(result.reason, result.status))
@@ -245,7 +244,7 @@ export function renderQuarantineAdmin(
         accessToken: auth.accessToken,
         limit: QUARANTINE_PAGE_SIZE,
         cursor: auditNextCursor,
-        http,
+        http: quarantineClient(http),
       })
       if (!result.ok) return
       auditEntries = [...auditEntries, ...result.response.items]
@@ -274,7 +273,7 @@ export function renderQuarantineAdmin(
         accessToken: auth.accessToken,
         id,
         action,
-        http,
+        http: quarantineClient(http),
       })
       if (!result.ok) {
         setError(quarantinePrepareError(result.reason, result.status))
@@ -310,7 +309,7 @@ export function renderQuarantineAdmin(
         id,
         action: active.action,
         confirmationToken: active.dryRun.confirmationToken,
-        http,
+        http: quarantineClient(http),
       })
       if (!result.ok) {
         setError(quarantinePrepareError(result.reason, result.status))
@@ -348,6 +347,20 @@ function setupMetadataAvailable(plugin: KuroflareSpikePlugin): boolean {
   } catch {
     return false
   }
+}
+
+function quarantineCreateClient(plugin: KuroflareSpikePlugin): WorkerClient | null {
+  try {
+    const setup = requireSetupMetadata(plugin)
+    return createWorkerClient(setup.endpoint)
+  } catch {
+    return null
+  }
+}
+
+function quarantineClient(c: WorkerClient | null): WorkerClient {
+  if (c === null) throw new Error('Quarantine admin client is not available')
+  return c
 }
 
 async function quarantineAuth(plugin: KuroflareSpikePlugin): Promise<

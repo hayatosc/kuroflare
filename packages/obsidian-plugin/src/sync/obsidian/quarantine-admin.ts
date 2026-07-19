@@ -13,13 +13,12 @@ import {
 } from '@kuroflare/core'
 import * as v from 'valibot'
 
+import type { WorkerClient } from '../api-client'
 import type { LocalSetupMetadata } from '../engine/setup'
 
 export type QuarantineAdminAction = QuarantinedUpdateActionRequest['action']
 
-export interface QuarantineAdminHttpPort {
-  fetch(url: string, init?: RequestInit): Promise<Response>
-}
+export type QuarantineAdminHttpPort = WorkerClient
 
 export type QuarantineAdminListResult =
   | { readonly ok: true; readonly response: QuarantinedUpdateListResponse }
@@ -69,8 +68,12 @@ export async function fetchQuarantineAdminEntries(input: {
   readonly cursor?: string | undefined
   readonly http: QuarantineAdminHttpPort
 }): Promise<QuarantineAdminListResult> {
-  const response = await input.http.fetch(
-    quarantineAdminUrl(input.setup, undefined, input.limit, input.cursor),
+  const query: Record<string, string> = {}
+  if (input.limit !== undefined) query.limit = String(input.limit)
+  if (input.cursor !== undefined) query.cursor = input.cursor
+
+  const response = await input.http.admin.quarantine.$get(
+    { query },
     { headers: authorizationHeaders(input.accessToken) },
   )
   if (!response.ok) {
@@ -91,16 +94,14 @@ export async function fetchQuarantineAdminAudit(input: {
   readonly cursor?: string | undefined
   readonly http: QuarantineAdminHttpPort
 }): Promise<QuarantineAdminAuditResult> {
-  const url = new URL(input.setup.endpoint)
-  url.pathname = '/admin/quarantine/audit'
-  url.search = ''
-  url.hash = ''
-  if (input.limit !== undefined) url.searchParams.set('limit', String(input.limit))
-  if (input.cursor !== undefined) url.searchParams.set('cursor', input.cursor)
+  const query: Record<string, string> = {}
+  if (input.limit !== undefined) query.limit = String(input.limit)
+  if (input.cursor !== undefined) query.cursor = input.cursor
 
-  const response = await input.http.fetch(url.toString(), {
-    headers: authorizationHeaders(input.accessToken),
-  })
+  const response = await input.http.admin.quarantine.audit.$get(
+    { query },
+    { headers: authorizationHeaders(input.accessToken) },
+  )
   if (!response.ok) {
     return { ok: false, reason: 'http-failed', status: response.status }
   }
@@ -118,9 +119,10 @@ export async function fetchQuarantineAdminDetail(input: {
   readonly id: string
   readonly http: QuarantineAdminHttpPort
 }): Promise<QuarantineAdminDetailResult> {
-  const response = await input.http.fetch(quarantineAdminUrl(input.setup, input.id), {
-    headers: authorizationHeaders(input.accessToken),
-  })
+  const response = await input.http.admin.quarantine[':id'].$get(
+    { param: { id: input.id } },
+    { headers: authorizationHeaders(input.accessToken) },
+  )
   if (!response.ok) {
     return { ok: false, reason: 'http-failed', status: response.status }
   }
@@ -139,13 +141,9 @@ export async function prepareQuarantineAdminAction(input: {
   readonly action: QuarantineAdminAction
   readonly http: QuarantineAdminHttpPort
 }): Promise<QuarantineAdminPrepareResult> {
-  const response = await input.http.fetch(
-    quarantineAdminActionUrl(input.setup, input.id, input.action),
-    {
-      method: 'POST',
-      headers: jsonAuthorizationHeaders(input.accessToken),
-      body: JSON.stringify({ mode: 'dry-run' }),
-    },
+  const response = await input.http.admin.quarantine[':id'][input.action].$post(
+    { param: { id: input.id }, json: { mode: 'dry-run' } },
+    { headers: authorizationHeaders(input.accessToken) },
   )
   if (!response.ok) {
     return { ok: false, reason: 'http-failed', status: response.status }
@@ -169,17 +167,16 @@ export async function executeQuarantineAdminAction(input: {
   readonly confirmationToken: string
   readonly http: QuarantineAdminHttpPort
 }): Promise<QuarantineAdminExecuteResult> {
-  const response = await input.http.fetch(
-    quarantineAdminActionUrl(input.setup, input.id, input.action),
+  const response = await input.http.admin.quarantine[':id'][input.action].$post(
     {
-      method: 'POST',
-      headers: jsonAuthorizationHeaders(input.accessToken),
-      body: JSON.stringify({
+      param: { id: input.id },
+      json: {
         mode: 'execute',
         confirmationToken: input.confirmationToken,
         reason: 'obsidian-plugin-admin',
-      }),
+      },
     },
+    { headers: authorizationHeaders(input.accessToken) },
   )
   if (!response.ok) {
     return { ok: false, reason: 'http-failed', status: response.status }
@@ -194,38 +191,6 @@ export async function executeQuarantineAdminAction(input: {
   return { ok: true, response: body }
 }
 
-function quarantineAdminUrl(
-  setup: LocalSetupMetadata,
-  id?: string,
-  limit?: number,
-  cursor?: string,
-): string {
-  const url = new URL(setup.endpoint)
-  url.pathname =
-    id === undefined ? '/admin/quarantine' : `/admin/quarantine/${encodeURIComponent(id)}`
-  url.search = ''
-  url.hash = ''
-  if (limit !== undefined) url.searchParams.set('limit', String(limit))
-  if (cursor !== undefined) url.searchParams.set('cursor', cursor)
-  return url.toString()
-}
-
-function quarantineAdminActionUrl(
-  setup: LocalSetupMetadata,
-  id: string,
-  action: QuarantineAdminAction,
-): string {
-  const url = new URL(setup.endpoint)
-  url.pathname = `/admin/quarantine/${encodeURIComponent(id)}/${action}`
-  url.search = ''
-  url.hash = ''
-  return url.toString()
-}
-
-function authorizationHeaders(accessToken: string): HeadersInit {
+function authorizationHeaders(accessToken: string): Record<string, string> {
   return { Authorization: `Bearer ${accessToken}` }
-}
-
-function jsonAuthorizationHeaders(accessToken: string): HeadersInit {
-  return { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
 }

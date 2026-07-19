@@ -16,6 +16,7 @@ import {
   createRemoteSetupAccessTokenVerifier,
 } from './auth'
 import type { AuthRefreshRetryHost } from './auth'
+import { createWorkerClient } from '../sync/api-client'
 
 const deviceId = makeDeviceId('auth-preflight-device')
 const accessTokenSecretKey = 'kuroflare:auth-preflight:access-token'
@@ -355,18 +356,25 @@ test('auth refresh lock serializes refresh and revoke operations', () => {
 })
 
 test('remote setup verifier rejects forged or malformed worker responses', async () => {
-  const verifier = createRemoteSetupAccessTokenVerifier({
-    endpoint: 'https://worker.example/api/',
-    fetch: async (input, init) => {
+  const fetchCalls: { readonly url: string; readonly authorization: string | null }[] = []
+  const mockFetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      assert.equal(url, 'https://worker.example/auth/verify')
-      assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer forged.jwt')
+      fetchCalls.push({
+        url,
+        authorization: new Headers(init?.headers).get('Authorization'),
+      })
       return new Response(JSON.stringify({ aud: 'vault-1', exp: 'not-a-number' }), { status: 200 })
     },
+  )
+  const verifier = createRemoteSetupAccessTokenVerifier({
+    client: createWorkerClient('https://worker.example/api/', undefined, mockFetch),
   })
 
   assert.equal(await verifier.verify('forged.jwt'), undefined)
+  assert.equal(fetchCalls[0]?.url, 'https://worker.example/auth/verify')
+  assert.equal(fetchCalls[0]?.authorization, 'Bearer forged.jwt')
 })
 
 test('remote setup verifier accepts only a valid verified claims response', async () => {
@@ -379,9 +387,11 @@ test('remote setup verifier accepts only a valid verified claims response', asyn
     exp: 2_000,
     tokenVersion: 1,
   }
+  const mockFetch = vi.fn(
+    async () => new Response(JSON.stringify(claims), { status: 200 }),
+  )
   const verifier = createRemoteSetupAccessTokenVerifier({
-    endpoint: 'https://worker.example',
-    fetch: async () => new Response(JSON.stringify(claims), { status: 200 }),
+    client: createWorkerClient('https://worker.example', undefined, mockFetch),
   })
 
   assert.deepEqual(await verifier.verify('valid.jwt'), claims)

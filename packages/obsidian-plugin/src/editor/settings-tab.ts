@@ -1,6 +1,7 @@
 import { parseSetupUri } from '@kuroflare/core'
 import { type App, Notice, PluginSettingTab, Setting } from 'obsidian'
 
+import { createWorkerClient } from '../sync/api-client'
 import { readAccessToken, requireSetupMetadata } from '../host/auth'
 import {
   DEVICE_REVOKE_CONFIRMATION,
@@ -10,7 +11,6 @@ import {
 } from '../host/constants'
 import {
   accessTokenSecretKeyForSetup,
-  deviceRevokeUrl,
   docIdLabel,
   repairLogDescription,
 } from '../host/helpers'
@@ -128,9 +128,10 @@ export class KuroflareSettingTab extends PluginSettingTab {
               new Notice('No access token')
               return
             }
-            const response = await fetch(deviceRevokeUrl(setup), {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${token}` },
+            const client = createWorkerClient(setup.endpoint, token)
+            const response = await client.devices[':deviceId'].revoke.$post({
+              param: { deviceId: setup.deviceId },
+              json: { reason: 'user-initiated' },
             })
             if (response.ok) {
               new Notice('Device revoked')

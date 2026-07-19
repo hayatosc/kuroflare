@@ -37,9 +37,9 @@ import {
   AUTH_REFRESH_MARGIN_MS,
   AUTH_REFRESH_STALE_AFTER_MS,
 } from './constants'
+import { createWorkerClient, type WorkerClient } from '../sync/api-client'
 import {
   localSetupMetadataFromSetupResponse,
-  deviceRevokeUrl,
   createAuthRefreshMetadataPort,
   createAuthRevokeMetadataPort,
   createObsidianAuthRevokeSecretStoragePort,
@@ -555,13 +555,10 @@ export async function revokeCurrentDeviceAfterConfirmation(
       return
     }
 
-    const response = await fetch(deviceRevokeUrl(setup), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ reason: 'obsidian-plugin-self-revoke' }),
+    const workerClient = createWorkerClient(setup.endpoint, accessToken)
+    const response = await workerClient.devices[':deviceId'].revoke.$post({
+      param: { deviceId: setup.deviceId },
+      json: { reason: 'obsidian-plugin-self-revoke' },
     })
     if (!response.ok) {
       new Notice(`Kuroflare auth: revoke failed (${response.status})`)
@@ -681,10 +678,9 @@ export async function runAuthRefreshRequest(
       requiredScopes: ['sync:read', 'sync:write', 'blob:read', 'blob:write'],
       now: Date.now(),
       secretStorage: createObsidianAuthRefreshSecretStoragePort(plugin.app.secretStorage),
-      http: createAuthRefreshHttpPort(setup),
+      http: createAuthRefreshHttpPort(createWorkerClient(setup.endpoint)),
       verifier: createRemoteSetupAccessTokenVerifier({
-        endpoint: setup.endpoint,
-        fetch: (input, init) => fetch(input, init),
+        client: createWorkerClient(setup.endpoint),
       }),
       metadataStore,
     })
@@ -837,8 +833,7 @@ export function cancelAuthRefreshStartupRetry(plugin: AuthRefreshRetryHost): voi
 }
 /** Input for verifying setup access tokens through the worker's trusted JWT verifier. */
 export interface RemoteSetupAccessTokenVerifierInput {
-  readonly endpoint: string
-  readonly fetch: typeof globalThis.fetch
+  readonly client: WorkerClient
 }
 
 /** Creates a verifier that delegates signature and claim validation to the worker. */
@@ -847,17 +842,12 @@ export function createRemoteSetupAccessTokenVerifier(
 ): SyncRuntimeSetupPersistAccessTokenVerifierPort {
   return {
     async verify(accessToken): Promise<DeviceTokenClaims | undefined> {
-      let url: URL
-      try {
-        url = new URL('/auth/verify', input.endpoint)
-      } catch {
-        return undefined
-      }
       let response: Response
       try {
-        response = await input.fetch(url, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        })
+        response = await input.client.auth.verify.$get(
+          {},
+          { headers: { Authorization: `Bearer ${accessToken}` } },
+        )
       } catch {
         return undefined
       }

@@ -2,12 +2,12 @@ import { makeDeviceId, makeVaultId, makeYDocId } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
 import type { LocalSetupMetadata } from '../engine/setup'
+import { createWorkerClient } from '../api-client'
 import {
   fetchSnapshotHealthEntries,
   quarantineSnapshotHealthEntry,
   rollbackSnapshotHealthEntry,
   verifySnapshotHealthEntry,
-  type SnapshotHealthAdminHttpPort,
 } from './snapshot-health-admin'
 
 const setup = {
@@ -34,8 +34,23 @@ const entry = {
   observedAt: 10,
 }
 
+function createTestClient(responses: Response[]): {
+  client: ReturnType<typeof createWorkerClient>
+  requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }>
+} {
+  const requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }> = []
+  const fetchMock = async (url: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({ url: fetchUrl(url), init })
+    const response = responses.shift()
+    if (response === undefined) throw new Error(`unexpected fetch: ${fetchUrl(url)}`)
+    return response
+  }
+  const client = createWorkerClient('https://sync.example.test/base', undefined, fetchMock)
+  return { client, requests }
+}
+
 test('snapshot health list guards responses, sends sync:write bearer, and paginates', async () => {
-  const http = new QueueHttpPort([
+  const { client, requests } = createTestClient([
     jsonResponse({ entries: [entry], nextCursor: '1' }),
     jsonResponse({ entries: [] }),
   ])
@@ -46,7 +61,7 @@ test('snapshot health list guards responses, sends sync:write bearer, and pagina
       accessToken: 'device-access-token',
       docId,
       limit: 1,
-      http,
+      http: client,
     }),
     { ok: true, response: { entries: [entry], nextCursor: '1' } },
   )
@@ -57,12 +72,12 @@ test('snapshot health list guards responses, sends sync:write bearer, and pagina
       docId,
       limit: 1,
       cursor: '1',
-      http,
+      http: client,
     }),
     { ok: true, response: { entries: [] } },
   )
   assert.deepEqual(
-    http.requests.map((request) => ({
+    requests.map((request) => ({
       url: request.url,
       authorization: headerValue(request.init?.headers, 'Authorization'),
     })),
@@ -80,30 +95,30 @@ test('snapshot health list guards responses, sends sync:write bearer, and pagina
 })
 
 test('snapshot health list rejects invalid request and invalid response without fetching', async () => {
-  const http = new QueueHttpPort([jsonResponse({ unexpected: true })])
+  const { client, requests } = createTestClient([jsonResponse({ unexpected: true })])
   assert.deepEqual(
     await fetchSnapshotHealthEntries({
       setup,
       accessToken: 'device-access-token',
       docId,
       limit: 0,
-      http,
+      http: client,
     }),
     { ok: false, reason: 'invalid-request' },
   )
-  assert.equal(http.requests.length, 0)
+  assert.equal(requests.length, 0)
 
   const invalidResponseResult = await fetchSnapshotHealthEntries({
     setup,
     accessToken: 'device-access-token',
     docId,
-    http,
+    http: client,
   })
   assert.deepEqual(invalidResponseResult, { ok: false, reason: 'invalid-response' })
 })
 
 test('snapshot health mutations guard request/response and include explicit confirmations', async () => {
-  const http = new QueueHttpPort([
+  const { client, requests } = createTestClient([
     jsonResponse({ ok: true, entry }),
     jsonResponse({
       ok: true,
@@ -136,7 +151,7 @@ test('snapshot health mutations guard request/response and include explicit conf
       reason: 'operator verified bytes',
       confirmation: 'verify',
     },
-    http,
+    http: client,
   })
   assert.equal(verifyResult.ok, true)
   if (verifyResult.ok) assert.equal(verifyResult.response.entry.authorityStatus, 'authoritative')
@@ -151,7 +166,7 @@ test('snapshot health mutations guard request/response and include explicit conf
       reason: 'operator quarantined source',
       confirmation: 'quarantine',
     },
-    http,
+    http: client,
   })
   assert.equal(quarantineResult.ok, true)
   if (quarantineResult.ok) {
@@ -170,14 +185,14 @@ test('snapshot health mutations guard request/response and include explicit conf
           reason: 'operator rolled back source',
           confirmation: 'rollback',
         },
-        http,
+        http: client,
       })
     ).ok,
     true,
   )
 
   assert.deepEqual(
-    http.requests.map((request) => ({
+    requests.map((request) => ({
       url: request.url,
       method: request.init?.method,
       authorization: headerValue(request.init?.headers, 'Authorization'),
@@ -225,7 +240,7 @@ test('snapshot health mutations guard request/response and include explicit conf
 })
 
 test('snapshot health mutations reject invalid confirmation and HTTP errors', async () => {
-  const http = new QueueHttpPort([jsonResponse({ error: 'nope' }, 403)])
+  const { client, requests } = createTestClient([jsonResponse({ error: 'nope' }, 403)])
   const invalid = await verifySnapshotHealthEntry({
     setup,
     accessToken: 'device-access-token',
@@ -236,10 +251,10 @@ test('snapshot health mutations reject invalid confirmation and HTTP errors', as
       reason: 'operator reason',
       confirmation: 'wrong',
     },
-    http,
+    http: client,
   })
   assert.deepEqual(invalid, { ok: false, reason: 'invalid-request' })
-  assert.equal(http.requests.length, 0)
+  assert.equal(requests.length, 0)
 
   const failed = await rollbackSnapshotHealthEntry({
     setup,
@@ -251,19 +266,23 @@ test('snapshot health mutations reject invalid confirmation and HTTP errors', as
       reason: 'operator reason',
       confirmation: 'rollback',
     },
-    http,
+    http: client,
   })
   assert.deepEqual(failed, { ok: false, reason: 'http-failed', status: 403 })
 })
 
 test('snapshot health client handles missing credentials and network failures without leaking them', async () => {
-  const http = new ThrowingHttpPort()
+  const fetchMock = async (): Promise<Response> => {
+    throw new Error('network failure')
+  }
+  const client = createWorkerClient('https://sync.example.test/base', undefined, fetchMock)
+
   assert.deepEqual(
     await fetchSnapshotHealthEntries({
       setup,
       accessToken: ' ',
       docId,
-      http,
+      http: client,
     }),
     { ok: false, reason: 'invalid-request' },
   )
@@ -272,30 +291,11 @@ test('snapshot health client handles missing credentials and network failures wi
       setup,
       accessToken: 'device-access-token',
       docId,
-      http,
+      http: client,
     }),
     { ok: false, reason: 'http-failed' },
   )
 })
-
-class QueueHttpPort implements SnapshotHealthAdminHttpPort {
-  readonly requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }> = []
-
-  constructor(private readonly responses: Response[]) {}
-
-  async fetch(url: string, init?: RequestInit): Promise<Response> {
-    this.requests.push({ url, init })
-    const response = this.responses.shift()
-    if (response === undefined) throw new Error(`unexpected fetch: ${url}`)
-    return response
-  }
-}
-
-class ThrowingHttpPort implements SnapshotHealthAdminHttpPort {
-  async fetch(): Promise<Response> {
-    throw new Error('network failure')
-  }
-}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -315,4 +315,10 @@ function headerValue(headers: HeadersInit | undefined, key: string): string | un
 
 function requestBodyJson(body: BodyInit | null | undefined): unknown {
   return typeof body === 'string' ? JSON.parse(body) : undefined
+}
+
+function fetchUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.href
+  return input.url
 }

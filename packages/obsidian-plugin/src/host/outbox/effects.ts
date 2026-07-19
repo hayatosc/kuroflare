@@ -11,6 +11,8 @@ import {
 import { TFile, TFolder } from 'obsidian'
 import * as v from 'valibot'
 
+import { createWorkerClient, type WorkerClient } from '../../sync/api-client'
+
 import {
   type OutboxWorkerManifestPutSideEffectPlan,
   type OutboxWorkerBlobPutSideEffectPlan,
@@ -39,6 +41,8 @@ export async function runManifestPutSideEffect(
   sideEffect: OutboxWorkerManifestPutSideEffectPlan,
 ): Promise<OutboxWorkerSideEffectResultEvidence> {
   try {
+    // The /blob-manifests/* route uses a catch-all wildcard that hc client does not support.
+    // Keep as raw fetch until hono/client adds wildcard RPC support.
     const response = await fetch(sideEffect.putManifestRequest.url, {
       method: sideEffect.putManifestRequest.method,
       headers: sideEffect.putManifestRequest.headers,
@@ -85,14 +89,31 @@ export async function runBlobPutSideEffect(
     return { kind: 'invalid-payload', code: 'local-cache-read-failed' }
   }
 
-  const head = await fetchJsonSideEffect(plugin, sideEffect.headRequest)
-  if (head.kind !== 'success') {
-    return head
+  const endpointUrl = new URL(sideEffect.headRequest.url)
+  const accessToken =
+    sideEffect.headRequest.headers.authorization?.replace(/^Bearer\s+/i, '') ?? undefined
+  const client = createWorkerClient(endpointUrl.origin, accessToken)
+
+  let headRes: Response
+  try {
+    headRes = await client.blobs.head.$post({
+      json: { hashes: [sideEffect.blob.sha256] },
+    })
+  } catch (error: unknown) {
+    console.warn('[kuroflare] blob head check failed before HTTP response', {
+      itemId: sideEffect.itemId,
+      error: safeLogError(error),
+    })
+    return { kind: 'network-error' }
   }
-  if (!v.is(BlobHeadResponseSchema, head.body)) {
+  if (!headRes.ok) {
+    return await httpFailureResult(headRes)
+  }
+  const headBody: unknown = await headRes.json().catch(() => undefined)
+  if (!v.is(BlobHeadResponseSchema, headBody)) {
     return { kind: 'invalid-payload', code: 'blob-head-response-invalid' }
   }
-  const entry = head.body.exists[sideEffect.blob.sha256]
+  const entry = headBody.exists[sideEffect.blob.sha256]
   if (entry?.found === true) {
     if (entry.size !== sideEffect.blob.size) {
       return { kind: 'invalid-payload', code: 'blob-head-size-mismatch' }
@@ -100,25 +121,37 @@ export async function runBlobPutSideEffect(
     return { kind: 'success' }
   }
 
-  const uploadUrl = await fetchJsonSideEffect(plugin, sideEffect.uploadUrlRequest)
-  if (uploadUrl.kind !== 'success') {
-    return uploadUrl
+  let uploadUrlRes: Response
+  try {
+    uploadUrlRes = await client.blobs['upload-url'].$post({
+      json: { sha256: sideEffect.blob.sha256, size: sideEffect.blob.size },
+    })
+  } catch (error: unknown) {
+    console.warn('[kuroflare] blob upload URL fetch failed before HTTP response', {
+      itemId: sideEffect.itemId,
+      error: safeLogError(error),
+    })
+    return { kind: 'network-error' }
   }
-  if (!v.is(BlobUploadUrlResponseSchema, uploadUrl.body)) {
+  if (!uploadUrlRes.ok) {
+    return await httpFailureResult(uploadUrlRes)
+  }
+  const uploadUrlBody: unknown = await uploadUrlRes.json().catch(() => undefined)
+  if (!v.is(BlobUploadUrlResponseSchema, uploadUrlBody)) {
     return { kind: 'invalid-payload', code: 'blob-upload-url-response-invalid' }
   }
-  if (uploadUrl.body.kind === 'already-exists') {
+  if (uploadUrlBody.kind === 'already-exists') {
     return { kind: 'success' }
   }
-  if (uploadUrl.body.kind === 'multipart') {
-    return runBlobMultipartPutSideEffect(sideEffect, bytes, uploadUrl.body)
+  if (uploadUrlBody.kind === 'multipart') {
+    return runBlobMultipartPutSideEffect(sideEffect, bytes, uploadUrlBody, client)
   }
 
   try {
-    const response = await fetch(uploadUrl.body.url, {
+    const response = await fetch(uploadUrlBody.url, {
       method: sideEffect.uploadPut.method,
       headers: {
-        ...uploadUrl.body.headers,
+        ...uploadUrlBody.headers,
         authorization: sideEffect.uploadUrlRequest.headers.authorization ?? '',
       },
       body: arrayBufferFromBytes(bytes),
@@ -147,6 +180,7 @@ async function runBlobMultipartPutSideEffect(
   sideEffect: OutboxWorkerBlobPutSideEffectPlan,
   bytes: Uint8Array,
   target: BlobMultipartUploadResponse,
+  client: WorkerClient,
 ): Promise<OutboxWorkerSideEffectResultEvidence> {
   const authorization = sideEffect.uploadUrlRequest.headers.authorization ?? ''
   const partCount = target.parts.length
@@ -188,14 +222,10 @@ async function runBlobMultipartPutSideEffect(
     completedParts.push({ partNumber: part.partNumber, etag: partBody.etag })
   }
 
-  const completeUrl = new URL(sideEffect.uploadUrlRequest.url)
-  completeUrl.pathname = `/blobs/${sideEffect.blob.sha256}/complete`
-  completeUrl.search = ''
   try {
-    const completeResponse = await fetch(completeUrl.toString(), {
-      method: 'POST',
-      headers: { authorization, 'content-type': 'application/json' },
-      body: JSON.stringify({ uploadId: target.uploadId, parts: completedParts }),
+    const completeResponse = await client.blobs[':hash'].complete.$post({
+      param: { hash: sideEffect.blob.sha256 },
+      json: { uploadId: target.uploadId, parts: completedParts },
     })
     if (completeResponse.ok) {
       return { kind: 'success' }
@@ -218,9 +248,12 @@ export async function runBlobGetSideEffect(
   if (!isCurrent()) return { kind: 'network-error' }
   let response: Response
   try {
-    response = await fetch(sideEffect.downloadRequest.url, {
-      method: sideEffect.downloadRequest.method,
-      headers: sideEffect.downloadRequest.headers,
+    const endpointUrl = new URL(sideEffect.downloadRequest.url)
+    const accessToken =
+      sideEffect.downloadRequest.headers.authorization?.replace(/^Bearer\s+/i, '') ?? undefined
+    const client = createWorkerClient(endpointUrl.origin, accessToken)
+    response = await client.blobs[':hash'].$get({
+      param: { hash: sideEffect.blob.sha256 },
     })
   } catch (error: unknown) {
     console.warn('[kuroflare] blob get failed before HTTP response', {
@@ -394,34 +427,6 @@ async function compensateStaleMaterializeWrite(
     })
   } finally {
     await cleanupCreatedAdapterFolders(plugin, createdFolders)
-  }
-}
-
-export async function fetchJsonSideEffect(
-  plugin: KuroflareSpikePlugin,
-  request: OutboxWorkerManifestPutSideEffectPlan['putManifestRequest'],
-): Promise<
-  | { readonly kind: 'success'; readonly body: unknown }
-  | Exclude<OutboxWorkerSideEffectResultEvidence, { readonly kind: 'success' }>
-> {
-  try {
-    const init: RequestInit = {
-      method: request.method,
-      headers: request.headers,
-    }
-    if (request.bodyJson !== undefined) {
-      init.body = JSON.stringify(request.bodyJson)
-    }
-    const response = await fetch(request.url, init)
-    if (!response.ok) {
-      return await httpFailureResult(response)
-    }
-    return { kind: 'success', body: await response.json().catch(() => undefined) }
-  } catch (error: unknown) {
-    console.warn('[kuroflare] JSON side effect failed before HTTP response', {
-      error: safeLogError(error),
-    })
-    return { kind: 'network-error' }
   }
 }
 

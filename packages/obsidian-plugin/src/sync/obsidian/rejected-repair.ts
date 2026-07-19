@@ -22,11 +22,10 @@ import {
 } from '../store/indexeddb'
 import { type LocalStoreOutboxRecord } from '../store/store'
 import { planLocalStoreSyncUpdateRejectedRepairTransaction } from '../store/store'
+import type { WorkerClient } from '../api-client'
 
 /** HTTP boundary used by the explicit rejected-update repair action. */
-export interface RejectedUpdateRepairHttpPort {
-  readonly fetch: (url: string, init?: RequestInit) => Promise<Response>
-}
+export type RejectedUpdateRepairHttpPort = WorkerClient
 
 /** A paused outbox row eligible for explicit rejected-update repair. */
 export type PausedRejectedUpdate = LocalStoreOutboxRecord
@@ -246,13 +245,21 @@ async function fetchLatestManifestSeq(
       readonly status?: number | undefined
     }
 > {
-  const url = latestSnapshotUrl(input.setup, docId)
+  const vaultId = input.setup.vaultId
+  const authHeaders = { Authorization: `Bearer ${input.accessToken}` }
   let response: Response
   try {
-    response = await input.http.fetch(url, {
-      cache: 'no-store',
-      headers: { Authorization: `Bearer ${input.accessToken}` },
-    })
+    if (docId.kind === 'meta') {
+      response = await input.http.vaults[':vaultId'].meta.latest.$get(
+        { param: { vaultId } },
+        { headers: authHeaders },
+      )
+    } else {
+      response = await input.http.vaults[':vaultId'].files[':ydocId'].latest.$get(
+        { param: { vaultId, ydocId: docId.ydocId } },
+        { headers: authHeaders },
+      )
+    }
   } catch {
     return { ok: false, reason: 'network-failed' }
   }
@@ -308,16 +315,21 @@ async function importRejectedUpdate(
           latestSeq,
           ...(row.metadataSchemaVersion === 2 ? { metadataSchemaVersion: 2 as const } : {}),
         }
+  const vaultId = input.setup.vaultId
+  const authHeaders = { Authorization: `Bearer ${input.accessToken}` }
   let response: Response
   try {
-    response = await input.http.fetch(snapshotImportUrl(input.setup, row.docId), {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${input.accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    })
+    if (row.docId.kind === 'meta') {
+      response = await input.http.vaults[':vaultId'].meta.snapshot.$put(
+        { param: { vaultId }, json: body },
+        { headers: authHeaders },
+      )
+    } else {
+      response = await input.http.vaults[':vaultId'].files[':ydocId'].snapshot.$put(
+        { param: { vaultId, ydocId: row.docId.ydocId }, json: body },
+        { headers: authHeaders },
+      )
+    }
   } catch {
     return { ok: false, reason: 'network-failed' }
   }
@@ -337,28 +349,6 @@ async function importRejectedUpdate(
     return { ok: false, reason: 'invalid-import-response' }
   }
   return { ok: true, snapshotSeq: responseBody.snapshotSeq }
-}
-
-function latestSnapshotUrl(setup: LocalSetupMetadata, docId: DocId): string {
-  const url = new URL(setup.endpoint)
-  url.pathname =
-    docId.kind === 'meta'
-      ? `/vaults/${encodeURIComponent(setup.vaultId)}/meta/latest`
-      : `/vaults/${encodeURIComponent(setup.vaultId)}/files/${encodeURIComponent(docId.ydocId)}/latest`
-  url.search = ''
-  url.hash = ''
-  return url.toString()
-}
-
-function snapshotImportUrl(setup: LocalSetupMetadata, docId: DocId): string {
-  const url = new URL(setup.endpoint)
-  url.pathname =
-    docId.kind === 'meta'
-      ? `/vaults/${encodeURIComponent(setup.vaultId)}/meta/snapshot`
-      : `/vaults/${encodeURIComponent(setup.vaultId)}/files/${encodeURIComponent(docId.ydocId)}/snapshot`
-  url.search = ''
-  url.hash = ''
-  return url.toString()
 }
 
 function decodeNonEmptyBase64(value: string | undefined): Uint8Array | null {

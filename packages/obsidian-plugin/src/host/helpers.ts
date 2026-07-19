@@ -13,6 +13,7 @@ import type { AuthRefreshMetadataPort } from '../sync/auth/refresh'
 import type { AuthRefreshSecretStoragePort } from '../sync/auth/refresh'
 import type { runAuthRefreshAttempt } from '../sync/auth/refresh'
 import type { AuthRevokeMetadataPort, AuthRevokeSecretStoragePort } from '../sync/auth/revoke'
+import type { WorkerClient } from '../sync/api-client'
 import type { LocalSetupPersistSecretStoragePort } from '../sync/engine/persist'
 import type { LocalSetupMetadata, LocalSetupMetadataPutOperation } from '../sync/engine/setup'
 import { LOCAL_SETUP_METADATA_KEY } from '../sync/engine/setup'
@@ -320,20 +321,14 @@ export function createObsidianAuthRefreshSecretStoragePort(
   }
 }
 
-export function createAuthRefreshHttpPort(setup: LocalSetupMetadata) {
+export function createAuthRefreshHttpPort(
+  client: WorkerClient,
+) {
   return {
     async refresh(request: DeviceTokenRefreshRequest): Promise<AuthRefreshHttpResult> {
-      const url = new URL(setup.endpoint)
-      url.pathname = '/auth/refresh'
-      url.search = ''
-      url.hash = ''
       let response: Response
       try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(request),
-        })
+        response = await client.auth.refresh.$post({ json: request })
       } catch {
         return { ok: false, reason: 'network' }
       }

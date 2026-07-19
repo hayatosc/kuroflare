@@ -1,4 +1,5 @@
 import { sValidator } from '@hono/standard-validator'
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 import {
   BlobHeadRequestSchema,
   BlobHeadResponseSchema,
@@ -40,6 +41,7 @@ import {
 } from '@kuroflare/core'
 import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
+import { createMiddleware } from 'hono/factory'
 import * as v from 'valibot'
 
 import {
@@ -54,8 +56,6 @@ import { apiErrorBody, extractBearerToken, timingSafeEqualString } from './utils
 
 const WEBSOCKET_UPGRADE = 'websocket'
 const ADMIN_TOKEN_HEADER = 'x-kuroflare-admin-secret'
-const ADMIN_SETUP_TOKEN_PATH = '/admin/setup-tokens'
-const ADMIN_SNAPSHOT_SEED_PATH = '/admin/snapshots/seed'
 
 /** Event shape returned by `GET /admin/retention` (matches DO `handleRetentionInspect` response). */
 const RetentionEventSchema = v.object({
@@ -69,6 +69,35 @@ const RetentionListResponseSchema = v.object({
   items: v.array(RetentionEventSchema),
   nextCursor: v.optional(v.string()),
 })
+
+const QuarantineListQuerySchema = v.object({
+  limit: v.optional(
+    v.pipe(v.string(), v.transform(Number), v.number(), v.integer(), v.minValue(1)),
+  ),
+  cursor: v.optional(v.pipe(v.string(), v.minLength(1))),
+})
+
+const QuarantineIdParamSchema = v.object({ id: v.pipe(v.string(), v.minLength(1)) })
+
+const SnapshotHealthQuerySchema = v.object({
+  docId: v.optional(v.pipe(v.string(), v.minLength(1))),
+  limit: v.optional(
+    v.pipe(v.string(), v.transform(Number), v.number(), v.integer(), v.minValue(1)),
+  ),
+  cursor: v.optional(v.pipe(v.string(), v.minLength(1))),
+})
+
+const DocIdParamSchema = v.object({ docId: v.pipe(v.string(), v.minLength(1)) })
+
+const BlobHashParamSchema = v.object({ hash: Sha256HexSchema })
+
+const BlobMultipartPartParamSchema = v.object({
+  hash: Sha256HexSchema,
+  uploadId: BlobUploadIdSchema,
+  partNumber: v.pipe(v.string(), v.transform(Number), v.number(), v.integer(), v.minValue(1)),
+})
+
+// --- Utility functions ---
 
 /** Rejects a request unless it carries the operator's admin secret via constant-time compare. */
 function authorizeAdminRequest(c: Context<{ Bindings: WorkerEnv }>): Response | undefined {
@@ -110,7 +139,7 @@ type DOErrorStatus = 400 | 401 | 403 | 404 | 409 | 429 | 500 | 503
  * original response is returned unchanged (used by routing tests with text fakes).
  */
 async function parseDOorPassthrough<T>(
-  c: Context<{ Bindings: WorkerEnv }>,
+  c: Context,
   response: Response,
   outputSchema: v.GenericSchema<T>,
 ): Promise<Response> {
@@ -126,7 +155,6 @@ async function parseDOorPassthrough<T>(
   }
   let body: unknown
   try {
-    // Clone the response so the original body is preserved if JSON parsing fails
     const clone = response.clone()
     body = await clone.json()
   } catch {
@@ -137,248 +165,6 @@ async function parseDOorPassthrough<T>(
   return c.json(parsed.output, response.status as 200)
 }
 
-/**
- * Forwards the request to the vault room with bearer-token auth and types the
- * successful response against `outputSchema`. Error responses are passed through.
- */
-async function forwardAuthorizedTyped<T>(
-  c: Context<{ Bindings: WorkerEnv }>,
-  outputSchema: v.GenericSchema<T>,
-): Promise<Response> {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined)
-    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-  const response = await routeVaultRoom(c.env, c.req.raw, claims.aud)
-  return parseDOorPassthrough(c, response, outputSchema)
-}
-
-export const workerApp = new Hono<{ Bindings: WorkerEnv }>()
-
-workerApp.use(
-  '*',
-  cors({
-    origin: '*',
-    allowHeaders: ['Authorization', 'Content-Type', ADMIN_TOKEN_HEADER],
-    allowMethods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT'],
-  }),
-)
-
-// ---- Admin-only routes (admin secret auth, forward to DO, no response typing) ----
-
-workerApp.post(
-  ADMIN_SETUP_TOKEN_PATH,
-  sValidator('json', AdminSetupTokenIssueRequestSchema),
-  async (c) => {
-    const rejection = authorizeAdminRequest(c)
-    if (rejection !== undefined) return rejection
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    return routeVaultRoom(c.env, doRequest, body.vaultId)
-  },
-)
-
-workerApp.post(
-  ADMIN_SNAPSHOT_SEED_PATH,
-  sValidator('json', AdminSnapshotSeedRequestSchema),
-  async (c) => {
-    const rejection = authorizeAdminRequest(c)
-    if (rejection !== undefined) return rejection
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    return routeVaultRoom(c.env, doRequest, body.vaultId)
-  },
-)
-
-// ---- Setup exchange (no auth, forward to DO, response typed) ----
-
-workerApp.post('/setup/exchange', sValidator('json', SetupExchangeRequestSchema), async (c) => {
-  const body = c.req.valid('json')
-  const doRequest = new Request(c.req.raw.url, {
-    method: c.req.raw.method,
-    headers: c.req.raw.headers,
-    body: JSON.stringify(body),
-  })
-  const response = await routeVaultRoom(c.env, doRequest, body.vaultId)
-  return parseDOorPassthrough(c, response, SetupExchangeResponseSchema)
-})
-
-// ---- Auth verify (bearer token, no DO, response typed) ----
-
-workerApp.get('/auth/verify', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined)
-    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-  return c.json(claims)
-})
-
-// ---- Auth refresh (no auth, forward to DO, response typed) ----
-
-workerApp.post('/auth/refresh', sValidator('json', DeviceTokenRefreshRequestSchema), async (c) => {
-  const body = c.req.valid('json')
-  const doRequest = new Request(c.req.raw.url, {
-    method: c.req.raw.method,
-    headers: c.req.raw.headers,
-    body: JSON.stringify(body),
-  })
-  const response = await routeVaultRoom(c.env, doRequest, body.vaultId)
-  return parseDOorPassthrough(c, response, DeviceTokenRefreshResponseSchema)
-})
-
-// ---- Device revoke (bearer auth, forward to DO, response typed) ----
-
-workerApp.post(
-  '/devices/:deviceId/revoke',
-  sValidator('param', v.object({ deviceId: DeviceIdSchema })),
-  sValidator('json', RevokeDeviceRequestSchema),
-  async (c) => {
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, RevokeDeviceResponseSchema)
-  },
-)
-
-// ---- Quarantine admin (bearer auth, forward to DO, response typed) ----
-
-const QuarantineListQuerySchema = v.object({
-  limit: v.optional(
-    v.pipe(v.string(), v.transform(Number), v.number(), v.integer(), v.minValue(1)),
-  ),
-  cursor: v.optional(v.pipe(v.string(), v.minLength(1))),
-})
-
-workerApp.get('/admin/quarantine', sValidator('query', QuarantineListQuerySchema), (c) =>
-  forwardAuthorizedTyped(c, QuarantinedUpdateListResponseSchema),
-)
-
-workerApp.get('/admin/quarantine/audit', sValidator('query', QuarantineListQuerySchema), (c) =>
-  forwardAuthorizedTyped(c, QuarantineAuditListResponseSchema),
-)
-
-workerApp.get(
-  '/admin/quarantine/:id',
-  sValidator('param', v.object({ id: v.pipe(v.string(), v.minLength(1)) })),
-  (c) => forwardAuthorizedTyped(c, QuarantinedUpdateDetailResponseSchema),
-)
-
-workerApp.get('/admin/retention', sValidator('query', QuarantineListQuerySchema), (c) =>
-  forwardAuthorizedTyped(c, RetentionListResponseSchema),
-)
-
-// ---- Quarantine action (bearer auth, body validated, forward to DO, response typed) ----
-
-const QuarantineIdParamSchema = v.object({ id: v.pipe(v.string(), v.minLength(1)) })
-
-for (const action of ['discard', 'force-apply'] as const) {
-  workerApp.post(
-    `/admin/quarantine/:id/${action}`,
-    sValidator('param', QuarantineIdParamSchema),
-    sValidator('json', QuarantinedUpdateActionHttpRequestSchema),
-    async (c) => {
-      const body = c.req.valid('json')
-      const doRequest = new Request(c.req.raw.url, {
-        method: c.req.raw.method,
-        headers: c.req.raw.headers,
-        body: JSON.stringify(body),
-      })
-      const claims = await verifyBearerToken(c.env, c.req.raw)
-      if (claims === undefined)
-        return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-      const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-      return parseDOorPassthrough(c, response, QuarantinedUpdateActionHttpResponseSchema)
-    },
-  )
-}
-
-// ---- Snapshot health list (bearer auth, forward to DO, response typed) ----
-
-const SnapshotHealthQuerySchema = v.object({
-  docId: v.optional(v.pipe(v.string(), v.minLength(1))),
-  limit: v.optional(
-    v.pipe(v.string(), v.transform(Number), v.number(), v.integer(), v.minValue(1)),
-  ),
-  cursor: v.optional(v.pipe(v.string(), v.minLength(1))),
-})
-
-workerApp.get('/admin/snapshots', sValidator('query', SnapshotHealthQuerySchema), (c) =>
-  forwardAuthorizedTyped(c, SnapshotHealthListResponseSchema),
-)
-
-// ---- Snapshot health mutations — each route inlined for type-safe schema handling ----
-
-workerApp.post(
-  '/admin/snapshots/verify',
-  sValidator('json', SnapshotHealthVerifyRequestSchema),
-  async (c) => {
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, SnapshotHealthMutationResponseSchema)
-  },
-)
-
-workerApp.post(
-  '/admin/snapshots/quarantine',
-  sValidator('json', SnapshotHealthQuarantineRequestSchema),
-  async (c) => {
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, SnapshotHealthMutationResponseSchema)
-  },
-)
-
-workerApp.post(
-  '/admin/snapshots/rollback',
-  sValidator('json', SnapshotRollbackRequestSchema),
-  async (c) => {
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, SnapshotRollbackResponseSchema)
-  },
-)
-
-// ---- Snapshot health mutations with :docId param ----
-
-const DocIdParamSchema = v.object({ docId: v.pipe(v.string(), v.minLength(1)) })
-
 function snapshotHealthRouteDocMatches(
   routeDocId: string,
   docId: { readonly kind: 'meta' } | { readonly kind: 'file'; readonly ydocId: string },
@@ -386,299 +172,360 @@ function snapshotHealthRouteDocMatches(
   return docId.kind === 'meta' ? routeDocId === 'meta' : routeDocId === docId.ydocId
 }
 
-workerApp.post(
-  '/admin/snapshots/:docId/verify',
-  sValidator('param', DocIdParamSchema),
-  sValidator('json', SnapshotHealthVerifyRequestSchema),
-  async (c) => {
-    const { docId } = c.req.valid('param')
-    const body = c.req.valid('json')
-    if (!snapshotHealthRouteDocMatches(docId, body.docId)) {
-      return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-request'), 400)
-    }
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, SnapshotHealthMutationResponseSchema)
-  },
-)
+// --- Middleware ---
 
-workerApp.post(
-  '/admin/snapshots/:docId/quarantine',
-  sValidator('param', DocIdParamSchema),
-  sValidator('json', SnapshotHealthQuarantineRequestSchema),
-  async (c) => {
-    const { docId } = c.req.valid('param')
-    const body = c.req.valid('json')
-    if (!snapshotHealthRouteDocMatches(docId, body.docId)) {
-      return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-request'), 400)
-    }
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, SnapshotHealthMutationResponseSchema)
-  },
-)
+const adminAuth = createMiddleware<{ Bindings: WorkerEnv }>(async (c, next) => {
+  const rejection = authorizeAdminRequest(c)
+  if (rejection !== undefined) return rejection
+  await next()
+})
 
-workerApp.post(
-  '/admin/snapshots/:docId/rollback',
-  sValidator('param', DocIdParamSchema),
-  sValidator('json', SnapshotRollbackRequestSchema),
-  async (c) => {
-    const { docId } = c.req.valid('param')
-    const body = c.req.valid('json')
-    if (!snapshotHealthRouteDocMatches(docId, body.docId)) {
-      return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-request'), 400)
-    }
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, SnapshotRollbackResponseSchema)
-  },
-)
+const bearerAuth = createMiddleware<{
+  Bindings: WorkerEnv
+  Variables: { claims: DeviceTokenClaims }
+}>(async (c, next) => {
+  const claims = await verifyBearerToken(c.env, c.req.raw)
+  if (!claims) {
+    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
+  }
+  c.set('claims', claims)
+  await next()
+})
 
-// ---- Local outbox repair evidence (bearer auth, body validated, forward to DO, response typed) ----
+type AuthedEnv = { Bindings: WorkerEnv; Variables: { claims: DeviceTokenClaims } }
 
-workerApp.post(
-  '/repair/local-outbox/evidence',
-  sValidator('json', LocalOutboxRepairEvidenceRequestSchema),
-  async (c) => {
+// --- Sub-routers ---
+
+const adminRouter = new Hono<{ Bindings: WorkerEnv }>()
+  .post('/admin/setup-tokens', adminAuth, sValidator('json', AdminSetupTokenIssueRequestSchema), async (c) => {
     const body = c.req.valid('json')
     const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
+      method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
     })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, LocalOutboxRepairEvidenceResponseSchema)
-  },
-)
-
-// ---- Vault snapshot latest (bearer auth, param validated, forward to DO, response typed) ----
-
-workerApp.get(
-  '/vaults/:vaultId/meta/latest',
-  sValidator('param', v.object({ vaultId: VaultIdSchema })),
-  async (c) => {
-    const { vaultId } = c.req.valid('param')
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    if (claims.aud !== vaultId) return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
-    const response = await routeVaultRoom(c.env, c.req.raw, claims.aud)
-    return parseDOorPassthrough(c, response, MetaLatestSnapshotResponseSchema)
-  },
-)
-
-workerApp.get(
-  '/vaults/:vaultId/files/:ydocId/latest',
-  sValidator('param', v.object({ vaultId: VaultIdSchema, ydocId: YDocIdSchema })),
-  async (c) => {
-    const { vaultId } = c.req.valid('param')
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    if (claims.aud !== vaultId) return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
-    const response = await routeVaultRoom(c.env, c.req.raw, claims.aud)
-    return parseDOorPassthrough(c, response, DocLatestSnapshotResponseSchema)
-  },
-)
-
-// ---- Vault snapshot import (bearer auth, body validated, forward to DO, response typed) ----
-
-workerApp.put(
-  '/vaults/:vaultId/meta/snapshot',
-  sValidator('param', v.object({ vaultId: VaultIdSchema })),
-  sValidator('json', SnapshotImportRequestSchema),
-  async (c) => {
-    const { vaultId } = c.req.valid('param')
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    if (claims.aud !== vaultId) return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, SnapshotImportResponseSchema)
-  },
-)
-
-workerApp.put(
-  '/vaults/:vaultId/files/:ydocId/snapshot',
-  sValidator('param', v.object({ vaultId: VaultIdSchema, ydocId: YDocIdSchema })),
-  sValidator('json', SnapshotImportRequestSchema),
-  async (c) => {
-    const { vaultId } = c.req.valid('param')
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    if (claims.aud !== vaultId) return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
-    const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-    return parseDOorPassthrough(c, response, SnapshotImportResponseSchema)
-  },
-)
-
-// ---- Blob HEAD (bearer auth, body validated, forward to DO, response typed) ----
-
-workerApp.post('/blobs/head', sValidator('json', BlobHeadRequestSchema), async (c) => {
-  const body = c.req.valid('json')
-  const doRequest = new Request(c.req.raw.url, {
-    method: c.req.raw.method,
-    headers: c.req.raw.headers,
-    body: JSON.stringify(body),
+    return routeVaultRoom(c.env, doRequest, body.vaultId)
   })
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined)
-    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-  const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-  return parseDOorPassthrough(c, response, BlobHeadResponseSchema)
-})
-
-// ---- Blob upload URL (bearer auth, body validated, forward to DO, response typed) ----
-
-workerApp.post('/blobs/upload-url', sValidator('json', BlobUploadUrlRequestSchema), async (c) => {
-  const body = c.req.valid('json')
-  const doRequest = new Request(c.req.raw.url, {
-    method: c.req.raw.method,
-    headers: c.req.raw.headers,
-    body: JSON.stringify(body),
+  .post('/admin/snapshots/seed', adminAuth, sValidator('json', AdminSnapshotSeedRequestSchema), async (c) => {
+    const body = c.req.valid('json')
+    const doRequest = new Request(c.req.raw.url, {
+      method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+    })
+    return routeVaultRoom(c.env, doRequest, body.vaultId)
   })
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined)
-    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-  const response = await routeVaultRoom(c.env, doRequest, claims.aud)
-  return parseDOorPassthrough(c, response, BlobUploadUrlResponseSchema)
-})
 
-// ---- Blob multipart complete (bearer auth, body validated, forward to DO) ----
+const authedCore = new Hono<AuthedEnv>()
+  .get('/auth/verify', bearerAuth, (c) => c.json(c.var.claims))
+  .post('/devices/:deviceId/revoke', bearerAuth,
+    sValidator('param', v.object({ deviceId: DeviceIdSchema })),
+    sValidator('json', RevokeDeviceRequestSchema),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, RevokeDeviceResponseSchema)
+    },
+  )
+  .post('/repair/local-outbox/evidence', bearerAuth,
+    sValidator('json', LocalOutboxRepairEvidenceRequestSchema),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, LocalOutboxRepairEvidenceResponseSchema)
+    },
+  )
 
-workerApp.post(
-  '/blobs/:hash/complete',
-  sValidator('param', v.object({ hash: Sha256HexSchema })),
-  sValidator('json', BlobMultipartCompleteRequestSchema),
-  async (c) => {
+const authedQuarantine = new Hono<AuthedEnv>()
+  .get('/admin/quarantine', bearerAuth, sValidator('query', QuarantineListQuerySchema), async (c) => {
+    const response = await routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+    return parseDOorPassthrough(c, response, QuarantinedUpdateListResponseSchema)
+  })
+  .get('/admin/quarantine/audit', bearerAuth, sValidator('query', QuarantineListQuerySchema), async (c) => {
+    const response = await routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+    return parseDOorPassthrough(c, response, QuarantineAuditListResponseSchema)
+  })
+  .get('/admin/quarantine/:id', bearerAuth,
+    sValidator('param', QuarantineIdParamSchema),
+    async (c) => {
+      const response = await routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, QuarantinedUpdateDetailResponseSchema)
+    },
+  )
+  .post('/admin/quarantine/:id/discard', bearerAuth,
+    sValidator('param', QuarantineIdParamSchema),
+    sValidator('json', QuarantinedUpdateActionHttpRequestSchema),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, QuarantinedUpdateActionHttpResponseSchema)
+    },
+  )
+  .post('/admin/quarantine/:id/force-apply', bearerAuth,
+    sValidator('param', QuarantineIdParamSchema),
+    sValidator('json', QuarantinedUpdateActionHttpRequestSchema),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, QuarantinedUpdateActionHttpResponseSchema)
+    },
+  )
+
+const authedSnapshotAdmin = new Hono<AuthedEnv>()
+  .get('/admin/retention', bearerAuth, sValidator('query', QuarantineListQuerySchema), async (c) => {
+    const response = await routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+    return parseDOorPassthrough(c, response, RetentionListResponseSchema)
+  })
+  .get('/admin/snapshots', bearerAuth, sValidator('query', SnapshotHealthQuerySchema), async (c) => {
+    const response = await routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+    return parseDOorPassthrough(c, response, SnapshotHealthListResponseSchema)
+  })
+  .post('/admin/snapshots/verify', bearerAuth,
+    sValidator('json', SnapshotHealthVerifyRequestSchema),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, SnapshotHealthMutationResponseSchema)
+    },
+  )
+  .post('/admin/snapshots/quarantine', bearerAuth,
+    sValidator('json', SnapshotHealthQuarantineRequestSchema),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, SnapshotHealthMutationResponseSchema)
+    },
+  )
+  .post('/admin/snapshots/rollback', bearerAuth,
+    sValidator('json', SnapshotRollbackRequestSchema),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, SnapshotRollbackResponseSchema)
+    },
+  )
+  .post('/admin/snapshots/:docId/verify', bearerAuth,
+    sValidator('param', DocIdParamSchema),
+    sValidator('json', SnapshotHealthVerifyRequestSchema),
+    async (c) => {
+      const { docId } = c.req.valid('param')
+      const body = c.req.valid('json')
+      if (!snapshotHealthRouteDocMatches(docId, body.docId)) {
+        return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-request'), 400)
+      }
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, SnapshotHealthMutationResponseSchema)
+    },
+  )
+  .post('/admin/snapshots/:docId/quarantine', bearerAuth,
+    sValidator('param', DocIdParamSchema),
+    sValidator('json', SnapshotHealthQuarantineRequestSchema),
+    async (c) => {
+      const { docId } = c.req.valid('param')
+      const body = c.req.valid('json')
+      if (!snapshotHealthRouteDocMatches(docId, body.docId)) {
+        return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-request'), 400)
+      }
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, SnapshotHealthMutationResponseSchema)
+    },
+  )
+  .post('/admin/snapshots/:docId/rollback', bearerAuth,
+    sValidator('param', DocIdParamSchema),
+    sValidator('json', SnapshotRollbackRequestSchema),
+    async (c) => {
+      const { docId } = c.req.valid('param')
+      const body = c.req.valid('json')
+      if (!snapshotHealthRouteDocMatches(docId, body.docId)) {
+        return c.json(apiErrorBody('request/invalid', 'invalid-snapshot-health-request'), 400)
+      }
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, SnapshotRollbackResponseSchema)
+    },
+  )
+
+const authedVaults = new Hono<AuthedEnv>()
+  .get('/vaults/:vaultId/meta/latest', bearerAuth,
+    sValidator('param', v.object({ vaultId: VaultIdSchema })),
+    async (c) => {
+      const { vaultId } = c.req.valid('param')
+      if (c.var.claims.aud !== vaultId)
+        return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
+      const response = await routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, MetaLatestSnapshotResponseSchema)
+    },
+  )
+  .get('/vaults/:vaultId/files/:ydocId/latest', bearerAuth,
+    sValidator('param', v.object({ vaultId: VaultIdSchema, ydocId: YDocIdSchema })),
+    async (c) => {
+      const { vaultId } = c.req.valid('param')
+      if (c.var.claims.aud !== vaultId)
+        return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
+      const response = await routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, DocLatestSnapshotResponseSchema)
+    },
+  )
+  .put('/vaults/:vaultId/meta/snapshot', bearerAuth,
+    sValidator('param', v.object({ vaultId: VaultIdSchema })),
+    sValidator('json', SnapshotImportRequestSchema),
+    async (c) => {
+      const { vaultId } = c.req.valid('param')
+      if (c.var.claims.aud !== vaultId)
+        return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, SnapshotImportResponseSchema)
+    },
+  )
+  .put('/vaults/:vaultId/files/:ydocId/snapshot', bearerAuth,
+    sValidator('param', v.object({ vaultId: VaultIdSchema, ydocId: YDocIdSchema })),
+    sValidator('json', SnapshotImportRequestSchema),
+    async (c) => {
+      const { vaultId } = c.req.valid('param')
+      if (c.var.claims.aud !== vaultId)
+        return c.json(apiErrorBody('auth/rejected', 'vault-mismatch'), 400)
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+      return parseDOorPassthrough(c, response, SnapshotImportResponseSchema)
+    },
+  )
+
+const authedBlobs = new Hono<AuthedEnv>()
+  .post('/blobs/head', bearerAuth, sValidator('json', BlobHeadRequestSchema), async (c) => {
     const body = c.req.valid('json')
     const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
+      method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
     })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    return routeVaultRoom(c.env, doRequest, claims.aud)
-  },
-)
-
-// ---- Blob multipart abort (bearer auth, body validated, forward to DO) ----
-
-workerApp.post(
-  '/blobs/:hash/abort',
-  sValidator('param', v.object({ hash: Sha256HexSchema })),
-  sValidator('json', BlobMultipartAbortRequestSchema),
-  async (c) => {
+    const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+    return parseDOorPassthrough(c, response, BlobHeadResponseSchema)
+  })
+  .post('/blobs/upload-url', bearerAuth, sValidator('json', BlobUploadUrlRequestSchema), async (c) => {
     const body = c.req.valid('json')
     const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
+      method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
     })
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    return routeVaultRoom(c.env, doRequest, claims.aud)
-  },
-)
+    const response = await routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+    return parseDOorPassthrough(c, response, BlobUploadUrlResponseSchema)
+  })
+  .post('/blobs/:hash/complete', bearerAuth,
+    sValidator('param', v.object({ hash: Sha256HexSchema })),
+    sValidator('json', BlobMultipartCompleteRequestSchema),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      return routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+    },
+  )
+  .post('/blobs/:hash/abort', bearerAuth,
+    sValidator('param', v.object({ hash: Sha256HexSchema })),
+    sValidator('json', BlobMultipartAbortRequestSchema),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+      })
+      return routeVaultRoom(c.env, doRequest, c.var.claims.aud)
+    },
+  )
+  .on(['GET', 'PUT'], '/blobs/:hash', bearerAuth, sValidator('param', BlobHashParamSchema), async (c) => {
+    return routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+  })
+  .put('/blobs/:hash/parts/:uploadId/:partNumber', bearerAuth,
+    sValidator('param', BlobMultipartPartParamSchema),
+    async (c) => {
+      return routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+    },
+  )
+  .on(['GET', 'PUT'], '/blob-manifests/*', bearerAuth, async (c) => {
+    return routeVaultRoom(c.env, c.req.raw, c.var.claims.aud)
+  })
 
-// ---- Blob binary routes (bearer auth, forward to DO, no typing) ----
-// These handle binary streams where RPC typing provides no benefit.
-
-const BlobHashParamSchema = v.object({ hash: Sha256HexSchema })
-
-workerApp.on(
-  ['GET', 'PUT'],
-  '/blobs/:hash',
-  sValidator('param', BlobHashParamSchema),
-  async (c) => {
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    return routeVaultRoom(c.env, c.req.raw, claims.aud)
-  },
-)
-
-const BlobMultipartPartParamSchema = v.object({
-  hash: Sha256HexSchema,
-  uploadId: BlobUploadIdSchema,
-  partNumber: v.pipe(v.string(), v.transform(Number), v.number(), v.integer(), v.minValue(1)),
-})
-
-workerApp.put(
-  '/blobs/:hash/parts/:uploadId/:partNumber',
-  sValidator('param', BlobMultipartPartParamSchema),
-  async (c) => {
-    const claims = await verifyBearerToken(c.env, c.req.raw)
-    if (claims === undefined)
-      return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-    return routeVaultRoom(c.env, c.req.raw, claims.aud)
-  },
-)
-
-workerApp.on(['GET', 'PUT'], '/blob-manifests/*', async (c) => {
-  const claims = await verifyBearerToken(c.env, c.req.raw)
-  if (claims === undefined)
-    return c.json(apiErrorBody('auth/rejected', 'auth-reject:invalid-token'), 401)
-  return routeVaultRoom(c.env, c.req.raw, claims.aud)
-})
-
-// ---- WebSocket upgrade (param validated, forward to DO, no typing) ----
-
-workerApp.get(
-  '/ws/:vaultId',
-  sValidator('param', v.object({ vaultId: VaultIdSchema })),
-  async (c) => {
+const publicRouter = new Hono<{ Bindings: WorkerEnv }>()
+  .post('/setup/exchange', sValidator('json', SetupExchangeRequestSchema), async (c) => {
+    const body = c.req.valid('json')
+    const doRequest = new Request(c.req.raw.url, {
+      method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+    })
+    const response = await routeVaultRoom(c.env, doRequest, body.vaultId)
+    return parseDOorPassthrough(c, response, SetupExchangeResponseSchema)
+  })
+  .post('/auth/refresh', sValidator('json', DeviceTokenRefreshRequestSchema), async (c) => {
+    const body = c.req.valid('json')
+    const doRequest = new Request(c.req.raw.url, {
+      method: c.req.raw.method, headers: c.req.raw.headers, body: JSON.stringify(body),
+    })
+    const response = await routeVaultRoom(c.env, doRequest, body.vaultId)
+    return parseDOorPassthrough(c, response, DeviceTokenRefreshResponseSchema)
+  })
+  .get('/ws/:vaultId', sValidator('param', v.object({ vaultId: VaultIdSchema })), async (c) => {
     const { vaultId } = c.req.valid('param')
     if (c.req.header('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE) {
       return c.json(apiErrorBody('request/invalid', 'expected-websocket-upgrade'), 426)
     }
     return routeVaultRoom(c.env, c.req.raw, vaultId)
-  },
-)
+  })
+
+// --- Compose ---
+
+const app = new Hono<{ Bindings: WorkerEnv }>()
+  .use('*', cors({
+    origin: '*',
+    allowHeaders: ['Authorization', 'Content-Type', ADMIN_TOKEN_HEADER],
+    allowMethods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT'],
+  }))
+  .route('/', adminRouter)
+  .route('/', authedCore)
+  .route('/', authedQuarantine)
+  .route('/', authedSnapshotAdmin)
+  .route('/', authedVaults)
+  .route('/', authedBlobs)
+  .route('/', publicRouter)
+
+/**
+ * Expose the StandardSchema Issue type locally so that tsgo can name the
+ * accumulated Hono route type without TS2883.
+ */
+type _ = StandardSchemaV1.Issue
 
 /** Hono application type — used by `hono/client` for typed RPC. */
-export type AppType = typeof workerApp
+export type AppType = typeof app
+
+export const workerApp = app
+export default app
 
 /** Legacy alias used by entrypoint routing and existing test imports. */
-export const workerEntrypoint = workerApp
-export default workerApp
+export const workerEntrypoint = app

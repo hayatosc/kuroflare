@@ -38,6 +38,7 @@ import type {
 } from '../types'
 import { currentSetupMetadata, currentSetupVaultIdHint } from './auth'
 import { createRemoteSetupAccessTokenVerifier } from './auth'
+import { createWorkerClient } from '../sync/api-client'
 import type { StartupSideEffectGate } from './boot'
 import { DEFAULT_SETTINGS, META_SYNC_DOC_ID, SPIKE_TEXT_NAME, WORKER_ORIGIN } from './constants'
 import {
@@ -369,8 +370,7 @@ export async function persistPendingSetupResponse(host: VaultLifecycleHost): Pro
     response,
     now: Date.now(),
     verifier: createRemoteSetupAccessTokenVerifier({
-      endpoint: response.endpoint,
-      fetch: (input, init) => fetch(input, init),
+      client: createWorkerClient(response.endpoint),
     }),
     secretKeyPrefix: 'kuroflare',
     secretStorage: createObsidianSecretStoragePort(host.app.secretStorage),

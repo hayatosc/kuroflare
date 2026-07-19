@@ -10,6 +10,7 @@ import * as v from 'valibot'
 import { readAccessToken, requireSetupMetadata } from '../../host/auth'
 import { accessTokenSecretKeyForSetup, redactSecretText } from '../../host/helpers'
 import type KuroflareSpikePlugin from '../../host/plugin'
+import { createWorkerClient, type WorkerClient } from '../api-client'
 import {
   fetchSnapshotHealthEntries,
   quarantineSnapshotHealthEntry,
@@ -66,9 +67,7 @@ export function renderSnapshotHealthAdmin(
   const actionButtonUpdaters = new Set<() => void>()
 
   const hasSetupMetadata = setupMetadataAvailable(plugin)
-  const http = {
-    fetch: async (url: string, init?: RequestInit): Promise<Response> => await fetch(url, init),
-  }
+  const http: WorkerClient | null = snapshotHealthCreateClient(plugin)
 
   new Setting(controlsEl)
     .setName('Document ID')
@@ -284,7 +283,7 @@ export function renderSnapshotHealthAdmin(
         docId,
         limit: 32,
         cursor,
-        http,
+        http: snapshotHealthClient(http),
       })
       if (!result.ok) {
         setError(snapshotHealthRequestError(result.reason, result.status))
@@ -352,20 +351,20 @@ export function renderSnapshotHealthAdmin(
               setup: auth.setup,
               accessToken: auth.accessToken,
               request: { ...requestBase, confirmation: 'verify' },
-              http,
+              http: snapshotHealthClient(http),
             })
           : action === 'quarantine'
             ? await quarantineSnapshotHealthEntry({
                 setup: auth.setup,
                 accessToken: auth.accessToken,
                 request: { ...requestBase, confirmation: 'quarantine' },
-                http,
+                http: snapshotHealthClient(http),
               })
             : await rollbackSnapshotHealthEntry({
                 setup: auth.setup,
                 accessToken: auth.accessToken,
                 request: { ...requestBase, confirmation: 'rollback' },
-                http,
+                http: snapshotHealthClient(http),
               })
       if (!result.ok) {
         setError(snapshotHealthRequestError(result.reason, result.status))
@@ -403,6 +402,20 @@ function setupMetadataAvailable(plugin: KuroflareSpikePlugin): boolean {
   } catch {
     return false
   }
+}
+
+function snapshotHealthCreateClient(plugin: KuroflareSpikePlugin): WorkerClient | null {
+  try {
+    const setup = requireSetupMetadata(plugin)
+    return createWorkerClient(setup.endpoint)
+  } catch {
+    return null
+  }
+}
+
+function snapshotHealthClient(c: WorkerClient | null): WorkerClient {
+  if (c === null) throw new Error('Snapshot health client is not available')
+  return c
 }
 
 async function snapshotHealthAuth(plugin: KuroflareSpikePlugin): Promise<

@@ -9,6 +9,7 @@ import {
 } from '@kuroflare/core'
 import * as v from 'valibot'
 
+import { createWorkerClient } from './api-client'
 import {
   createSyncRuntimeSetupExchangePort,
   type SyncRuntimeSetupExchangePort,
@@ -22,31 +23,10 @@ export type SetupExchangeStartupEffect = Extract<
   { readonly kind: 'run-setup-exchange' }
 >
 
-/** Minimal HTTP response surface required by setup exchange. */
-export interface SetupExchangeHttpResponsePort {
-  readonly ok: boolean
-  readonly status: number
-  /** Parses the response body as JSON. */
-  json(): Promise<unknown>
-}
-
-/** Minimal fetch surface required by setup exchange. */
-export interface SetupExchangeFetchPort {
-  /**
-   * Sends one HTTP request to the sync service.
-   *
-   * @param input Request URL.
-   * @param init HTTP method, headers, and body.
-   * @returns HTTP response with JSON parsing support.
-   */
-  (input: string, init: RequestInit): Promise<SetupExchangeHttpResponsePort>
-}
-
 /** Input for exchanging a setup token for local device credentials. */
 export interface SetupExchangeHttpInput {
   readonly endpoint: string
   readonly request: SetupExchangeRequest
-  readonly fetch: SetupExchangeFetchPort
 }
 
 /** Raw setup request evidence read from plugin settings or setup UI fields. */
@@ -82,14 +62,12 @@ export type SetupExchangeRequestBuildPlan =
 /** Input for creating an HTTP-backed startup setup exchange port. */
 export interface HttpSyncRuntimeSetupExchangePortInput {
   readonly endpoint: string
-  readonly fetch: SetupExchangeFetchPort
   readonly buildRequest: (effect: SetupExchangeStartupEffect) => SetupExchangeRequest
   readonly scheduleReplan: (request: SyncRuntimeSetupExchangeReplanRequest) => Promise<void>
 }
 
 /** Input for creating a settings-backed HTTP startup setup exchange port. */
 export interface EvidenceBackedHttpSyncRuntimeSetupExchangePortInput {
-  readonly fetch: SetupExchangeFetchPort
   readonly readEvidence: (effect: SetupExchangeStartupEffect) => SetupExchangeRuntimeEvidence
   readonly scheduleReplan: (request: SyncRuntimeSetupExchangeReplanRequest) => Promise<void>
 }
@@ -99,23 +77,22 @@ const INVALID_OPTIONAL_DEVICE_ID = Symbol('invalid-optional-device-id')
 /**
  * Exchanges a setup token with the worker and validates the setup response.
  *
- * @param input Worker endpoint, guarded setup request, and fetch implementation.
+ * @param input Worker endpoint, guarded setup request.
+ * @param fetchImpl Optional fetch override for testability.
  * @returns Validated setup response ready for startup replan.
  * @throws When the endpoint/request is invalid, HTTP fails, JSON parsing fails, or response validation fails.
  */
 export async function requestSetupExchange(
   input: SetupExchangeHttpInput,
+  fetchImpl?: typeof fetch,
 ): Promise<SetupExchangeResponse> {
   if (!v.is(SetupExchangeRequestSchema, input.request)) {
     throw new Error('invalid-setup-exchange-request')
   }
 
-  const url = setupExchangeUrl(input.endpoint)
-  const response = await input.fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input.request),
-  })
+  const normalizedEndpoint = validateEndpoint(input.endpoint)
+  const client = createWorkerClient(normalizedEndpoint, undefined, fetchImpl)
+  const response = await client.setup.exchange.$post({ json: input.request })
   if (!response.ok) {
     throw new Error(`setup-exchange-http:${response.status}`)
   }
@@ -184,7 +161,7 @@ export function buildSetupExchangeRequest(
 /**
  * Creates a startup setup exchange port backed by the worker HTTP API.
  *
- * @param input Endpoint, fetch implementation, request builder, and replan scheduler.
+ * @param input Endpoint, request builder, and replan scheduler.
  * @returns Setup exchange startup port that validates the HTTP response before scheduling replan.
  */
 export function createHttpSyncRuntimeSetupExchangePort(
@@ -195,7 +172,6 @@ export function createHttpSyncRuntimeSetupExchangePort(
       return requestSetupExchange({
         endpoint: input.endpoint,
         request: input.buildRequest(effect),
-        fetch: input.fetch,
       })
     },
     scheduleReplan: input.scheduleReplan,
@@ -205,7 +181,7 @@ export function createHttpSyncRuntimeSetupExchangePort(
 /**
  * Creates a startup setup exchange port backed by raw setup UI/settings evidence.
  *
- * @param input Evidence reader, fetch implementation, and replan scheduler.
+ * @param input Evidence reader and replan scheduler.
  * @returns Setup exchange startup port that guards setup request evidence before HTTP exchange.
  */
 export function createEvidenceBackedHttpSyncRuntimeSetupExchangePort(
@@ -221,17 +197,16 @@ export function createEvidenceBackedHttpSyncRuntimeSetupExchangePort(
       return requestSetupExchange({
         endpoint: evidence.endpoint,
         request: requestPlan.request,
-        fetch: input.fetch,
       })
     },
     scheduleReplan: input.scheduleReplan,
   })
 }
 
-function setupExchangeUrl(endpoint: string): string {
+function validateEndpoint(endpoint: string): string {
   let url: URL
   try {
-    url = new URL('/setup/exchange', endpoint)
+    url = new URL(endpoint)
   } catch (error: unknown) {
     throw new Error('invalid-setup-exchange-endpoint', { cause: error })
   }
@@ -241,6 +216,9 @@ function setupExchangeUrl(endpoint: string): string {
   if (url.username !== '' || url.password !== '' || url.hash !== '') {
     throw new Error('invalid-setup-exchange-endpoint')
   }
+  // Normalize: strip pathname/search so hc treats it as a clean origin.
+  url.pathname = ''
+  url.search = ''
   return url.toString()
 }
 

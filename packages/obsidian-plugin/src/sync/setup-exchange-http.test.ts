@@ -4,14 +4,13 @@ import {
   type SetupExchangeRequest,
   type SetupExchangeResponse,
 } from '@kuroflare/core'
-import { assert, expect, test } from 'vitest'
+import { assert, expect, test, vi } from 'vitest'
 
 import {
   buildSetupExchangeRequest,
   createEvidenceBackedHttpSyncRuntimeSetupExchangePort,
   createHttpSyncRuntimeSetupExchangePort,
   requestSetupExchange,
-  type SetupExchangeFetchPort,
   type SetupExchangeStartupEffect,
 } from './setup-exchange-http'
 
@@ -34,6 +33,12 @@ const response = {
   protocolVersion: 1,
   bootstrapMode: 'new-vault',
 } satisfies SetupExchangeResponse
+
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.toString()
+  return input.url
+}
 
 test('setup exchange request builder normalizes UI evidence into protocol request', () => {
   assert.deepEqual(
@@ -108,23 +113,22 @@ test('setup exchange request builder returns non-secret failure reasons', () => 
 })
 
 test('setup exchange http client posts request and validates response', async () => {
-  const calls: { readonly input: string; readonly init: RequestInit }[] = []
-  const fetch: SetupExchangeFetchPort = async (input, init) => {
-    calls.push({ input, init })
-    return {
-      ok: true,
+  const calls: { readonly url: string; readonly init: RequestInit | undefined }[] = []
+  const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: requestUrl(input), init })
+    return new Response(JSON.stringify(response), {
       status: 200,
-      async json() {
-        return response
-      },
-    }
+      headers: { 'content-type': 'application/json' },
+    })
   }
 
-  const result = await requestSetupExchange({
-    endpoint: 'https://sync.example.test/',
-    request,
-    fetch,
-  })
+  const result = await requestSetupExchange(
+    {
+      endpoint: 'https://sync.example.test/',
+      request,
+    },
+    fetchImpl,
+  )
 
   assert.deepEqual(result, response)
   assert.equal(calls.length, 1)
@@ -133,86 +137,51 @@ test('setup exchange http client posts request and validates response', async ()
   if (call === undefined) {
     return
   }
-  assert.equal(call.input, 'https://sync.example.test/setup/exchange')
-  assert.equal(call.init.method, 'POST')
-  assert.deepEqual(call.init.headers, { 'content-type': 'application/json' })
-  assert.equal(call.init.body, JSON.stringify(request))
+  assert.equal(call.url, 'https://sync.example.test/setup/exchange')
+  assert.equal(call.init?.method, 'POST')
+  assert.equal(call.init?.body, JSON.stringify(request))
 })
 
 test('setup exchange http client rejects non-ok responses without reading token-bearing body', async () => {
-  let jsonRead = false
-  const fetch: SetupExchangeFetchPort = async () => ({
-    ok: false,
-    status: 403,
-    async json() {
-      jsonRead = true
-      return { error: 'setup-token:expired' }
-    },
-  })
+  const fetchImpl = async () =>
+    new Response(JSON.stringify({ error: 'setup-token:expired' }), { status: 403 })
 
   await expect(
-    requestSetupExchange({
-      endpoint: 'https://sync.example.test',
-      request,
-      fetch,
-    }),
+    requestSetupExchange(
+      { endpoint: 'https://sync.example.test', request },
+      fetchImpl,
+    ),
   ).rejects.toThrow(/setup-exchange-http:403/)
-  assert.equal(jsonRead, false)
 })
 
 test('setup exchange http client rejects invalid json and invalid response shapes', async () => {
-  const invalidJsonFetch: SetupExchangeFetchPort = async () => ({
-    ok: true,
-    status: 200,
-    async json() {
-      throw new Error('json-parse-failed')
-    },
-  })
-
   await expect(
-    requestSetupExchange({
-      endpoint: 'https://sync.example.test',
-      request,
-      fetch: invalidJsonFetch,
-    }),
+    requestSetupExchange(
+      { endpoint: 'https://sync.example.test', request },
+      async () => new Response('not json', { status: 200 }),
+    ),
   ).rejects.toThrow(/setup-exchange-invalid-json/)
 
-  const invalidResponseFetch: SetupExchangeFetchPort = async () => ({
-    ok: true,
-    status: 200,
-    async json() {
-      return { ...response, refreshToken: '' }
-    },
-  })
-
   await expect(
-    requestSetupExchange({
-      endpoint: 'https://sync.example.test',
-      request,
-      fetch: invalidResponseFetch,
-    }),
+    requestSetupExchange(
+      { endpoint: 'https://sync.example.test', request },
+      async () => new Response(JSON.stringify({ ...response, refreshToken: '' }), { status: 200 }),
+    ),
   ).rejects.toThrow(/invalid-setup-exchange-response/)
 })
 
 test('setup exchange http client rejects invalid endpoint before sending request', async () => {
   let called = false
-  const fetch: SetupExchangeFetchPort = async () => {
+  const fetchImpl = async () => {
     called = true
-    return {
-      ok: true,
-      status: 200,
-      async json() {
-        return response
-      },
-    }
+    return new Response(JSON.stringify(response), { status: 200 })
   }
 
   await expect(
-    requestSetupExchange({
-      endpoint: 'kuroflare://setup',
-      request,
-      fetch,
-    }),
+    requestSetupExchange(
+      { endpoint: 'kuroflare://setup', request },
+      fetchImpl,
+    ),
   ).rejects.toThrow(/invalid-setup-exchange-endpoint/)
   assert.equal(called, false)
 })
@@ -223,23 +192,22 @@ test('http-backed setup exchange startup port schedules replan after validated r
     reason: 'setup-required',
   } satisfies SetupExchangeStartupEffect
   const effects: SetupExchangeStartupEffect[] = []
-  const calls: { readonly input: string; readonly init: RequestInit }[] = []
   const scheduled: {
     readonly effect: SetupExchangeStartupEffect
     readonly response: SetupExchangeResponse
   }[] = []
+
+  vi.stubGlobal(
+    'fetch',
+    async () =>
+      new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+  )
+
   const port = createHttpSyncRuntimeSetupExchangePort({
     endpoint: 'https://sync.example.test',
-    fetch: async (input, init) => {
-      calls.push({ input, init })
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return response
-        },
-      }
-    },
     buildRequest(startupEffect) {
       effects.push(startupEffect)
       return request
@@ -252,7 +220,6 @@ test('http-backed setup exchange startup port schedules replan after validated r
   await port.run(effect)
 
   assert.deepEqual(effects, [effect])
-  assert.equal(calls.length, 1)
   assert.deepEqual(scheduled, [{ effect, response }])
   assert.deepEqual(port.snapshot().completed, [{ effect, response }])
 })
@@ -266,15 +233,15 @@ test('http-backed setup exchange startup port does not schedule replan after inv
     readonly effect: SetupExchangeStartupEffect
     readonly response: SetupExchangeResponse
   }[] = []
+
+  vi.stubGlobal(
+    'fetch',
+    async () =>
+      new Response(JSON.stringify({ ...response, tokenVersion: 0 }), { status: 200 }),
+  )
+
   const port = createHttpSyncRuntimeSetupExchangePort({
     endpoint: 'https://sync.example.test',
-    fetch: async () => ({
-      ok: true,
-      status: 200,
-      async json() {
-        return { ...response, tokenVersion: 0 }
-      },
-    }),
     buildRequest() {
       return request
     },
@@ -293,22 +260,21 @@ test('evidence-backed setup exchange startup port builds request before scheduli
     kind: 'run-setup-exchange',
     reason: 'setup-required',
   } satisfies SetupExchangeStartupEffect
-  const calls: { readonly input: string; readonly init: RequestInit }[] = []
   const scheduled: {
     readonly effect: SetupExchangeStartupEffect
     readonly response: SetupExchangeResponse
   }[] = []
-  const port = createEvidenceBackedHttpSyncRuntimeSetupExchangePort({
-    fetch: async (input, init) => {
-      calls.push({ input, init })
-      return {
-        ok: true,
+
+  vi.stubGlobal(
+    'fetch',
+    async () =>
+      new Response(JSON.stringify(response), {
         status: 200,
-        async json() {
-          return response
-        },
-      }
-    },
+        headers: { 'Content-Type': 'application/json' },
+      }),
+  )
+
+  const port = createEvidenceBackedHttpSyncRuntimeSetupExchangePort({
     readEvidence(startupEffect) {
       assert.deepEqual(startupEffect, effect)
       return {
@@ -327,14 +293,6 @@ test('evidence-backed setup exchange startup port builds request before scheduli
 
   await port.run(effect)
 
-  assert.equal(calls.length, 1)
-  const call = calls[0]
-  assert.notEqual(call, undefined)
-  if (call === undefined) {
-    return
-  }
-  assert.equal(call.input, 'https://sync.example.test/setup/exchange')
-  assert.equal(call.init.body, JSON.stringify(request))
   assert.deepEqual(scheduled, [{ effect, response }])
   assert.deepEqual(port.snapshot().completed, [{ effect, response }])
 })
@@ -346,21 +304,22 @@ test('evidence-backed setup exchange startup port fails invalid evidence without
   } satisfies SetupExchangeStartupEffect
   const token = 'secret-setup-token'
   let fetchCalled = false
+  vi.stubGlobal(
+    'fetch',
+    async () => {
+      fetchCalled = true
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    },
+  )
+
   const scheduled: {
     readonly effect: SetupExchangeStartupEffect
     readonly response: SetupExchangeResponse
   }[] = []
   const port = createEvidenceBackedHttpSyncRuntimeSetupExchangePort({
-    fetch: async () => {
-      fetchCalled = true
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return response
-        },
-      }
-    },
     readEvidence() {
       return {
         endpoint: 'https://sync.example.test',

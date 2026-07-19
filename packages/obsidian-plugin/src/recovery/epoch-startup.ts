@@ -20,6 +20,7 @@ import {
   waitForIndexedDbTransaction,
 } from '../host/helpers'
 import { readOutboxWorkerSnapshot } from '../host/store'
+import { createWorkerClient } from '../sync/api-client'
 import type { LocalSetupMetadata } from '../sync/engine/setup'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import {
@@ -230,6 +231,7 @@ async function recoverOneDocumentEpoch(
   }
   const accessToken = await host.readAccessToken(input.setup)
   if (accessToken === undefined) throw new Error('document-recovery-token-missing')
+  const client = createWorkerClient(input.setup.endpoint, accessToken)
   const key = documentEpochMetadataKey(input.document.docId)
   host.recoveryHydrating.add(key)
   try {
@@ -251,9 +253,17 @@ async function recoverOneDocumentEpoch(
         input.document.docId.kind === 'meta' ? host.validateMetaCandidate : undefined,
       snapshots: {
         fetchLatest: async () => {
-          const response = await fetch(host.latestSnapshotUrl(input.setup, input.document.docId), {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          })
+          const response =
+            input.document.docId.kind === 'meta'
+              ? await client.vaults[':vaultId'].meta.latest.$get({
+                  param: { vaultId: input.setup.vaultId },
+                })
+              : await client.vaults[':vaultId'].files[':ydocId'].latest.$get({
+                  param: {
+                    vaultId: input.setup.vaultId,
+                    ydocId: input.document.docId.ydocId,
+                  },
+                })
           if (response.status === 404) return { kind: 'not-found' as const }
           if (!response.ok) throw new Error(`document-recovery-latest-${response.status}`)
           const body: unknown = await response.json().catch(() => undefined)
@@ -271,18 +281,24 @@ async function recoverOneDocumentEpoch(
           }
         },
         importSnapshot: async ({ updateBytes, latestSeq }) => {
-          const response = await fetch(host.snapshotImportUrl(input.setup, input.document.docId), {
-            method: 'PUT',
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              updateBytesBase64: encodeBase64(updateBytes),
-              ...(latestSeq !== undefined ? { latestSeq } : {}),
-              ...(input.document.docId.kind === 'meta' ? { metadataSchemaVersion: 2 } : {}),
-            }),
-          })
+          const json = {
+            updateBytesBase64: encodeBase64(updateBytes),
+            ...(latestSeq !== undefined ? { latestSeq } : {}),
+            ...(input.document.docId.kind === 'meta' ? { metadataSchemaVersion: 2 as const } : {}),
+          }
+          const response =
+            input.document.docId.kind === 'meta'
+              ? await client.vaults[':vaultId'].meta.snapshot.$put({
+                  param: { vaultId: input.setup.vaultId },
+                  json,
+                })
+              : await client.vaults[':vaultId'].files[':ydocId'].snapshot.$put({
+                  param: {
+                    vaultId: input.setup.vaultId,
+                    ydocId: input.document.docId.ydocId,
+                  },
+                  json,
+                })
           if (response.status === 409) return { ok: false as const, status: 409 as const }
           if (!response.ok) return { ok: false as const, status: response.status }
           const body: unknown = await response.json().catch(() => undefined)

@@ -65,6 +65,7 @@ import {
 } from '../sync/obsidian/rejected-repair'
 import { createSyncRuntimeObsidianSetupExchangeEvidenceReader } from '../sync/obsidian/settings'
 import { createEvidenceBackedHttpSyncRuntimeSetupExchangePort } from '../sync/setup-exchange-http'
+import { createWorkerClient } from '../sync/api-client'
 import { createBrowserLocalStoreIndexedDbFactoryPort } from '../sync/store/indexeddb'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import {
@@ -390,7 +391,7 @@ export default class KuroflareSpikePlugin extends Plugin {
       setup,
       accessToken,
       itemId,
-      http: { fetch: async (url, init) => await fetch(url, init) },
+      http: createWorkerClient(setup.endpoint),
     })
     if (result.ok) {
       this.syncRejectedUpdateRepairEntries = this.syncRejectedUpdateRepairEntries.filter(
@@ -641,19 +642,16 @@ export default class KuroflareSpikePlugin extends Plugin {
           const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
           if (!isCurrent()) return
           if (accessToken === undefined) break
-          const response = await fetch(this.snapshotImportUrl(setup, META_SYNC_DOC_ID), {
-            method: 'PUT',
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
+          const workerClient = createWorkerClient(setup.endpoint, accessToken)
+          const response = await workerClient.vaults[':vaultId'].meta.snapshot.$put({
+            param: { vaultId: setup.vaultId },
+            json: {
               updateBytesBase64: encodeBase64(migrationUpdate),
               ...(latest !== null && latest.response.manifestSeq > 0
                 ? { latestSeq: latest.response.manifestSeq }
                 : {}),
               metadataSchemaVersion: 2,
-            }),
+            },
           })
           if (!isCurrent()) return
           if (response.ok) {
@@ -728,7 +726,6 @@ export default class KuroflareSpikePlugin extends Plugin {
       readSettings,
     })
     const setupExchange = createEvidenceBackedHttpSyncRuntimeSetupExchangePort({
-      fetch: (input, init) => fetch(input, init),
       readEvidence: (effect) => setupEvidenceReader.readEvidence(effect),
       scheduleReplan: async (request) => {
         await this.stagePendingSetupResponse(request.response)
@@ -956,17 +953,21 @@ export default class KuroflareSpikePlugin extends Plugin {
     const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
     if (!isCurrent()) return
     if (accessToken === undefined) throw new Error('snapshot-import-token-missing')
-    const response = await fetch(this.snapshotImportUrl(setup, docId), {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        updateBytesBase64: encodeBase64(updateBytes),
-        ...(docId.kind === 'meta' ? { metadataSchemaVersion: 2 } : {}),
-      }),
-    })
+    const workerClient = createWorkerClient(setup.endpoint, accessToken)
+    const importBody = {
+      updateBytesBase64: encodeBase64(updateBytes),
+      ...(docId.kind === 'meta' ? { metadataSchemaVersion: 2 as const } : {}),
+    }
+    const response =
+      docId.kind === 'meta'
+        ? await workerClient.vaults[':vaultId'].meta.snapshot.$put({
+            param: { vaultId: setup.vaultId },
+            json: importBody,
+          })
+        : await workerClient.vaults[':vaultId'].files[':ydocId'].snapshot.$put({
+            param: { vaultId: setup.vaultId, ydocId: docId.ydocId },
+            json: importBody,
+          })
     if (!isCurrent()) return
     if (!response.ok) {
       console.warn('[kuroflare] local snapshot import failed', {
@@ -996,9 +997,15 @@ export default class KuroflareSpikePlugin extends Plugin {
     const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
     if (!isCurrent()) return null
     if (accessToken === undefined) return null
-    const response = await fetch(this.latestSnapshotUrl(setup, docId), {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
+    const workerClient = createWorkerClient(setup.endpoint, accessToken)
+    const response =
+      docId.kind === 'meta'
+        ? await workerClient.vaults[':vaultId'].meta.latest.$get({
+            param: { vaultId: setup.vaultId },
+          })
+        : await workerClient.vaults[':vaultId'].files[':ydocId'].latest.$get({
+            param: { vaultId: setup.vaultId, ydocId: docId.ydocId },
+          })
     if (!isCurrent()) return null
     if (!response.ok) {
       console.warn('[kuroflare] latest snapshot fetch failed', {

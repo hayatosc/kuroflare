@@ -175,6 +175,9 @@ importers:
       '@kuroflare/worker':
         specifier: workspace:*
         version: link:../worker
+      '@standard-schema/spec':
+        specifier: 1.1.0
+        version: 1.1.0
       hono:
         specifier: ^4.12.27
         version: 4.12.27
@@ -243,6 +246,9 @@ importers:
       '@cloudflare/vitest-pool-workers':
         specifier: 0.16.20
         version: 0.16.20(@vitest/runner@4.1.9)(@vitest/snapshot@4.1.9)(vitest@4.1.9(@types/node@22.19.21)(jsdom@29.1.1)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.28.1)))
+      '@standard-schema/spec':
+        specifier: 1.1.0
+        version: 1.1.0
       '@types/node':
         specifier: ^22.15.30
         version: 22.19.21

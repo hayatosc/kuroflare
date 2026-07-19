@@ -6,7 +6,7 @@ import {
   makeVaultId,
   makeYDocId,
 } from '@kuroflare/core'
-import { assert, test } from 'vitest'
+import { assert, test, vi } from 'vitest'
 
 import type { LocalSetupMetadata } from '../engine/setup'
 import type { LocalStoreOutboxRecord } from '../store/store'
@@ -15,6 +15,7 @@ import {
   repairRejectedUpdateRemote,
   type RejectedUpdateRepairRemoteRow,
 } from './rejected-repair'
+import { createWorkerClient } from '../api-client'
 
 const vaultId = makeVaultId('repair-vault')
 const docId = { kind: 'file', ydocId: makeYDocId('repair-doc') } as const
@@ -31,14 +32,22 @@ const setup: LocalSetupMetadata = {
   tokenVersion: 1,
 }
 
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.toString()
+  return input.url
+}
+
 test('rejected repair remote adapter orders latest GET before exact PUT import', async () => {
   const calls: { readonly method: string; readonly url: string; readonly body?: string }[] = []
-  const http = {
-    fetch: async (url: string, init?: RequestInit): Promise<Response> => {
-      const call = { method: init?.method ?? 'GET', url }
+  const mockFetch = vi.fn(
+    async (urlInput: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method ?? 'GET'
+      const url = requestUrl(urlInput)
+      const call = { method, url }
       const body = typeof init?.body === 'string' ? init.body : undefined
       calls.push(body === undefined ? call : { ...call, body })
-      if (init?.method === 'PUT') {
+      if (method === 'PUT') {
         return new Response(
           JSON.stringify({
             ok: true,
@@ -64,7 +73,8 @@ test('rejected repair remote adapter orders latest GET before exact PUT import',
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       )
     },
-  }
+  )
+  const client = createWorkerClient('https://sync.example.test/base', undefined, mockFetch)
   const row: RejectedUpdateRepairRemoteRow = {
     kind: 'y-update',
     docId,
@@ -79,7 +89,7 @@ test('rejected repair remote adapter orders latest GET before exact PUT import',
     setup,
     accessToken: 'access-token',
     row,
-    http,
+    http: client,
   })
 
   assert.deepEqual(result, { ok: true, snapshotSeq: 8 })
@@ -103,16 +113,16 @@ test('rejected repair remote adapter leaves failures before PUT and rejects hash
     rejectionRetryable: false,
     updateBytesBase64: 'AQID',
   }
+  const mockFetch = vi.fn(async () => {
+    calls.push('unexpected')
+    return new Response('{}', { status: 500 })
+  })
+  const client = createWorkerClient('https://sync.example.test/base', undefined, mockFetch)
   const result = await repairRejectedUpdateRemote({
     setup,
     accessToken: 'access-token',
     row,
-    http: {
-      fetch: async (): Promise<Response> => {
-        calls.push('unexpected')
-        return new Response('{}', { status: 500 })
-      },
-    },
+    http: client,
   })
   assert.deepEqual(result, { ok: false, reason: 'hash-mismatch' })
   assert.deepEqual(calls, [])
@@ -120,6 +130,25 @@ test('rejected repair remote adapter leaves failures before PUT and rejects hash
 
 test('rejected repair remote adapter treats latest 404 as a new document without latestSeq', async () => {
   let importBody = ''
+  const mockFetch = vi.fn(
+    async (urlInput: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (init?.method === 'PUT') {
+        importBody = typeof init.body === 'string' ? init.body : ''
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            vaultId,
+            docId,
+            snapshotKey: 'snapshots/repair-vault/files/repair-doc/1.yupdate',
+            snapshotSeq: 1,
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response('{}', { status: 404 })
+    },
+  )
+  const client = createWorkerClient('https://sync.example.test/base', undefined, mockFetch)
   const result = await repairRejectedUpdateRemote({
     setup,
     accessToken: 'access-token',
@@ -132,24 +161,7 @@ test('rejected repair remote adapter treats latest 404 as a new document without
       rejectionRetryable: false,
       updateBytesBase64: 'AQID',
     },
-    http: {
-      fetch: async (_url, init): Promise<Response> => {
-        if (init?.method === 'PUT') {
-          importBody = typeof init.body === 'string' ? init.body : ''
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              vaultId,
-              docId,
-              snapshotKey: 'snapshots/repair-vault/files/repair-doc/1.yupdate',
-              snapshotSeq: 1,
-            }),
-            { status: 200 },
-          )
-        }
-        return new Response('{}', { status: 404 })
-      },
-    },
+    http: client,
   })
   assert.deepEqual(result, { ok: true, snapshotSeq: 1 })
   assert.deepEqual(JSON.parse(importBody), { updateBytesBase64: 'AQID' })
@@ -157,6 +169,36 @@ test('rejected repair remote adapter treats latest 404 as a new document without
 
 test('rejected metadata repair preserves the explicit grouped-v2 marker', async () => {
   let importBody = ''
+  const mockFetch = vi.fn(
+    async (urlInput: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (init?.method === 'PUT') {
+        importBody = typeof init.body === 'string' ? init.body : ''
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            vaultId,
+            docId: metaDocId,
+            snapshotKey: 'snapshots/repair-vault/meta/8.yupdate',
+            snapshotSeq: 8,
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          manifestSeq: 3,
+          snapshotKey: 'snapshots/repair-vault/meta/7.yupdate',
+          snapshotSeq: 7,
+          updateSha256,
+          stateVectorSha256: updateSha256,
+          stateVector: 'AQID',
+          updateBytesBase64: 'AQID',
+        }),
+        { status: 200 },
+      )
+    },
+  )
+  const client = createWorkerClient('https://sync.example.test/base', undefined, mockFetch)
   const result = await repairRejectedUpdateRemote({
     setup,
     accessToken: 'access-token',
@@ -170,35 +212,7 @@ test('rejected metadata repair preserves the explicit grouped-v2 marker', async 
       updateBytesBase64: 'AQID',
       metadataSchemaVersion: 2,
     },
-    http: {
-      fetch: async (_url, init): Promise<Response> => {
-        if (init?.method === 'PUT') {
-          importBody = typeof init.body === 'string' ? init.body : ''
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              vaultId,
-              docId: metaDocId,
-              snapshotKey: 'snapshots/repair-vault/meta/8.yupdate',
-              snapshotSeq: 8,
-            }),
-            { status: 200 },
-          )
-        }
-        return new Response(
-          JSON.stringify({
-            manifestSeq: 3,
-            snapshotKey: 'snapshots/repair-vault/meta/7.yupdate',
-            snapshotSeq: 7,
-            updateSha256,
-            stateVectorSha256: updateSha256,
-            stateVector: 'AQID',
-            updateBytesBase64: 'AQID',
-          }),
-          { status: 200 },
-        )
-      },
-    },
+    http: client,
   })
   assert.deepEqual(result, { ok: true, snapshotSeq: 8 })
   assert.deepEqual(JSON.parse(importBody), {
@@ -229,44 +243,57 @@ test('rejected repair remote adapter leaves 409 and invalid import identity as i
     updateBytesBase64: 'AQID',
   })
   let putCount = 0
+
+  const conflictFetch = vi.fn(
+    async (urlInput: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (init?.method === 'PUT') {
+        putCount += 1
+        return new Response('{}', { status: 409 })
+      }
+      return new Response(latestBody, { status: 200 })
+    },
+  )
+  const conflictClient = createWorkerClient(
+    'https://sync.example.test/base',
+    undefined,
+    conflictFetch,
+  )
   const conflict = await repairRejectedUpdateRemote({
     setup,
     accessToken: 'access-token',
     row: rejectedRow,
-    http: {
-      fetch: async (_url, init): Promise<Response> => {
-        if (init?.method === 'PUT') {
-          putCount += 1
-          return new Response('{}', { status: 409 })
-        }
-        return new Response(latestBody, { status: 200 })
-      },
-    },
+    http: conflictClient,
   })
   assert.deepEqual(conflict, { ok: false, reason: 'conflict', status: 409 })
 
+  const invalidFetch = vi.fn(
+    async (urlInput: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (init?.method === 'PUT') {
+        putCount += 1
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            vaultId: makeVaultId('other-vault'),
+            docId,
+            snapshotKey: 'snapshots/other-vault/files/repair-doc/8.yupdate',
+            snapshotSeq: 8,
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response(latestBody, { status: 200 })
+    },
+  )
+  const invalidClient = createWorkerClient(
+    'https://sync.example.test/base',
+    undefined,
+    invalidFetch,
+  )
   const invalidIdentity = await repairRejectedUpdateRemote({
     setup,
     accessToken: 'access-token',
     row: rejectedRow,
-    http: {
-      fetch: async (_url, init): Promise<Response> => {
-        if (init?.method === 'PUT') {
-          putCount += 1
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              vaultId: makeVaultId('other-vault'),
-              docId,
-              snapshotKey: 'snapshots/other-vault/files/repair-doc/8.yupdate',
-              snapshotSeq: 8,
-            }),
-            { status: 200 },
-          )
-        }
-        return new Response(latestBody, { status: 200 })
-      },
-    },
+    http: invalidClient,
   })
   assert.deepEqual(invalidIdentity, { ok: false, reason: 'invalid-import-response' })
   assert.equal(putCount, 2)

@@ -29,6 +29,7 @@ import {
 } from '../host/guards'
 import { binaryBlobCacheKey, requireOutboxPlanItemId, safeLogError } from '../host/helpers'
 import { readMetaFile } from '../host/meta'
+import { createWorkerClient } from '../sync/api-client'
 import type { LocalSetupMetadata } from '../sync/engine/setup'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import type { GenerationMarkerOwner } from '../types'
@@ -628,6 +629,8 @@ async function fetchBlobManifestForMeta(
   if (reconcile.fetchBlobManifestForMeta !== undefined) {
     return reconcile.fetchBlobManifestForMeta(setup, accessToken, value)
   }
+  // The /blob-manifests/* route uses a catch-all wildcard that hc client does not support.
+  // Keep as raw fetch until hono/client adds wildcard RPC support.
   const url = new URL(setup.endpoint)
   url.pathname = `/blob-manifests/${encodeURIComponent(value.blobManifestHash)}.json`
   let response: Response
@@ -659,16 +662,13 @@ async function remoteBlobChunksExist(
     return reconcile.remoteBlobChunksExist(setup, accessToken, manifest)
   }
   const hashes = manifest.chunks.map((chunk) => chunk.sha256)
+  const client = createWorkerClient(setup.endpoint, accessToken)
   for (const [batchIndex, batch] of blobHeadHashBatches(hashes).entries()) {
     const start = batchIndex * MAX_BLOB_HEAD_HASHES_PER_REQUEST
-    const url = new URL(setup.endpoint)
-    url.pathname = '/blobs/head'
     let response: Response
     try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ hashes: batch }),
+      response = await client.blobs.head.$post({
+        json: { hashes: [...batch] },
       })
     } catch {
       return false

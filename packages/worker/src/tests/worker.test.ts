@@ -288,6 +288,6 @@ test('worker entrypoint rejects invalid routes before touching Durable Objects',
         env,
       )
     ).status,
-    400,
+    401,
   )
 })

@@ -2,12 +2,12 @@ import { makeDeviceId, makeVaultId } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
 import type { LocalSetupMetadata } from '../engine/setup'
+import { createWorkerClient } from '../api-client'
 import {
   executeQuarantineAdminAction,
   fetchQuarantineAdminDetail,
   fetchQuarantineAdminEntries,
   prepareQuarantineAdminAction,
-  type QuarantineAdminHttpPort,
 } from './quarantine-admin'
 
 const setup = {
@@ -30,14 +30,31 @@ const entry = {
   createdAt: 10,
 } as const
 
+function createTestClient(responses: Response[]): {
+  client: ReturnType<typeof createWorkerClient>
+  requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }>
+} {
+  const requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }> = []
+  const fetchMock = async (url: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({ url: fetchUrl(url), init })
+    const response = responses.shift()
+    if (response === undefined) {
+      throw new Error(`unexpected fetch: ${fetchUrl(url)}`)
+    }
+    return response
+  }
+  const client = createWorkerClient('https://sync.example.test/base', undefined, fetchMock)
+  return { client, requests }
+}
+
 test('quarantine admin fetches and guards list/detail responses', async () => {
-  const http = new QueueHttpPort([
+  const { client, requests } = createTestClient([
     jsonResponse({ items: [entry] }),
     jsonResponse({ entry, updateBytesBase64: 'AQIDBA==' }),
   ])
 
   assert.deepEqual(
-    await fetchQuarantineAdminEntries({ setup, accessToken: 'access-token', http }),
+    await fetchQuarantineAdminEntries({ setup, accessToken: 'access-token', http: client }),
     { ok: true, response: { items: [entry] } },
   )
   assert.deepEqual(
@@ -45,18 +62,18 @@ test('quarantine admin fetches and guards list/detail responses', async () => {
       setup,
       accessToken: 'access-token',
       id: entry.id,
-      http,
+      http: client,
     }),
     { ok: true, detail: { entry, updateBytesBase64: 'AQIDBA==' } },
   )
   assert.deepEqual(
-    http.requests.map((request) => ({
+    requests.map((request) => ({
       url: request.url,
       authorization: headerValue(request.init?.headers, 'Authorization'),
     })),
     [
       {
-        url: 'https://sync.example.test/admin/quarantine',
+        url: 'https://sync.example.test/admin/quarantine?',
         authorization: 'Bearer access-token',
       },
       {
@@ -68,7 +85,7 @@ test('quarantine admin fetches and guards list/detail responses', async () => {
 })
 
 test('quarantine admin prepares and executes actions with server confirmation tokens', async () => {
-  const http = new QueueHttpPort([
+  const { client, requests } = createTestClient([
     jsonResponse({
       action: 'discard',
       id: entry.id,
@@ -91,7 +108,7 @@ test('quarantine admin prepares and executes actions with server confirmation to
       accessToken: 'access-token',
       id: entry.id,
       action: 'discard',
-      http,
+      http: client,
     }),
     {
       ok: true,
@@ -112,7 +129,7 @@ test('quarantine admin prepares and executes actions with server confirmation to
       id: entry.id,
       action: 'discard',
       confirmationToken: 'confirmation-token',
-      http,
+      http: client,
     }),
     {
       ok: true,
@@ -126,7 +143,7 @@ test('quarantine admin prepares and executes actions with server confirmation to
   )
 
   assert.deepEqual(
-    http.requests.map((request) => ({
+    requests.map((request) => ({
       url: request.url,
       method: request.init?.method,
       body: requestBodyJson(request.init?.body),
@@ -151,7 +168,7 @@ test('quarantine admin prepares and executes actions with server confirmation to
 })
 
 test('quarantine admin rejects mismatched action responses', async () => {
-  const http = new QueueHttpPort([
+  const { client } = createTestClient([
     jsonResponse({
       action: 'force-apply',
       id: entry.id,
@@ -168,26 +185,11 @@ test('quarantine admin rejects mismatched action responses', async () => {
       accessToken: 'access-token',
       id: entry.id,
       action: 'discard',
-      http,
+      http: client,
     }),
     { ok: false, reason: 'mismatched-response' },
   )
 })
-
-class QueueHttpPort implements QuarantineAdminHttpPort {
-  readonly requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }> = []
-
-  constructor(private readonly responses: Response[]) {}
-
-  async fetch(url: string, init?: RequestInit): Promise<Response> {
-    this.requests.push({ url, init })
-    const response = this.responses.shift()
-    if (response === undefined) {
-      throw new Error(`unexpected fetch: ${url}`)
-    }
-    return response
-  }
-}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -214,4 +216,10 @@ function requestBodyJson(body: BodyInit | null | undefined): unknown {
     return undefined
   }
   return JSON.parse(body)
+}
+
+function fetchUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.href
+  return input.url
 }

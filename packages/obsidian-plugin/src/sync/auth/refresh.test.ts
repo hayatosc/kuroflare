@@ -7,9 +7,10 @@ import {
   type DeviceTokenRefreshRequest,
   type DeviceTokenScope,
 } from '@kuroflare/core'
-import { assert, test } from 'vitest'
+import { assert, test, vi } from 'vitest'
 
 import { createRemoteSetupAccessTokenVerifier } from '../../host/auth'
+import { createWorkerClient } from '../api-client'
 import {
   createAuthRefreshIndexedDbMetadataPort,
   persistAuthRefreshStart,
@@ -141,16 +142,22 @@ test('auth refresh rejects a forged response through remote verification before 
   ])
   const metadataStore = new FakeAuthMetadataStore()
   let verifyRequest: { readonly url: string; readonly authorization: string | null } | undefined
-  const verifier = createRemoteSetupAccessTokenVerifier({
-    endpoint: 'https://sync.example.test',
-    fetch: async (input, init) => {
+  const mockFetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
       verifyRequest = {
         url:
-          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url,
         authorization: new Headers(init?.headers).get('Authorization'),
       }
       return new Response(JSON.stringify({ error: 'auth-reject:invalid-token' }), { status: 401 })
     },
+  )
+  const verifier = createRemoteSetupAccessTokenVerifier({
+    client: createWorkerClient('https://sync.example.test', undefined, mockFetch),
   })
 
   const result = await runAuthRefreshAttempt({
