@@ -1,10 +1,6 @@
 import { Compartment } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import {
-  DocLatestSnapshotResponseSchema,
-  MetaLatestSnapshotResponseSchema,
-  SnapshotImportResponseSchema,
-  decodeFullSnapshotBytesFromResponse,
   canonicalizeTextForYText,
   decideJoinFileAdoption,
   hashCanonicalText,
@@ -36,7 +32,6 @@ import type { MetadataReconcilePort, MetadataReconcileWriteContext } from '../me
 import { enqueueMissingRemoteBinaryDownloads } from '../metadata/materialize'
 import { materializeMetaRenames, type MetadataMaterializationPort } from '../metadata/materialize'
 import { reconcileAndMaterializeMeta } from '../metadata/reconcile'
-import { documentEpochMetadataKey } from '../recovery/epoch'
 import type { DocumentEpochRecoveryHost } from '../recovery/epoch-startup'
 import {
   createSyncRuntimeIndexedDbLocalStoreEffectPort,
@@ -45,13 +40,7 @@ import {
   type SyncRuntimeStartupStepEffectPort,
 } from '../sync/engine/actuation'
 import { type LocalSetupMetadata } from '../sync/engine/setup'
-import {
-  commitFullSnapshotApplyIndexedDbTransaction,
-  createFullSnapshotApplyIndexedDbDatabasePort,
-  planFullSnapshotApplyRuntime,
-  runNeedFullSnapshotRecovery,
-  type VerifiedFullSnapshotBytes,
-} from '../sync/engine/snapshot'
+import { type VerifiedFullSnapshotBytes } from '../sync/engine/snapshot'
 import {
   createSyncRuntimeObsidianComposition,
   type SyncRuntimeObsidianComposition,
@@ -101,7 +90,6 @@ import {
   BINARY_UPLOAD_ORIGIN,
   REPAIR_ORIGIN,
   DEFAULT_SETTINGS,
-  NEED_FULL_SNAPSHOT_RECOVERY_BACKOFF_MS,
 } from './constants'
 import { flushYTextToDisk } from './editor'
 import {
@@ -125,10 +113,8 @@ import {
   mergeRepairLogEntries,
   safeLogError,
   sameDocId,
-  hasPendingRunnableOutboxUpdate,
 } from './helpers'
 import {
-  activateLoadedTextDoc,
   establishInitialDocumentEpoch,
   loadTextDoc,
   insertMetaFile,
@@ -141,7 +127,6 @@ import {
   shouldAdoptRemoteMetadata,
   shouldPrepareMetadataMigration,
   readMetaFile,
-  replaceTextDoc,
   prepareDocumentProvider,
   updateMetaFile,
 } from './meta'
@@ -158,6 +143,13 @@ import {
   type RepairCommandsPort,
 } from './repair'
 import {
+  applyLatestSnapshot,
+  fetchLatestSnapshotPayload,
+  publishInitialFileSnapshots,
+  publishLocalMetaSnapshot,
+  recoverFromNeedFullSnapshot,
+} from './snapshot'
+import {
   openWorkerWebSocket,
   requestActiveFileFromWorker,
   requestMetaDocFromWorker,
@@ -169,12 +161,7 @@ import {
   wireLocalAwarenessBroadcast,
 } from './socket'
 import { sendDocUpdateToWorker } from './socket'
-import {
-  openLocalStoreDatabase,
-  putOutboxRecords,
-  readOutboxWorkerSnapshot,
-  readRemoteCursorSeq,
-} from './store'
+import { openLocalStoreDatabase, putOutboxRecords, readOutboxWorkerSnapshot } from './store'
 import {
   captureVaultOperationContext as captureVaultOperationContextLifecycle,
   clearLoadedTextDocsForVaultTransition,
@@ -924,64 +911,11 @@ export default class KuroflareSpikePlugin extends Plugin {
   }
 
   private async publishLocalMetaSnapshot(reason: string): Promise<void> {
-    await this.importLocalSnapshot(META_SYNC_DOC_ID, Y.encodeStateAsUpdate(this.metaDoc), reason)
+    await publishLocalMetaSnapshot(this, reason)
   }
 
   private async publishInitialFileSnapshots(reason: string): Promise<void> {
-    for (const loaded of this.loadedTextDocs.values()) {
-      const owner = { vaultId: loaded.vaultId, generation: loaded.vaultGeneration }
-      const isCurrent = () => this.loadedTextDocStillCurrent(loaded, owner)
-      if (!isCurrent()) return
-      await this.importLocalSnapshot(
-        loaded.docId,
-        Y.encodeStateAsUpdate(loaded.doc),
-        reason,
-        isCurrent,
-      )
-    }
-  }
-
-  private async importLocalSnapshot(
-    docId: DocId,
-    updateBytes: Uint8Array,
-    reason: string,
-    isCurrent: () => boolean = () => true,
-  ): Promise<void> {
-    if (!isCurrent()) return
-    if (docId.kind === 'meta' && !metadataWritesEnabled(this)) return
-    const setup = requireSetupMetadata(this)
-    const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
-    if (!isCurrent()) return
-    if (accessToken === undefined) throw new Error('snapshot-import-token-missing')
-    const workerClient = createWorkerClient(setup.endpoint, accessToken)
-    const importBody = {
-      updateBytesBase64: encodeBase64(updateBytes),
-      ...(docId.kind === 'meta' ? { metadataSchemaVersion: 2 as const } : {}),
-    }
-    const response =
-      docId.kind === 'meta'
-        ? await workerClient.vaults[':vaultId'].meta.snapshot.$put({
-            param: { vaultId: setup.vaultId },
-            json: importBody,
-          })
-        : await workerClient.vaults[':vaultId'].files[':ydocId'].snapshot.$put({
-            param: { vaultId: setup.vaultId, ydocId: docId.ydocId },
-            json: importBody,
-          })
-    if (!isCurrent()) return
-    if (!response.ok) {
-      console.warn('[kuroflare] local snapshot import failed', {
-        status: response.status,
-        docId,
-        reason,
-      })
-      throw new Error('snapshot-import-http-failed')
-    }
-    const body: unknown = await response.json().catch(() => undefined)
-    if (!isCurrent()) return
-    if (!v.is(SnapshotImportResponseSchema, body)) {
-      throw new Error('snapshot-import-response-invalid')
-    }
+    await publishInitialFileSnapshots(this, reason)
   }
 
   private async fetchLatestSnapshotPayload(
@@ -992,38 +926,7 @@ export default class KuroflareSpikePlugin extends Plugin {
     readonly response: MetaLatestSnapshotResponse | DocLatestSnapshotResponse
     readonly verifiedBytes: VerifiedFullSnapshotBytes
   } | null> {
-    if (!isCurrent()) return null
-    const setup = requireSetupMetadata(this)
-    const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
-    if (!isCurrent()) return null
-    if (accessToken === undefined) return null
-    const workerClient = createWorkerClient(setup.endpoint, accessToken)
-    const response =
-      docId.kind === 'meta'
-        ? await workerClient.vaults[':vaultId'].meta.latest.$get({
-            param: { vaultId: setup.vaultId },
-          })
-        : await workerClient.vaults[':vaultId'].files[':ydocId'].latest.$get({
-            param: { vaultId: setup.vaultId, ydocId: docId.ydocId },
-          })
-    if (!isCurrent()) return null
-    if (!response.ok) {
-      console.warn('[kuroflare] latest snapshot fetch failed', {
-        status: response.status,
-        reason,
-        docId,
-      })
-      return null
-    }
-    const body: unknown = await response.json().catch(() => undefined)
-    if (!isCurrent()) return null
-    const schema =
-      docId.kind === 'meta' ? MetaLatestSnapshotResponseSchema : DocLatestSnapshotResponseSchema
-    if (!v.is(schema, body)) return null
-    const decoded = await decodeFullSnapshotBytesFromResponse({ response: body })
-    if (!isCurrent()) return null
-    if (!decoded.ok) return null
-    return { response: body, verifiedBytes: decoded }
+    return fetchLatestSnapshotPayload(this, docId, reason, isCurrent)
   }
 
   private async applyLatestSnapshot(
@@ -1032,158 +935,14 @@ export default class KuroflareSpikePlugin extends Plugin {
       readonly response: MetaLatestSnapshotResponse | DocLatestSnapshotResponse
       readonly verifiedBytes: VerifiedFullSnapshotBytes
     },
-    _reason: string,
+    reason: string,
     isCurrent: () => boolean = () => true,
   ): Promise<void> {
-    if (!isCurrent()) return
-    const setup = requireSetupMetadata(this)
-    const db = await openLocalStoreDatabase(this, setup.vaultId, isCurrent)
-    if (!isCurrent()) return
-    const localStore = await readOutboxWorkerSnapshot(db)
-    if (!isCurrent()) return
-    const currentSnapshotSeq = await readRemoteCursorSeq(db, docId)
-    if (!isCurrent()) return
-    const activeEditorBound = docId.kind === 'file' && sameDocId(docId, await activeDocId(this))
-    if (!isCurrent()) return
-    const plan = planFullSnapshotApplyRuntime({
-      requestedDocId: docId,
-      response: snapshot.response,
-      verifiedBytes: snapshot.verifiedBytes,
-      currentSnapshotSeq,
-      hasPendingLocalUpdates: hasPendingRunnableOutboxUpdate(localStore.outboxRecords, docId),
-      activeEditorBound,
-      currentOutboxRecords: localStore.outboxRecords,
-      currentLeaseRows: localStore.leaseRows,
-    })
-    if (!plan.ok) {
-      console.warn('[kuroflare] latest snapshot apply deferred', {
-        action: plan.action,
-        reason: plan.reason,
-        docId,
-      })
-      throw new Error(`latest-snapshot-apply:${plan.action}:${plan.reason}`)
-    }
-    const cursorSeqBeforeCommit = await readRemoteCursorSeq(db, docId)
-    if (!isCurrent()) return
-    if (cursorSeqBeforeCommit !== currentSnapshotSeq) {
-      throw new Error('latest-snapshot-apply:wait:remote-cursor-advanced')
-    }
-    const committed = await commitFullSnapshotApplyIndexedDbTransaction({
-      database: createFullSnapshotApplyIndexedDbDatabasePort(db),
-      transaction: plan.indexedDbWriteTransaction,
-      remoteCursorCas: { expectedRemoteCursorSeq: currentSnapshotSeq },
-    })
-    if (!committed) throw new Error('latest-snapshot-apply:wait:remote-cursor-advanced')
-    if (!isCurrent()) return
-    if (docId.kind === 'meta') {
-      await this.replaceMetaDoc(plan.updateBytes, isCurrent)
-      return
-    }
-    const wasActiveTextDoc = this.activeTextDoc?.docId.ydocId === docId.ydocId
-    const loaded = await replaceTextDoc(this, docId, plan.updateBytes, WORKER_ORIGIN)
-    if (!isCurrent()) return
-    if (wasActiveTextDoc) {
-      activateLoadedTextDoc(this, loaded)
-    }
-    await this.resolvePendingRemoteTextFile(loaded)
-    if (!isCurrent()) return
-    if (sameDocId(docId, await activeDocId(this))) {
-      await flushYTextToDisk(this, 'full-snapshot')
-    }
+    await applyLatestSnapshot(this, docId, snapshot, reason, isCurrent)
   }
 
-  /**
-   * Automatically recovers from a NeedFullSnapshot response by fetching and applying a
-   * replacement snapshot, which resumes the matching paused outbox item as a side effect
-   * of {@link applyLatestSnapshot}. Bounded retries with backoff; exhausting them leaves
-   * the outbox item in its existing paused/manual-recovery state (fail closed).
-   */
   async recoverFromNeedFullSnapshot(docId: DocId, reason: NeedFullSnapshotReason): Promise<void> {
-    const initialContext = this.captureVaultOperationContext()
-    if (initialContext === undefined) return
-    let context: TextDocumentOwner = initialContext
-    const isCurrent = () => this.vaultOperationStillCurrent(context)
-    const epochKey = documentEpochMetadataKey(docId)
-    if (
-      this.needFullSnapshotRecoveryInProgress.has(epochKey) ||
-      this.documentRecoveryRequired.has(epochKey) ||
-      this.documentReplacementInProgress.has(epochKey)
-    ) {
-      return
-    }
-    const owner = {}
-    this.needFullSnapshotRecoveryInProgress.add(epochKey)
-    this.needFullSnapshotRecoveryOwners.set(epochKey, owner)
-    this.documentReplacementInProgress.add(epochKey)
-    try {
-      const result = await runNeedFullSnapshotRecovery(
-        {
-          fetchSnapshot: async () => {
-            if (!isCurrent()) return null
-            return await this.fetchLatestSnapshotPayload(
-              docId,
-              `need-full-snapshot:${reason}`,
-              isCurrent,
-            )
-          },
-          applySnapshot: async (payload) => {
-            if (!isCurrent()) return false
-            try {
-              await this.applyLatestSnapshot(
-                docId,
-                payload,
-                `need-full-snapshot:${reason}`,
-                isCurrent,
-              )
-              if (
-                docId.kind === 'meta' &&
-                this.pendingSetupResponse === null &&
-                currentSetupMetadata(this)?.vaultId === context.vaultId
-              ) {
-                context = { ...context, generation: this.metadataVaultGeneration }
-              }
-              return isCurrent()
-            } catch (error: unknown) {
-              console.warn('[kuroflare] need-full-snapshot auto-recovery apply attempt failed', {
-                docId,
-                reason,
-                error: safeLogError(error),
-              })
-              return false
-            }
-          },
-          wait: async (delayMs) => {
-            await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs))
-          },
-        },
-        NEED_FULL_SNAPSHOT_RECOVERY_BACKOFF_MS,
-      )
-      if (!result.ok) {
-        console.warn(
-          '[kuroflare] need-full-snapshot auto-recovery exhausted retries; outbox item remains paused for manual recovery',
-          { docId, reason, attempts: result.attempts },
-        )
-      }
-    } finally {
-      if (this.needFullSnapshotRecoveryOwners.get(epochKey) === owner) {
-        this.needFullSnapshotRecoveryOwners.delete(epochKey)
-        this.needFullSnapshotRecoveryInProgress.delete(epochKey)
-      }
-      this.documentReplacementInProgress.delete(epochKey)
-    }
-    if (isCurrent()) {
-      const recoveredDoc =
-        docId.kind === 'meta' ? this.metaDoc : this.loadedTextDocs.get(docId.ydocId)?.doc
-      if (recoveredDoc !== undefined) {
-        await requestDocFromWorker(
-          this,
-          docId,
-          Y.encodeStateVector(recoveredDoc),
-          'need-full-snapshot:post-recovery-catch-up',
-          isCurrent,
-        )
-      }
-    }
+    await recoverFromNeedFullSnapshot(this, docId, reason)
   }
 
   private latestSnapshotUrl(setup: LocalSetupMetadata, docId: DocId): string {
