@@ -27,6 +27,7 @@ import {
   type SyncRuntimeObsidianShellEvidencePort,
   type SyncRuntimeObsidianShellEvidenceReadResult,
 } from '../obsidian/shell'
+import { startupPlanSideEffectPermission } from '../obsidian/shell/utils'
 import {
   LOCAL_STORE_INDEXEDDB_MINIMUM_READABLE_VERSION,
   LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
@@ -302,6 +303,13 @@ test('Obsidian shell driver leaves setup exchange failure as a retryable runtime
   })
   assert.deepEqual(setupExchange.snapshot().completed, [])
   assert.equal(result.deferredEffect, undefined)
+  // Worker unreachable at setup time (e.g. MVP-0 offline vaults) must not freeze local
+  // editing: setup exchange makes no local mutation on failure, so it degrades to
+  // local-only instead of the full block reserved for local-store-safety failures.
+  assert.equal(
+    startupPlanSideEffectPermission(result.startupPlan, result.state.shell, false),
+    'local-only',
+  )
 })
 
 test('Obsidian shell driver can execute startup steps after local-store gate is acknowledged', async () => {
@@ -393,6 +401,12 @@ test('Obsidian shell driver stops startup step pumping on first startup step fai
   })
   assert.equal(result.state.shell.backgroundQueues, 'stopped')
   assert.equal(result.state.shell.backgroundQueueStopReason, 'rejected')
+  // Unlike a setup-exchange failure, a startup-step failure can leave local-store
+  // mutations mid-transaction, so it keeps the full block.
+  assert.equal(
+    startupPlanSideEffectPermission(result.startupPlan, result.state.shell, false),
+    'blocked',
+  )
 })
 
 test('Obsidian shell driver transport tick runs setup exchange, local-store gate, and startup steps in order', async () => {

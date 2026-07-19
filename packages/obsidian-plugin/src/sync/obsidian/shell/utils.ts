@@ -13,10 +13,14 @@ export function startupPlanSideEffectPermission(
   shell: SyncRuntimeShellState,
   evidenceFailure: boolean,
 ): SyncRuntimeSideEffectPermission {
+  // A failed setup exchange is a pure network probe with no local mutation on
+  // failure (see setup-exchange-http.ts), so it degrades to local-only editing
+  // instead of the full block reserved for local-store-safety failures below.
+  const setupExchangeFailed = lastFailedEffectIsSetupExchange(shell)
   if (
     evidenceFailure ||
     plan === undefined ||
-    shell.lastFailedEffect !== undefined ||
+    (shell.lastFailedEffect !== undefined && !setupExchangeFailed) ||
     shell.status === 'local-store-blocked' ||
     plan.action === 'rebuild-local-store' ||
     plan.action === 'hold-local-store-degraded' ||
@@ -24,6 +28,9 @@ export function startupPlanSideEffectPermission(
     plan.action === 'reject-local-store-schema-evidence'
   ) {
     return 'blocked'
+  }
+  if (setupExchangeFailed) {
+    return 'local-only'
   }
 
   switch (plan.sync.clientPlan.action) {
@@ -38,6 +45,11 @@ export function startupPlanSideEffectPermission(
     case 'reject':
       return 'local-only'
   }
+}
+
+function lastFailedEffectIsSetupExchange(shell: SyncRuntimeShellState): boolean {
+  const effect = shell.lastFailedEffect?.effect
+  return effect?.kind === 'run-sync-startup-effect' && effect.effect.kind === 'run-setup-exchange'
 }
 
 export function startupReplanCurrentFromEvidenceInput(
