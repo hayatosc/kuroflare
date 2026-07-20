@@ -49,7 +49,7 @@ export interface SyncRuntimeObsidianResumePortInput {
 export interface SyncRuntimeObsidianShellLifecycleOptions {
   readonly maxLocalEffects?: number | undefined
   readonly maxStartupSteps?: number | undefined
-  /** Called before effects are pumped with the current startup side-effect permission. */
+  /** Called once the tick's effects have run, with the resulting startup side-effect permission. */
   readonly onSideEffectPermission?:
     | ((permission: SyncRuntimeSideEffectPermission) => void)
     | undefined

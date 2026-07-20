@@ -40,13 +40,6 @@ export async function runSyncRuntimeObsidianShellDriverTick(
 ): Promise<SyncRuntimeObsidianShellDriverTickResult> {
   const previous = input.state ?? INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE
   const planned = await planShellWhenIdle(previous, input.evidence)
-  input.onSideEffectPermission?.(
-    startupPlanSideEffectPermission(
-      planned.startupPlan,
-      previous.shell,
-      planned.evidenceFailure !== undefined,
-    ),
-  )
   let shell = planned.shell
 
   const pumpPlan = planSyncRuntimeNoNetworkEffectPump({
@@ -71,6 +64,14 @@ export async function runSyncRuntimeObsidianShellDriverTick(
     previous: previous.presentation,
   })
 
+  input.onSideEffectPermission?.(
+    startupPlanSideEffectPermission(
+      planned.startupPlan,
+      shell,
+      planned.evidenceFailure !== undefined,
+    ),
+  )
+
   return {
     state: {
       shell,
@@ -93,13 +94,6 @@ export async function runSyncRuntimeObsidianShellDriverSetupExchangeTick(
 ): Promise<SyncRuntimeObsidianShellDriverTickResult> {
   const previous = input.state ?? INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE
   const planned = await planShellWhenIdle(previous, input.evidence)
-  input.onSideEffectPermission?.(
-    startupPlanSideEffectPermission(
-      planned.startupPlan,
-      previous.shell,
-      planned.evidenceFailure !== undefined,
-    ),
-  )
   let shell = planned.shell
   const startupInput = planned.startupInput ?? previous.startupInput
   let startupPlan = planned.startupPlan
@@ -159,6 +153,10 @@ export async function runSyncRuntimeObsidianShellDriverSetupExchangeTick(
     previous: previous.presentation,
   })
 
+  input.onSideEffectPermission?.(
+    startupPlanSideEffectPermission(startupPlan, shell, planned.evidenceFailure !== undefined),
+  )
+
   return {
     state: {
       shell,
@@ -181,13 +179,6 @@ export async function runSyncRuntimeObsidianShellDriverStartupStepTick(
 ): Promise<SyncRuntimeObsidianShellDriverTickResult> {
   const previous = input.state ?? INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE
   const planned = await planShellWhenIdle(previous, input.evidence)
-  input.onSideEffectPermission?.(
-    startupPlanSideEffectPermission(
-      planned.startupPlan,
-      previous.shell,
-      planned.evidenceFailure !== undefined,
-    ),
-  )
   let shell = planned.shell
   let executedLocalEffectCount = 0
   let executedStartupStepCount = 0
@@ -216,6 +207,14 @@ export async function runSyncRuntimeObsidianShellDriverStartupStepTick(
     previous: previous.presentation,
   })
 
+  input.onSideEffectPermission?.(
+    startupPlanSideEffectPermission(
+      planned.startupPlan,
+      shell,
+      planned.evidenceFailure !== undefined,
+    ),
+  )
+
   return {
     state: {
       shell,
@@ -238,13 +237,6 @@ export async function runSyncRuntimeObsidianShellDriverTransportTick(
 ): Promise<SyncRuntimeObsidianShellDriverTickResult> {
   const previous = input.state ?? INITIAL_SYNC_RUNTIME_OBSIDIAN_SHELL_DRIVER_STATE
   const planned = await planShellWhenIdle(previous, input.evidence)
-  input.onSideEffectPermission?.(
-    startupPlanSideEffectPermission(
-      planned.startupPlan,
-      previous.shell,
-      planned.evidenceFailure !== undefined,
-    ),
-  )
   let shell = planned.shell
   const startupInput = planned.startupInput ?? previous.startupInput
   let startupPlan = planned.startupPlan
@@ -311,6 +303,10 @@ export async function runSyncRuntimeObsidianShellDriverTransportTick(
     state: shell,
     previous: previous.presentation,
   })
+
+  input.onSideEffectPermission?.(
+    startupPlanSideEffectPermission(startupPlan, shell, planned.evidenceFailure !== undefined),
+  )
 
   return {
     state: {

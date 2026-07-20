@@ -312,6 +312,77 @@ test('Obsidian shell driver leaves setup exchange failure as a retryable runtime
   )
 })
 
+test("Obsidian shell driver reports this tick's own setup-exchange failure to onSideEffectPermission", async () => {
+  // Regression: onSideEffectPermission used to be computed from the pre-tick shell/plan
+  // before this tick's own effects ran, so a setup-exchange failure that happens inside
+  // the tick was invisible to the gate until a later tick started. That left readiness
+  // gates (see host/editor.ts waitForActiveMarkdownBindingReadiness) reading stale
+  // 'allowed' permission for the whole duration of a tick that actually failed.
+  const evidence = new StaticStartupEvidencePort({
+    intent: 'reconnect',
+    local: { ...baseLocalState, hasDeviceCredentials: false, vaultId: undefined },
+  })
+  const executor = new RecordingShellEffectExecutor()
+  const startupStep = new RecordingStartupStepPort()
+  const setupExchange = createSyncRuntimeSetupExchangePort({
+    async exchange() {
+      throw new Error('setup-exchange-http:401')
+    },
+    async scheduleReplan() {},
+  })
+  const permissions: string[] = []
+
+  const result = await runSyncRuntimeObsidianShellDriverTransportTick({
+    evidence,
+    executor,
+    setupExchange,
+    startupStep,
+    onSideEffectPermission: (permission) => permissions.push(permission),
+  })
+
+  assert.isDefined(result.state.shell.lastFailedEffect)
+  assert.deepEqual(permissions, ['local-only'])
+})
+
+test("Obsidian shell driver reports this tick's own startup-step failure to onSideEffectPermission", async () => {
+  // Regression: a local-store-safety failure produced by a startup step within the tick
+  // must land as 'blocked' before the tick returns, since it is what actually gates
+  // local editor binding after the tick resolves.
+  const evidence = new StaticStartupEvidencePort({
+    intent: 'reconnect',
+    local: baseLocalState,
+    localStoreEvidence: {
+      ok: true,
+      evidence: {
+        dbExists: true,
+        currentVersion: LOCAL_STORE_INDEXEDDB_TARGET_VERSION,
+        presentStores: DEFAULT_LOCAL_STORE_OBJECT_STORES,
+        pendingOutboxCount: 0,
+      },
+    },
+  })
+  const executor = new RecordingShellEffectExecutor()
+  const startupStep = new RecordingStartupStepPort('open-websocket')
+  const setupExchange = createSyncRuntimeSetupExchangePort({
+    async exchange() {
+      throw new Error('setup-exchange-should-not-run')
+    },
+    async scheduleReplan() {},
+  })
+  const permissions: string[] = []
+
+  const result = await runSyncRuntimeObsidianShellDriverTransportTick({
+    evidence,
+    executor,
+    setupExchange,
+    startupStep,
+    onSideEffectPermission: (permission) => permissions.push(permission),
+  })
+
+  assert.isDefined(result.state.shell.lastFailedEffect)
+  assert.deepEqual(permissions, ['blocked'])
+})
+
 test('Obsidian shell driver can execute startup steps after local-store gate is acknowledged', async () => {
   const evidence = new StaticStartupEvidencePort({
     intent: 'reconnect',

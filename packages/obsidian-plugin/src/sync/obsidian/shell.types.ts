@@ -54,7 +54,7 @@ export interface SyncRuntimeObsidianShellDriverTickInput {
   readonly evidence: SyncRuntimeObsidianShellEvidencePort
   readonly executor: SyncRuntimeShellEffectExecutor
   readonly maxLocalEffects?: number | undefined
-  /** Called after evidence is planned and before any executable effect is pumped. */
+  /** Called once this tick's own effects have run, reflecting their actual outcome. */
   readonly onSideEffectPermission?:
     | ((permission: SyncRuntimeSideEffectPermission) => void)
     | undefined
