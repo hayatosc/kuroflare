@@ -5,9 +5,11 @@
 設計レビュー（2026-07-03）で見つかった項目は spec 本文へ反映済みで、記録は git 履歴にある。
 The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-review.md](spec/design-review.md).
 
-## Current summary (2026-07-18)
+## Current summary (2026-07-20)
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証は core 210 件、worker 282 件、model-tests 17 件、Obsidian 501 件、worker e2e 16 件（multipart upload の実 R2 e2e を含む）。
+- 2026-07-20: 実 Obsidian e2e が 07-19〜20 のリファクタ由来の実機限定退行 2 件を検出し修正（`hono/client` が plugin バンドルから漏れてロード失敗 → tsdown `alwaysBundle` に追加、冷えた vault では plugin コピー後に manifest 再スキャンが走らず `plugin:enable` 失敗 → smoke に `loadManifests()` を追加）。また per-file YDoc の vaultId スコープ化（fd25524）以降、setup 未完了ではプラグインの編集パイプラインが構造的に起動しないため、MVP-0/MVP-2 smoke を worker `dev:local` + setup exchange 前提に再定義し（`scripts/e2e-worker-setup.ts` に共通化、worker 未起動は fail-fast、vault 排他ロック付き）、[client.md](spec/client.md) Phase 0 の記述を実態（setup 前は安全に不活性、setup 後はオフライン編集を outbox が継続）に合わせて明確化。MVP-0/MVP-1/MVP-2 いずれも実機で green を再確認。あわせて `host/plugin.ts` を 1782→1032 行に分割（snapshot / materialize / meta-migration を抽出、挙動不変）、worker 構造化ログ next tier を実装。
+
+- ワークスペース全体の build / typecheck / lint / format は green。直近の検証 (2026-07-20) は core 214 件、worker 290 件、model-tests 17 件、Obsidian 539 件、worker e2e 16 件（multipart upload の実 R2 e2e を含む）。
 - Worker SQLite e2e suite: extended from 11 to 16 tests, adding real-workerd coverage
   for quarantine discard (confirm/execute, audit trail, double-discard rejection),
   `GET /admin/retention` cursor pagination across page boundaries, snapshot rollback
@@ -142,7 +144,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 - Device setup-token issuance now uses an operator-secret-gated route (`POST /admin/setup-tokens`, `ADMIN_TOKEN_SECRET`, constant-time comparison, `ApiError`-envelope responses) instead of the former e2e-disguised `/__e2e/setup-token` path. The e2e-only snapshot-seeding route was folded into the same admin secret as `POST /admin/snapshots/seed` (test/fixture use only, not part of the normal operator flow). Still no self-service "invite a device" UI — onboarding remains a manual, operator-run `curl` step (see `docs/deployment.md` §4). Verified by unit/worker-e2e suites plus the real Obsidian + miniflare `:app` E2E (green 2026-07-18).
 - presence / awareness は WS 伝搬まで実装済み: `awareness-update` control frame（[protocol.md](spec/protocol.md) §1）を DO が永続化なしで vault 内 fan-out し、切断時は最後に広告された presence の `state: null` を合成 broadcast する。クライアントは接続中のみローカル state 変更を送信（オフライン時は黙って捨て、outbox に積まない）、受信した peer state を `LocalAwareness` に反映して y-codemirror.next がリモートカーソルを描画する。worker unit + 実 workerd e2e + plugin unit でカバー。実 Obsidian 複数端末での目視確認は未実施。
 - 配布前に settings UI、Setup URI/QR、ログの secret redaction、migration / backward-incompatible policy、手動エスケープハッチの UI を整える。
-- Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）は `logEvent` 経由で実装済み（quarantine イベントは `quarantineId` 付き）。残りは next tier（connection count、op append latency、checkpoint duration、cold start restore source、duplicate ignored）。
+- Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）は `logEvent` 経由で実装済み（quarantine イベントは `quarantineId` 付き）。next tier も実装済み (2026-07-20): `connection-open`/`connection-close`（接続数付き）、`op-append-latency`、`checkpoint-duration`、`doc-restore-source`（`r2-snapshot` / `op-log-replay` / `empty` の別）、`sync-duplicate-ignored`。既存イベントのスキーマは無変更（追加のみ）。
 - `BlobHeadEntrySchema` の size 必須化（[sync-model.md](spec/sync-model.md) §5 の「size 不明なら復活させない」）は schema 側でも強制済み（`found === (size !== undefined)` の双方向チェック、worker の head 応答計画も size 欠如を reject）。
 
 ## モジュール対応表
@@ -169,26 +171,26 @@ spec の設計要素と実装モジュールの対応。決定層（純粋関数
 
 ### packages/worker
 
-| モジュール                                                            | 内容                                                                                            |
-| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `runtime.ts`                                                          | Worker entrypoint + `VaultRoom` DO shell（WS admission、sync pipeline、HTTP route）             |
-| `db/`                                                                 | SQLite schema / migration / retention / repository                                              |
-| `checkpoint/checkpoint.ts`                                            | checkpoint write / compact / orphaned run recovery decision                                     |
-| `devices/`、`setup-tokens.ts`                                         | device registry、setup token consume decision                                                   |
-| `http/`（setup / auth-refresh / device / quarantine / blob / health） | HTTP handler の response plan                                                                   |
-| `sync/`（snapshots / request / update）、`quarantine.ts`              | snapshot key / restore 候補選択、sync-request / sync-update decision、quarantine admin decision |
-| `runtime/eviction.ts`                                                 | multi-doc eviction decision                                                                     |
+| モジュール                                                            | 内容                                                                                                                                                                         |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main.ts` / `types.ts`                                                | Worker entrypoint、env 型                                                                                                                                                    |
+| `runtime/`                                                            | `VaultRoom` DO runtime（`app.ts` edge routing、`room.ts` WS admission、`sync.ts`、`checkpoints.ts`、`blobs.ts`、`documents.ts` hydration/eviction、`auth.ts`、`storage.ts`） |
+| `db/`                                                                 | SQLite schema / migration / retention / repository                                                                                                                           |
+| `checkpoint/`                                                         | checkpoint write / compact / orphaned run recovery decision                                                                                                                  |
+| `devices/`                                                            | device registry、setup token consume decision                                                                                                                                |
+| `http/`（setup / auth-refresh / device / quarantine / blob / health） | HTTP handler の response plan                                                                                                                                                |
+| `sync/`（snapshots / request / update / yjs）、`quarantine.ts`        | snapshot key / restore 候補選択、sync-request / sync-update decision、yjs validation、quarantine admin decision                                                              |
 
 ### packages/obsidian-plugin
 
-| モジュール                   | 内容                                                                                                    |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `main.ts`                    | Plugin lifecycle、Obsidian concrete port（spike 由来コードを含む）                                      |
-| `obsidian/editor-binding.ts` | CM6 ⇄ Y.Text binding、EditorView adapter                                                                |
-| `sync/engine/`               | startup planner / actuation / shell driver / presentation / websocket runtime / outbox worker / persist |
-| `sync/store/`                | local store driver / IndexedDB adapter / schema / repair                                                |
-| `sync/meta/`                 | meta reconcile、file tree 適用                                                                          |
-| `sync/obsidian/`             | composition root、evidence reader、lifecycle adapter、settings / repair panel                           |
+| モジュール  | 内容                                                                                                                                                                                                       |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main.ts`   | 薄い entry（plugin と公開シンボルの re-export）                                                                                                                                                            |
+| `host/`     | Plugin クラス本体と Obsidian concrete port（`plugin.ts` composition、auth / socket / files / vault / meta / meta-migration / editor / snapshot / materialize / repair / boot / guards / store、`outbox/`） |
+| `editor/`   | CM6 ⇄ Y.Text binding（EditorView adapter）、awareness、settings tab                                                                                                                                        |
+| `metadata/` | meta reconcile / materialize / evidence / generation / transition（file tree 適用）                                                                                                                        |
+| `recovery/` | DR-007 document epoch recovery（startup probe / repair）                                                                                                                                                   |
+| `sync/`     | 純 decision 層と composition（auth / engine / meta / obsidian / store / transport、`api-client.ts`）                                                                                                       |
 
 ### packages/model-tests
 
