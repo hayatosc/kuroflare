@@ -603,7 +603,9 @@ export function routeWorkerInboundMessageForStartup(
     return handle(message)
   }
   void handle(message).catch((error: unknown) => {
-    console.warn('[kuroflare] asynchronous worker inbound handling failed', { error })
+    console.warn('[kuroflare] asynchronous worker inbound handling failed', {
+      error: safeLogError(error),
+    })
   })
 }
 
@@ -690,7 +692,7 @@ async function handleWorkerWebSocketIssue(
   try {
     await recovery
   } catch (error: unknown) {
-    console.warn('[kuroflare] worker websocket recovery failed', { issue, error })
+    console.warn('[kuroflare] worker websocket recovery failed', { issue, error: safeLogError(error) })
     scheduleOutboxWorkerTick(plugin, 1_000, `websocket-${issue.kind}-retry`)
   } finally {
     if (plugin.workerWebSocketRecoveryPromise === recovery) {

@@ -8,7 +8,7 @@ import {
   makeYDocId,
 } from '@kuroflare/core'
 import * as v from 'valibot'
-import { assert, expect, test } from 'vitest'
+import { assert, expect, test, vi } from 'vitest'
 
 import { LocalAwareness } from '../editor/awareness'
 import {
@@ -28,6 +28,26 @@ import {
   wireLocalAwarenessBroadcast,
   type WorkerWebSocketOpenRuntime,
 } from './socket'
+
+test('routeWorkerInboundMessageForStartup redacts token material from a failed inbound handler error', async () => {
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    void routeWorkerInboundMessageForStartup(
+      { ok: false, reason: 'invalid-control-message' },
+      async () => {
+        throw new Error('sync request failed: Authorization Bearer abc.def-token.ghi')
+      },
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    const loggedText = warnSpy.mock.calls.map((call) => JSON.stringify(call)).join('\n')
+    assert.equal(warnSpy.mock.calls.length, 1)
+    assert.equal(loggedText.includes('abc.def-token.ghi'), false)
+    assert(loggedText.includes('[redacted]'))
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
 
 test('requestDocFromWorker reports a closed socket without leaving a pending request', async () => {
   const plugin = {

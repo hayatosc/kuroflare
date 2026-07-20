@@ -50,8 +50,10 @@ import {
 import { AdminSetupTokenIssueRequestSchema } from '../../runtime/types'
 import {
   apiErrorBody,
+  logEvent,
   makeGeneratedDeviceId,
   makeOpaqueToken,
+  retentionErrorMessage,
   sha256Text,
 } from '../../runtime/utils'
 
@@ -169,7 +171,10 @@ export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<
       )
     })
   } catch (error) {
-    console.error('[kuroflare] setup exchange persist failed', error)
+    logEvent('setup-exchange-persist-failed', {
+      vaultId: body.vaultId,
+      error: retentionErrorMessage(error),
+    })
     return c.json(apiErrorBody('server/error', 'setup-persist:transaction-failed'), 500)
   }
 

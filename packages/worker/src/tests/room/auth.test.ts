@@ -1,5 +1,5 @@
 import { CURRENT_PROTOCOL_VERSION, makeDeviceId, makeMessageId } from '@kuroflare/core'
-import { assert, test } from 'vitest'
+import { assert, test, vi } from 'vitest'
 
 import { VaultRoom } from '../../runtime'
 import {
@@ -105,7 +105,7 @@ test('VaultRoom exchanges setup tokens for device credentials', async () => {
   assert.equal(storage.sql.queries.includes('transaction rollback'), false)
 })
 
-test('VaultRoom rolls back setup exchange persistence failures', async () => {
+test('VaultRoom rolls back setup exchange persistence failures without leaking secrets to logs', async () => {
   const storage = new SqlOnlyStorage()
   const setupToken = 'setup-token-rollback'
   const setupTokenHash = await hashTestText(setupToken)
@@ -119,6 +119,7 @@ test('VaultRoom rolls back setup exchange persistence failures', async () => {
   storage.sql.failOnQueryIncludes = 'insert into device_refresh_tokens'
   const room = new VaultRoom(new FakeState(storage), makeEnvWithDeviceTokenSecret('secret'))
 
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
   const response = await room.fetch(
     new Request('https://worker.example/setup/exchange', {
       method: 'POST',
@@ -129,6 +130,9 @@ test('VaultRoom rolls back setup exchange persistence failures', async () => {
       }),
     }),
   )
+  const events = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))
+  const loggedText = logSpy.mock.calls.map(([line]) => String(line)).join('\n')
+  logSpy.mockRestore()
 
   assert.equal(response.status, 500)
   assert.deepEqual(await response.json(), {
@@ -139,6 +143,12 @@ test('VaultRoom rolls back setup exchange persistence failures', async () => {
   assert(storage.sql.queries.includes('transaction begin'))
   assert(storage.sql.queries.includes('transaction rollback'))
   assert.equal(storage.sql.queries.at(-1), 'transaction rollback')
+
+  // Guards the fix in room/http/auth.ts: the persist-failure path must log
+  // through the structured, secret-safe logEvent() convention, and the
+  // emitted fields must never contain the raw setup token.
+  assert(events.some((event) => event.event === 'setup-exchange-persist-failed'))
+  assert.equal(loggedText.includes(setupToken), false)
 })
 
 test('VaultRoom refreshes device access tokens and rotates refresh tokens', async () => {
