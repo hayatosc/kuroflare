@@ -1,11 +1,26 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, rmSync } from 'node:fs'
+import { rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import {
+  acquireObsidianE2ELock,
+  copyPluginWithSetup,
+  requireObsidianVaultPath,
+  requireSafeObsidianVaultPath,
+  seedWorkerSetupToken,
+  waitForPluginLoaded,
+  waitForSetupReady,
+} from './e2e-worker-setup.ts'
 
 const pluginDir = dirname(fileURLToPath(import.meta.url))
 const packageDir = resolve(pluginDir, '..')
 const pluginId = 'kuroflare'
+const endpoint = process.env.KUROFLARE_E2E_ENDPOINT ?? 'http://127.0.0.1:8787'
+const adminSecret = process.env.KUROFLARE_E2E_ADMIN_SECRET ?? 'e2e-admin-secret'
+const runId = Date.now().toString(36)
+const vaultId = process.env.KUROFLARE_E2E_VAULT_ID ?? `obsidian-mvp2-e2e-${runId}`
+const setupToken = process.env.KUROFLARE_E2E_SETUP_TOKEN ?? `setup-token-${runId}`
 const notePath = 'mvp2-note.md'
 const renamedPath = 'mvp2-renamed.md'
 
@@ -55,20 +70,6 @@ function sleep(ms: number): Promise<void> {
   })
 }
 
-function copyPlugin(vaultPath: string): void {
-  const targetDir = join(vaultPath, '.obsidian', 'plugins', pluginId)
-  mkdirSync(targetDir, { recursive: true })
-  for (const file of ['manifest.json', 'versions.json', 'main.js']) {
-    copyFileSync(join(packageDir, file), join(targetDir, file))
-  }
-  // Obsidian scans community plugins only at startup, so a plugin copied into
-  // a cold vault is invisible to plugin:enable until manifests are rescanned.
-  obsidian([
-    'eval',
-    "code=(async () => { await app.plugins.loadManifests(); return 'manifests-reloaded' })()",
-  ])
-}
-
 // Read the active (non-deleted) meta entry for a path, or null. fileId never changes across a rename.
 function readActiveMetaEntry(path: string): ActiveMetaEntry | null {
   const value = evalInObsidian(`(() => {
@@ -103,24 +104,6 @@ async function waitForActiveMetaEntry(path: string): Promise<ActiveMetaEntry | n
   return entry
 }
 
-async function waitForPluginReady(): Promise<void> {
-  const deadline = Date.now() + 5000
-  while (Date.now() < deadline) {
-    const ready = evalInObsidian(`(() => {
-      const plugin = app.plugins.plugins.kuroflare;
-      return JSON.stringify(Boolean(
-        plugin?.metaDoc &&
-        plugin?.statusEl?.textContent === 'Kuroflare: ready'
-      ));
-    })()`)
-    if (ready === true) {
-      return
-    }
-    await sleep(100)
-  }
-  throw new Error('kuroflare plugin did not become ready')
-}
-
 function clearMetaIndexedDb() {
   obsidian([
     'eval',
@@ -128,22 +111,42 @@ function clearMetaIndexedDb() {
   ])
 }
 
-const vaultPath = obsidian(['vault', 'info=path'])
-copyPlugin(vaultPath)
+const vaultPath = requireSafeObsidianVaultPath(
+  requireObsidianVaultPath(obsidian(['vault', 'info=path'])),
+)
+acquireObsidianE2ELock(vaultPath, runId)
 
-// Start from a clean slate so the run is idempotent.
-rmSync(join(vaultPath, notePath), { force: true })
-rmSync(join(vaultPath, renamedPath), { force: true })
+// Fail fast with an actionable message if the worker isn't running, instead
+// of surfacing as an opaque plugin-state timeout later on.
+await seedWorkerSetupToken({ endpoint, adminSecret, vaultId, setupToken })
 
 obsidian(['dev:debug', 'on'])
 obsidian(['dev:errors', 'clear'])
 obsidian(['dev:console', 'clear'])
 obsidian(['plugin:disable', `id=${pluginId}`, 'filter=community'])
+
+// Start from a clean slate so the run is idempotent.
+rmSync(join(vaultPath, notePath), { force: true })
+rmSync(join(vaultPath, renamedPath), { force: true })
 clearMetaIndexedDb()
+copyPluginWithSetup({
+  vaultPath,
+  packageDir,
+  pluginId,
+  endpoint,
+  setupVaultId: vaultId,
+  setupToken,
+  requestedDeviceName: 'Obsidian MVP-2 E2E',
+  setupBootstrapMode: 'new-vault',
+})
 obsidian(['plugins:restrict', 'off'])
 obsidian(['plugin:enable', `id=${pluginId}`, 'filter=community'])
-await waitForPluginReady()
-await sleep(250)
+waitForPluginLoaded(pluginId, evalInObsidian)
+waitForSetupReady(evalInObsidian)
+// Setup exchange races the very first (pre-setup) active-view bind attempt,
+// which logs a benign, already-tracked error; clear it now so the final
+// dev:errors assertion only reflects this scenario's own steps below.
+obsidian(['dev:errors', 'clear'])
 
 // Create a note inside Obsidian so the plugin's vault 'create' watcher registers a meta entry.
 evalInObsidian(

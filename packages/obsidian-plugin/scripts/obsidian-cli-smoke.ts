@@ -1,11 +1,26 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import {
+  acquireObsidianE2ELock,
+  copyPluginWithSetup,
+  requireObsidianVaultPath,
+  requireSafeObsidianVaultPath,
+  seedWorkerSetupToken,
+  waitForPluginLoaded,
+  waitForSetupReady,
+} from './e2e-worker-setup.ts'
 
 const pluginDir = dirname(fileURLToPath(import.meta.url))
 const packageDir = resolve(pluginDir, '..')
 const pluginId = 'kuroflare'
+const endpoint = process.env.KUROFLARE_E2E_ENDPOINT ?? 'http://127.0.0.1:8787'
+const adminSecret = process.env.KUROFLARE_E2E_ADMIN_SECRET ?? 'e2e-admin-secret'
+const runId = Date.now().toString(36)
+const vaultId = process.env.KUROFLARE_E2E_VAULT_ID ?? `obsidian-cli-e2e-${runId}`
+const setupToken = process.env.KUROFLARE_E2E_SETUP_TOKEN ?? `setup-token-${runId}`
 const notePath = 'e2e-smoke.md'
 const secondNotePath = 'e2e-smoke-second.md'
 const initialContent = 'initial smoke'
@@ -91,20 +106,6 @@ async function waitForNewConflictCopy(
   return { after, created: after.filter((path) => !before.includes(path)) }
 }
 
-function copyPlugin(vaultPath: string): void {
-  const targetDir = join(vaultPath, '.obsidian', 'plugins', pluginId)
-  mkdirSync(targetDir, { recursive: true })
-  for (const file of ['manifest.json', 'versions.json', 'main.js']) {
-    copyFileSync(join(packageDir, file), join(targetDir, file))
-  }
-  // Obsidian scans community plugins only at startup, so a plugin copied into
-  // a cold vault is invisible to plugin:enable until manifests are rescanned.
-  obsidian([
-    'eval',
-    "code=(async () => { await app.plugins.loadManifests(); return 'manifests-reloaded' })()",
-  ])
-}
-
 function clearSpikeIndexedDb() {
   obsidian([
     'eval',
@@ -112,8 +113,14 @@ function clearSpikeIndexedDb() {
   ])
 }
 
-const vaultPath = obsidian(['vault', 'info=path'])
-copyPlugin(vaultPath)
+const vaultPath = requireSafeObsidianVaultPath(
+  requireObsidianVaultPath(obsidian(['vault', 'info=path'])),
+)
+acquireObsidianE2ELock(vaultPath, runId)
+
+// Fail fast with an actionable message if the worker isn't running, instead
+// of surfacing as an opaque plugin-state timeout later on.
+await seedWorkerSetupToken({ endpoint, adminSecret, vaultId, setupToken })
 
 const noteFile = join(vaultPath, notePath)
 writeFileSync(noteFile, initialContent)
@@ -124,14 +131,31 @@ obsidian(['dev:debug', 'on'])
 obsidian(['dev:errors', 'clear'])
 obsidian(['dev:console', 'clear'])
 obsidian(['plugin:disable', `id=${pluginId}`, 'filter=community'])
-obsidian(['open', `path=${notePath}`])
 clearSpikeIndexedDb()
+copyPluginWithSetup({
+  vaultPath,
+  packageDir,
+  pluginId,
+  endpoint,
+  setupVaultId: vaultId,
+  setupToken,
+  requestedDeviceName: 'Obsidian CLI E2E',
+  setupBootstrapMode: 'new-vault',
+})
 obsidian(['plugins:restrict', 'off'])
 obsidian(['plugin:enable', `id=${pluginId}`, 'filter=community'])
+waitForPluginLoaded(pluginId, evalInObsidian)
 
 const commands = obsidian(['commands', 'filter=kuroflare'])
 requireIncludes(commands, 'kuroflare:kuroflare-spike-simulate-remote-insert', 'commands')
 requireIncludes(commands, 'kuroflare:kuroflare-spike-flush-ytext-to-disk', 'commands')
+
+waitForSetupReady(evalInObsidian)
+// Setup exchange races the very first (pre-setup) active-view bind attempt,
+// which logs a benign, already-tracked error; clear it now so the final
+// dev:errors assertion only reflects this scenario's own steps below.
+obsidian(['dev:errors', 'clear'])
+obsidian(['open', `path=${notePath}`])
 
 const state = await waitForEvalIncludes(
   'code=JSON.stringify({activeFile: app.workspace.getActiveFile()?.path, targetPath: app.plugins.plugins.kuroflare?.targetPath, yText: app.plugins.plugins.kuroflare?.ytext?.toJSON?.()})',
