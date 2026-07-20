@@ -9,7 +9,14 @@ UI をネットワークでブロックしない。
 ```
 Phase 0: ローカルロード（オフラインでも完結）
   - y-indexeddb からメタ YDoc + 各ファイル YDoc を復元
-  - この時点で Vault は完全に使える（local-first）
+  - Until setup exchange completes, the plugin stays safely inactive: it never
+    binds Y.Text to the active editor or writes metadata, so editing the
+    vault directly in Obsidian (outside the plugin) is unaffected. The
+    plugin's own edit pipeline (YDoc binding, metadata writes) activates only
+    once setup succeeds.
+  - Once setup has completed at least once, reconnect restores everything
+    from IndexedDB here and editing keeps working while offline, queued
+    through the outbox (§5) until the connection returns.
   - SV も IndexedDB に生きている（消すとフル再同期になる）
 
 Phase 1: 接続 & メタ YDoc の収束

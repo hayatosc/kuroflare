@@ -58,7 +58,7 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ### MVP チェックリスト（[operations.md](spec/operations.md) §8 対応）
 
-- [x] MVP-0: local editor loop。実 Linux Obsidian + obsidian-cli で CM6 ⇄ Y.Text ⇄ disk の両レグ、per-file YDoc、watcher-drop CAS conflict-copy を往復（`test:e2e:obsidian`）。
+- [x] MVP-0: local editor loop。実 Linux Obsidian + obsidian-cli で CM6 ⇄ Y.Text ⇄ disk の両レグ、per-file YDoc、watcher-drop CAS conflict-copy を往復（`test:e2e:obsidian`）。2026-07-20 以降は worker `dev:local` + setup exchange 済みを前提に実行する（per-file YDoc の IndexedDB 名前空間が vaultId でスコープされるため。setup 前のプラグインは安全に不活性 — [client.md](spec/client.md) Phase 0 参照）。
 - [x] MVP-1: one file remote sync。The real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14 with `worker dev:local` running separately.
 - [x] MVP-2: meta YDoc + path repair。rename = 同一 fileId の path 更新、Worker 経由 cross-device concurrent rename の収束、text 本文の per-file YDoc 化を実機 e2e で実証。
 - [x] MVP-3: initial sync + binary。binary blob PUT → meta 参照公開、manifest/chunk 再取得、初回 meta/file snapshot からの Markdown materialize を実機 e2e で証明。production API / UX 化は残タスク。
