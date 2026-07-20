@@ -98,24 +98,19 @@ import {
 } from './files'
 import { registerFileTreeWatcher } from './files'
 import { deferStartupReplan } from './guards'
-import { accessTokenSecretKeyForSetup, encodeBase64, safeLogError, sameDocId } from './helpers'
+import { accessTokenSecretKeyForSetup, safeLogError, sameDocId } from './helpers'
 import { resolveJoinAdoptionHashCheck, resolvePendingRemoteTextFile } from './materialize'
 import {
   establishInitialDocumentEpoch,
   loadTextDoc,
   insertMetaFile,
   metaMap,
-  migrateLegacyMetaDoc,
   metadataWritesEnabled,
-  metaDocWritable,
-  metaDocLegacyOnly,
-  hasLegacyDeletedTombstones,
-  shouldAdoptRemoteMetadata,
-  shouldPrepareMetadataMigration,
   readMetaFile,
   prepareDocumentProvider,
   updateMetaFile,
 } from './meta'
+import { prepareMetadataAfterHello, startMetadataMigrationAfterHello } from './meta-migration'
 import { runOutboxWorkerTick } from './outbox/tick'
 import {
   clearRepairLogEntry as clearRepairLogEntryCommand,
@@ -535,130 +530,12 @@ export default class KuroflareSpikePlugin extends Plugin {
     await replaceMetaDocLifecycle(this, updateBytes, isCurrent)
   }
 
-  /** Performs the legacy-to-v2 transition through the snapshot-import CAS endpoint. */
   async prepareMetadataAfterHello(): Promise<void> {
-    const context = this.captureVaultOperationContext()
-    const migrationMetaDoc = this.metaDoc
-    if (context === undefined) return
-    const isCurrent = () =>
-      this.vaultOperationStillCurrent(context) && this.metaDoc === migrationMetaDoc
-    if (this.metadataAccess !== 'read-write') return
-    const root = this.metaDoc.getMap<unknown>('meta')
-    if (root.size === 0) return
-    if (metaDocWritable(this.metaDoc)) {
-      this.metadataMigrationPending = false
-      return
-    }
-    if (hasLegacyDeletedTombstones(this.metaDoc)) {
-      this.metadataMigrationPending = false
-      this.metadataAccess = 'read-only'
-      new Notice(
-        'Kuroflare metadata: legacy deleted entries require manual recovery; metadata writes are paused.',
-      )
-      return
-    }
-    const localUpdate = Y.encodeStateAsUpdate(this.metaDoc)
-    let latest: Awaited<ReturnType<KuroflareSpikePlugin['fetchLatestSnapshotPayload']>> = null
-    let manualRepairRequired = false
-    try {
-      latest = await this.fetchLatestSnapshotPayload(
-        META_SYNC_DOC_ID,
-        'metadata-migration',
-        isCurrent,
-      )
-      if (!isCurrent()) return
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const candidate = new Y.Doc()
-        try {
-          if (latest !== null) {
-            Y.applyUpdate(candidate, latest.verifiedBytes.updateBytes)
-            const candidateRoot = candidate.getMap<unknown>('meta')
-            if (shouldAdoptRemoteMetadata(this.metaDoc, candidate)) {
-              this.metadataMigrationPending = false
-              await this.replaceMetaDoc(latest.verifiedBytes.updateBytes, isCurrent)
-              return
-            }
-            if (candidateRoot.size > 0 && !metaDocLegacyOnly(candidate)) {
-              manualRepairRequired = true
-              break
-            }
-          }
-          const baseStateVector = Y.encodeStateVector(candidate)
-          Y.applyUpdate(candidate, localUpdate)
-          if (!migrateLegacyMetaDoc(candidate)) break
-          const migrationUpdate = Y.encodeStateAsUpdate(candidate, baseStateVector)
-          const setup = requireSetupMetadata(this)
-          const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
-          if (!isCurrent()) return
-          if (accessToken === undefined) break
-          const workerClient = createWorkerClient(setup.endpoint, accessToken)
-          const response = await workerClient.vaults[':vaultId'].meta.snapshot.$put({
-            param: { vaultId: setup.vaultId },
-            json: {
-              updateBytesBase64: encodeBase64(migrationUpdate),
-              ...(latest !== null && latest.response.manifestSeq > 0
-                ? { latestSeq: latest.response.manifestSeq }
-                : {}),
-              metadataSchemaVersion: 2,
-            },
-          })
-          if (!isCurrent()) return
-          if (response.ok) {
-            this.metadataMigrationPending = false
-            await this.replaceMetaDoc(Y.encodeStateAsUpdate(candidate), isCurrent)
-            return
-          }
-          if (response.status !== 409) break
-          latest = await this.fetchLatestSnapshotPayload(
-            META_SYNC_DOC_ID,
-            'metadata-migration-retry',
-            isCurrent,
-          )
-          if (!isCurrent()) return
-        } finally {
-          candidate.destroy()
-        }
-      }
-    } catch (error: unknown) {
-      if (!isCurrent()) return
-      console.warn('[kuroflare] metadata migration CAS failed', { error: safeLogError(error) })
-    }
-    if (!isCurrent()) return
-    this.metadataMigrationPending = false
-    this.metadataAccess = 'read-only'
-    if (manualRepairRequired) {
-      new Notice(
-        'Kuroflare metadata: local metadata differs from remote v2; local data was preserved. Manual repair is required.',
-      )
-    }
+    await prepareMetadataAfterHello(this)
   }
 
-  /** Starts at most one deferred metadata migration and exposes its completion to startup. */
   startMetadataMigrationAfterHello(): Promise<void> {
-    if (
-      this.metadataMigrationPending &&
-      this.metaDoc.getMap<unknown>('meta').size > 0 &&
-      metaDocWritable(this.metaDoc)
-    ) {
-      this.metadataMigrationPending = false
-    }
-    if (
-      !shouldPrepareMetadataMigration({
-        metadataAccess: this.metadataAccess,
-        migrationPending: this.metadataMigrationPending,
-        metaDoc: this.metaDoc,
-      })
-    ) {
-      return Promise.resolve()
-    }
-    const inFlight = this.metadataMigrationPromise
-    if (inFlight !== null) return inFlight
-    const migration = this.prepareMetadataAfterHello()
-    const tracked = migration.finally(() => {
-      if (this.metadataMigrationPromise === tracked) this.metadataMigrationPromise = null
-    })
-    this.metadataMigrationPromise = tracked
-    return tracked
+    return startMetadataMigrationAfterHello(this)
   }
 
   private createSyncRuntime(): SyncRuntimeObsidianComposition {
