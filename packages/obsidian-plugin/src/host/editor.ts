@@ -20,6 +20,7 @@ import type { FileDocId } from '../types'
 import { fileDocIdForPath } from './auth'
 import { DISK_ORIGIN, MARKDOWN_EXTENSION } from './constants'
 import { activeMarkdownBindingMatches } from './guards'
+import { safeLogError } from './helpers'
 import { loadTextDoc, setActiveTextDoc } from './meta'
 import type KuroflareSpikePlugin from './plugin'
 import {
@@ -282,7 +283,10 @@ export async function waitForActiveMarkdownBindingReadiness(
   try {
     await runtime.lifecycle.runStartupTick()
   } catch (error: unknown) {
-    console.warn('[kuroflare] active editor binding deferred after startup failure', error)
+    console.warn(
+      '[kuroflare] active editor binding deferred after startup failure',
+      safeLogError(error),
+    )
     return false
   }
   return plugin.startupSideEffectGate.canRun()
