@@ -23,13 +23,12 @@
   "scripts": {
     "build": "tsdown",
     "test": "pnpm --filter @kuroflare/worker... build && tsdown && node --experimental-strip-types test/contract.test.ts",
-    "typecheck": "tsgo --noEmit",
-    "typecheck:compat": "tsc --noEmit"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@kuroflare/worker": "workspace:*",
     "@types/node": "^22.15.30",
     "tsdown": "^0.22.2",
-    "typescript": "^5.8.3"
+    "typescript": "^7.0.0"
   }
 }

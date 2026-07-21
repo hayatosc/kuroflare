@@ -13,10 +13,9 @@
     "build": "tsdown",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "dev": "tsdown --watch",
-    "dev:local": "wrangler dev --local --ip 127.0.0.1 --port 8787 --persist-to /tmp/kuroflare-worker-miniflare-state --var DEVICE_TOKEN_SECRET:e2e-device-token-secret --var ADMIN_TOKEN_SECRET:e2e-admin-secret",
-    "typecheck:compat": "tsc --noEmit"
+    "dev:local": "wrangler dev --local --ip 127.0.0.1 --port 8787 --persist-to /tmp/kuroflare-worker-miniflare-state --var DEVICE_TOKEN_SECRET:e2e-device-token-secret --var ADMIN_TOKEN_SECRET:e2e-admin-secret"
   },
   "dependencies": {
     "@hono/standard-validator": "^0.3.0",
@@ -30,7 +29,7 @@
     "@cloudflare/vitest-pool-workers": "0.16.20",
     "@standard-schema/spec": "1.1.0",
     "@types/node": "^22.15.30",
-    "typescript": "^5.8.3",
+    "typescript": "^7.0.0",
     "vitest": "^4.1.9",
     "wrangler": "^4.105.0"
   }

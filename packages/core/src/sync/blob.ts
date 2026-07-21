@@ -1,3 +1,4 @@
+import canonicalize from 'canonicalize'
 import * as v from 'valibot'
 
 import { Sha256HexSchema, type BinaryMetaFile } from '../sync/meta'
@@ -69,25 +70,11 @@ export function stringifyBlobManifest(manifest: BlobManifest): string {
     throw new Error('Invalid blob manifest')
   }
 
-  const chunkJsons = manifest.chunks.map(
-    (chunk) =>
-      `{"sha256":${JSON.stringify(chunk.sha256)},"offset":${chunk.offset},"size":${chunk.size}}`,
-  )
-
-  // Deterministic property order is required for SHA-256 hash integrity.
-  // `JSON.stringify` does not guarantee property order, so we build the JSON manually
-  // from an ordered list of key-value pairs.
-  const pairs: readonly [string, string][] = [
-    ['version', '1'],
-    ['fileId', JSON.stringify(manifest.fileId)],
-    ['contentSha256', JSON.stringify(manifest.contentSha256)],
-    ['size', String(manifest.size)],
-    ['chunks', `[${chunkJsons.join(',')}]`],
-    ['createdBy', JSON.stringify(manifest.createdBy)],
-    ['createdAt', String(manifest.createdAt)],
-  ]
-
-  return `{${pairs.map(([key, value]) => `"${key}":${value}`).join(',')}}`
+  const result = canonicalize(manifest)
+  if (result === undefined) {
+    throw new Error('Failed to canonicalize blob manifest')
+  }
+  return result
 }
 
 export function encodeBlobManifestJson(manifest: BlobManifest): Uint8Array {

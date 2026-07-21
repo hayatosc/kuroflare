@@ -1327,11 +1327,11 @@ test('canonicalizes blob manifest JSON', () => {
     createdAt: 10,
   }
   const canonicalJson =
-    '{"version":1,"fileId":"file-1","contentSha256":"' +
-    'c'.repeat(64) +
-    '","size":5,"chunks":[{"sha256":"' +
+    '{"chunks":[{"offset":0,"sha256":"' +
     'a'.repeat(64) +
-    '","offset":0,"size":5}],"createdBy":"device-1","createdAt":10}'
+    '","size":5}],"contentSha256":"' +
+    'c'.repeat(64) +
+    '","createdAt":10,"createdBy":"device-1","fileId":"file-1","size":5,"version":1}'
   const shuffledJson =
     '{"createdAt":10,"createdBy":"device-1","chunks":[{"size":5,"offset":0,"sha256":"' +
     'a'.repeat(64) +

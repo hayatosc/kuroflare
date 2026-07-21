@@ -19,3 +19,20 @@ export async function hashBytesSha256(bytes: Uint8Array): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest('SHA-256', digestInput.buffer)
   return bytesToHex(new Uint8Array(digest))
 }
+
+/** Constant-time byte comparison; used to compare HMAC signatures and shared secrets. */
+export function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false
+  }
+  let mismatch = 0
+  for (let index = 0; index < left.byteLength; index += 1) {
+    const leftByte = left[index]
+    const rightByte = right[index]
+    if (leftByte === undefined || rightByte === undefined) {
+      return false
+    }
+    mismatch |= leftByte ^ rightByte
+  }
+  return mismatch === 0
+}

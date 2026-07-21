@@ -13,8 +13,7 @@
     "test:e2e:obsidian:miniflare": "NODE_ENV=production tsdown && mv main.cjs main.js && node --experimental-strip-types scripts/obsidian-miniflare-smoke/index.ts",
     "test:e2e:obsidian:miniflare:app": "node --experimental-strip-types scripts/open-obsidian-e2e-vault.ts && NODE_ENV=production tsdown && mv main.cjs main.js && node --experimental-strip-types scripts/obsidian-miniflare-smoke/index.ts",
     "snapshot:import": "node --experimental-strip-types scripts/kuroflare-snapshot-import.ts",
-    "typecheck": "tsgo --noEmit",
-    "typecheck:compat": "tsc --noEmit"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@kuroflare/core": "workspace:*",
@@ -35,6 +34,6 @@
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.1.1",
     "obsidian": "1.13.0",
-    "typescript": "^5.8.3"
+    "typescript": "^7.0.0"
   }
 }

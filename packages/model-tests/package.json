@@ -6,9 +6,8 @@
   "scripts": {
     "build": "echo 'no build needed'",
     "test": "vitest run",
-    "typecheck": "tsgo --noEmit",
-    "dev": "tsdown --watch",
-    "typecheck:compat": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev": "tsdown --watch"
   },
   "dependencies": {
     "@kuroflare/core": "workspace:*",
@@ -17,6 +16,6 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.30",
-    "typescript": "^5.8.3"
+    "typescript": "^7.0.0"
   }
 }

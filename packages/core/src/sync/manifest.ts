@@ -74,8 +74,21 @@ const NormalizedChunkingOptionsSchema = v.pipe(
   ),
 )
 
+const GEAR_TABLE: readonly bigint[] = buildGearTable()
+
+function buildGearTable(): readonly bigint[] {
+  const table: bigint[] = new Array(256)
+  let state = 0x9e3779b97f4a7c15n
+  for (let i = 0; i < 256; i++) {
+    state = (state * 0x5d588b656c078965n + 0x269ec3n) & 0xffffffffffffffffn
+    table[i] = state
+  }
+  return table
+}
+
 /**
- * Splits bytes into deterministic content-defined chunks.
+ * Splits bytes into deterministic content-defined chunks using a GEAR-hash
+ * FastCDC rolling hash.
  *
  * @param bytes - Complete file bytes.
  * @param options - Optional chunk size tuning.
@@ -90,29 +103,32 @@ export function chunkBytes(
     return []
   }
 
-  const boundaryMask = avgSize - 1
+  const boundaryMask = BigInt(avgSize - 1)
   const chunks: Uint8Array[] = []
   let start = 0
-  let rolling = 0
+  let rolling = 0n
 
-  // Split the file bytes at deterministic content-defined boundaries.
   for (let index = 0; index < bytes.byteLength; index += 1) {
     const byte = bytes[index]
     if (byte === undefined) {
       throw new Error('Unexpected sparse byte array')
     }
-    rolling = ((rolling << 5) - rolling + byte) >>> 0
+    const gear = GEAR_TABLE[byte]
+    if (gear === undefined) {
+      throw new Error('Unexpected sparse byte array')
+    }
+    rolling = ((rolling << 1n) + gear) & 0xffffffffffffffffn
 
     const size = index + 1 - start
     if (size < minSize) {
       continue
     }
 
-    const reachedBoundary = (rolling & boundaryMask) === boundaryMask
+    const reachedBoundary = (rolling & boundaryMask) === 0n
     if (reachedBoundary || size >= maxSize) {
       chunks.push(bytes.slice(start, index + 1))
       start = index + 1
-      rolling = 0
+      rolling = 0n
     }
   }
 
