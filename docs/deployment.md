@@ -296,7 +296,99 @@ table in §2). Each entry has an `event` field you can filter on.
   arbitrary log-line content; they're a coarser complement to Logpush-based
   alerting on the specific `logEvent` names above, not a replacement for it.
 
-## 7. Future work
+## 7. Staged rollout and channel promotion
+
+Worker auto-updates are driven by two committed channel pointers,
+`distribution/channels/stable.json` and `beta.json`, served over
+`raw.githubusercontent.com`. A deployed Worker's Cron reads its channel's pointer
+and issues a Deploy Hook only when eligible (see
+[distribution-pipeline.md](plans/distribution-pipeline.md)). Promotion **only edits a
+pointer** — it never rebuilds or republishes a release, because the immutable release
+manifest already fixes the runtime bundle.
+
+`rolloutPercentage` is the share of installations that _newly_ issue a Deploy Hook; it is
+not a hard cap on deployed Workers, because a build queued before a pointer change can
+still land. Only promote releases that are backward-compatible across every Worker in the
+`template protocol version 1` range (`automaticUpdate: true`).
+
+### Pointer CLI
+
+All actions are pure pointer mutations with validation (allowed stages, no skipping or
+rolling backward, no promoting to an older version). Run locally to prepare a change, or
+drive them through the `Kuroflare worker channel promotion` workflow
+(`.github/workflows/release-worker-promote.yml`, `workflow_dispatch`), which applies one
+action, re-validates, and commits the pointer to the default branch.
+
+```bash
+# Emergency stop: stop issuing new Deploy Hooks on a channel.
+pnpm release:worker:pause --channel stable
+
+# Promote an already-published, fixed version onto a channel (switches paused at 0%).
+pnpm release:worker:promote --channel stable --version 1.4.2
+
+# Advance (or resume) the staged rollout; only the current or next stage is allowed.
+pnpm release:worker:rollout --channel stable --percentage 1
+
+# Emergency: block / unblock a bad source version from auto-updating.
+pnpm release:worker:block   --channel stable --version 1.4.1
+pnpm release:worker:unblock --channel stable --version 1.4.1
+
+# Read-only invariant check for both pointers.
+pnpm release:worker:validate-pointers
+```
+
+### Stable promotion sequence
+
+Promote beta → stable only after the dedicated canary has passed on real Cloudflare.
+
+1. **Pause** the current stable pointer (`release:worker:pause --channel stable`) to stop
+   issuing new hooks.
+2. **Drain**: wait for the maximum Workers Build time plus a margin. This is a best-effort
+   drain — a hook queued before the pause can still start and resolve the _new_ pointer, so
+   `rolloutPercentage` is never an exact cap.
+3. **Promote** to the new version (`release:worker:promote --channel stable --version x.y.z`).
+   The pointer switches to `x.y.z`, `paused: true`, `rolloutPercentage: 0`.
+4. **Re-verify** that the npm `stable` dist-tag, the GitHub Release assets, the release
+   manifest, and the build lockfile all point at the same product version, bundle hash, and
+   dependency tree (`pnpm release:worker:validate-pointers` plus the manifest/lockfile
+   checks from §CI in distribution-pipeline.md).
+5. **Roll out** in order: `--percentage 1`, then `10`, `50`, `100`, each after a minimum
+   observation window. Watch canary and cohort Worker errors, sync E2E, and build-failure
+   rate between stages. The rollout command clears `paused`; advancing may not skip a stage
+   or roll backward.
+
+### Emergency stop and fixes
+
+- To halt a rollout, `release:worker:pause --channel <channel>`. Already-running builds may
+  still deploy, so treat the stop as complete only after the build timeout plus margin.
+- A pointer change **cannot** revert an already-deployed Worker. To fix a bad release,
+  publish a new patch version and promote it, or roll back the code from Cloudflare
+  deployment history (below).
+- `release:worker:block --channel <channel> --version <bad-source>` suppresses new hooks
+  from Workers still running a specific source version; it is a suppression aid, not the
+  sole safety boundary.
+
+### Code rollback
+
+A Cloudflare Worker version does not include Durable Object, R2, or SQLite state, so code
+rollback does not undo data migrations. To roll back code, select the previous version from
+the Cloudflare dashboard's deployment history (Workers → the Worker → Deployments). Keep
+schema migrations backward-readable by the immediately previous stable runtime so a code
+rollback stays safe; ship destructive migrations as separate expand/migrate/contract
+releases and never as an automatic update.
+
+### Deploy Hook rotation
+
+The Worker's update permission is limited to its `DEPLOY_HOOK_URL` secret. If the hook URL leaks:
+
+1. Delete the Deploy Hook in the Cloudflare dashboard (Workers Builds → the build → Deploy
+   Hooks) and create a new one.
+2. Update the Worker's `DEPLOY_HOOK_URL` secret to the new URL
+   (`wrangler secret put DEPLOY_HOOK_URL`).
+3. The old URL stops working immediately; no pointer or release change is required. Never
+   put the hook URL in the Plugin, the user repository, API responses, or logs.
+
+## 8. Future work
 
 - A self-service setup-URI issuance flow (e.g. rate-limited and safe to
   expose to end users), replacing the operator-run `curl` step in §4.

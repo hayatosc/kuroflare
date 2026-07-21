@@ -5,17 +5,41 @@ import { join, resolve } from 'node:path'
 import { test } from 'node:test'
 
 import {
+  advanceChannelRollout,
+  blockChannelSourceVersion,
   canonicalUtcTimestamp,
   createWorkerReleaseManifest,
   generateBuildLock,
   npmSha512Integrity,
+  pauseChannelPointer,
+  promoteChannelPointer,
   readCompatibilityMetadata,
+  ROLLOUT_STAGES,
+  unblockChannelSourceVersion,
   validateBuildLock,
   validateChannelPointer,
   validateWorkerReleaseManifest,
   writePublicChecksums,
   writeReleaseChecksums,
 } from './worker.ts'
+
+const NOW = '2026-07-22T09:00:00.000Z'
+
+function pointerFixture(
+  channel: 'stable' | 'beta' = 'stable',
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    channel,
+    productVersion: '0.1.0',
+    rolloutPercentage: 0,
+    blockedSourceVersions: [],
+    paused: true,
+    updatedAt: '2026-07-21T00:00:00.000Z',
+    ...overrides,
+  }
+}
 
 const integrity = npmSha512Integrity(Buffer.from('package'))
 
@@ -289,4 +313,121 @@ test('release checksums include worker inputs and generated assets', async () =>
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('ROLLOUT_STAGES defines the ordered staged-rollout percentages', () => {
+  assert.deepEqual([...ROLLOUT_STAGES], [1, 10, 50, 100])
+})
+
+test('promoteChannelPointer switches to a newer fixed version paused at 0%', () => {
+  const next = promoteChannelPointer(
+    pointerFixture('stable', { productVersion: '0.1.0', rolloutPercentage: 100, paused: false }),
+    'stable',
+    '0.2.0',
+    NOW,
+  )
+  assert.equal(next.productVersion, '0.2.0')
+  assert.equal(next.paused, true)
+  assert.equal(next.rolloutPercentage, 0)
+  assert.equal(next.updatedAt, canonicalUtcTimestamp(NOW))
+})
+
+test('promoteChannelPointer refuses a version that is not newer than the current pointer', () => {
+  const at = pointerFixture('stable', { productVersion: '0.2.0' })
+  assert.throws(() => promoteChannelPointer(at, 'stable', '0.2.0', NOW), /not newer/)
+  assert.throws(() => promoteChannelPointer(at, 'stable', '0.1.0', NOW), /not newer/)
+})
+
+test('advanceChannelRollout walks 0 -> 1 -> 10 -> 50 -> 100 and clears paused', () => {
+  let pointer = pointerFixture('stable', {
+    productVersion: '0.2.0',
+    rolloutPercentage: 0,
+    paused: true,
+  })
+  const observed: number[] = []
+  for (const stage of [1, 10, 50, 100]) {
+    pointer = advanceChannelRollout(pointer, 'stable', stage, NOW)
+    observed.push(Number(pointer.rolloutPercentage))
+    assert.equal(pointer.paused, false)
+  }
+  assert.deepEqual(observed, [1, 10, 50, 100])
+})
+
+test('advanceChannelRollout resumes the current stage after an emergency pause', () => {
+  const paused = pointerFixture('stable', {
+    productVersion: '0.2.0',
+    rolloutPercentage: 50,
+    paused: true,
+  })
+  const resumed = advanceChannelRollout(paused, 'stable', 50, NOW)
+  assert.equal(resumed.rolloutPercentage, 50)
+  assert.equal(resumed.paused, false)
+})
+
+test('advanceChannelRollout rejects skipping ahead, rolling back, and non-stage values', () => {
+  const at1 = pointerFixture('stable', {
+    productVersion: '0.2.0',
+    rolloutPercentage: 1,
+    paused: false,
+  })
+  assert.throws(() => advanceChannelRollout(at1, 'stable', 50, NOW), /next stage/)
+  const at50 = pointerFixture('stable', {
+    productVersion: '0.2.0',
+    rolloutPercentage: 50,
+    paused: false,
+  })
+  assert.throws(() => advanceChannelRollout(at50, 'stable', 10, NOW), /next stage/)
+  const at100 = pointerFixture('stable', {
+    productVersion: '0.2.0',
+    rolloutPercentage: 100,
+    paused: false,
+  })
+  assert.throws(() => advanceChannelRollout(at100, 'stable', 1, NOW), /next stage/)
+  assert.throws(
+    () => advanceChannelRollout(at1, 'stable', 25, NOW),
+    /rollout percentage must be one of/,
+  )
+})
+
+test('pauseChannelPointer stops new hooks while preserving version and percentage', () => {
+  const live = pointerFixture('stable', {
+    productVersion: '0.2.0',
+    rolloutPercentage: 50,
+    paused: false,
+  })
+  const paused = pauseChannelPointer(live, 'stable', NOW)
+  assert.equal(paused.paused, true)
+  assert.equal(paused.productVersion, '0.2.0')
+  assert.equal(paused.rolloutPercentage, 50)
+  assert.equal(paused.updatedAt, canonicalUtcTimestamp(NOW))
+})
+
+test('block/unblock source versions dedupe, sort, and remove without touching other fields', () => {
+  const base = pointerFixture('stable', {
+    productVersion: '0.3.0',
+    rolloutPercentage: 10,
+    paused: false,
+  })
+  const blocked = blockChannelSourceVersion(
+    blockChannelSourceVersion(
+      blockChannelSourceVersion(base, 'stable', '0.2.0', NOW),
+      'stable',
+      '0.1.0',
+      NOW,
+    ),
+    'stable',
+    '0.2.0',
+    NOW,
+  )
+  assert.deepEqual(blocked.blockedSourceVersions, ['0.1.0', '0.2.0'])
+  assert.equal(blocked.rolloutPercentage, 10)
+  const unblocked = unblockChannelSourceVersion(blocked, 'stable', '0.1.0', NOW)
+  assert.deepEqual(unblocked.blockedSourceVersions, ['0.2.0'])
+})
+
+test('every rollout mutation produces a pointer that revalidates', () => {
+  const promoted = promoteChannelPointer(pointerFixture('beta'), 'beta', '0.2.0', NOW)
+  assert.doesNotThrow(() => validateChannelPointer(promoted, 'beta'))
+  const rolled = advanceChannelRollout(promoted, 'beta', 1, NOW)
+  assert.doesNotThrow(() => validateChannelPointer(rolled, 'beta'))
 })

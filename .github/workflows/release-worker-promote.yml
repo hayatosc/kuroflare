@@ -1,0 +1,130 @@
+name: Kuroflare worker channel promotion
+
+# Manually driven Phase 7 staged rollout. Every action mutates only a channel pointer
+# (distribution/channels/{stable,beta}.json) and commits it to the default branch; it never
+# rebuilds or republishes a release. Cron in the deployed Worker reads these pointers and
+# issues Deploy Hooks accordingly. rolloutPercentage is the share of installations that newly
+# issue a hook, not a hard cap on deployed workers, so only backward-compatible releases are
+# promoted (see docs/plans/distribution-pipeline.md and docs/deployment.md section 7).
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Pointer action to apply
+        required: true
+        type: choice
+        options:
+          - pause
+          - promote
+          - rollout
+          - block
+          - unblock
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+      version:
+        description: Product version (required for promote/block/unblock, e.g. 1.4.2)
+        required: false
+        type: string
+      percentage:
+        description: Rollout percentage (required for rollout)
+        required: false
+        type: choice
+        options:
+          - '1'
+          - '10'
+          - '50'
+          - '100'
+
+permissions: {}
+
+# Serialize pointer commits so two promotions never race on the same branch.
+concurrency:
+  group: release-worker-promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      # pnpm/action-setup v4.1.0
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda
+        with:
+          version: 11.2.0
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      - name: Apply pointer action
+        env:
+          ACTION: ${{ inputs.action }}
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
+          PERCENTAGE: ${{ inputs.percentage }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            pause)
+              node --experimental-strip-types scripts/release/worker.ts pointer-pause --channel "$CHANNEL"
+              ;;
+            promote)
+              [ -n "$VERSION" ] || { echo "version is required for promote" >&2; exit 1; }
+              node --experimental-strip-types scripts/release/worker.ts pointer-promote --channel "$CHANNEL" --version "$VERSION"
+              ;;
+            rollout)
+              [ -n "$PERCENTAGE" ] || { echo "percentage is required for rollout" >&2; exit 1; }
+              node --experimental-strip-types scripts/release/worker.ts pointer-rollout --channel "$CHANNEL" --percentage "$PERCENTAGE"
+              ;;
+            block)
+              [ -n "$VERSION" ] || { echo "version is required for block" >&2; exit 1; }
+              node --experimental-strip-types scripts/release/worker.ts pointer-block --channel "$CHANNEL" --version "$VERSION"
+              ;;
+            unblock)
+              [ -n "$VERSION" ] || { echo "version is required for unblock" >&2; exit 1; }
+              node --experimental-strip-types scripts/release/worker.ts pointer-unblock --channel "$CHANNEL" --version "$VERSION"
+              ;;
+            *)
+              echo "Unknown action: $ACTION" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Re-validate pointers
+        run: node --experimental-strip-types scripts/release/worker.ts validate-pointers
+
+      - name: Commit pointer change
+        env:
+          ACTION: ${{ inputs.action }}
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
+          PERCENTAGE: ${{ inputs.percentage }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- distribution/channels; then
+            echo "No pointer change to commit."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          detail="$CHANNEL"
+          [ -n "$VERSION" ] && detail="$detail $VERSION"
+          [ -n "$PERCENTAGE" ] && detail="$detail ${PERCENTAGE}%"
+          git add distribution/channels
+          git commit -m "chore(release): ${ACTION} ${detail} channel pointer"
+          git push origin "HEAD:${DEFAULT_BRANCH}"

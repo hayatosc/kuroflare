@@ -8,20 +8,20 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 
 ## 1. Priority and status
 
-| ID     | Priority | Area                                       | Status                                                                               |
-| ------ | -------- | ------------------------------------------ | ------------------------------------------------------------------------------------ |
-| DR-001 | P0       | Durable authority and failure model        | Closed: composite authority and disaster boundary tested                             |
-| DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested                                               |
-| DR-003 | P0       | Large-update snapshot escape               | Closed narrowly: safe rejection + explicit repair; live escape remains unimplemented |
-| DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                                                   |
-| DR-005 | P1       | Meta entry merge granularity               | Closed: grouped schema v2, migration, and write admission implemented and tested     |
-| DR-006 | P1       | Delete-versus-edit causality               | Closed: causal deletion witnesses and deferred reconciliation tested                 |
-| DR-007 | P1       | Yjs actor identity                         | Closed: device/actor identity separated; provider-loss and real-process restart tested |
-| DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                                                      |
+| ID     | Priority | Area                                       | Status                                                                                  |
+| ------ | -------- | ------------------------------------------ | --------------------------------------------------------------------------------------- |
+| DR-001 | P0       | Durable authority and failure model        | Closed: composite authority and disaster boundary tested                                |
+| DR-002 | P0       | Atomic update append                       | Implemented and fault-injection tested                                                  |
+| DR-003 | P0       | Large-update snapshot escape               | Closed narrowly: safe rejection + explicit repair; live escape remains unimplemented    |
+| DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                                                      |
+| DR-005 | P1       | Meta entry merge granularity               | Closed: grouped schema v2, migration, and write admission implemented and tested        |
+| DR-006 | P1       | Delete-versus-edit causality               | Closed: causal deletion witnesses and deferred reconciliation tested                    |
+| DR-007 | P1       | Yjs actor identity                         | Closed: device/actor identity separated; provider-loss and real-process restart tested  |
+| DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                                                         |
 | DR-009 | P1       | Quarantine and public error evidence       | Closed: unified ApiError envelope (whole route surface), generalized WS reject evidence |
-| DR-010 | P2       | Empty binary files                         | Closed: chunkless meta entries permitted and cross-checked against the manifest      |
-| DR-011 | P2       | Portable path materialization              | Closed: deterministic shared sanitizer replaces OS-specific repair                   |
-| DR-012 | P2       | Capability negotiation                     | Closed: opaque capability tokens with known-intersection negotiation                 |
+| DR-010 | P2       | Empty binary files                         | Closed: chunkless meta entries permitted and cross-checked against the manifest         |
+| DR-011 | P2       | Portable path materialization              | Closed: deterministic shared sanitizer replaces OS-specific repair                      |
+| DR-012 | P2       | Capability negotiation                     | Closed: opaque capability tokens with known-intersection negotiation                    |
 
 P0 items can acknowledge or delete durable user data incorrectly.
 P1 items can violate convergence, recovery, or interoperability under realistic concurrency.
@@ -88,7 +88,7 @@ The former `snapshot-escape` branch advanced `docs.latest_seq`, wrote `message_d
 
 That sequence permanently suppressed a retry because the dedup row proved a completion that never happened.
 The runtime now sends one guarded `sync-update-rejected` frame for an oversized live update, then performs the stable `1011` close with reason `append-reject:large-update-requires-snapshot-import`, without acknowledgement or durable mutation.
-The matching client item is paused with evidence and a released lease; snapshot import still requires manual use of the authenticated route, so DR-009 is not fully closed.
+The matching client item is paused with evidence and a released lease; snapshot import still requires manual use of the authenticated route. That manual repair is the intentional limit of DR-003's narrow safe-rejection scope, not a DR-009 gap (DR-009 is closed below).
 
 Recommended contract:
 
@@ -258,23 +258,23 @@ Recommended simpler contract:
 Acceptance evidence:
 
 - [x] The specification identifies the exact component that sets each real `Y.Doc.clientID`:
-  the Obsidian plugin creates each meta and file document with `new Y.Doc()`, so Yjs
-  generates the actor ID independently per document.
+      the Obsidian plugin creates each meta and file document with `new Y.Doc()`, so Yjs
+      generates the actor ID independently per document.
 - [x] Operation-log tests prove that a spoofed client actor field cannot change the
-  authenticated `deviceId` audit attribution. `packages/worker/src/tests/room/sync.test.ts`
-  sends a sync update carrying `actor: 'spoofed-audit-device'` and asserts the persisted
-  `op_log` row records the authenticated `deviceId` from Hello, not the spoofed field.
+      authenticated `deviceId` audit attribution. `packages/worker/src/tests/room/sync.test.ts`
+      sends a sync update carrying `actor: 'spoofed-audit-device'` and asserts the persisted
+      `op_log` row records the authenticated `deviceId` from Hello, not the spoofed field.
 - [x] Provider-loss recovery tests cover absent/present/unavailable probes, first epochs,
-  meta/file loss, fresh Yjs actors, restart recovery, remote+local+pending convergence,
-  duplicate idempotency, malformed/dependency-missing rows, 404 new documents, and 409
-  rebuild. Recovery persists `recovering` before import and atomically commits candidate
-  YDoc, cursor, exact outbox completions, and `ready` epoch after provider persistence.
-  (`packages/obsidian-plugin/src/recovery/epoch*.test.ts`.)
+      meta/file loss, fresh Yjs actors, restart recovery, remote+local+pending convergence,
+      duplicate idempotency, malformed/dependency-missing rows, 404 new documents, and 409
+      rebuild. Recovery persists `recovering` before import and atomically commits candidate
+      YDoc, cursor, exact outbox completions, and `ready` epoch after provider persistence.
+      (`packages/obsidian-plugin/src/recovery/epoch*.test.ts`.)
 - [x] Real Obsidian process-restart coverage. The `:app` E2E identifies the running
-  Obsidian root process via Linux `/proc`, SIGTERMs and relaunches it mid-edit
-  (`restartObsidianProcess` in the miniflare smoke harness), then drives epoch recovery
-  through both the sync-request and need-full-snapshot paths. Green on 2026-07-16 across
-  six consecutive runs (see [implementation-status.md](../implementation-status.md)).
+      Obsidian root process via Linux `/proc`, SIGTERMs and relaunches it mid-edit
+      (`restartObsidianProcess` in the miniflare smoke harness), then drives epoch recovery
+      through both the sync-request and need-full-snapshot paths. Green on 2026-07-16 across
+      six consecutive runs (see [implementation-status.md](../implementation-status.md)).
 
 DR-007 is closed. The checked-in unit crash tests use fake-indexeddb for the y-indexeddb
 provider and local-store transactions; the real-process crash-boundary is covered by the
@@ -341,28 +341,28 @@ Recommended contract:
 Acceptance evidence:
 
 - [x] Contract tests cover every public route and WebSocket rejection. A mechanical test
-  enumerates the composed Hono route table and asserts that every registered route returns
-  the `ApiError` envelope on any 4xx/5xx (`packages/worker/src/tests/routes.test.ts`,
-  "every registered public HTTP route emits the ApiError envelope"); it also guards against
-  a future handler regressing to an ad hoc body. WebSocket rejection is covered for every
-  reason code (`hash-mismatch`, `yjs-apply-failed`, `meta-schema-invalid`,
-  `large-update-requires-snapshot-import`, `metadata-read-only`) in the room sync,
-  quarantine, and auth tests. This enumeration surfaced and fixed a real gap: the public
-  `POST /setup/exchange`, `POST /auth/refresh`, and `GET /ws/:vaultId` routes previously
-  returned the raw validator issue list (not the envelope) on request-validation failure,
-  because they reach the validator before any auth middleware; they now map validation
-  failure to `request/invalid`.
+      enumerates the composed Hono route table and asserts that every registered route returns
+      the `ApiError` envelope on any 4xx/5xx (`packages/worker/src/tests/routes.test.ts`,
+      "every registered public HTTP route emits the ApiError envelope"); it also guards against
+      a future handler regressing to an ad hoc body. WebSocket rejection is covered for every
+      reason code (`hash-mismatch`, `yjs-apply-failed`, `meta-schema-invalid`,
+      `large-update-requires-snapshot-import`, `metadata-read-only`) in the room sync,
+      quarantine, and auth tests. This enumeration surfaced and fixed a real gap: the public
+      `POST /setup/exchange`, `POST /auth/refresh`, and `GET /ws/:vaultId` routes previously
+      returned the raw validator issue list (not the envelope) on request-validation failure,
+      because they reach the validator before any auth middleware; they now map validation
+      failure to `request/invalid`.
 - [x] Oversized live updates emit exactly one guarded rejection frame followed by the
-  existing close, and matching client evidence is persisted atomically
-  (`packages/worker/src/tests/room/sync.test.ts` asserts one `sync-update-rejected` frame
-  then close 1011; the client persists the matching outbox pause atomically).
+      existing close, and matching client evidence is persisted atomically
+      (`packages/worker/src/tests/room/sync.test.ts` asserts one `sync-update-rejected` frame
+      then close 1011; the client persists the matching outbox pause atomically).
 - [x] Unknown error codes fail closed and are not retried automatically: the client uses a
-  retryable allowlist and defaults any unrecognized `ApiError.code`/HTTP status to a
-  permanent, non-retried failure.
+      retryable allowlist and defaults any unrecognized `ApiError.code`/HTTP status to a
+      permanent, non-retried failure.
 - [x] One malformed update causes one durable quarantine record and one stable client
-  repair entry without an infinite retry loop (`packages/worker/src/tests/room/quarantine.test.ts`;
-  the client pauses the item with `resumeOn: 'manual'` and dedupes the repair-log entry by
-  stable id).
+      repair entry without an infinite retry loop (`packages/worker/src/tests/room/quarantine.test.ts`;
+      the client pauses the item with `resumeOn: 'manual'` and dedupes the repair-log entry by
+      stable id).
 
 DR-009 is closed. Every public HTTP failure uses the guarded `ApiError` envelope
 (structurally, via the shared `apiErrorBody` helper used by every handler and validator

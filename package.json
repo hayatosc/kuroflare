@@ -22,6 +22,11 @@
     "release:worker:generate": "node --experimental-strip-types scripts/release/worker.ts generate",
     "release:worker:checksum": "node --experimental-strip-types scripts/release/worker.ts checksum",
     "release:worker:validate-pointers": "node --experimental-strip-types scripts/release/worker.ts validate-pointers",
+    "release:worker:pause": "node --experimental-strip-types scripts/release/worker.ts pointer-pause",
+    "release:worker:promote": "node --experimental-strip-types scripts/release/worker.ts pointer-promote",
+    "release:worker:rollout": "node --experimental-strip-types scripts/release/worker.ts pointer-rollout",
+    "release:worker:block": "node --experimental-strip-types scripts/release/worker.ts pointer-block",
+    "release:worker:unblock": "node --experimental-strip-types scripts/release/worker.ts pointer-unblock",
     "test:deploy-template": "node --test deploy/cloudflare/test/*.test.mjs",
     "test:release": "node --experimental-strip-types --test scripts/release/*.test.ts"
   },

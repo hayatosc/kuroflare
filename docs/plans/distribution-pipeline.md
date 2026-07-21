@@ -618,6 +618,8 @@ stable成果物は公開後に差し替えない。
 
 モノレポ内のversion contract、公開Worker runtime、固定bootstrap、Deploy Button用テンプレート、UpdateCoordinator、release workflowは実装済みである。
 
+Phase 7の段階配信ツールも実装済みである。`scripts/release/worker.ts`のchannel pointer操作コマンド（pause / promote / rollout / block / unblock、成果物を再ビルドせずpointerだけを検証付きで変更）、`workflow_dispatch`駆動の昇格workflow（`.github/workflows/release-worker-promote.yml`）、`docs/deployment.md`§7の運用手順（stable昇格・緊急停止・Deploy Hook rotation・code rollback）を含む。ただし実際のbeta→stable自動昇格は、下記の公開repository・npm公開・canary検証が揃うまで有効化しない。
+
 独自deployer packageとdeploy CLIは存在せず、今後も追加しない。
 
 ただし、現在のlocal repositoryにはGit remoteが設定されておらず、`hayatosc/kuroflare`という公開GitHub repositoryもまだ存在しない。

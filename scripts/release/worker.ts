@@ -386,6 +386,145 @@ export function validateChannelPointer(value: unknown, channel: 'stable' | 'beta
   return pointer
 }
 
+// --- Phase 7: staged rollout / channel promotion (no artifact rebuild) ---
+//
+// These pure functions mutate a channel pointer only. Promotion never rebuilds or
+// republishes a release: the immutable release manifest already fixes the runtime bundle,
+// so pointing a channel at an already-published `productVersion` is what "promotes" it.
+// `rolloutPercentage` is the share of installations that newly issue a Deploy Hook, not a
+// hard cap on deployed workers (queued builds can still land), which is why only releases
+// backward-compatible across the whole template-protocol-1 range are `automaticUpdate`.
+
+/** The ordered staged-rollout percentages. A rollout advances through these in order. */
+export const ROLLOUT_STAGES = [1, 10, 50, 100] as const
+type RolloutStage = (typeof ROLLOUT_STAGES)[number]
+
+function isRolloutStage(value: number): value is RolloutStage {
+  return (ROLLOUT_STAGES as readonly number[]).includes(value)
+}
+
+/** The stage that may follow `current`, or undefined if `current` is terminal/invalid. */
+function nextRolloutStage(current: number): RolloutStage | undefined {
+  // A freshly promoted pointer sits at 0% and advances to the first real stage.
+  if (current === 0) return ROLLOUT_STAGES[0]
+  const index = ROLLOUT_STAGES.indexOf(current as RolloutStage)
+  if (index === -1) return undefined
+  return ROLLOUT_STAGES[index + 1]
+}
+
+/** Emergency stop / pre-switch drain: stop issuing new Deploy Hooks on a channel. */
+export function pauseChannelPointer(
+  pointer: unknown,
+  channel: 'stable' | 'beta',
+  now: string | Date,
+): JsonObject {
+  const current = validateChannelPointer(pointer, channel)
+  return validateChannelPointer(
+    { ...current, paused: true, updatedAt: canonicalUtcTimestamp(now) },
+    channel,
+  )
+}
+
+/**
+ * Promote an already-published, fixed release onto a channel without rebuilding it. The
+ * pointer switches to the new version paused at 0%; the operator then drains in-flight
+ * builds, re-verifies that npm and the GitHub Release point at the same fixed artifact,
+ * and starts the rollout with {@link advanceChannelRollout}.
+ */
+export function promoteChannelPointer(
+  pointer: unknown,
+  channel: 'stable' | 'beta',
+  version: string,
+  now: string | Date,
+): JsonObject {
+  const current = validateChannelPointer(pointer, channel)
+  const target = requireStableVersion(version, 'promotion version')
+  if (compareStableVersion(target, String(current.productVersion)) <= 0) {
+    throw new Error(
+      `cannot promote ${channel} to ${target}: not newer than the current ${String(current.productVersion)}`,
+    )
+  }
+  return validateChannelPointer(
+    {
+      ...current,
+      productVersion: target,
+      paused: true,
+      rolloutPercentage: 0,
+      updatedAt: canonicalUtcTimestamp(now),
+    },
+    channel,
+  )
+}
+
+/**
+ * Advance (or resume) the staged rollout. Only the current stage (a resume that clears an
+ * emergency pause) or the immediate next stage is allowed, so a rollout can never skip
+ * ahead or roll backward via the pointer. Rolling out implies the channel is live, so this
+ * clears `paused`.
+ */
+export function advanceChannelRollout(
+  pointer: unknown,
+  channel: 'stable' | 'beta',
+  percentage: number,
+  now: string | Date,
+): JsonObject {
+  const current = validateChannelPointer(pointer, channel)
+  if (!isRolloutStage(percentage)) {
+    throw new Error(
+      `rollout percentage must be one of ${ROLLOUT_STAGES.join(', ')}; got ${percentage}`,
+    )
+  }
+  const currentPercentage = Number(current.rolloutPercentage)
+  if (percentage !== currentPercentage && percentage !== nextRolloutStage(currentPercentage)) {
+    throw new Error(
+      `rollout must resume the current stage (${currentPercentage}%) or advance to the next stage; got ${percentage}%`,
+    )
+  }
+  return validateChannelPointer(
+    {
+      ...current,
+      rolloutPercentage: percentage,
+      paused: false,
+      updatedAt: canonicalUtcTimestamp(now),
+    },
+    channel,
+  )
+}
+
+/** Emergency block: stop workers running a specific source version from auto-updating. */
+export function blockChannelSourceVersion(
+  pointer: unknown,
+  channel: 'stable' | 'beta',
+  version: string,
+  now: string | Date,
+): JsonObject {
+  const current = validateChannelPointer(pointer, channel)
+  const target = requireStableVersion(version, 'blocked source version')
+  const blocked = (current.blockedSourceVersions as string[]).slice()
+  if (!blocked.includes(target)) blocked.push(target)
+  blocked.sort(compareStableVersion)
+  return validateChannelPointer(
+    { ...current, blockedSourceVersions: blocked, updatedAt: canonicalUtcTimestamp(now) },
+    channel,
+  )
+}
+
+/** Reverse {@link blockChannelSourceVersion} for a source version once it is safe again. */
+export function unblockChannelSourceVersion(
+  pointer: unknown,
+  channel: 'stable' | 'beta',
+  version: string,
+  now: string | Date,
+): JsonObject {
+  const current = validateChannelPointer(pointer, channel)
+  const target = requireStableVersion(version, 'blocked source version')
+  const blocked = (current.blockedSourceVersions as string[]).filter((entry) => entry !== target)
+  return validateChannelPointer(
+    { ...current, blockedSourceVersions: blocked, updatedAt: canonicalUtcTimestamp(now) },
+    channel,
+  )
+}
+
 export function validateWorkerReleaseManifest(value: unknown): WorkerReleaseManifest {
   const manifest = requireObject(value, 'worker release manifest')
   if (manifest.schemaVersion !== 1) throw new Error('worker release schemaVersion must be 1')
@@ -698,10 +837,21 @@ async function parseArguments(args: readonly string[]): Promise<{
   const command = args[0]
   if (
     !command ||
-    !['stage', 'generate', 'checksum', 'public-checksum', 'validate-pointers'].includes(command)
+    ![
+      'stage',
+      'generate',
+      'checksum',
+      'public-checksum',
+      'validate-pointers',
+      'pointer-pause',
+      'pointer-promote',
+      'pointer-rollout',
+      'pointer-block',
+      'pointer-unblock',
+    ].includes(command)
   ) {
     throw new Error(
-      'Usage: node --experimental-strip-types scripts/release/worker.ts <stage|generate|checksum|validate-pointers> [options]',
+      'Usage: node --experimental-strip-types scripts/release/worker.ts <stage|generate|checksum|validate-pointers|pointer-pause|pointer-promote|pointer-rollout|pointer-block|pointer-unblock> [options]',
     )
   }
   const values = new Map<string, string>()
@@ -723,6 +873,34 @@ function requiredOption(values: Map<string, string>, name: string): string {
   return value
 }
 
+function requireChannelOption(values: Map<string, string>): 'stable' | 'beta' {
+  const channel = requiredOption(values, 'channel')
+  if (channel !== 'stable' && channel !== 'beta') {
+    throw new Error(`--channel must be "stable" or "beta"; got "${channel}"`)
+  }
+  return channel
+}
+
+function requirePercentage(values: Map<string, string>): number {
+  const raw = requiredOption(values, 'percentage')
+  const percentage = Number(raw)
+  if (!Number.isInteger(percentage))
+    throw new Error(`--percentage must be an integer; got "${raw}"`)
+  return percentage
+}
+
+/** Reads a channel pointer file, applies a validated mutation, and writes it back. */
+async function rewriteChannelPointer(
+  channel: 'stable' | 'beta',
+  mutate: (current: JsonObject) => JsonObject,
+): Promise<JsonObject> {
+  const path = join(rootDirectory, 'distribution/channels', `${channel}.json`)
+  const current = await readJson(path, `${channel} channel pointer`)
+  const next = mutate(current)
+  await writeFile(path, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+  return next
+}
+
 async function main(): Promise<void> {
   const { command, values } = await parseArguments(process.argv.slice(2))
   const stagingDir = values.get('staging-dir')
@@ -735,6 +913,42 @@ async function main(): Promise<void> {
       validateChannelPointer(pointer, channel)
     }
     console.log('[release] Channel pointers are valid.')
+    return
+  }
+  if (command.startsWith('pointer-')) {
+    const channel = requireChannelOption(values)
+    const next = await rewriteChannelPointer(channel, (current) => {
+      if (command === 'pointer-pause') return pauseChannelPointer(current, channel, new Date())
+      if (command === 'pointer-promote') {
+        return promoteChannelPointer(
+          current,
+          channel,
+          requiredOption(values, 'version'),
+          new Date(),
+        )
+      }
+      if (command === 'pointer-rollout') {
+        return advanceChannelRollout(current, channel, requirePercentage(values), new Date())
+      }
+      if (command === 'pointer-block') {
+        return blockChannelSourceVersion(
+          current,
+          channel,
+          requiredOption(values, 'version'),
+          new Date(),
+        )
+      }
+      return unblockChannelSourceVersion(
+        current,
+        channel,
+        requiredOption(values, 'version'),
+        new Date(),
+      )
+    })
+    console.log(
+      `[release] ${channel} pointer -> productVersion ${String(next.productVersion)}, ` +
+        `rollout ${String(next.rolloutPercentage)}%, paused ${String(next.paused)}.`,
+    )
     return
   }
   if (!stagingDir) throw new Error(`--staging-dir is required for ${command}`)
