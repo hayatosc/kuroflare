@@ -8,6 +8,10 @@ export const CHECKPOINT_ALARM_DELAY_MS = 30_000
 export const CHECKPOINT_ALARM_DOC_LIMIT = 16
 export const CHECKPOINT_OP_THRESHOLD = 128
 export const SNAPSHOT_RETENTION_MIN_GENERATIONS = 3
+// Unreachable under the default client chunker: every blob object is one CDC
+// chunk, capped at `DEFAULT_CHUNKING_OPTIONS.maxSize` (1MiB), so uploads always
+// take the single-put path. Raising that cap above this threshold is what
+// activates multipart, so the two constants must be changed together.
 export const BLOB_MULTIPART_THRESHOLD_BYTES = 16 * 1024 * 1024
 export const BLOB_SINGLE_PUT_MAX_BYTES = BLOB_MULTIPART_THRESHOLD_BYTES - 1
 export const BLOB_MANIFEST_MAX_BYTES = 1024 * 1024
