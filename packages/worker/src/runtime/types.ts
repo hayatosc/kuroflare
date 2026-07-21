@@ -317,6 +317,29 @@ export const AdminSetupTokenIssueRequestSchema = v.object({
   expiresInMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(86_400_000))),
 })
 
+export const SetupTokenIssueResponseSchema = v.object({
+  ok: v.literal(true),
+  vaultId: VaultIdSchema,
+  expiresAt: PosIntSchema,
+  tokenReadable: v.boolean(),
+})
+
+/**
+ * Device-authenticated invite request. Carries no `vaultId` and no
+ * `setupToken`: the vault is taken from the caller's token claims so a device
+ * cannot mint an invite for a vault it does not belong to, and the token itself
+ * is generated at the edge so a client cannot choose a guessable one.
+ */
+export const DeviceSetupTokenIssueRequestSchema = v.object({
+  expiresInMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(86_400_000))),
+})
+
+export const DeviceSetupTokenIssueResponseSchema = v.object({
+  setupToken: v.pipe(v.string(), v.minLength(1)),
+  vaultId: VaultIdSchema,
+  expiresAt: PosIntSchema,
+})
+
 export const AdminSnapshotSeedRequestSchema = v.object({
   vaultId: VaultIdSchema,
   docId: DocIdSchema,

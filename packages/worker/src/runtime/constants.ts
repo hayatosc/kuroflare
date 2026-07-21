@@ -24,4 +24,5 @@ export const VAULT_ID_STORAGE_KEY = 'vault:id'
 export const MAX_HYDRATED_FILE_DOCS = 256
 export const EVICTION_IDLE_THRESHOLD_MS = 5 * 60 * 1_000
 export const ADMIN_SETUP_TOKEN_PATH = '/admin/setup-tokens'
+export const DEVICE_SETUP_TOKEN_PATH = '/devices/setup-tokens'
 export const ADMIN_SNAPSHOT_SEED_PATH = '/admin/snapshots/seed'

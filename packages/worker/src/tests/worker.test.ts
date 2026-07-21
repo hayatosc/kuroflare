@@ -5,7 +5,12 @@ import workerEntrypoint, {
   type DurableObjectIdBinding,
   type DurableObjectStubBinding,
 } from '../runtime'
-import { makeEnv, makeDeviceToken, makeEnvWithDeviceTokenSecret } from './support'
+import {
+  makeEnv,
+  makeDeviceToken,
+  makeEnvWithDeviceTokenSecret,
+  TEST_DEVICE_TOKEN_SECRET,
+} from './support'
 
 test('worker entrypoint keeps the admin setup token issuance endpoint degraded without a secret', async () => {
   const response = await workerEntrypoint.fetch(
@@ -85,6 +90,102 @@ test('worker entrypoint rejects admin setup token issuance with a mismatched sec
   )
 
   assert.equal(response.status, 403)
+})
+
+function makeSetupTokenIssuingEnv(capture: {
+  routedName?: string
+  routedBody?: unknown
+}): WorkerEnv {
+  return {
+    ...makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+    VAULT_ROOM: {
+      idFromName(name: string): DurableObjectIdBinding {
+        capture.routedName = name
+        return {}
+      },
+      get(): DurableObjectStubBinding {
+        return {
+          async fetch(request: Request): Promise<Response> {
+            capture.routedBody = await request.json()
+            return Response.json({
+              ok: true,
+              vaultId: 'vault-1',
+              expiresAt: 1_700_000_000_000,
+              tokenReadable: true,
+            })
+          },
+        }
+      },
+    },
+  }
+}
+
+test('device setup token issuance rejects an unauthenticated caller', async () => {
+  const capture: { routedName?: string } = {}
+  const response = await workerEntrypoint.fetch(
+    new Request('https://worker.example/devices/setup-tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+    makeSetupTokenIssuingEnv(capture),
+  )
+
+  assert.equal(response.status, 401)
+  assert.equal(capture.routedName, undefined)
+})
+
+test('device setup token issuance returns a generated token bound to the caller vault', async () => {
+  const capture: { routedName?: string; routedBody?: unknown } = {}
+  const env = makeSetupTokenIssuingEnv(capture)
+  const response = await workerEntrypoint.fetch(
+    new Request('https://worker.example/devices/setup-tokens', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+      },
+      body: JSON.stringify({ expiresInMs: 60_000 }),
+    }),
+    env,
+  )
+
+  assert.equal(response.status, 200)
+  const body = (await response.json()) as {
+    setupToken: string
+    vaultId: string
+    expiresAt: number
+  }
+  assert.equal(capture.routedName, 'vault-1')
+  assert.equal(body.vaultId, 'vault-1')
+  assert.equal(body.expiresAt, 1_700_000_000_000)
+  // The edge generates the token and is the only place it exists in the clear;
+  // the Durable Object receives the same value and stores only its hash.
+  assert.ok(body.setupToken.length >= 32)
+  assert.deepEqual(capture.routedBody, {
+    vaultId: 'vault-1',
+    setupToken: body.setupToken,
+    expiresInMs: 60_000,
+  })
+})
+
+test('device setup token issuance ignores a caller-supplied vaultId', async () => {
+  const capture: { routedName?: string; routedBody?: unknown } = {}
+  const response = await workerEntrypoint.fetch(
+    new Request('https://worker.example/devices/setup-tokens', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET)}`,
+      },
+      body: JSON.stringify({ vaultId: 'vault-victim' }),
+    }),
+    makeSetupTokenIssuingEnv(capture),
+  )
+
+  assert.equal(response.status, 200)
+  assert.equal(capture.routedName, 'vault-1')
+  assert.equal((capture.routedBody as { vaultId: string }).vaultId, 'vault-1')
 })
 
 test('worker entrypoint routes auth refresh requests by body vaultId', async () => {

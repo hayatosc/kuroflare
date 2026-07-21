@@ -270,6 +270,53 @@ test('VaultRoom rolls back auth refresh rotation failures', async () => {
   assert.equal(storage.sql.queries.at(-1), 'transaction rollback')
 })
 
+test('VaultRoom issues a device-authenticated setup token for an active device', async () => {
+  const secret = 'test-device-token-secret'
+  const storage = new SqlOnlyStorage()
+  storage.sql.devices.set('device-1', {
+    deviceId: 'device-1',
+    tokenVersion: 2,
+    revokedAt: undefined,
+  })
+  const room = new VaultRoom(new FakeState(storage), makeEnvWithDeviceTokenSecret(secret))
+
+  const response = await room.fetch(
+    new Request('https://worker.example/devices/setup-tokens', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await makeDeviceToken(secret)}` },
+      body: JSON.stringify({ vaultId: 'vault-1', setupToken: 'invite-token' }),
+    }),
+  )
+
+  assert.equal(response.status, 200)
+  assert.equal(storage.sql.setupTokens.size, 1)
+})
+
+test('VaultRoom refuses device-authenticated setup token issuance from a revoked device', async () => {
+  const secret = 'test-device-token-secret'
+  const storage = new SqlOnlyStorage()
+  // The access token itself is still signed and unexpired; only the registry
+  // knows this device was revoked. Without the DO-side re-authorization a
+  // revoked device could enrol a fresh one and undo its own revocation.
+  storage.sql.devices.set('device-1', {
+    deviceId: 'device-1',
+    tokenVersion: 2,
+    revokedAt: Date.now(),
+  })
+  const room = new VaultRoom(new FakeState(storage), makeEnvWithDeviceTokenSecret(secret))
+
+  const response = await room.fetch(
+    new Request('https://worker.example/devices/setup-tokens', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await makeDeviceToken(secret)}` },
+      body: JSON.stringify({ vaultId: 'vault-1', setupToken: 'invite-token' }),
+    }),
+  )
+
+  assert.equal(response.status, 403)
+  assert.equal(storage.sql.setupTokens.size, 0)
+})
+
 test('VaultRoom revokes devices through authenticated HTTP requests', async () => {
   const secret = 'test-device-token-secret'
   const storage = new SqlOnlyStorage()

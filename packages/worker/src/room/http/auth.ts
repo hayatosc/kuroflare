@@ -86,6 +86,27 @@ export async function handleAdminSetupTokenIssue(room: VaultRoom, c: Context): P
   )
 }
 
+/**
+ * Device-authenticated invite issuance.
+ *
+ * The edge's `bearerAuth` only proves the JWT signature and expiry are intact;
+ * it never reads the device registry. Re-authorizing here is what makes revoke
+ * meaningful for this route: without it a device that was just revoked could
+ * spend the remaining lifetime of its unexpired access token enrolling a fresh
+ * device and win back the access it had lost.
+ */
+export async function handleDeviceSetupTokenIssue(room: VaultRoom, c: Context): Promise<Response> {
+  const db = getDb(room)
+  if (db === undefined)
+    return c.json(apiErrorBody('server/degraded', 'device-setup-token-issue-unavailable'), 503)
+  await ensureSchema(room)
+
+  const rejection = await authorizeHttpRequest(room, c, ['sync:write'])
+  if (rejection !== undefined) return rejection
+
+  return handleAdminSetupTokenIssue(room, c)
+}
+
 export async function handleSetupExchange(room: VaultRoom, c: Context): Promise<Response> {
   const db = getDb(room)
   const secret = room.env.DEVICE_TOKEN_SECRET

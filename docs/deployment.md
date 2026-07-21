@@ -150,10 +150,22 @@ Run everything from `packages/worker`.
 
 ## 4. Device onboarding
 
-There is currently no self-service "invite a device" UI. Onboarding a device
-is an operator action run from the command line, using the admin route
-`POST /admin/setup-tokens`, gated by the `ADMIN_TOKEN_SECRET` you set above.
-Do not expose this secret or route to end users.
+There are two ways to enrol a device, and which one applies depends only on
+whether the vault already has a device.
+
+**Bootstrapping the first device** is an operator action run from the command
+line, using the admin route `POST /admin/setup-tokens`, gated by the
+`ADMIN_TOKEN_SECRET` you set above. Do not expose this secret or route to end
+users. The rest of this section walks through it.
+
+**Every device after the first** is enrolled from an already-synced device
+instead: it calls `POST /devices/setup-tokens` with its own device token, and
+the Worker issues an equivalent setup token bound to the vault in that token's
+claims. The operator secret is not involved. This grants the inviting device no
+new authority — it can already read and write the whole vault and revoke every
+other device in it — so being able to enrol one more device is strictly weaker
+than what it can already do. See [protocol.md](spec/protocol.md) §10 for the
+device permission model this rests on.
 
 1. **Generate a random setup token locally** (never reuse across vaults or
    let it leave your machine other than to your own device):

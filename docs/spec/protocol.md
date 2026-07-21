@@ -123,6 +123,7 @@ POST /blobs/:sha256/complete
 POST /blobs/:sha256/abort
 PUT  /blob-manifests/:sha256.json
 GET  /blob-manifests/:sha256.json
+POST /devices/setup-tokens        # 登録済み device が新 device を招待（setup token を発行）
 POST /devices/:deviceId/revoke
 GET  /admin/quarantine[/:id]
 POST /admin/quarantine/:id/{discard,force-apply}
@@ -287,6 +288,7 @@ revoke（`POST /devices/:deviceId/revoke`）:
 
 - actor の Bearer JWT を entrypoint と DO の両方で検証し、`sync:write` がある場合だけ target を revoke する。
 - active device は tokenVersion bump、already revoked は idempotent に既存値を返す（§3）。
+- actor と target の関係は**意図的に検査しない**。登録済み device は誰でも同一 vault の任意の device を revoke できる。これは §9 のフラットな権限モデルの帰結であり、実装漏れではない。紛失・盗難された端末を手元の別端末から即座に締め出せることが、この設計で得たい性質そのものである。
 
 ## 8. Authenticated device identity and Yjs actors
 
@@ -342,3 +344,21 @@ revoke の反映:
 - auth が必要な side effect の開始直前に、token の残り寿命を `refreshMarginMs + estimatedDurationMs` と照合し、足りなければ開始せず先に refresh をスケジュールする（`refresh-first`）。
 - `estimatedDurationMs` は outbox item 単位で渡して blob の大小を区別する。local-only の `materialize` は gate の対象外。
 - これにより、長い blob 転送を期限間際の token で開始して途中 auth failure に落ちる経路を減らす。
+
+## 10. デバイス権限モデル
+
+vault 内の登録済み device は**すべて対等**である。device row（[server.md](server.md) §2 の `devices`）にも JWT claims にも role / owner / first-device といった権限段階は存在しない。setup exchange を完了した device は一律に `sync:read` / `sync:write` / `blob:read` / `blob:write` の 4 scope を受け取る。scope は「どの種類の操作か」を表すだけで、device 間の上下関係を表さない。
+
+この前提の下で、device が実行できる操作は次の 3 つとも同じ信頼レベルに属する:
+
+- vault 全体の読み書き
+- 同一 vault の任意の device の revoke（§7）
+- 新しい device の招待（`POST /devices/setup-tokens`）
+
+招待は `bearerAuth` の下に置く。発行先 vault は request body ではなく actor の JWT `aud` から取り、setup token 自体は Worker 側で生成する（client が推測しやすい値を選べないようにするため）。発行された token の寿命・one-time 性・vault 束縛は §5 の operator 発行分とまったく同じ row と consume 判定を通る。したがってこの route は既存 device の権限を増やさない: vault の全 plaintext を読み書きでき、他の全 device を締め出せる主体にとって、device を 1 つ増やせることは厳密により弱い能力である。
+
+招待は entrypoint の bearer 検証だけで通してはならない。entrypoint は JWT の署名と有効期限しか見ておらず、device registry の `revoked_at` / `tokenVersion` を照合するのは DO 側の `authorizeHttpRequest` である。DO 側でも `sync:write` を要求して再認可しないと、revoke された device が失効前に発行された access token の残り寿命（最大 1 時間）を使って新しい device を登録し、失ったはずの権限を恒久的に取り戻せる。revoke を意味のあるものにしているのはこの再認可であり、revoke 経路（§7）が DO 側でも認可し直しているのと同じ理由による。
+
+operator 専用の `POST /admin/setup-tokens`（`ADMIN_TOKEN_SECRET`）は、**まだ 1 台も device が無い vault の初回 bootstrap 用**として残る。device が 1 台でも登録されていれば、以後の招待は device 側から発行できる。
+
+E2EE を導入して device ごとに鍵を分ける場合はこのモデルを見直す必要がある（その時点で初めて「誰が誰を招待・失効できるか」が意味を持つ）。

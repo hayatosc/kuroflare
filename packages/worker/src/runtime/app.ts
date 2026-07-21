@@ -51,12 +51,15 @@ import { cors } from 'hono/cors'
 import { createMiddleware } from 'hono/factory'
 import * as v from 'valibot'
 
+import { DEVICE_SETUP_TOKEN_PATH } from './constants'
 import {
   type WorkerEnv,
   AdminSetupTokenIssueRequestSchema,
   AdminSnapshotSeedRequestSchema,
+  DeviceSetupTokenIssueRequestSchema,
+  SetupTokenIssueResponseSchema,
 } from './types'
-import { apiErrorBody, extractBearerToken, timingSafeEqualString } from './utils'
+import { apiErrorBody, extractBearerToken, makeOpaqueToken, timingSafeEqualString } from './utils'
 
 // sValidator('json', ...) requires Content-Type: application/json.
 // Requests without it receive a 400 with a field-level validation error.
@@ -266,6 +269,36 @@ const adminRouter = new Hono<{ Bindings: WorkerEnv }>()
 
 const authedCore = new Hono<AuthedEnv>()
   .get('/auth/verify', bearerAuth, (c) => c.json(c.var.claims))
+  /**
+   * Lets an already-registered device invite another device, so enrolling a
+   * second device no longer requires the operator secret. This grants no new
+   * authority: any device holding a valid token can already read and write the
+   * whole vault and revoke every other device in it, so being able to enrol one
+   * more is strictly weaker than what the caller can already do.
+   */
+  .post(
+    DEVICE_SETUP_TOKEN_PATH,
+    bearerAuth,
+    sValidator('json', DeviceSetupTokenIssueRequestSchema, (result, c) =>
+      result.success ? undefined : rejectInvalidRequest(c),
+    ),
+    async (c) => {
+      const body = c.req.valid('json')
+      const vaultId = c.var.claims.aud
+      const setupToken = makeOpaqueToken()
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method,
+        headers: c.req.raw.headers,
+        body: JSON.stringify({ vaultId, setupToken, expiresInMs: body.expiresInMs }),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, vaultId)
+      if (!response.ok) return parseDOorPassthrough(c, response, SetupTokenIssueResponseSchema)
+      const issued: unknown = await response.json().catch(() => undefined)
+      const parsed = v.safeParse(SetupTokenIssueResponseSchema, issued)
+      if (!parsed.success) return c.json(apiErrorBody('server/error', 'DO-error-not-json'), 500)
+      return c.json({ setupToken, vaultId, expiresAt: parsed.output.expiresAt }, 200)
+    },
+  )
   .post(
     '/devices/:deviceId/revoke',
     bearerAuth,

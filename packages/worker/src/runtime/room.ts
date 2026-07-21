@@ -18,6 +18,7 @@ import {
 import { handleRetentionInspect } from '../room/http/admin-retention'
 import {
   handleAdminSetupTokenIssue,
+  handleDeviceSetupTokenIssue,
   handleAuthRefresh,
   handleDeviceRevoke,
   handleSetupExchange,
@@ -52,6 +53,7 @@ import { checkpointDoc, evictIdleDocs, readCheckpointableDocIds } from './checkp
 import { recoverOrphanedCheckpointRuns } from './checkpoints'
 import {
   ADMIN_SETUP_TOKEN_PATH,
+  DEVICE_SETUP_TOKEN_PATH,
   ADMIN_SNAPSHOT_SEED_PATH,
   CHECKPOINT_ALARM_DOC_LIMIT,
   WEBSOCKET_UPGRADE,
@@ -101,6 +103,7 @@ export class VaultRoom {
   ) {
     this.doRouter = new Hono()
       .post(ADMIN_SETUP_TOKEN_PATH, (c) => handleAdminSetupTokenIssue(this, c))
+      .post(DEVICE_SETUP_TOKEN_PATH, (c) => handleDeviceSetupTokenIssue(this, c))
       .post(ADMIN_SNAPSHOT_SEED_PATH, (c) => handleAdminSnapshotSeed(this, c))
       .post('/setup/exchange', (c) => handleSetupExchange(this, c))
       .post('/auth/refresh', (c) => handleAuthRefresh(this, c))
