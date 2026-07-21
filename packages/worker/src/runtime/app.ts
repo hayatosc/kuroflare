@@ -9,6 +9,7 @@ import {
   BlobUploadUrlResponseSchema,
   CURRENT_PROTOCOL_VERSION,
   DeviceIdSchema,
+  DeviceSetupTokenIssueRequestSchema,
   DeviceTokenRefreshRequestSchema,
   DeviceTokenRefreshResponseSchema,
   DocLatestSnapshotResponseSchema,
@@ -56,7 +57,6 @@ import {
   type WorkerEnv,
   AdminSetupTokenIssueRequestSchema,
   AdminSnapshotSeedRequestSchema,
-  DeviceSetupTokenIssueRequestSchema,
   SetupTokenIssueResponseSchema,
 } from './types'
 import { apiErrorBody, extractBearerToken, makeOpaqueToken, timingSafeEqualString } from './utils'

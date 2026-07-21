@@ -1,7 +1,7 @@
 import { PRODUCT_VERSION, parseSetupUri } from '@kuroflare/core'
 import { type App, Notice, PluginSettingTab, Setting } from 'obsidian'
 
-import { readAccessToken, requireSetupMetadata } from '../host/auth'
+import { currentSetupMetadata, readAccessToken, requireSetupMetadata } from '../host/auth'
 import {
   DEVICE_REVOKE_CONFIRMATION,
   INVALID_META_DISCARD_CONFIRMATION,
@@ -12,6 +12,7 @@ import { accessTokenSecretKeyForSetup, docIdLabel, repairLogDescription } from '
 import type KuroflareSpikePlugin from '../host/plugin'
 import { confirmAndApplySetupUri } from '../host/setup-uri'
 import { createWorkerClient } from '../sync/api-client'
+import { buildDeviceInviteSetupUri, issueDeviceInviteSetupToken } from '../sync/auth/invite'
 import { renderQuarantineAdmin } from '../sync/obsidian/quarantine-ui'
 import {
   planRejectedUpdateRepairOutcomePresentation,
@@ -25,12 +26,51 @@ import { planWorkerVersionPresentation } from '../sync/worker-version-presentati
 export class KuroflareSettingTab extends PluginSettingTab {
   private rejectedRepairStatusText = ''
   private workerVersionProbeId = 0
+  private deviceInviteRequestId = 0
+  private deviceInviteContainerEl: HTMLElement | null = null
 
   constructor(
     app: App,
     private readonly plugin: KuroflareSpikePlugin,
   ) {
     super(app, plugin)
+  }
+
+  // Invalidates any in-flight invite request and clears the rendered setup URI so a
+  // one-time credential never lingers once the tab is closed or re-rendered.
+  override hide(): void {
+    this.deviceInviteRequestId++
+    this.deviceInviteContainerEl?.empty()
+    super.hide()
+  }
+
+  private async generateDeviceInvite(container: HTMLElement): Promise<void> {
+    const requestId = ++this.deviceInviteRequestId
+    const setup = currentSetupMetadata(this.plugin)
+    if (setup === undefined) return
+    const token = await readAccessToken(this.plugin, accessTokenSecretKeyForSetup(setup))
+    if (requestId !== this.deviceInviteRequestId || !container.isConnected) return
+    if (token === undefined) {
+      new Notice('Kuroflare invite: access token is missing')
+      return
+    }
+    const result = await issueDeviceInviteSetupToken({
+      endpoint: setup.endpoint,
+      accessToken: token,
+    })
+    if (requestId !== this.deviceInviteRequestId || !container.isConnected) return
+    if (!result.ok) {
+      new Notice(`Kuroflare invite: failed (${result.error?.code ?? result.status})`)
+      return
+    }
+    renderDeviceInviteResult(container, {
+      setupUri: buildDeviceInviteSetupUri({
+        endpoint: setup.endpoint,
+        vaultId: result.response.vaultId,
+        setupToken: result.response.setupToken,
+      }),
+      expiresAt: result.response.expiresAt,
+    })
   }
 
   private runRepairAction(action: () => Promise<unknown>): void {
@@ -168,6 +208,29 @@ export class KuroflareSettingTab extends PluginSettingTab {
           })()
         })
       })
+
+    const inviteAvailable =
+      currentSetupMetadata(this.plugin) !== undefined && this.plugin.syncStoppedByAuth === null
+    let deviceInviteContainer: HTMLElement | undefined
+    new Setting(containerEl)
+      .setName('Invite another device')
+      .setDesc(
+        'Generate a one-time link for a second device to join this vault. The link is short-lived and shown only once.',
+      )
+      .addButton((button) => {
+        button
+          .setButtonText('Generate invite')
+          .setDisabled(!inviteAvailable)
+          .onClick(() => {
+            if (!inviteAvailable || deviceInviteContainer === undefined) return
+            button.setDisabled(true)
+            void this.generateDeviceInvite(deviceInviteContainer).finally(() => {
+              button.setDisabled(!inviteAvailable)
+            })
+          })
+      })
+    deviceInviteContainer = containerEl.createDiv()
+    this.deviceInviteContainerEl = deviceInviteContainer
 
     containerEl.createEl('h3', { text: 'Local store repair' })
     const runtimeRepairEntries = this.plugin.syncRepairEntries
@@ -464,4 +527,35 @@ function renderWorkerVersionPresentation(
     details.createEl('dt', { text: row.label })
     details.createEl('dd', { text: row.value })
   }
+}
+
+/** Just-issued device invite fields rendered into the settings tab; never persisted. */
+interface DeviceInvitePresentation {
+  readonly setupUri: string
+  readonly expiresAt: number
+}
+
+function renderDeviceInviteResult(container: HTMLElement, invite: DeviceInvitePresentation): void {
+  container.empty()
+  new Setting(container)
+    .setName('Invite link')
+    .setDesc(
+      `Expires ${new Date(invite.expiresAt).toISOString()}. This link contains a one-time credential — share it only with the device you are enrolling.`,
+    )
+    .addTextArea((text) => {
+      text.setValue(invite.setupUri)
+      text.inputEl.readOnly = true
+    })
+    .addButton((button) => {
+      button.setButtonText('Copy').onClick(() => {
+        void navigator.clipboard
+          .writeText(invite.setupUri)
+          .then(() => {
+            new Notice('Kuroflare invite: link copied to clipboard')
+          })
+          .catch(() => {
+            new Notice('Kuroflare invite: could not copy link')
+          })
+      })
+    })
 }

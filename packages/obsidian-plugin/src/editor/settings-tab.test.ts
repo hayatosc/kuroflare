@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { makeDeviceId, makeVaultId } from '@kuroflare/core'
 import type { App } from 'obsidian'
 import { assert, beforeEach, test, vi } from 'vitest'
 
@@ -163,6 +164,8 @@ const obsidianMocks = vi.hoisted(() => {
     readonly containerEl = document.createElement('div')
 
     constructor(..._args: unknown[]) {}
+
+    hide(): void {}
   }
 
   class FakeNotice {
@@ -213,15 +216,32 @@ vi.mock('../sync/obsidian/rejected-repair-ui', () => ({
 vi.mock('../sync/worker-version', () => ({
   fetchWorkerVersion: vi.fn(async () => ({ ok: false, reason: 'network' })),
 }))
+vi.mock('../host/auth', () => ({
+  currentSetupMetadata: vi.fn(() => undefined),
+  readAccessToken: vi.fn(async () => undefined),
+  requireSetupMetadata: vi.fn(),
+}))
+vi.mock('../sync/auth/invite', () => ({
+  issueDeviceInviteSetupToken: vi.fn(),
+  buildDeviceInviteSetupUri: vi.fn(() => 'kuroflare://setup?stub'),
+}))
 
+import { currentSetupMetadata, readAccessToken } from '../host/auth'
+import { issueDeviceInviteSetupToken } from '../sync/auth/invite'
 import { fetchWorkerVersion } from '../sync/worker-version'
 import { KuroflareSettingTab } from './settings-tab'
 
 const fetchWorkerVersionMock = vi.mocked(fetchWorkerVersion)
+const currentSetupMetadataMock = vi.mocked(currentSetupMetadata)
+const readAccessTokenMock = vi.mocked(readAccessToken)
+const issueDeviceInviteSetupTokenMock = vi.mocked(issueDeviceInviteSetupToken)
 
 beforeEach(() => {
   document.body.replaceChildren()
   fetchWorkerVersionMock.mockReset()
+  currentSetupMetadataMock.mockReset().mockReturnValue(undefined)
+  readAccessTokenMock.mockReset()
+  issueDeviceInviteSetupTokenMock.mockReset()
   fetchWorkerVersionMock.mockResolvedValue({ ok: false, reason: 'network' })
 })
 
@@ -253,6 +273,7 @@ function createPathRepairPlugin(
     binaryRestoreCheckDetail: null,
     trustedSetupMetadata: null,
     pendingSetupResponse: null,
+    syncStoppedByAuth: null,
     getSyncRejectedUpdateRepairEntriesSnapshot: () => [],
     refreshSyncRejectedUpdateRepairEntries: vi.fn(async () => undefined),
     repairSyncRejectedUpdate: vi.fn(),
@@ -386,4 +407,112 @@ test('reports repair action failures without exposing the error', async () => {
     obsidianMocks.FakeNotice.messages.some((message) => message.includes('secret')),
     false,
   )
+})
+
+function localSetupMetadataFixture() {
+  return {
+    endpoint: 'https://sync.example.test',
+    vaultId: makeVaultId('vault-1'),
+    deviceId: makeDeviceId('device-1'),
+    protocolVersion: 1,
+    bootstrapMode: 'join-existing',
+    tokenVersion: 1,
+  } as const
+}
+
+function findInviteButton(tab: KuroflareSettingTab): HTMLButtonElement | undefined {
+  return [...tab.containerEl.querySelectorAll('button')].find(
+    (button) => button.textContent === 'Generate invite',
+  )
+}
+
+test('hides the invite action when there is no active device registration', () => {
+  installObsidianDomHelpers()
+  currentSetupMetadataMock.mockReturnValue(undefined)
+  const plugin = createPathRepairPlugin(vi.fn(async () => undefined))
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The mocked PluginSettingTab constructor does not inspect App.
+  const tab = new KuroflareSettingTab({} as App, plugin)
+  tab.display()
+
+  const inviteButton = findInviteButton(tab)
+  assert(inviteButton)
+  assert.equal(inviteButton.disabled, true)
+})
+
+test('hides the invite action while auth is revoked even with setup metadata present', () => {
+  installObsidianDomHelpers()
+  currentSetupMetadataMock.mockReturnValue(localSetupMetadataFixture())
+  const plugin = createPathRepairPlugin(vi.fn(async () => undefined))
+  plugin.syncStoppedByAuth = 'revoked'
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The mocked PluginSettingTab constructor does not inspect App.
+  const tab = new KuroflareSettingTab({} as App, plugin)
+  tab.display()
+
+  const inviteButton = findInviteButton(tab)
+  assert(inviteButton)
+  assert.equal(inviteButton.disabled, true)
+})
+
+test('issues a device invite and renders the copyable setup URI with its expiry', async () => {
+  installObsidianDomHelpers()
+  currentSetupMetadataMock.mockReturnValue(localSetupMetadataFixture())
+  readAccessTokenMock.mockResolvedValue('device-access-token')
+  issueDeviceInviteSetupTokenMock.mockResolvedValue({
+    ok: true,
+    response: {
+      setupToken: 'issued-token',
+      vaultId: makeVaultId('vault-1'),
+      expiresAt: 1_700_000_000_000,
+    },
+  })
+  const plugin = createPathRepairPlugin(vi.fn(async () => undefined))
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The mocked PluginSettingTab constructor does not inspect App.
+  const tab = new KuroflareSettingTab({} as App, plugin)
+  document.body.append(tab.containerEl)
+  tab.display()
+
+  const inviteButton = findInviteButton(tab)
+  assert(inviteButton)
+  assert.equal(inviteButton.disabled, false)
+  inviteButton.click()
+
+  await vi.waitFor(() => {
+    const uriInput = tab.containerEl.querySelector<HTMLInputElement>(
+      '[data-name="Invite link"] input',
+    )
+    assert(uriInput)
+    assert.equal(uriInput.value, 'kuroflare://setup?stub')
+  })
+  const inviteSetting = tab.containerEl.querySelector<HTMLElement>('[data-name="Invite link"]')
+  assert(inviteSetting)
+  assert.match(inviteSetting.dataset.description ?? '', /2023-11-14T22:13:20\.000Z/)
+})
+
+test('reports an auth-rejected invite failure without rendering a setup URI', async () => {
+  installObsidianDomHelpers()
+  obsidianMocks.FakeNotice.messages = []
+  currentSetupMetadataMock.mockReturnValue(localSetupMetadataFixture())
+  readAccessTokenMock.mockResolvedValue('device-access-token')
+  issueDeviceInviteSetupTokenMock.mockResolvedValue({
+    ok: false,
+    status: 401,
+    error: { code: 'auth/rejected', retryable: false },
+  })
+  const plugin = createPathRepairPlugin(vi.fn(async () => undefined))
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The mocked PluginSettingTab constructor does not inspect App.
+  const tab = new KuroflareSettingTab({} as App, plugin)
+  document.body.append(tab.containerEl)
+  tab.display()
+
+  const inviteButton = findInviteButton(tab)
+  assert(inviteButton)
+  inviteButton.click()
+
+  await vi.waitFor(() =>
+    assert.equal(
+      obsidianMocks.FakeNotice.messages.at(-1),
+      'Kuroflare invite: failed (auth/rejected)',
+    ),
+  )
+  assert.equal(tab.containerEl.querySelector('[data-name="Invite link"]'), null)
 })
