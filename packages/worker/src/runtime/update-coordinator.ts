@@ -52,6 +52,56 @@ const BUILD_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 const RELEASE_ASSET_PATH_PATTERN = /^\/github-production-release-asset\/[1-9]\d*\/[0-9A-Fa-f-]+$/
 const MAX_BUILD_UUID_LENGTH = 128
 
+const RandomUuidSchema = v.pipe(v.string(), v.regex(RANDOM_UUID_PATTERN))
+const BuildUuidSchema = v.pipe(v.string(), v.regex(BUILD_UUID_PATTERN))
+const AlreadyExistsResultSchema = v.object({
+  success: v.literal(true),
+  result: v.object({ already_exists: v.literal(true) }),
+})
+const RequestSchema = v.object({
+  requestedAt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+})
+const HookBuildUuidResponseSchema = v.object({
+  success: v.literal(true),
+  result: v.object({
+    build_uuid: v.pipe(v.string(), v.maxLength(MAX_BUILD_UUID_LENGTH), v.regex(BUILD_UUID_PATTERN)),
+  }),
+})
+const UpdateCoordinatorStateSchema = v.strictObject({
+  lastRequestedAt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  requestCount: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  installationId: v.optional(RandomUuidSchema),
+  lastCheckedAt: v.optional(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
+  lastOutcome: v.optional(
+    v.picklist([
+      'disabled',
+      'checked',
+      'paused',
+      'no-newer-version',
+      'blocked-source-version',
+      'rollout-excluded',
+      'incompatible-protocol',
+      'channel-mismatch',
+      'invalid-metadata',
+      'fetch-failed',
+      'triggered',
+      'already-triggered',
+      'backoff',
+      'retry-ceiling',
+      'hook-failed',
+      'updated',
+    ]),
+  ),
+  lastTargetVersion: v.optional(ProductVersionSchema),
+  lastTriggeredVersion: v.optional(ProductVersionSchema),
+  lastBuildUuid: v.optional(BuildUuidSchema),
+  triggeredAt: v.optional(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
+  failureCount: v.optional(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
+  nextRetryAt: v.optional(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
+  lastObservedRunningVersion: v.optional(ProductVersionSchema),
+  triggerReservationId: v.optional(RandomUuidSchema),
+})
+
 const EMPTY_STATE: UpdateCoordinatorState = {
   lastRequestedAt: 0,
   requestCount: 0,
@@ -697,97 +747,16 @@ async function readResponseBytes(response: Response, maxBytes: number): Promise<
 }
 
 function parseHookBuildUuid(value: unknown): string | undefined {
-  if (!isRecord(value) || value.success !== true || !isRecord(value.result)) return undefined
-  const buildUuid = value.result.build_uuid
-  return typeof buildUuid === 'string' &&
-    buildUuid.length <= MAX_BUILD_UUID_LENGTH &&
-    BUILD_UUID_PATTERN.test(buildUuid)
-    ? buildUuid
-    : undefined
+  const parsed = v.safeParse(HookBuildUuidResponseSchema, value)
+  return parsed.success ? parsed.output.result.build_uuid : undefined
 }
 
 function isAlreadyExistsResult(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    value.success === true &&
-    isRecord(value.result) &&
-    value.result.already_exists === true
-  )
+  return v.is(AlreadyExistsResultSchema, value)
 }
 
 function isUpdateCoordinatorState(value: unknown): value is UpdateCoordinatorState {
-  const allowedKeys = new Set([
-    'lastRequestedAt',
-    'requestCount',
-    'installationId',
-    'lastCheckedAt',
-    'lastOutcome',
-    'lastTargetVersion',
-    'lastTriggeredVersion',
-    'lastBuildUuid',
-    'triggeredAt',
-    'failureCount',
-    'nextRetryAt',
-    'lastObservedRunningVersion',
-    'triggerReservationId',
-  ])
-  if (!isRecord(value) || !isSafeNonNegativeInteger(value.lastRequestedAt)) return false
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false
-  if (!isSafeNonNegativeInteger(value.requestCount)) return false
-  if (value.installationId !== undefined && !isRandomUuid(value.installationId)) return false
-  for (const key of ['lastCheckedAt', 'triggeredAt', 'nextRetryAt'] as const) {
-    if (value[key] !== undefined && !isSafeNonNegativeInteger(value[key])) return false
-  }
-  for (const key of [
-    'lastTargetVersion',
-    'lastTriggeredVersion',
-    'lastObservedRunningVersion',
-  ] as const) {
-    if (value[key] !== undefined && !v.is(ProductVersionSchema, value[key])) return false
-  }
-  if (value.lastBuildUuid !== undefined && !isBuildUuid(value.lastBuildUuid)) return false
-  if (value.triggerReservationId !== undefined && !isRandomUuid(value.triggerReservationId))
-    return false
-  if (value.failureCount !== undefined && !isSafeNonNegativeInteger(value.failureCount))
-    return false
-  if (value.lastOutcome !== undefined && !isOutcome(value.lastOutcome)) return false
-  return true
-}
-
-function isOutcome(value: unknown): value is UpdateCoordinatorOutcome {
-  return (
-    typeof value === 'string' &&
-    [
-      'disabled',
-      'checked',
-      'paused',
-      'no-newer-version',
-      'blocked-source-version',
-      'rollout-excluded',
-      'incompatible-protocol',
-      'channel-mismatch',
-      'invalid-metadata',
-      'fetch-failed',
-      'triggered',
-      'already-triggered',
-      'backoff',
-      'retry-ceiling',
-      'hook-failed',
-      'updated',
-    ].includes(value)
-  )
-}
-
-function isRandomUuid(value: unknown): value is string {
-  return typeof value === 'string' && RANDOM_UUID_PATTERN.test(value)
-}
-
-function isBuildUuid(value: unknown): value is string {
-  return typeof value === 'string' && BUILD_UUID_PATTERN.test(value)
-}
-
-function isSafeNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  return v.is(UpdateCoordinatorStateSchema, value)
 }
 
 function safeTimestampAdd(timestamp: number, delay: number): number {
@@ -800,10 +769,6 @@ function retryDelayMs(failureCount: number): number {
     UPDATE_MAX_RETRY_DELAY_MS,
     UPDATE_INITIAL_RETRY_DELAY_MS * 2 ** Math.max(0, failureCount - 1),
   )
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function omitUndefined<T extends object>(value: T): T {
@@ -820,8 +785,8 @@ async function parseRequest(request: Request): Promise<UpdateCoordinatorRequest 
   } catch {
     return undefined
   }
-  if (!isRecord(body) || !isSafeNonNegativeInteger(body.requestedAt)) return undefined
-  return { requestedAt: body.requestedAt }
+  const parsed = v.safeParse(RequestSchema, body)
+  return parsed.success ? parsed.output : undefined
 }
 
 function jsonError(code: string, detail: string, status: number): Response {

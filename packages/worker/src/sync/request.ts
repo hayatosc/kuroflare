@@ -1,5 +1,6 @@
 import {
   SyncUpdateSchema,
+  isNonNegativeSafeInteger,
   type NeedFullSnapshot,
   type SyncRequest,
   type SyncUpdate,
@@ -126,8 +127,4 @@ function isValidDocStateClock(doc: SyncRequestDocState): boolean {
     isNonNegativeSafeInteger(doc.minRetainedSeq) &&
     doc.minRetainedSeq <= doc.latestSeq
   )
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }

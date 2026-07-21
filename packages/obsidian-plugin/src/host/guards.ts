@@ -1,4 +1,9 @@
-import { canonicalizeVaultPath, type OutboxRunningLease, type DocId } from '@kuroflare/core'
+import {
+  canonicalizeVaultPath,
+  type OutboxRunningLease,
+  type DocId,
+} from '@kuroflare/core'
+import * as v from 'valibot'
 
 import type { LocalStoreRepairImportedOutboxRecord } from '../sync/store/repair'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
@@ -14,84 +19,62 @@ export function isPartialSettings(value: unknown): value is Partial<KuroflareSet
   return typeof value === 'object' && value !== null
 }
 
+const KuroflareRepairLogEntrySchema = v.object({
+  id: v.string(),
+  kind: v.picklist([
+    'path-conflict',
+    'portable-path',
+    'delete-vs-edit',
+    'invalid-meta',
+    'remote-materialize-blocked',
+  ]),
+  fileId: v.string(),
+  reason: v.string(),
+  createdAt: v.pipe(v.number(), v.safeInteger()),
+  path: v.optional(v.string()),
+})
+
 export function isKuroflareRepairLogEntry(value: unknown): value is KuroflareRepairLogEntry {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false
-  }
-  const id = Reflect.get(value, 'id')
-  const kind = Reflect.get(value, 'kind')
-  const fileId = Reflect.get(value, 'fileId')
-  const reason = Reflect.get(value, 'reason')
-  const createdAt = Reflect.get(value, 'createdAt')
-  const path = Reflect.get(value, 'path')
-  return (
-    typeof id === 'string' &&
-    (kind === 'path-conflict' ||
-      kind === 'portable-path' ||
-      kind === 'delete-vs-edit' ||
-      kind === 'invalid-meta' ||
-      kind === 'remote-materialize-blocked') &&
-    typeof fileId === 'string' &&
-    typeof reason === 'string' &&
-    Number.isSafeInteger(createdAt) &&
-    (path === undefined || typeof path === 'string')
-  )
+  return v.is(KuroflareRepairLogEntrySchema, value)
 }
+
+const KuroflareLocalRepairExportMetadataSchema = v.object({
+  path: v.string(),
+  exportedAt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  pendingOutboxCount: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+})
 
 export function isKuroflareLocalRepairExportMetadata(
   value: unknown,
 ): value is KuroflareLocalRepairExportMetadata {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false
-  }
-  const path = Reflect.get(value, 'path')
-  const exportedAt = Reflect.get(value, 'exportedAt')
-  const pendingOutboxCount = Reflect.get(value, 'pendingOutboxCount')
-  return (
-    typeof path === 'string' &&
-    Number.isSafeInteger(exportedAt) &&
-    exportedAt >= 0 &&
-    Number.isSafeInteger(pendingOutboxCount) &&
-    pendingOutboxCount >= 0
-  )
+  return v.is(KuroflareLocalRepairExportMetadataSchema, value)
 }
 
 export function isFileAlreadyExistsError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('File already exists')
 }
 
+const LocalStoreOutboxRecordSchema = v.object({
+  id: v.string(),
+  kind: v.string(),
+  status: v.string(),
+  dependsOn: v.array(v.string()),
+  metadataSchemaVersion: v.optional(v.literal(2)),
+})
+
 export function isLocalStoreOutboxRecord(value: unknown): value is LocalStoreOutboxRecord {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false
-  }
-  const id = Reflect.get(value, 'id')
-  const kind = Reflect.get(value, 'kind')
-  const status = Reflect.get(value, 'status')
-  const dependsOn = Reflect.get(value, 'dependsOn')
-  const metadataSchemaVersion = Reflect.get(value, 'metadataSchemaVersion')
-  return (
-    typeof id === 'string' &&
-    typeof kind === 'string' &&
-    typeof status === 'string' &&
-    Array.isArray(dependsOn) &&
-    (metadataSchemaVersion === undefined || metadataSchemaVersion === 2)
-  )
+  return v.is(LocalStoreOutboxRecordSchema, value)
 }
 
+const OutboxRunningLeaseSchema = v.object({
+  itemId: v.string(),
+  kind: v.string(),
+  ownerId: v.string(),
+  leaseExpiresAt: v.pipe(v.number(), v.safeInteger()),
+})
+
 export function isOutboxRunningLease(value: unknown): value is OutboxRunningLease {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false
-  }
-  const itemId = Reflect.get(value, 'itemId')
-  const kind = Reflect.get(value, 'kind')
-  const ownerId = Reflect.get(value, 'ownerId')
-  const leaseExpiresAt = Reflect.get(value, 'leaseExpiresAt')
-  return (
-    typeof itemId === 'string' &&
-    typeof kind === 'string' &&
-    typeof ownerId === 'string' &&
-    Number.isSafeInteger(leaseExpiresAt)
-  )
+  return v.is(OutboxRunningLeaseSchema, value)
 }
 
 export function isStagedRepairImportRecord(

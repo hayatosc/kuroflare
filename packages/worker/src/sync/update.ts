@@ -196,5 +196,5 @@ function makeQuarantineDecision(
 }
 
 function isValidQuarantineId(value: string): boolean {
-  return value.length > 0 && value.length <= 128
+  return v.is(v.pipe(v.string(), v.minLength(1), v.maxLength(128)), value)
 }

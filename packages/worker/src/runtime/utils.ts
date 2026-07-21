@@ -5,6 +5,7 @@ import {
   MessageIdSchema,
   Sha256HexSchema,
   YDocIdSchema,
+  isRecord,
   makeDeviceId,
   timingSafeEqual,
   type ApiError,
@@ -38,6 +39,12 @@ const RETRYABLE_API_ERROR_CODES = new Set<ApiErrorCode>([
   'server/degraded',
   'server/error',
 ])
+
+const StoredQuarantineConfirmationSchema = v.object({
+  subject: v.string(),
+  tokenHash: v.string(),
+  expiresAt: v.number(),
+})
 
 /** Builds the guarded `ApiError` envelope every public HTTP failure response uses. */
 export function apiErrorBody(code: ApiErrorCode, detail?: string): ApiError {
@@ -202,13 +209,11 @@ export function quarantinedUpdateRecordFromSqlRow(
 }
 
 export function isQuarantineReason(value: unknown): value is QuarantinedUpdateRecord['reason'] {
-  return (
-    value === 'hash-mismatch' || value === 'yjs-apply-failed' || value === 'meta-schema-invalid'
-  )
+  return v.is(v.picklist(['hash-mismatch', 'yjs-apply-failed', 'meta-schema-invalid']), value)
 }
 
 export function isQuarantineAuditAction(value: unknown): value is QuarantineAuditAction {
-  return value === 'discarded-by-admin' || value === 'force-applied-by-admin'
+  return v.is(v.picklist(['discarded-by-admin', 'force-applied-by-admin']), value)
 }
 
 export function quarantineAuditEntryFromSqlRow(
@@ -248,12 +253,7 @@ export function isStoredQuarantineConfirmation(value: unknown): value is {
   readonly tokenHash: string
   readonly expiresAt: number
 } {
-  return (
-    isRecord(value) &&
-    typeof value.subject === 'string' &&
-    typeof value.tokenHash === 'string' &&
-    typeof value.expiresAt === 'number'
-  )
+  return v.is(StoredQuarantineConfirmationSchema, value)
 }
 
 export function decodeBase64(value: string): Uint8Array | null {
@@ -329,7 +329,10 @@ export function extractWebSocketProtocolToken(protocolHeader: string | null): st
 }
 
 export function isCompactJwt(value: string | null): boolean {
-  return value !== null && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
+  return (
+    value !== null &&
+    v.is(v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/)), value)
+  )
 }
 
 export function isWebSocketAttachment(value: unknown): value is WebSocketAttachment {
@@ -371,18 +374,10 @@ export function isSessionState(value: unknown): value is SessionState {
   )
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 export function isCheckpointRunStatus(value: unknown): value is CheckpointRunStatus {
-  return (
-    value === 'writing' ||
-    value === 'r2-written' ||
-    value === 'pointer-updated' ||
-    value === 'compacted' ||
-    value === 'completed' ||
-    value === 'failed'
+  return v.is(
+    v.picklist(['writing', 'r2-written', 'pointer-updated', 'compacted', 'completed', 'failed']),
+    value,
   )
 }
 

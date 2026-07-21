@@ -1,3 +1,5 @@
+import { isNonNegativeSafeInteger, isPositiveSafeInteger } from '@kuroflare/core'
+
 /** Durable checkpoint run states stored in the Durable Object database. */
 export type CheckpointRunStatus =
   | 'writing'
@@ -244,12 +246,4 @@ function classifySnapshotProblem(
   }
 
   return null
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }

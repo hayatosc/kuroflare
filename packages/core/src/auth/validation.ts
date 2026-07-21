@@ -97,6 +97,5 @@ export function isClientRefreshState(value: unknown): value is ClientAuthMetadat
   return v.is(v.picklist(['idle', 'refreshing', 'backing-off']), value)
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
+import { isRecord } from '../utils/shared'
+export { isRecord }

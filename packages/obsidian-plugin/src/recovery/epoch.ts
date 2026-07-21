@@ -1,5 +1,40 @@
-import { hashBytesSha256, makeSha256Hex, type DocId } from '@kuroflare/core'
+import {
+  hashBytesSha256,
+  isNonNegativeSafeInteger,
+  isPositiveSafeInteger,
+  isRecord,
+  makeSha256Hex,
+  type DocId,
+} from '@kuroflare/core'
+import { DocIdSchema, NonNegativeSafeIntegerSchema } from '@kuroflare/core'
+import * as v from 'valibot'
 import * as Y from 'yjs'
+
+const RecoveryOutboxUpdateSchema = v.object({
+  id: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
+  docId: DocIdSchema,
+  status: v.picklist(['pending', 'retrying', 'paused', 'in-flight']),
+  updateBytes: v.pipe(
+    v.instance(Uint8Array),
+    v.check((b) => b.byteLength <= 64 * 1024 * 1024),
+  ),
+  dependsOn: v.optional(v.array(v.string())),
+})
+
+const DocumentEpochRecordSchema = v.object({
+  docId: DocIdSchema,
+  providerDbName: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
+  epochId: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
+  status: v.picklist(['recovering', 'ready']),
+  createdAt: NonNegativeSafeIntegerSchema,
+  updatedAt: NonNegativeSafeIntegerSchema,
+  baseUpdateSha256: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(128))),
+  baseStateVectorBase64: v.optional(
+    v.pipe(v.string(), v.minLength(1), v.maxLength(4 * 1024 * 1024)),
+  ),
+  remoteCursorSeq: v.optional(NonNegativeSafeIntegerSchema),
+  recoveryReason: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
+})
 
 /** The provider database state observed before y-indexeddb is opened. */
 export type IndexedDbProviderProbe =
@@ -185,29 +220,7 @@ export async function probeIndexedDbProvider(
 
 /** Validates persisted epoch evidence at the local-store trust boundary. */
 export function isDocumentEpochRecord(value: unknown): value is DocumentEpochRecord {
-  if (!isRecord(value)) return false
-  const docId = Reflect.get(value, 'docId')
-  const providerDbName = Reflect.get(value, 'providerDbName')
-  const epochId = Reflect.get(value, 'epochId')
-  const status = Reflect.get(value, 'status')
-  const createdAt = Reflect.get(value, 'createdAt')
-  const updatedAt = Reflect.get(value, 'updatedAt')
-  return (
-    isDocId(docId) &&
-    isBoundedString(providerDbName, 256) &&
-    isBoundedString(epochId, 256) &&
-    (status === 'recovering' || status === 'ready') &&
-    isNonNegativeSafeInteger(createdAt) &&
-    isNonNegativeSafeInteger(updatedAt) &&
-    (Reflect.get(value, 'baseUpdateSha256') === undefined ||
-      isBoundedString(Reflect.get(value, 'baseUpdateSha256'), 128)) &&
-    (Reflect.get(value, 'baseStateVectorBase64') === undefined ||
-      isBoundedString(Reflect.get(value, 'baseStateVectorBase64'), 4 * 1024 * 1024)) &&
-    (Reflect.get(value, 'remoteCursorSeq') === undefined ||
-      isNonNegativeSafeInteger(Reflect.get(value, 'remoteCursorSeq'))) &&
-    (Reflect.get(value, 'recoveryReason') === undefined ||
-      isBoundedString(Reflect.get(value, 'recoveryReason'), 256))
-  )
+  return v.is(DocumentEpochRecordSchema, value)
 }
 
 /** Classifies provider evidence without opening or creating the provider database. */
@@ -540,26 +553,12 @@ export async function recoverDocumentEpochLifecycle(
   return { ...remote, readyEpoch }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 function isBoundedString(value: unknown, maxLength: number): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= maxLength
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  return v.is(v.pipe(v.string(), v.minLength(1), v.maxLength(maxLength)), value)
 }
 
 function isDocId(value: unknown): value is DocId {
-  if (!isRecord(value)) return false
-  const kind = Reflect.get(value, 'kind')
-  return kind === 'meta' || (kind === 'file' && isBoundedString(Reflect.get(value, 'ydocId'), 256))
+  return v.is(DocIdSchema, value)
 }
 
 function sameDocId(left: DocId, right: DocId): boolean {
@@ -568,24 +567,7 @@ function sameDocId(left: DocId, right: DocId): boolean {
 }
 
 function isRecoveryOutboxUpdate(value: unknown): value is RecoveryOutboxUpdate {
-  if (!isRecord(value)) return false
-  const id = Reflect.get(value, 'id')
-  const status = Reflect.get(value, 'status')
-  const updateBytes = Reflect.get(value, 'updateBytes')
-  const dependsOn = Reflect.get(value, 'dependsOn')
-  return (
-    isBoundedString(id, 256) &&
-    (status === 'pending' ||
-      status === 'retrying' ||
-      status === 'paused' ||
-      status === 'in-flight') &&
-    isDocId(Reflect.get(value, 'docId')) &&
-    updateBytes instanceof Uint8Array &&
-    updateBytes.byteLength <= 64 * 1024 * 1024 &&
-    (dependsOn === undefined ||
-      (Array.isArray(dependsOn) &&
-        dependsOn.every((dependency: unknown) => typeof dependency === 'string')))
-  )
+  return v.is(RecoveryOutboxUpdateSchema, value)
 }
 
 function hasPendingStructs(doc: Y.Doc): boolean {

@@ -2,6 +2,7 @@ import {
   DeviceIdSchema,
   HttpEndpointSchema,
   isClientAuthMetadata,
+  isRecord,
   planClientAuthMetadataFromSetupResponse,
   SetupBootstrapModeSchema,
   VaultIdSchema,
@@ -303,8 +304,4 @@ function isBoundedNonEmptyString(value: string, maxLength: number): boolean {
 
 function secretWriteIdentity(write: LocalSetupSecretWriteEffect): string {
   return `${write.token}\0${write.key}`
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
