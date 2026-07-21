@@ -476,7 +476,8 @@ async function readDocumentEpochEvidence(
     outboxValues.some((value) => {
       if (!v.is(PendingOutboxRowSchema, value)) return false
       if (value.docId.kind !== docId.kind) return false
-      return value.docId.kind === 'meta' || value.docId.ydocId === docId.ydocId
+      if (docId.kind === 'meta') return true
+      return value.docId.ydocId === docId.ydocId
     })
   return {
     epoch,

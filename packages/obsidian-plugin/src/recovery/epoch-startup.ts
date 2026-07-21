@@ -107,9 +107,10 @@ export async function recoverDocumentEpochsAtStartup(
     })
     for (const row of rawOutboxRows) {
       if (!v.is(RawOutboxRowSchema, row)) continue
-      if (!isDocIdLike(row.docId)) continue
-      if (documents.some((document) => sameDocId(document.docId, row.docId))) continue
-      documents.push({ docId: row.docId })
+      const rowDocId = row.docId
+      if (!isDocIdLike(rowDocId)) continue
+      if (documents.some((document) => sameDocId(document.docId, rowDocId))) continue
+      documents.push({ docId: rowDocId })
     }
     const affected: Array<{
       readonly docId: DocId
