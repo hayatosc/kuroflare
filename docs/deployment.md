@@ -179,24 +179,41 @@ Do not expose this secret or route to end users.
    raw token — only its SHA-256 hash — and the token is single-use (consumed
    by `/setup/exchange`).
 
-3. **Compose the setup URI** the plugin understands
+3. **Choose the bootstrap intent and compose the setup URI** the plugin understands
    (`packages/core/src/sync/setup.ts`, `parseSetupUri`):
 
    ```
-   kuroflare://setup?endpoint=<url-encoded-worker-origin>&vaultId=<vault-id>&setupToken=<setup-token>
+   kuroflare://setup?endpoint=<url-encoded-worker-origin>&vaultId=<vault-id>&setupToken=<setup-token>&bootstrapMode=<new-vault-or-join-existing>
    ```
 
    Example:
 
    ```
-   kuroflare://setup?endpoint=https%3A%2F%2Fyour-worker.workers.dev&vaultId=my-vault&setupToken=<the-token-from-step-1>
+   kuroflare://setup?endpoint=https%3A%2F%2Fyour-worker.workers.dev&vaultId=my-vault&setupToken=<the-token-from-step-1>&bootstrapMode=join-existing
    ```
 
+   Use `new-vault` only when this is the first device and the Worker has no
+   persisted documents for the vault. Use `join-existing` when attaching a
+   device to an existing remote vault. The plugin rejects a setup response
+   whose bootstrap mode does not match this explicit intent.
+
 4. **Paste the URI into the plugin's settings tab** ("Setup URI" field,
-   `packages/obsidian-plugin/src/obsidian/settings-tab.ts`) and click Apply.
-   This fills in the Worker endpoint, vault ID, and setup token fields for
-   you. Alternatively, fill the "Worker endpoint" / "Vault ID" / "Setup
-   token" fields manually with the same values.
+   `packages/obsidian-plugin/src/editor/settings-tab.ts`) and click Apply, or
+   open the equivalent Obsidian deep link by replacing the scheme and action:
+
+   ```
+   obsidian://kuroflare-setup?endpoint=<url-encoded-worker-origin>&vaultId=<vault-id>&setupToken=<setup-token>&bootstrapMode=<new-vault-or-join-existing>
+   ```
+
+   On an unregistered device with no setup already in progress, both paths
+   validate the fields and show the endpoint, vault ID, and bootstrap mode in a
+   confirmation dialog before writing settings or starting setup. The dialog
+   never displays the setup token. If a legacy URI omits `bootstrapMode`, the
+   plugin uses the bootstrap mode currently selected in settings and shows that
+   effective value for confirmation. A registered device or a device already
+   running setup rejects another URI without opening the dialog; an explicit
+   local registration-reset flow is not implemented. Alternatively, fill the
+   Worker endpoint, Vault ID, setup token, and bootstrap mode fields manually.
 
 Setup tokens expire quickly (10 minutes by default) — generate and register
 one right before pasting it into the plugin, not in advance.

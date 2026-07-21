@@ -11,6 +11,7 @@ import * as v from 'valibot'
 
 import { isLocalStoreOutboxRecord } from '../../host/guards'
 import { waitForIndexedDbRequest, waitForIndexedDbTransaction } from '../../host/helpers'
+import type { WorkerClient } from '../api-client'
 import {
   planOutboundQueueSyncUpdateRejectedRepair,
   type OutboundQueueSyncUpdateRejectedRepairPlan,
@@ -22,7 +23,6 @@ import {
 } from '../store/indexeddb'
 import { type LocalStoreOutboxRecord } from '../store/store'
 import { planLocalStoreSyncUpdateRejectedRepairTransaction } from '../store/store'
-import type { WorkerClient } from '../api-client'
 
 /** HTTP boundary used by the explicit rejected-update repair action. */
 export type RejectedUpdateRepairHttpPort = WorkerClient

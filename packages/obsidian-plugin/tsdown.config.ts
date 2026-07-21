@@ -12,7 +12,14 @@ export default defineConfig({
   target: 'node18',
   sourcemap: process.env.NODE_ENV !== 'production' ? 'inline' : false,
   deps: {
-    alwaysBundle: [/^@kuroflare\//, /^hono(\/|$)/, 'valibot', 'y-codemirror.next', 'y-indexeddb', 'yjs'],
+    alwaysBundle: [
+      /^@kuroflare\//,
+      /^hono(\/|$)/,
+      'valibot',
+      'y-codemirror.next',
+      'y-indexeddb',
+      'yjs',
+    ],
     neverBundle: [/^@codemirror\//, /^@lezer\//],
   },
   rolldownOptions: {

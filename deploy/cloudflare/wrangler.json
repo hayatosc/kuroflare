@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kuroflare-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-12",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "VAULT_ROOM",
+        "class_name": "VaultRoom"
+      },
+      {
+        "name": "UPDATE_COORDINATOR",
+        "class_name": "UpdateCoordinator"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "SNAPSHOT_BUCKET",
+      "bucket_name": "kuroflare-snapshots"
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VaultRoom", "UpdateCoordinator"]
+    }
+  ],
+  "triggers": {
+    "crons": ["17 */6 * * *"]
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "KUROFLARE_RELEASE_CHANNEL": "stable"
+  },
+  "secrets": {
+    "required": ["DEVICE_TOKEN_SECRET", "ADMIN_TOKEN_SECRET"]
+  }
+}

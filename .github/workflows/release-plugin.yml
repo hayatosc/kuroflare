@@ -1,0 +1,189 @@
+name: Kuroflare release
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
+permissions: {}
+
+concurrency:
+  group: release-plugin-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      release_commit: ${{ steps.tag.outputs.release_commit }}
+      release_timestamp: ${{ steps.tag.outputs.release_timestamp }}
+    steps:
+      # actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # pnpm/action-setup v4.1.0
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda
+        with:
+          version: 11.2.0
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Verify tag ancestry
+        id: tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet refs/remotes/origin/main
+          tag_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          event_commit="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          if [[ "$tag_commit" != "$event_commit" ]]; then
+            echo "Tag commit does not match the workflow event commit." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            echo "Release tag commit is not reachable from origin/main." >&2
+            exit 1
+          fi
+          printf 'release_commit=%s\n' "$tag_commit" >> "$GITHUB_OUTPUT"
+          printf 'release_timestamp=%s\n' "$(git show -s --format=%cI "$tag_commit")" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Version contract
+        run: pnpm version:check
+
+      - name: Release contract
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: pnpm release:plugin:validate -- --tag "$RELEASE_TAG"
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Release pipeline tests
+        run: pnpm test:release
+
+      - name: Deploy template contract tests
+        run: pnpm test:deploy-template
+
+      - name: Worker e2e (real workerd / DO / R2)
+        run: pnpm --filter @kuroflare/worker test:e2e
+
+      - name: Build production plugin
+        run: pnpm --filter @kuroflare/obsidian-plugin build
+
+      - name: Build worker runtime
+        run: pnpm --filter @kuroflare/worker-runtime build
+
+      - name: Stage release bundle
+        id: stage
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          staging_dir="$(mktemp -d "$RUNNER_TEMP/kuroflare-plugin.XXXXXX")"
+          runtime_dir="$(mktemp -d "$RUNNER_TEMP/kuroflare-runtime.XXXXXX")"
+          pnpm release:plugin:stage -- --tag "$RELEASE_TAG" --staging-dir "$staging_dir"
+          cp scripts/release/publish-plugin.mjs "$staging_dir/publish-plugin.mjs"
+          pnpm --filter @kuroflare/worker-runtime pack --pack-destination "$runtime_dir" >/dev/null
+          runtime_tarball="$(find "$runtime_dir" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          if [[ -z "$runtime_tarball" ]]; then
+            echo "Worker runtime pack did not produce a tarball." >&2
+            exit 1
+          fi
+          pnpm release:worker:stage -- --staging-dir "$staging_dir" --runtime-tarball "$runtime_tarball" --tag "$RELEASE_TAG"
+          pnpm release:worker:checksum -- --staging-dir "$staging_dir"
+          printf 'staging_dir=%s\n' "$staging_dir" >> "$GITHUB_OUTPUT"
+
+      # actions/upload-artifact v4.6.2
+      - name: Upload release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: obsidian-plugin-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.stage.outputs.staging_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      # actions/download-artifact v4.3.0
+      - name: Download release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: obsidian-plugin-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kuroflare-plugin-release
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify release bundle
+        working-directory: ${{ runner.temp }}/kuroflare-plugin-release
+        run: sha256sum -c INPUT_SHA256SUMS
+
+      - name: Publish worker runtime to npm
+        env:
+          RELEASE_ASSET_DIR: ${{ runner.temp }}/kuroflare-plugin-release
+          RELEASE_RUNTIME_TARBALL: ${{ runner.temp }}/kuroflare-plugin-release/worker-runtime.tgz
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node "$RELEASE_ASSET_DIR/publish-plugin.mjs" --runtime-only
+
+      - name: Generate immutable worker metadata
+        env:
+          RELEASE_ASSET_DIR: ${{ runner.temp }}/kuroflare-plugin-release
+          RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
+          RELEASE_PUBLISHED_AT: ${{ needs.build.outputs.release_timestamp }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          node "$RELEASE_ASSET_DIR/worker.ts" generate
+          --staging-dir "$RELEASE_ASSET_DIR"
+          --tag "$RELEASE_TAG"
+          --commit "$RELEASE_COMMIT"
+          --published-at "$RELEASE_PUBLISHED_AT"
+
+      - name: Recompute and verify release checksums
+        working-directory: ${{ runner.temp }}/kuroflare-plugin-release
+        run: |
+          set -euo pipefail
+          node worker.ts public-checksum --staging-dir .
+          sha256sum -c SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+          RELEASE_ASSET_DIR: ${{ runner.temp }}/kuroflare-plugin-release
+          RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node "$RELEASE_ASSET_DIR/publish-plugin.mjs"

@@ -6,6 +6,10 @@ compatibility_date = "2026-06-12"
 name = "VAULT_ROOM"
 class_name = "VaultRoom"
 
+[[durable_objects.bindings]]
+name = "UPDATE_COORDINATOR"
+class_name = "UpdateCoordinator"
+
 # wrangler.toml has no field for R2 lifecycle rules; they're bucket-level config
 # applied out of band via `wrangler r2 bucket lifecycle` (see its --help for the
 # exact flags on the wrangler version in use). The DO's own alarm-driven sweep
@@ -20,6 +24,16 @@ bucket_name = "kuroflare-snapshots"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["VaultRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["UpdateCoordinator"]
+
+[triggers]
+crons = ["17 */6 * * *"]
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
 
 # Uncomment to override the default minimum retained snapshot generation
 # count (3, packages/worker/src/runtime/constants.ts). Must be a positive

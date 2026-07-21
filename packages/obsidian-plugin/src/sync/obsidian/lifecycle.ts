@@ -1,5 +1,6 @@
 import {
   type SyncRuntimeSetupExchangePort,
+  type SyncRuntimeShellState,
   type SyncRuntimeShellEffectExecutor,
   type SyncRuntimeStartupStepEffectPort,
 } from '../engine/actuation'
@@ -197,8 +198,7 @@ export function createSyncRuntimeObsidianShellLifecycle(
   }
 }
 
-function startupSyncIsBlocked(startup: SyncRuntimeObsidianShellLifecycleTickResult): boolean {
-  const shell = startup.driver.state.shell
+export function isSyncRuntimeObsidianShellBlocked(shell: SyncRuntimeShellState): boolean {
   return (
     shell.lastFailedEffect !== undefined ||
     shell.status === 'auth-blocked' ||
@@ -206,6 +206,10 @@ function startupSyncIsBlocked(startup: SyncRuntimeObsidianShellLifecycleTickResu
     shell.status === 'local-store-blocked' ||
     shell.status === 'rejected'
   )
+}
+
+function startupSyncIsBlocked(startup: SyncRuntimeObsidianShellLifecycleTickResult): boolean {
+  return isSyncRuntimeObsidianShellBlocked(startup.driver.state.shell)
 }
 
 /**

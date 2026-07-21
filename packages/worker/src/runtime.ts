@@ -1,2 +1,2 @@
 export * from './runtime/index'
-export { default } from './runtime/app'
+export { default } from './runtime/entrypoint'

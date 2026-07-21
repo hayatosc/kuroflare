@@ -1,7 +1,6 @@
-import { parseSetupUri } from '@kuroflare/core'
+import { PRODUCT_VERSION, parseSetupUri } from '@kuroflare/core'
 import { type App, Notice, PluginSettingTab, Setting } from 'obsidian'
 
-import { createWorkerClient } from '../sync/api-client'
 import { readAccessToken, requireSetupMetadata } from '../host/auth'
 import {
   DEVICE_REVOKE_CONFIRMATION,
@@ -9,12 +8,10 @@ import {
   LOCAL_STORE_DISCARD_CONFIRMATION,
   LOCAL_STORE_REBUILD_CONFIRMATION,
 } from '../host/constants'
-import {
-  accessTokenSecretKeyForSetup,
-  docIdLabel,
-  repairLogDescription,
-} from '../host/helpers'
+import { accessTokenSecretKeyForSetup, docIdLabel, repairLogDescription } from '../host/helpers'
 import type KuroflareSpikePlugin from '../host/plugin'
+import { confirmAndApplySetupUri } from '../host/setup-uri'
+import { createWorkerClient } from '../sync/api-client'
 import { renderQuarantineAdmin } from '../sync/obsidian/quarantine-ui'
 import {
   planRejectedUpdateRepairOutcomePresentation,
@@ -22,15 +19,47 @@ import {
 } from '../sync/obsidian/rejected-repair-ui'
 import { planLocalStoreRepairSettingsPresentation } from '../sync/obsidian/repair-ui'
 import { renderSnapshotHealthAdmin } from '../sync/obsidian/snapshot-health-ui'
+import { fetchWorkerVersion } from '../sync/worker-version'
+import { planWorkerVersionPresentation } from '../sync/worker-version-presentation'
 
 export class KuroflareSettingTab extends PluginSettingTab {
   private rejectedRepairStatusText = ''
+  private workerVersionProbeId = 0
 
   constructor(
     app: App,
     private readonly plugin: KuroflareSpikePlugin,
   ) {
     super(app, plugin)
+  }
+
+  private runRepairAction(action: () => Promise<unknown>): void {
+    void action()
+      .then(() => {
+        this.display()
+      })
+      .catch(() => {
+        new Notice('Kuroflare: repair action failed')
+      })
+  }
+
+  private probeWorkerVersion(container: HTMLElement, endpoint: string): void {
+    const probeId = ++this.workerVersionProbeId
+    renderWorkerVersionPresentation(
+      container,
+      planWorkerVersionPresentation({
+        pluginVersion: PRODUCT_VERSION,
+        result: { state: 'loading' },
+      }),
+    )
+    void fetchWorkerVersion(endpoint).then((result) => {
+      if (probeId !== this.workerVersionProbeId) return
+      if (!container.isConnected) return
+      renderWorkerVersionPresentation(
+        container,
+        planWorkerVersionPresentation({ pluginVersion: PRODUCT_VERSION, result }),
+      )
+    })
   }
 
   override display(): void {
@@ -54,27 +83,24 @@ export class KuroflareSettingTab extends PluginSettingTab {
             new Notice('Kuroflare setup: invalid setup URI')
             return
           }
-          void this.plugin
-            .updateSettings({
-              endpoint: parsed.endpoint,
-              setupVaultId: parsed.vaultId,
-              setupToken: parsed.setupToken,
-            })
-            .then(() => {
-              new Notice('Kuroflare setup: setup URI applied')
-              this.display()
-            })
+          confirmAndApplySetupUri(this.plugin, parsed, () => this.display())
         })
       })
 
-    new Setting(containerEl).setName('Worker endpoint').addText((text) => {
+    const workerEndpointSetting = new Setting(containerEl).setName('Worker endpoint')
+    containerEl.createEl('h3', { text: 'Worker version' })
+    const workerVersionContainer = containerEl.createDiv()
+    workerEndpointSetting.addText((text) => {
       text
         .setPlaceholder('http://127.0.0.1:8787')
         .setValue(settings.endpoint)
         .onChange((value) => {
-          void this.plugin.updateSettings({ endpoint: value.trim() })
+          const endpoint = value.trim()
+          void this.plugin.updateSettings({ endpoint })
+          this.probeWorkerVersion(workerVersionContainer, endpoint)
         })
     })
+    this.probeWorkerVersion(workerVersionContainer, settings.endpoint)
 
     new Setting(containerEl).setName('Vault ID').addText((text) => {
       text.setValue(settings.setupVaultId).onChange((value) => {
@@ -347,73 +373,95 @@ export class KuroflareSettingTab extends PluginSettingTab {
         })
       }
       if (entry.kind === 'invalid-meta') {
-        let _invalidMetaConfirmation = ''
+        let invalidMetaConfirmation = ''
         setting
           .setDesc(
             `${repairLogDescription(entry)}. Type ${INVALID_META_DISCARD_CONFIRMATION} to discard the invalid meta key.`,
           )
           .addButton((button) => {
             button.setButtonText('Inspect invalid meta').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() => this.plugin.inspectInvalidMetaRepairEntry(entry))
             })
           })
           .addText((text) => {
             text.setPlaceholder(INVALID_META_DISCARD_CONFIRMATION).onChange((value) => {
-              _invalidMetaConfirmation = value.trim()
+              invalidMetaConfirmation = value.trim()
             })
           })
           .addButton((button) => {
             button.setButtonText('Discard invalid meta').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() =>
+                this.plugin.discardInvalidMetaRepairEntry(entry, invalidMetaConfirmation),
+              )
             })
           })
       } else if (entry.kind === 'remote-materialize-blocked') {
         setting
           .addButton((button) => {
             button.setButtonText('Resolve to conflict path').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() =>
+                this.plugin.resolveRemoteMaterializeBlockedRepairEntry(entry),
+              )
             })
           })
           .addButton((button) => {
             button.setButtonText('Retry materialize').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() =>
+                this.plugin.retryRemoteMaterializeBlockedRepairEntry(entry),
+              )
             })
           })
           .addButton((button) => {
             button.setButtonText('Clear').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() => this.plugin.clearRepairLogEntry(entry))
             })
           })
       } else if (entry.kind === 'path-conflict' || entry.kind === 'portable-path') {
         setting
           .addButton((button) => {
             button.setButtonText('Resolve to conflict path').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() => this.plugin.resolvePathConflictRepairEntry(entry))
             })
           })
           .addButton((button) => {
             button.setButtonText('Retry path materialize').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() => this.plugin.retryPathConflictRepairEntry(entry))
             })
           })
           .addButton((button) => {
             button.setButtonText('Clear').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() => this.plugin.clearRepairLogEntry(entry))
             })
           })
       } else if (entry.kind === 'delete-vs-edit' && entry.reason === 'missing-binary-content') {
         setting
           .addButton((button) => {
             button.setButtonText('Retry binary restore check').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() => this.plugin.retryKeepDeletedRepairEntry(entry))
             })
           })
           .addButton((button) => {
             button.setButtonText('Clear').onClick(() => {
-              new Notice('Kuroflare: repair actions under refactoring')
+              this.runRepairAction(() => this.plugin.clearRepairLogEntry(entry))
             })
           })
       }
     }
+  }
+}
+
+function renderWorkerVersionPresentation(
+  container: HTMLElement,
+  presentation: ReturnType<typeof planWorkerVersionPresentation>,
+): void {
+  container.empty()
+  container.createEl('p', {
+    text: presentation.statusText,
+    attr: { role: 'status', 'aria-live': 'polite' },
+  })
+  const details = container.createEl('dl')
+  for (const row of presentation.rows) {
+    details.createEl('dt', { text: row.label })
+    details.createEl('dd', { text: row.value })
   }
 }

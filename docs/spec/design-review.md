@@ -395,7 +395,7 @@ Implemented contract:
   the sanitizer introduces converges through the existing conflict-suffix mechanism.
   Repair-log entries reuse the existing path-conflict retry/resolve actions
   (`packages/obsidian-plugin/src/sync/obsidian/repair-actions.ts`,
-  `packages/obsidian-plugin/src/obsidian/settings-tab.ts`) instead of a new independent one.
+  `packages/obsidian-plugin/src/editor/settings-tab.ts`) instead of a new independent one.
 
 Acceptance evidence:
 

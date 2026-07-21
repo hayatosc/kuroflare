@@ -6,6 +6,9 @@ export * from './utils/ids'
 export * from './utils/text'
 export * from './utils/version'
 
+// ---- Distribution ----
+export * from './distribution'
+
 // ---- HTTP ----
 export * from './http/admin'
 export * from './http/blob'

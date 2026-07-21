@@ -201,7 +201,7 @@ response: { status: "ok" | "degraded", protocolVersion, checkedAt,
 | 対象                          | guard の規則                                                                                                                                                                                      |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | URL                           | http(s) のみ。credential / fragment 付きを拒否。header 値に CR/LF 禁止                                                                                                                            |
-| setup issue response          | `kuroflare://setup?...` URI 内の endpoint / vaultId / setupToken が本体と一致しないものを拒否                                                                                                     |
+| setup issue response          | `kuroflare://setup?...` URI 内の endpoint / vaultId / setupToken が本体と一致しないものを拒否。Optional `bootstrapMode` is validated as `new-vault` or `join-existing` when present.              |
 | /blobs/head                   | request hash と evidence の 1:1 対応（重複、未要求、欠落を拒否）。`found=true` は `size` 必須、`found=false` は `size` 禁止（[sync-model.md](sync-model.md) §5: size 不明を復活許可扱いにしない） |
 | snapshot response             | `snapshots/.../*.yupdate` 形式の key、update / SV の SHA-256、base64 本体。空 vault bootstrap 用に空 base64 は許可                                                                                |
 | quarantine                    | list は bytes 本体なし。明示 inspect の detail だけが `updateBytesBase64` を返す                                                                                                                  |
@@ -240,9 +240,11 @@ E2EE しないため、token は vault の全 plaintext へのアクセス権そ
 デバイス登録は Setup URI（QR にもできる）1 本で行う。
 
 ```
-kuroflare://setup?endpoint=...&vaultId=...&setupToken=...
+kuroflare://setup?endpoint=...&vaultId=...&setupToken=...&bootstrapMode=new-vault|join-existing
 ```
 
+- `bootstrapMode` records the user's explicit bootstrap intent. On an unregistered device with no setup already in progress, the Obsidian client displays the effective intent and non-secret endpoint/vault fields for confirmation before writing settings or starting setup; it never displays the setup token. Existing registration metadata or in-progress setup rejects another URI without mutation. A legacy URI without the parameter uses a recognized mode already selected in plugin settings and otherwise falls back to `new-vault`.
+- The plugin also registers `obsidian://kuroflare-setup?...` with the same fields and guarded application path.
 - `setupToken` は one-time かつ短命（例: 10 分）。`POST /setup/exchange` で device token に交換し、以後使えない。QR / URI を再利用可能にしない。
 - setup token は平文で保存せず、token hash から row（`vault_id / issued_at / expires_at / consumed_at`）を引く。consume 判定は unknown token、vault mismatch、壊れた有効期間、not-yet-valid、expired、already consumed をすべて拒否する。
 - exchange handler は request guard の後、token consume、device registry 判定、device row 書き込み、access JWT mint、initial refresh token hash insert を 1 transaction で進める。token を consume してから後続の書き込みに失敗する状態を避けるためで、途中で失敗したら rollback して credential response を返さない。

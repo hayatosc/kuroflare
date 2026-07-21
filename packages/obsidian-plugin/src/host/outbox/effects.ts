@@ -12,7 +12,6 @@ import { TFile, TFolder } from 'obsidian'
 import * as v from 'valibot'
 
 import { createWorkerClient, type WorkerClient } from '../../sync/api-client'
-
 import {
   type OutboxWorkerManifestPutSideEffectPlan,
   type OutboxWorkerBlobPutSideEffectPlan,

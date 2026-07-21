@@ -75,12 +75,14 @@ export interface ParsedSetupUri {
   readonly endpoint: string
   readonly vaultId: string
   readonly setupToken: string
+  readonly bootstrapMode?: SetupBootstrapMode | undefined
 }
 
 const SetupUriQuerySchema = v.object({
   endpoint: HttpEndpointSchema,
   vaultId: VaultIdSchema,
   setupToken: SetupTokenSchema,
+  bootstrapMode: v.optional(SetupBootstrapModeSchema),
 })
 
 /**
@@ -95,10 +97,17 @@ export function parseSetupUri(setupUri: string): ParsedSetupUri | undefined {
     if (url.protocol !== 'kuroflare:' || url.hostname !== 'setup') {
       return undefined
     }
-    const result = v.safeParse(SetupUriQuerySchema, {
+    const bootstrapMode = url.searchParams.get('bootstrapMode')
+    const query = {
       endpoint: url.searchParams.get('endpoint'),
       vaultId: url.searchParams.get('vaultId'),
       setupToken: url.searchParams.get('setupToken'),
+      ...(bootstrapMode === null
+        ? {}
+        : { bootstrapMode: bootstrapMode.length === 0 ? undefined : bootstrapMode }),
+    }
+    const result = v.safeParse(SetupUriQuerySchema, {
+      ...query,
     })
     if (!result.success) {
       return undefined
@@ -107,6 +116,34 @@ export function parseSetupUri(setupUri: string): ParsedSetupUri | undefined {
   } catch {
     return undefined
   }
+}
+
+/** Parsed fields from Obsidian's already-decoded protocol handler parameters. */
+export type ParsedObsidianSetupUriParams = ParsedSetupUri
+
+const ObsidianSetupUriParamsSchema = v.object({
+  endpoint: HttpEndpointSchema,
+  vaultId: VaultIdSchema,
+  setupToken: SetupTokenSchema,
+  bootstrapMode: v.optional(SetupBootstrapModeSchema),
+})
+
+/**
+ * Validates query parameters passed to the registered Obsidian setup protocol handler.
+ *
+ * @param params Already-decoded parameters from Obsidian.
+ * @returns Parsed setup fields, or `undefined` when validation fails.
+ */
+export function parseObsidianSetupUriParams(
+  params: Readonly<Record<string, string | undefined>>,
+): ParsedObsidianSetupUriParams | undefined {
+  const result = v.safeParse(ObsidianSetupUriParamsSchema, {
+    endpoint: params.endpoint,
+    vaultId: params.vaultId,
+    setupToken: params.setupToken,
+    bootstrapMode: params.bootstrapMode === '' ? undefined : params.bootstrapMode,
+  })
+  return result.success ? result.output : undefined
 }
 
 export const SetupExchangeResponseSchema = v.strictObject({

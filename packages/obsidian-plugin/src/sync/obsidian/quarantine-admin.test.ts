@@ -1,8 +1,8 @@
 import { makeDeviceId, makeVaultId } from '@kuroflare/core'
 import { assert, test } from 'vitest'
 
-import type { LocalSetupMetadata } from '../engine/setup'
 import { createWorkerClient } from '../api-client'
+import type { LocalSetupMetadata } from '../engine/setup'
 import {
   executeQuarantineAdminAction,
   fetchQuarantineAdminDetail,

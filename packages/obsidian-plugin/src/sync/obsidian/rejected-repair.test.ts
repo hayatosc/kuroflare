@@ -8,6 +8,7 @@ import {
 } from '@kuroflare/core'
 import { assert, test, vi } from 'vitest'
 
+import { createWorkerClient } from '../api-client'
 import type { LocalSetupMetadata } from '../engine/setup'
 import type { LocalStoreOutboxRecord } from '../store/store'
 import {
@@ -15,7 +16,6 @@ import {
   repairRejectedUpdateRemote,
   type RejectedUpdateRepairRemoteRow,
 } from './rejected-repair'
-import { createWorkerClient } from '../api-client'
 
 const vaultId = makeVaultId('repair-vault')
 const docId = { kind: 'file', ydocId: makeYDocId('repair-doc') } as const

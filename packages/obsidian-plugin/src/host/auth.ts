@@ -18,6 +18,7 @@ import type { OutboxAuthRefreshRequestDecision } from '@kuroflare/core'
 import { Notice } from 'obsidian'
 import * as v from 'valibot'
 
+import { createWorkerClient, type WorkerClient } from '../sync/api-client'
 import {
   recoverStaleAuthRefreshStart as recoverStaleAuthRefreshStartFn,
   runAuthRefreshAttempt,
@@ -37,7 +38,6 @@ import {
   AUTH_REFRESH_MARGIN_MS,
   AUTH_REFRESH_STALE_AFTER_MS,
 } from './constants'
-import { createWorkerClient, type WorkerClient } from '../sync/api-client'
 import {
   localSetupMetadataFromSetupResponse,
   createAuthRefreshMetadataPort,

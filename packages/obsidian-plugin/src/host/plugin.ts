@@ -27,6 +27,7 @@ import { enqueueMissingRemoteBinaryDownloads } from '../metadata/materialize'
 import { materializeMetaRenames, type MetadataMaterializationPort } from '../metadata/materialize'
 import { reconcileAndMaterializeMeta } from '../metadata/reconcile'
 import type { DocumentEpochRecoveryHost } from '../recovery/epoch-startup'
+import { createWorkerClient } from '../sync/api-client'
 import {
   createSyncRuntimeIndexedDbLocalStoreEffectPort,
   createSyncRuntimeLocalStoreRebuildReplanPort,
@@ -48,7 +49,6 @@ import {
 } from '../sync/obsidian/rejected-repair'
 import { createSyncRuntimeObsidianSetupExchangeEvidenceReader } from '../sync/obsidian/settings'
 import { createEvidenceBackedHttpSyncRuntimeSetupExchangePort } from '../sync/setup-exchange-http'
-import { createWorkerClient } from '../sync/api-client'
 import { createBrowserLocalStoreIndexedDbFactoryPort } from '../sync/store/indexeddb'
 import type { LocalStoreOutboxRecord } from '../sync/store/store'
 import {
@@ -123,6 +123,7 @@ import {
   retryRemoteMaterializeBlockedRepairEntry as retryRemoteMaterializeBlockedRepairEntryCommand,
   type RepairCommandsPort,
 } from './repair'
+import { handleKuroflareSetupUriProtocol, KUROFLARE_SETUP_PROTOCOL_ACTION } from './setup-uri'
 import {
   applyLatestSnapshot,
   fetchLatestSnapshotPayload,
@@ -265,6 +266,9 @@ export default class KuroflareSpikePlugin extends Plugin {
     registerFileTreeWatcher(this)
     registerVaultWatcher(this)
     registerWorkspaceEvents(this)
+    this.registerObsidianProtocolHandler(KUROFLARE_SETUP_PROTOCOL_ACTION, (params) =>
+      handleKuroflareSetupUriProtocol(this, params),
+    )
 
     this.app.workspace.onLayoutReady(() => {
       void bindActiveMarkdownView(this, 'layout-ready')

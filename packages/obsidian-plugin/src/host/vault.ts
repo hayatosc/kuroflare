@@ -14,6 +14,7 @@ import {
   recoverDocumentEpochsAtStartup,
   type DocumentEpochRecoveryHost,
 } from '../recovery/epoch-startup'
+import { createWorkerClient } from '../sync/api-client'
 import { createVerifiedSyncRuntimeSetupPersistStepPort } from '../sync/engine/actuation'
 import { createLocalSetupPersistIndexedDbMetadataPort } from '../sync/engine/persist'
 import type { LocalSetupMetadata } from '../sync/engine/setup'
@@ -38,7 +39,6 @@ import type {
 } from '../types'
 import { currentSetupMetadata, currentSetupVaultIdHint } from './auth'
 import { createRemoteSetupAccessTokenVerifier } from './auth'
-import { createWorkerClient } from '../sync/api-client'
 import type { StartupSideEffectGate } from './boot'
 import { DEFAULT_SETTINGS, META_SYNC_DOC_ID, SPIKE_TEXT_NAME, WORKER_ORIGIN } from './constants'
 import {

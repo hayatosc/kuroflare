@@ -1,0 +1,35 @@
+{
+  "name": "@kuroflare/worker-runtime",
+  "version": "0.1.0",
+  "description": "Public Kuroflare Cloudflare Worker runtime",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hayatosc/kuroflare.git"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "pnpm --filter @kuroflare/worker... build && tsdown && node --experimental-strip-types test/contract.test.ts",
+    "typecheck": "tsgo --noEmit",
+    "typecheck:compat": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@kuroflare/worker": "workspace:*",
+    "@types/node": "^22.15.30",
+    "tsdown": "^0.22.2",
+    "typescript": "^5.8.3"
+  }
+}

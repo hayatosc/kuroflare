@@ -1,9 +1,10 @@
 import { Notice } from 'obsidian'
 import * as Y from 'yjs'
 
-import { accessTokenSecretKeyForSetup, encodeBase64, safeLogError } from './helpers'
+import { createWorkerClient } from '../sync/api-client'
 import { readAccessToken, requireSetupMetadata } from './auth'
 import { META_SYNC_DOC_ID } from './constants'
+import { accessTokenSecretKeyForSetup, encodeBase64, safeLogError } from './helpers'
 import {
   hasLegacyDeletedTombstones,
   metaDocLegacyOnly,
@@ -14,7 +15,6 @@ import {
 } from './meta'
 import type KuroflareSpikePlugin from './plugin'
 import { fetchLatestSnapshotPayload } from './snapshot'
-import { createWorkerClient } from '../sync/api-client'
 import { replaceMetaDoc } from './vault'
 
 /** Performs the legacy-to-v2 transition through the snapshot-import CAS endpoint. */
@@ -43,7 +43,12 @@ export async function prepareMetadataAfterHello(plugin: KuroflareSpikePlugin): P
   let latest: Awaited<ReturnType<typeof fetchLatestSnapshotPayload>> = null
   let manualRepairRequired = false
   try {
-    latest = await fetchLatestSnapshotPayload(plugin, META_SYNC_DOC_ID, 'metadata-migration', isCurrent)
+    latest = await fetchLatestSnapshotPayload(
+      plugin,
+      META_SYNC_DOC_ID,
+      'metadata-migration',
+      isCurrent,
+    )
     if (!isCurrent()) return
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const candidate = new Y.Doc()

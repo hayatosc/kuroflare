@@ -14,7 +14,10 @@ test('redactSecretText strips bearer JWTs, kuroflare access tokens, and token qu
     redactSecretText(`stored ${kuroflareToken} for device`),
     'stored kuroflare-token.[redacted] for device',
   )
-  assert.equal(redactSecretText(`bare jwt ${accessJwt} in message`), 'bare jwt [redacted-jwt] in message')
+  assert.equal(
+    redactSecretText(`bare jwt ${accessJwt} in message`),
+    'bare jwt [redacted-jwt] in message',
+  )
   assert.equal(
     redactSecretText('GET /setup?vaultId=v1&setupToken=super-secret-value'),
     'GET /setup?vaultId=v1&setupToken=[redacted]',

@@ -16,6 +16,7 @@ import {
   getEditorView,
   replaceYText,
 } from '../editor/editor-binding'
+import type { SyncRuntimeObsidianShellLifecycleResumeResult } from '../sync/obsidian/lifecycle'
 import type { FileDocId } from '../types'
 import { fileDocIdForPath } from './auth'
 import { DISK_ORIGIN, MARKDOWN_EXTENSION } from './constants'
@@ -610,10 +611,10 @@ export async function runSyncStartupTick(
 export async function handleLifecycleResume(
   plugin: KuroflareSpikePlugin,
   reason: string,
-): Promise<void> {
+): Promise<SyncRuntimeObsidianShellLifecycleResumeResult | undefined> {
   const runtime = plugin.syncRuntime
   if (runtime === null) {
-    return
+    return undefined
   }
   const result = await runtime.lifecycle.runResumeTick(reason)
   console.info('[kuroflare] sync lifecycle resume tick', {
@@ -624,4 +625,5 @@ export async function handleLifecycleResume(
         ? result.startup.driver.state.shell.completedEffects.length
         : undefined,
   })
+  return result
 }

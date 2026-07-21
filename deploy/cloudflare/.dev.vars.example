@@ -1,0 +1,6 @@
+DEVICE_TOKEN_SECRET=
+ADMIN_TOKEN_SECRET=
+
+# DEPLOY_HOOK_URL is intentionally optional for the initial deployment.
+# Create a Workers Builds Deploy Hook after the first deployment and add its
+# URL as a secret in the Cloudflare Dashboard when automatic updates are enabled.

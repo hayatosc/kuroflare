@@ -38,12 +38,14 @@ vi.mock('obsidian', () => {
   class FakeTFile {}
   class FakeTFolder {}
   class FakeMarkdownView {}
+  class FakeModal {}
   class FakePluginSettingTab {}
   class FakeSetting {}
   class FakeButtonComponent {}
   return {
     ButtonComponent: FakeButtonComponent,
     MarkdownView: FakeMarkdownView,
+    Modal: FakeModal,
     Notice: FakeNotice,
     Plugin: FakePlugin,
     PluginSettingTab: FakePluginSettingTab,

@@ -142,20 +142,13 @@ test('auth refresh rejects a forged response through remote verification before 
   ])
   const metadataStore = new FakeAuthMetadataStore()
   let verifyRequest: { readonly url: string; readonly authorization: string | null } | undefined
-  const mockFetch = vi.fn(
-    async (input: RequestInfo | URL, init?: RequestInit) => {
-      verifyRequest = {
-        url:
-          typeof input === 'string'
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url,
-        authorization: new Headers(init?.headers).get('Authorization'),
-      }
-      return new Response(JSON.stringify({ error: 'auth-reject:invalid-token' }), { status: 401 })
-    },
-  )
+  const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    verifyRequest = {
+      url: typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
+      authorization: new Headers(init?.headers).get('Authorization'),
+    }
+    return new Response(JSON.stringify({ error: 'auth-reject:invalid-token' }), { status: 401 })
+  })
   const verifier = createRemoteSetupAccessTokenVerifier({
     client: createWorkerClient('https://sync.example.test', undefined, mockFetch),
   })

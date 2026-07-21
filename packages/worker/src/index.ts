@@ -1,4 +1,12 @@
-export { default, VaultRoom, workerApp, workerEntrypoint } from './runtime'
+export {
+  default,
+  VaultRoom,
+  UpdateCoordinator,
+  workerApp,
+  workerEntrypoint,
+  workerModule,
+  scheduled,
+} from './runtime'
 export type { AppType } from './runtime'
 export type {
   DurableObjectIdBinding,
@@ -13,7 +21,17 @@ export type {
   R2ObjectsBinding,
   RuntimeCheckpointResult,
   RuntimeWebSocket,
+  UpdateCoordinatorRequest,
+  UpdateCoordinatorState,
+  WorkerExecutionContextBinding,
   WorkerEnv,
+  WorkerModuleBinding,
+  WorkerScheduledEventBinding,
+} from './runtime'
+export {
+  UPDATE_COORDINATOR_ID_NAME,
+  UPDATE_COORDINATOR_REQUEST_PATH,
+  UPDATE_COORDINATOR_STATE_KEY,
 } from './runtime'
 export {
   decideAuthAdmission,

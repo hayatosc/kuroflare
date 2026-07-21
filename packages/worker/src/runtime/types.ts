@@ -13,14 +13,98 @@ import { type CheckpointRunStatus } from '../checkpoint/checkpoint'
 /** Environment bindings required by the Worker entrypoint. */
 export interface WorkerEnv {
   readonly VAULT_ROOM: DurableObjectNamespaceBinding
+  /** Fixed singleton Durable Object used by the scheduled update coordinator. */
+  readonly UPDATE_COORDINATOR?: DurableObjectNamespaceBinding
   readonly SNAPSHOT_BUCKET?: R2BucketBinding
   readonly DEVICE_TOKEN_SECRET?: string
   readonly ADMIN_TOKEN_SECRET?: string
+  /** Optional Workers Builds Deploy Hook credential used by automatic updates. */
+  readonly DEPLOY_HOOK_URL?: string
+  /** Release metadata is required by the public `/version` endpoint. */
+  readonly KUROFLARE_RELEASE_CHANNEL?: string
+  readonly KUROFLARE_BUILD_COMMIT?: string
+  readonly CF_VERSION_METADATA?: CloudflareVersionMetadataBinding
   /**
    * Overrides `SNAPSHOT_RETENTION_MIN_GENERATIONS` (constants.ts) when set.
    * Must be a positive integer string; see `resolveSnapshotRetentionMinGenerations`.
    */
   readonly SNAPSHOT_RETENTION_MIN_GENERATIONS?: string
+}
+
+/** Minimal scheduled event surface provided by the Workers runtime. */
+export interface WorkerScheduledEventBinding {
+  readonly scheduledTime: number
+  readonly cron: string
+  readonly type: string
+}
+
+/** Minimal execution context surface used by module handlers. */
+export interface WorkerExecutionContextBinding {
+  waitUntil(promise: Promise<unknown>): void
+  passThroughOnException(): void
+}
+
+/** Module handler surface exported to the Workers runtime. */
+export interface WorkerModuleBinding {
+  fetch(
+    request: Request,
+    env: WorkerEnv,
+    context?: WorkerExecutionContextBinding,
+  ): Response | Promise<Response>
+  scheduled(
+    event: WorkerScheduledEventBinding,
+    env: WorkerEnv,
+    context: WorkerExecutionContextBinding,
+  ): void | Promise<void>
+}
+
+/** JSON request accepted by the internal UpdateCoordinator endpoint. */
+export interface UpdateCoordinatorRequest {
+  readonly requestedAt: number
+}
+
+/** Persisted JSON state for the singleton UpdateCoordinator. */
+export interface UpdateCoordinatorState {
+  readonly lastRequestedAt: number
+  readonly requestCount: number
+  readonly installationId?: string | undefined
+  readonly lastCheckedAt?: number | undefined
+  readonly lastOutcome?: UpdateCoordinatorOutcome | undefined
+  readonly lastTargetVersion?: string | undefined
+  readonly lastTriggeredVersion?: string | undefined
+  readonly lastBuildUuid?: string | undefined
+  readonly triggeredAt?: number | undefined
+  readonly failureCount?: number | undefined
+  readonly nextRetryAt?: number | undefined
+  readonly lastObservedRunningVersion?: string | undefined
+  /** Internal compare-and-set token for the currently executing hook request. */
+  readonly triggerReservationId?: string | undefined
+}
+
+/** Sanitized outcomes exposed by the singleton coordinator diagnostics. */
+export type UpdateCoordinatorOutcome =
+  | 'disabled'
+  | 'checked'
+  | 'paused'
+  | 'no-newer-version'
+  | 'blocked-source-version'
+  | 'rollout-excluded'
+  | 'incompatible-protocol'
+  | 'channel-mismatch'
+  | 'invalid-metadata'
+  | 'fetch-failed'
+  | 'triggered'
+  | 'already-triggered'
+  | 'backoff'
+  | 'retry-ceiling'
+  | 'hook-failed'
+  | 'updated'
+
+/** Cloudflare Workers version metadata binding exposed by `version_metadata`. */
+export interface CloudflareVersionMetadataBinding {
+  readonly id?: string
+  readonly tag?: string
+  readonly timestamp?: string
 }
 
 /** Minimal Durable Object namespace surface used by the Worker shell. */

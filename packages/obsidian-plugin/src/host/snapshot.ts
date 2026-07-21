@@ -12,6 +12,7 @@ import * as v from 'valibot'
 import * as Y from 'yjs'
 
 import { documentEpochMetadataKey } from '../recovery/epoch'
+import { createWorkerClient } from '../sync/api-client'
 import {
   commitFullSnapshotApplyIndexedDbTransaction,
   createFullSnapshotApplyIndexedDbDatabasePort,
@@ -19,10 +20,13 @@ import {
   runNeedFullSnapshotRecovery,
   type VerifiedFullSnapshotBytes,
 } from '../sync/engine/snapshot'
-import { createWorkerClient } from '../sync/api-client'
 import type { TextDocumentOwner } from '../types'
 import { activeDocId, currentSetupMetadata, readAccessToken, requireSetupMetadata } from './auth'
-import { NEED_FULL_SNAPSHOT_RECOVERY_BACKOFF_MS, META_SYNC_DOC_ID, WORKER_ORIGIN } from './constants'
+import {
+  NEED_FULL_SNAPSHOT_RECOVERY_BACKOFF_MS,
+  META_SYNC_DOC_ID,
+  WORKER_ORIGIN,
+} from './constants'
 import { flushYTextToDisk } from './editor'
 import {
   accessTokenSecretKeyForSetup,
@@ -257,7 +261,13 @@ export async function recoverFromNeedFullSnapshot(
         applySnapshot: async (payload) => {
           if (!isCurrent()) return false
           try {
-            await applyLatestSnapshot(plugin, docId, payload, `need-full-snapshot:${reason}`, isCurrent)
+            await applyLatestSnapshot(
+              plugin,
+              docId,
+              payload,
+              `need-full-snapshot:${reason}`,
+              isCurrent,
+            )
             if (
               docId.kind === 'meta' &&
               plugin.pendingSetupResponse === null &&

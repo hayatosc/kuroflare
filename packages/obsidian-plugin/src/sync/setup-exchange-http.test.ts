@@ -147,10 +147,7 @@ test('setup exchange http client rejects non-ok responses without reading token-
     new Response(JSON.stringify({ error: 'setup-token:expired' }), { status: 403 })
 
   await expect(
-    requestSetupExchange(
-      { endpoint: 'https://sync.example.test', request },
-      fetchImpl,
-    ),
+    requestSetupExchange({ endpoint: 'https://sync.example.test', request }, fetchImpl),
   ).rejects.toThrow(/setup-exchange-http:403/)
 })
 
@@ -178,10 +175,7 @@ test('setup exchange http client rejects invalid endpoint before sending request
   }
 
   await expect(
-    requestSetupExchange(
-      { endpoint: 'kuroflare://setup', request },
-      fetchImpl,
-    ),
+    requestSetupExchange({ endpoint: 'kuroflare://setup', request }, fetchImpl),
   ).rejects.toThrow(/invalid-setup-exchange-endpoint/)
   assert.equal(called, false)
 })
@@ -236,8 +230,7 @@ test('http-backed setup exchange startup port does not schedule replan after inv
 
   vi.stubGlobal(
     'fetch',
-    async () =>
-      new Response(JSON.stringify({ ...response, tokenVersion: 0 }), { status: 200 }),
+    async () => new Response(JSON.stringify({ ...response, tokenVersion: 0 }), { status: 200 }),
   )
 
   const port = createHttpSyncRuntimeSetupExchangePort({
@@ -304,16 +297,13 @@ test('evidence-backed setup exchange startup port fails invalid evidence without
   } satisfies SetupExchangeStartupEffect
   const token = 'secret-setup-token'
   let fetchCalled = false
-  vi.stubGlobal(
-    'fetch',
-    async () => {
-      fetchCalled = true
-      return new Response(JSON.stringify(response), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    },
-  )
+  vi.stubGlobal('fetch', async () => {
+    fetchCalled = true
+    return new Response(JSON.stringify(response), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
 
   const scheduled: {
     readonly effect: SetupExchangeStartupEffect

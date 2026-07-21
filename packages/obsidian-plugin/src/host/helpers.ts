@@ -8,12 +8,12 @@ import type {
 import { makeOutboxPlanItemId, hashBytesSha256 } from '@kuroflare/core'
 import type { SecretStorage } from 'obsidian'
 
+import type { WorkerClient } from '../sync/api-client'
 import type { AuthRefreshHttpResult } from '../sync/auth/refresh'
 import type { AuthRefreshMetadataPort } from '../sync/auth/refresh'
 import type { AuthRefreshSecretStoragePort } from '../sync/auth/refresh'
 import type { runAuthRefreshAttempt } from '../sync/auth/refresh'
 import type { AuthRevokeMetadataPort, AuthRevokeSecretStoragePort } from '../sync/auth/revoke'
-import type { WorkerClient } from '../sync/api-client'
 import type { LocalSetupPersistSecretStoragePort } from '../sync/engine/persist'
 import type { LocalSetupMetadata, LocalSetupMetadataPutOperation } from '../sync/engine/setup'
 import { LOCAL_SETUP_METADATA_KEY } from '../sync/engine/setup'
@@ -321,9 +321,7 @@ export function createObsidianAuthRefreshSecretStoragePort(
   }
 }
 
-export function createAuthRefreshHttpPort(
-  client: WorkerClient,
-) {
+export function createAuthRefreshHttpPort(client: WorkerClient) {
   return {
     async refresh(request: DeviceTokenRefreshRequest): Promise<AuthRefreshHttpResult> {
       let response: Response

@@ -22,6 +22,7 @@ import {
   makeYDocId,
   parseBlobManifestJson,
   parseControlMessage,
+  parseObsidianSetupUriParams,
   parseSetupUri,
   stringifyBlobManifest,
   type BlobManifest,
@@ -292,6 +293,28 @@ test('parses setup URI fields for client settings', () => {
       setupToken: 'setup-token',
     },
   )
+  assert.deepEqual(
+    parseSetupUri(
+      'kuroflare://setup?endpoint=https%3A%2F%2Fsync.example.test&vaultId=vault-1&setupToken=setup-token&bootstrapMode=join-existing',
+    ),
+    {
+      endpoint: 'https://sync.example.test',
+      vaultId: 'vault-1',
+      setupToken: 'setup-token',
+      bootstrapMode: 'join-existing',
+    },
+  )
+  assert.deepEqual(
+    parseSetupUri(
+      'kuroflare://setup?endpoint=https%3A%2F%2Fsync.example.test&vaultId=vault-1&setupToken=setup-token&bootstrapMode=',
+    ),
+    {
+      endpoint: 'https://sync.example.test',
+      vaultId: 'vault-1',
+      setupToken: 'setup-token',
+      bootstrapMode: undefined,
+    },
+  )
   assert.equal(parseSetupUri('https://sync.example.test'), undefined)
   assert.equal(
     parseSetupUri(
@@ -301,6 +324,65 @@ test('parses setup URI fields for client settings', () => {
   )
   assert.equal(
     parseSetupUri('kuroflare://setup?endpoint=https%3A%2F%2Fsync.example.test&vaultId='),
+    undefined,
+  )
+  assert.equal(
+    parseSetupUri(
+      'kuroflare://setup?endpoint=https%3A%2F%2Fsync.example.test&vaultId=vault-1&setupToken=setup-token&bootstrapMode=invalid-mode',
+    ),
+    undefined,
+  )
+})
+
+test('parses validated fields from Obsidian setup protocol params', () => {
+  assert.deepEqual(
+    parseObsidianSetupUriParams({
+      action: 'kuroflare-setup',
+      endpoint: 'https://sync.example.test',
+      vaultId: 'vault-1',
+      setupToken: 'setup-token',
+      bootstrapMode: 'join-existing',
+    }),
+    {
+      endpoint: 'https://sync.example.test',
+      vaultId: 'vault-1',
+      setupToken: 'setup-token',
+      bootstrapMode: 'join-existing',
+    },
+  )
+  assert.deepEqual(
+    parseObsidianSetupUriParams({
+      endpoint: 'https://sync.example.test',
+      vaultId: 'vault-1',
+      setupToken: 'setup-token',
+      bootstrapMode: '',
+    }),
+    {
+      endpoint: 'https://sync.example.test',
+      vaultId: 'vault-1',
+      setupToken: 'setup-token',
+      bootstrapMode: undefined,
+    },
+  )
+  assert.equal(
+    parseObsidianSetupUriParams({
+      endpoint: 'https://user:pass@sync.example.test',
+      vaultId: 'vault-1',
+      setupToken: 'setup-token',
+    }),
+    undefined,
+  )
+  assert.equal(
+    parseObsidianSetupUriParams({ endpoint: 'https://sync.example.test', vaultId: 'vault-1' }),
+    undefined,
+  )
+  assert.equal(
+    parseObsidianSetupUriParams({
+      endpoint: 'https://sync.example.test',
+      vaultId: 'vault-1',
+      setupToken: 'setup-token',
+      bootstrapMode: 'invalid-mode',
+    }),
     undefined,
   )
 })

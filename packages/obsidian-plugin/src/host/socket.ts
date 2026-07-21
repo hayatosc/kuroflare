@@ -692,7 +692,10 @@ async function handleWorkerWebSocketIssue(
   try {
     await recovery
   } catch (error: unknown) {
-    console.warn('[kuroflare] worker websocket recovery failed', { issue, error: safeLogError(error) })
+    console.warn('[kuroflare] worker websocket recovery failed', {
+      issue,
+      error: safeLogError(error),
+    })
     scheduleOutboxWorkerTick(plugin, 1_000, `websocket-${issue.kind}-retry`)
   } finally {
     if (plugin.workerWebSocketRecoveryPromise === recovery) {

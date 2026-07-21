@@ -3,6 +3,7 @@
 import { makeDeviceId, type ClientAuthMetadata } from '@kuroflare/core'
 import { assert, expect, test, vi } from 'vitest'
 
+import { createWorkerClient } from '../sync/api-client'
 import { LOCAL_AUTH_METADATA_KEY } from '../sync/engine/setup'
 import {
   ensureUsableAccessTokenFromMetadata,
@@ -16,7 +17,6 @@ import {
   createRemoteSetupAccessTokenVerifier,
 } from './auth'
 import type { AuthRefreshRetryHost } from './auth'
-import { createWorkerClient } from '../sync/api-client'
 
 const deviceId = makeDeviceId('auth-preflight-device')
 const accessTokenSecretKey = 'kuroflare:auth-preflight:access-token'
@@ -357,17 +357,15 @@ test('auth refresh lock serializes refresh and revoke operations', () => {
 
 test('remote setup verifier rejects forged or malformed worker responses', async () => {
   const fetchCalls: { readonly url: string; readonly authorization: string | null }[] = []
-  const mockFetch = vi.fn(
-    async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url =
-        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      fetchCalls.push({
-        url,
-        authorization: new Headers(init?.headers).get('Authorization'),
-      })
-      return new Response(JSON.stringify({ aud: 'vault-1', exp: 'not-a-number' }), { status: 200 })
-    },
-  )
+  const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    fetchCalls.push({
+      url,
+      authorization: new Headers(init?.headers).get('Authorization'),
+    })
+    return new Response(JSON.stringify({ aud: 'vault-1', exp: 'not-a-number' }), { status: 200 })
+  })
   const verifier = createRemoteSetupAccessTokenVerifier({
     client: createWorkerClient('https://worker.example/api/', undefined, mockFetch),
   })
@@ -387,9 +385,7 @@ test('remote setup verifier accepts only a valid verified claims response', asyn
     exp: 2_000,
     tokenVersion: 1,
   }
-  const mockFetch = vi.fn(
-    async () => new Response(JSON.stringify(claims), { status: 200 }),
-  )
+  const mockFetch = vi.fn(async () => new Response(JSON.stringify(claims), { status: 200 }))
   const verifier = createRemoteSetupAccessTokenVerifier({
     client: createWorkerClient('https://worker.example', undefined, mockFetch),
   })

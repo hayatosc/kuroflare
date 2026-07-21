@@ -262,6 +262,21 @@ importers:
         specifier: ^4.105.0
         version: 4.105.0
 
+  packages/worker-runtime:
+    devDependencies:
+      '@kuroflare/worker':
+        specifier: workspace:*
+        version: link:../worker
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.21
+      tsdown:
+        specifier: ^0.22.2
+        version: 0.22.2(@typescript/native-preview@7.0.0-dev.20260615.1)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
 packages:
 
   '@asamuzakjp/css-color@5.1.11':
