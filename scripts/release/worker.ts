@@ -403,12 +403,18 @@ function isRolloutStage(value: number): value is RolloutStage {
   return (ROLLOUT_STAGES as readonly number[]).includes(value)
 }
 
+/** Extract blockedSourceVersions as string[] from a validated channel pointer. */
+function blockedVersionList(pointer: JsonObject): string[] {
+  if (!Array.isArray(pointer.blockedSourceVersions)) return []
+  return pointer.blockedSourceVersions.filter((v): v is string => typeof v === 'string')
+}
+
 /** The stage that may follow `current`, or undefined if `current` is terminal/invalid. */
 function nextRolloutStage(current: number): RolloutStage | undefined {
   // A freshly promoted pointer sits at 0% and advances to the first real stage.
   if (current === 0) return ROLLOUT_STAGES[0]
-  const index = ROLLOUT_STAGES.indexOf(current as RolloutStage)
-  if (index === -1) return undefined
+  if (!isRolloutStage(current)) return undefined
+  const index = ROLLOUT_STAGES.indexOf(current)
   return ROLLOUT_STAGES[index + 1]
 }
 
@@ -500,7 +506,7 @@ export function blockChannelSourceVersion(
 ): JsonObject {
   const current = validateChannelPointer(pointer, channel)
   const target = requireStableVersion(version, 'blocked source version')
-  const blocked = (current.blockedSourceVersions as string[]).slice()
+  const blocked = blockedVersionList(current)
   if (!blocked.includes(target)) blocked.push(target)
   blocked.sort(compareStableVersion)
   return validateChannelPointer(
@@ -518,7 +524,7 @@ export function unblockChannelSourceVersion(
 ): JsonObject {
   const current = validateChannelPointer(pointer, channel)
   const target = requireStableVersion(version, 'blocked source version')
-  const blocked = (current.blockedSourceVersions as string[]).filter((entry) => entry !== target)
+  const blocked = blockedVersionList(current).filter((entry) => entry !== target)
   return validateChannelPointer(
     { ...current, blockedSourceVersions: blocked, updatedAt: canonicalUtcTimestamp(now) },
     channel,

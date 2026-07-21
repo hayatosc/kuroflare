@@ -5,7 +5,6 @@ import {
   MessageIdSchema,
   Sha256HexSchema,
   YDocIdSchema,
-  isRecord,
   makeDeviceId,
   timingSafeEqual,
   type ApiError,
@@ -175,26 +174,22 @@ export function snapshotCandidateFromKey(
   return { key, upperSeq, healthy: true }
 }
 
+const QuarantinedUpdateRowSchema = v.object({
+  messageId: MessageIdSchema,
+  deviceId: DeviceIdSchema,
+  reason: v.picklist(['hash-mismatch', 'yjs-apply-failed', 'meta-schema-invalid']),
+  updateSha256: Sha256HexSchema,
+  createdAt: NonNegIntSchema,
+})
+
 export function quarantinedUpdateRecordFromSqlRow(
   row: QuarantinedUpdateRow | undefined,
 ): QuarantinedUpdateRecord | undefined {
-  if (row === undefined) {
-    return undefined
-  }
-
+  if (row === undefined) return undefined
   const docId = docIdFromKey(row.docId)
   const updateBytes = readSqlUpdateBytes(row.updateBytes)
-  if (
-    docId === undefined ||
-    !v.is(MessageIdSchema, row.messageId) ||
-    !v.is(DeviceIdSchema, row.deviceId) ||
-    !isQuarantineReason(row.reason) ||
-    !v.is(Sha256HexSchema, row.updateSha256) ||
-    updateBytes === undefined ||
-    !v.is(NonNegIntSchema, row.createdAt)
-  ) {
-    return undefined
-  }
+  if (docId === undefined || updateBytes === undefined) return undefined
+  if (!v.is(QuarantinedUpdateRowSchema, row)) return undefined
 
   return {
     id: row.id,
@@ -216,23 +211,23 @@ export function isQuarantineAuditAction(value: unknown): value is QuarantineAudi
   return v.is(v.picklist(['discarded-by-admin', 'force-applied-by-admin']), value)
 }
 
+const QuarantineAuditEventRowSchema = v.object({
+  messageId: MessageIdSchema,
+  deviceId: DeviceIdSchema,
+  reason: v.picklist(['hash-mismatch', 'yjs-apply-failed', 'meta-schema-invalid']),
+  action: v.picklist(['discarded-by-admin', 'force-applied-by-admin']),
+  actor: DeviceIdSchema,
+  quarantinedAt: NonNegIntSchema,
+  resolvedAt: NonNegIntSchema,
+  appliedSeq: v.nullable(PosIntSchema),
+})
+
 export function quarantineAuditEntryFromSqlRow(
   row: QuarantineAuditEventRow,
 ): QuarantineAuditEntry | undefined {
   const docId = docIdFromKey(row.docId)
-  if (
-    docId === undefined ||
-    !v.is(MessageIdSchema, row.messageId) ||
-    !v.is(DeviceIdSchema, row.deviceId) ||
-    !isQuarantineReason(row.reason) ||
-    !isQuarantineAuditAction(row.action) ||
-    !v.is(DeviceIdSchema, row.actor) ||
-    !v.is(NonNegIntSchema, row.quarantinedAt) ||
-    !v.is(NonNegIntSchema, row.resolvedAt) ||
-    (row.appliedSeq !== null && !v.is(PosIntSchema, row.appliedSeq))
-  ) {
-    return undefined
-  }
+  if (docId === undefined) return undefined
+  if (!v.is(QuarantineAuditEventRowSchema, row)) return undefined
 
   return {
     quarantineId: row.quarantineId,
@@ -335,43 +330,39 @@ export function isCompactJwt(value: string | null): boolean {
   )
 }
 
+const WebSocketAwarenessAttachmentSchema = v.object({
+  docId: DocIdSchema,
+  clientId: NonNegIntSchema,
+})
+
+const WebSocketAttachmentSchema = v.object({
+  authToken: v.optional(v.string()),
+  session: v.optional(v.custom(isSessionState)),
+  awareness: v.optional(v.custom<WebSocketAwarenessAttachment>(isWebSocketAwarenessAttachment)),
+})
+
 export function isWebSocketAttachment(value: unknown): value is WebSocketAttachment {
-  if (!isRecord(value)) {
-    return false
-  }
-  const authToken = value.authToken
-  const session = value.session
-  const awareness = value.awareness
-  return (
-    (authToken === undefined || typeof authToken === 'string') &&
-    (session === undefined || isSessionState(session)) &&
-    (awareness === undefined || isWebSocketAwarenessAttachment(awareness))
-  )
+  return v.is(WebSocketAttachmentSchema, value)
 }
 
 export function isWebSocketAwarenessAttachment(
   value: unknown,
 ): value is WebSocketAwarenessAttachment {
-  if (!isRecord(value)) {
-    return false
-  }
-  return v.is(DocIdSchema, value.docId) && v.is(NonNegIntSchema, value.clientId)
+  return v.is(WebSocketAwarenessAttachmentSchema, value)
 }
 
+const SessionStateSchema = v.pipe(
+  v.object({
+    vaultId: VaultIdSchema,
+    deviceId: DeviceIdSchema,
+    metadataAccess: v.optional(MetadataAccessSchema),
+    metadataCapabilityAdvertised: v.optional(v.boolean()),
+  }),
+  v.check((s) => !('yClientId' in s) && !('y_client_id' in s)),
+)
+
 export function isSessionState(value: unknown): value is SessionState {
-  if (!isRecord(value)) {
-    return false
-  }
-  if ('yClientId' in value || 'y_client_id' in value) {
-    return false
-  }
-  return (
-    v.is(VaultIdSchema, value.vaultId) &&
-    v.is(DeviceIdSchema, value.deviceId) &&
-    (value.metadataAccess === undefined || v.is(MetadataAccessSchema, value.metadataAccess)) &&
-    (value.metadataCapabilityAdvertised === undefined ||
-      typeof value.metadataCapabilityAdvertised === 'boolean')
-  )
+  return v.is(SessionStateSchema, value)
 }
 
 export function isCheckpointRunStatus(value: unknown): value is CheckpointRunStatus {

@@ -6,6 +6,7 @@ import {
   type MetaFile,
   type MetaGroupedEntry,
 } from '@kuroflare/core'
+import * as v from 'valibot'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
@@ -463,19 +464,19 @@ async function readDocumentEpochEvidence(
   ])
   await waitForIndexedDbTransaction(transaction)
   const epoch = isDocumentEpochRecord(epochValue) ? epochValue : undefined
+  const PendingOutboxRowSchema = v.object({
+    docId: v.object({
+      kind: v.picklist(['meta', 'file']),
+      ydocId: v.optional(v.string()),
+    }),
+    status: v.picklist(['pending', 'retrying', 'paused']),
+  })
   const hasPendingOutbox =
     Array.isArray(outboxValues) &&
     outboxValues.some((value) => {
-      if (typeof value !== 'object' || value === null) return false
-      const candidate = Reflect.get(value, 'docId')
-      const status = Reflect.get(value, 'status')
-      return (
-        typeof candidate === 'object' &&
-        candidate !== null &&
-        Reflect.get(candidate, 'kind') === docId.kind &&
-        (docId.kind === 'meta' || Reflect.get(candidate, 'ydocId') === docId.ydocId) &&
-        (status === 'pending' || status === 'retrying' || status === 'paused')
-      )
+      if (!v.is(PendingOutboxRowSchema, value)) return false
+      if (value.docId.kind !== docId.kind) return false
+      return value.docId.kind === 'meta' || value.docId.ydocId === docId.ydocId
     })
   return {
     epoch,

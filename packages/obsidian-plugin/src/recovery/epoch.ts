@@ -1,7 +1,6 @@
 import {
   hashBytesSha256,
   isNonNegativeSafeInteger,
-  isPositiveSafeInteger,
   isRecord,
   makeSha256Hex,
   type DocId,
@@ -200,20 +199,19 @@ export async function probeIndexedDbProvider(
     return { ok: false, status: 'malformed', dbName, reason: 'database-directory-not-array' }
   }
 
+  const DatabaseEntrySchema = v.object({
+    name: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
+    version: v.optional(v.pipe(v.number(), v.safeInteger(), v.minValue(1))),
+  })
   const names = new Set<string>()
   for (const database of databases) {
-    if (!isRecord(database)) {
-      return { ok: false, status: 'malformed', dbName, reason: 'database-entry-not-object' }
-    }
-    const name = Reflect.get(database, 'name')
-    const version = Reflect.get(database, 'version')
-    if (!isBoundedString(name, 256) || (version !== undefined && !isPositiveSafeInteger(version))) {
+    if (!v.is(DatabaseEntrySchema, database)) {
       return { ok: false, status: 'malformed', dbName, reason: 'database-entry-invalid' }
     }
-    if (names.has(name)) {
+    if (names.has(database.name)) {
       return { ok: false, status: 'malformed', dbName, reason: 'duplicate-database-name' }
     }
-    names.add(name)
+    names.add(database.name)
   }
   return { ok: true, status: names.has(dbName) ? 'present' : 'absent', dbName }
 }

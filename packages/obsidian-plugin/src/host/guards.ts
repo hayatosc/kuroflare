@@ -1,5 +1,6 @@
 import {
   canonicalizeVaultPath,
+  DocIdSchema,
   type OutboxRunningLease,
   type DocId,
 } from '@kuroflare/core'
@@ -77,44 +78,39 @@ export function isOutboxRunningLease(value: unknown): value is OutboxRunningLeas
   return v.is(OutboxRunningLeaseSchema, value)
 }
 
+const StagedRepairImportRecordSchema = v.object({
+  kind: v.literal('y-update'),
+  status: v.literal('paused'),
+  reason: v.literal('imported-repair-export'),
+  resumeOn: v.literal('manual'),
+  docId: v.unknown(),
+  messageId: v.unknown(),
+  updateSha256: v.unknown(),
+  updateBytesBase64: v.unknown(),
+  createdAt: v.unknown(),
+  retryCount: v.optional(v.literal(0)),
+})
+
 export function isStagedRepairImportRecord(
   record: LocalStoreOutboxRecord,
 ): record is LocalStoreRepairImportedOutboxRecord {
-  return (
-    record.kind === 'y-update' &&
-    record.status === 'paused' &&
-    record.reason === 'imported-repair-export' &&
-    record.resumeOn === 'manual' &&
-    record.docId !== undefined &&
-    record.messageId !== undefined &&
-    record.updateSha256 !== undefined &&
-    record.updateBytesBase64 !== undefined &&
-    record.createdAt !== undefined &&
-    (record.retryCount ?? 0) === 0
-  )
+  return v.is(StagedRepairImportRecordSchema, record)
 }
+
+const StoredYDocRecordSchema = v.object({
+  docId: v.custom(isDocIdLike),
+  updateBytes: v.instance(Uint8Array),
+})
 
 export function isStoredYDocRecord(value: unknown): value is {
   readonly docId: DocId
   readonly updateBytes: Uint8Array
 } {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false
-  }
-  const docId = Reflect.get(value, 'docId')
-  const updateBytes = Reflect.get(value, 'updateBytes')
-  return isDocIdLike(docId) && updateBytes instanceof Uint8Array
+  return v.is(StoredYDocRecordSchema, value)
 }
 
 export function isDocIdLike(value: unknown): value is DocId {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false
-  }
-  const kind = Reflect.get(value, 'kind')
-  if (kind === 'meta') {
-    return true
-  }
-  return kind === 'file' && typeof Reflect.get(value, 'ydocId') === 'string'
+  return v.is(DocIdSchema, value)
 }
 
 /** Maximum number of blob hashes sent in one `/blobs/head` request. */

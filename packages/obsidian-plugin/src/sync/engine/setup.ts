@@ -2,7 +2,6 @@ import {
   DeviceIdSchema,
   HttpEndpointSchema,
   isClientAuthMetadata,
-  isRecord,
   planClientAuthMetadataFromSetupResponse,
   SetupBootstrapModeSchema,
   VaultIdSchema,
@@ -206,21 +205,17 @@ export function planLocalSetupPersist(input: LocalSetupPersistPlanInput): LocalS
  * @param value Candidate setup metadata record read from the metadata object store.
  * @returns Whether the setup metadata has the persisted shape expected by startup.
  */
+const LocalSetupMetadataSchema = v.strictObject({
+  endpoint: HttpEndpointSchema,
+  vaultId: VaultIdSchema,
+  deviceId: DeviceIdSchema,
+  protocolVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  bootstrapMode: SetupBootstrapModeSchema,
+  tokenVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
+})
+
 export function isLocalSetupMetadata(value: unknown): value is LocalSetupMetadata {
-  if (!isRecord(value)) {
-    return false
-  }
-  if ('yClientId' in value || 'y_client_id' in value) {
-    return false
-  }
-  return (
-    v.is(HttpEndpointSchema, value.endpoint) &&
-    v.is(VaultIdSchema, value.vaultId) &&
-    v.is(DeviceIdSchema, value.deviceId) &&
-    v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), value.protocolVersion) &&
-    v.is(SetupBootstrapModeSchema, value.bootstrapMode) &&
-    v.is(v.pipe(v.number(), v.integer(), v.minValue(1)), value.tokenVersion)
-  )
+  return v.is(LocalSetupMetadataSchema, value)
 }
 
 /**

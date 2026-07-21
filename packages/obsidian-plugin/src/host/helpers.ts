@@ -7,6 +7,7 @@ import type {
 } from '@kuroflare/core'
 import { makeOutboxPlanItemId, hashBytesSha256 } from '@kuroflare/core'
 import type { SecretStorage } from 'obsidian'
+import * as v from 'valibot'
 
 import type { WorkerClient } from '../sync/api-client'
 import type { AuthRefreshHttpResult } from '../sync/auth/refresh'
@@ -159,13 +160,13 @@ export function retryAfterMsFromHeader(value: string | null): number | undefined
   return Math.max(0, timestamp - Date.now())
 }
 
+const ResponseErrorBodySchema = v.object({
+  code: v.pipe(v.string(), v.minLength(1)),
+})
+
 export async function responseErrorCode(response: Response): Promise<string | undefined> {
   const body: unknown = await response.json().catch(() => undefined)
-  if (typeof body !== 'object' || body === null) {
-    return undefined
-  }
-  const code = Reflect.get(body, 'code')
-  return typeof code === 'string' && code.length > 0 ? code : undefined
+  return v.is(ResponseErrorBodySchema, body) ? body.code : undefined
 }
 
 export function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {

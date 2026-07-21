@@ -24,7 +24,7 @@ export type YDocId = v.InferInput<typeof YDocIdSchema>
 
 export const MetaDocIdSchema = v.object({ kind: v.literal('meta') })
 export const FileDocIdSchema = v.object({ kind: v.literal('file'), ydocId: YDocIdSchema })
-export const DocIdSchema = v.union([MetaDocIdSchema, FileDocIdSchema])
+export const DocIdSchema = v.variant('kind', [MetaDocIdSchema, FileDocIdSchema])
 
 export type DocId = v.InferInput<typeof DocIdSchema>
 

@@ -100,15 +100,16 @@ export async function recoverDocumentEpochsAtStartup(
       if (documents.some((document) => sameDocId(document.docId, rowDocId))) continue
       documents.push({ docId: rowDocId })
     }
+    const RawOutboxRowSchema = v.object({
+      docId: v.unknown(),
+      kind: v.literal('y-update'),
+      status: v.picklist(['pending', 'retrying', 'paused']),
+    })
     for (const row of rawOutboxRows) {
-      if (typeof row !== 'object' || row === null) continue
-      const docId = Reflect.get(row, 'docId')
-      if (!isDocIdLike(docId)) continue
-      if (Reflect.get(row, 'kind') !== 'y-update') continue
-      const status = Reflect.get(row, 'status')
-      if (status !== 'pending' && status !== 'retrying' && status !== 'paused') continue
-      if (documents.some((document) => sameDocId(document.docId, docId))) continue
-      documents.push({ docId })
+      if (!v.is(RawOutboxRowSchema, row)) continue
+      if (!isDocIdLike(row.docId)) continue
+      if (documents.some((document) => sameDocId(document.docId, row.docId))) continue
+      documents.push({ docId: row.docId })
     }
     const affected: Array<{
       readonly docId: DocId
@@ -134,14 +135,8 @@ export async function recoverDocumentEpochsAtStartup(
           (row.status === 'pending' || row.status === 'retrying' || row.status === 'paused'),
       )
       const rawHasPendingOutbox = rawOutboxRows.some((row) => {
-        if (typeof row !== 'object' || row === null) return false
-        const rowDocId = Reflect.get(row, 'docId')
-        const status = Reflect.get(row, 'status')
-        return (
-          isDocIdLike(rowDocId) &&
-          sameDocId(rowDocId, document.docId) &&
-          (status === 'pending' || status === 'retrying' || status === 'paused')
-        )
+        if (!v.is(RawOutboxRowSchema, row)) return false
+        return isDocIdLike(row.docId) && sameDocId(row.docId, document.docId)
       })
       if (
         (provider.status === 'absent' || epochValue?.status === 'recovering') &&
@@ -334,6 +329,15 @@ async function recoverOneDocumentEpoch(
   }
 }
 
+const RecoveryOutboxRowSchema = v.object({
+  docId: v.unknown(),
+  kind: v.literal('y-update'),
+  status: v.picklist(['pending', 'retrying', 'paused']),
+  id: v.string(),
+  updateBytesBase64: v.string(),
+  dependsOn: v.array(v.string()),
+})
+
 function assertNoMalformedRecoveryOutboxRows(rows: readonly unknown[], docId: DocId): void {
   const ids = new Set<string>()
   for (const row of rows) {
@@ -342,30 +346,13 @@ function assertNoMalformedRecoveryOutboxRows(rows: readonly unknown[], docId: Do
     if (typeof id === 'string') ids.add(id)
   }
   for (const row of rows) {
-    if (typeof row !== 'object' || row === null) continue
-    const candidate = Reflect.get(row, 'docId')
-    if (!isDocIdLike(candidate) || !sameDocId(candidate, docId)) continue
-    if (Reflect.get(row, 'kind') !== 'y-update') continue
-    const status = Reflect.get(row, 'status')
-    if (status !== 'pending' && status !== 'retrying' && status !== 'paused') continue
-    const bytes = Reflect.get(row, 'updateBytesBase64')
-    const id = Reflect.get(row, 'id')
-    const dependsOn = Reflect.get(row, 'dependsOn')
-    if (
-      typeof id !== 'string' ||
-      !Array.isArray(dependsOn) ||
-      typeof bytes !== 'string' ||
-      bytes.length === 0 ||
-      decodeBase64Bytes(bytes) === null
-    ) {
-      throw new Error(`document-recovery-malformed-outbox:${String(id)}`)
+    if (!v.is(RecoveryOutboxRowSchema, row)) continue
+    if (!isDocIdLike(row.docId) || !sameDocId(row.docId, docId)) continue
+    if (row.updateBytesBase64.length === 0 || decodeBase64Bytes(row.updateBytesBase64) === null) {
+      throw new Error(`document-recovery-malformed-outbox:${row.id}`)
     }
-    if (
-      dependsOn.some(
-        (dependency: unknown) => typeof dependency !== 'string' || !ids.has(dependency),
-      )
-    ) {
-      throw new Error(`document-recovery-missing-outbox-dependency:${String(id)}`)
+    if (row.dependsOn.some((dependency) => !ids.has(dependency))) {
+      throw new Error(`document-recovery-missing-outbox-dependency:${row.id}`)
     }
   }
 }
