@@ -16,7 +16,7 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 | DR-004 | P0       | Checkpoint boundary and rollback retention | Implemented and concurrency tested                                                   |
 | DR-005 | P1       | Meta entry merge granularity               | Closed: grouped schema v2, migration, and write admission implemented and tested     |
 | DR-006 | P1       | Delete-versus-edit causality               | Closed: causal deletion witnesses and deferred reconciliation tested                 |
-| DR-007 | P1       | Yjs actor identity                         | Current registry does not prove update authorship                                    |
+| DR-007 | P1       | Yjs actor identity                         | Closed: device/actor identity separated; provider-loss and real-process restart tested |
 | DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                                                      |
 | DR-009 | P1       | Quarantine and public error evidence       | Implemented: unified ApiError envelope and generalized WS reject evidence            |
 | DR-010 | P2       | Empty binary files                         | Closed: chunkless meta entries permitted and cross-checked against the manifest      |
@@ -238,7 +238,7 @@ Acceptance evidence:
 - [x] The decision converges on every client after required YDocs load.
 - [x] Binary changed-manifest restoration covers complete and missing evidence.
 
-### DR-007: Separate authenticated device identity from Yjs actor identity — slice 2 implemented
+### DR-007: Separate authenticated device identity from Yjs actor identity — closed
 
 The previous design assigned one `yClientId` per device and carried it through setup and
 hello. That value was not cryptographically bound to the Yjs actor IDs encoded in update
@@ -257,18 +257,29 @@ Recommended simpler contract:
 
 Acceptance evidence:
 
-- The specification identifies the exact component that sets each real `Y.Doc.clientID`.
-- Operation-log tests prove that a spoofed client actor field cannot change the authenticated `deviceId` audit attribution.
-- Provider-loss recovery tests cover absent/present/unavailable probes, first epochs,
+- [x] The specification identifies the exact component that sets each real `Y.Doc.clientID`:
+  the Obsidian plugin creates each meta and file document with `new Y.Doc()`, so Yjs
+  generates the actor ID independently per document.
+- [x] Operation-log tests prove that a spoofed client actor field cannot change the
+  authenticated `deviceId` audit attribution. `packages/worker/src/tests/room/sync.test.ts`
+  sends a sync update carrying `actor: 'spoofed-audit-device'` and asserts the persisted
+  `op_log` row records the authenticated `deviceId` from Hello, not the spoofed field.
+- [x] Provider-loss recovery tests cover absent/present/unavailable probes, first epochs,
   meta/file loss, fresh Yjs actors, restart recovery, remote+local+pending convergence,
   duplicate idempotency, malformed/dependency-missing rows, 404 new documents, and 409
   rebuild. Recovery persists `recovering` before import and atomically commits candidate
   YDoc, cursor, exact outbox completions, and `ready` epoch after provider persistence.
+  (`packages/obsidian-plugin/src/recovery/epoch*.test.ts`.)
+- [x] Real Obsidian process-restart coverage. The `:app` E2E identifies the running
+  Obsidian root process via Linux `/proc`, SIGTERMs and relaunches it mid-edit
+  (`restartObsidianProcess` in the miniflare smoke harness), then drives epoch recovery
+  through both the sync-request and need-full-snapshot paths. Green on 2026-07-16 across
+  six consecutive runs (see [implementation-status.md](../implementation-status.md)).
 
-Final DR-007 closure still requires the repository-wide crash-boundary and Worker E2E
-acceptance gate. The checked-in crash tests use fake-indexeddb for actual y-indexeddb
-provider and local-store transactions; real Obsidian process-restart coverage remains
-outstanding. This section must not be read as closing DR-009 or DR-012.
+DR-007 is closed. The checked-in unit crash tests use fake-indexeddb for the y-indexeddb
+provider and local-store transactions; the real-process crash-boundary is covered by the
+manually-run `:app` E2E above rather than automated CI, consistent with the other real
+Obsidian acceptance gates. This section must not be read as closing DR-009 or DR-012.
 
 ### DR-008: Define snapshot health as evidence, not a key shape — closed
 
@@ -448,7 +459,8 @@ Until then, implementation status must link to the corresponding DR identifier i
 Before the first distributed release:
 
 1. Close DR-001 through DR-004 and rerun crash-injection models.
-2. Decide DR-005 through DR-007 before freezing metadata schema version 1 and setup credentials.
+2. DR-005 through DR-007 are closed with the evidence above; metadata schema version 1
+   and setup credentials may be frozen against those decisions.
 3. DR-008 is closed with the evidence above. Close DR-009 before advertising
    protocol-level self-healing guarantees.
 4. DR-010, DR-011, and DR-012 are closed with the evidence above.
