@@ -1,3 +1,5 @@
+import { ApiErrorSchema } from '@kuroflare/core'
+import * as v from 'valibot'
 import { assert, test } from 'vitest'
 
 import workerEntrypoint, {
@@ -5,6 +7,7 @@ import workerEntrypoint, {
   type DurableObjectStubBinding,
   type WorkerEnv,
 } from '../runtime'
+import { workerApp } from '../runtime/app'
 
 function makeVersionEnv(extra: Omit<WorkerEnv, 'VAULT_ROOM'> = {}): WorkerEnv {
   return {
@@ -158,4 +161,55 @@ test('worker version response never exposes secrets or installation identifiers'
     'productVersion',
     'protocolVersion',
   ])
+})
+
+// DR-009 A1: the guarded ApiError envelope must cover every public HTTP route, not just
+// the hand-picked samples in http.test.ts. Enumerate the composed Hono route table and
+// assert that any error response (>= 400) on any registered route is an ApiError body.
+// Unauthenticated / invalid probes fail closed at the auth middleware (bearer/admin) or
+// the request validator, so this exercises the failure envelope of every route family
+// uniformly and guards against a future handler regressing to an ad hoc `{error}` body.
+test('every registered public HTTP route emits the ApiError envelope on any 4xx/5xx', async () => {
+  const env = makeVersionEnv()
+  const seen = new Set<string>()
+  const targets: { method: string; path: string }[] = []
+  for (const route of workerApp.routes) {
+    const method = route.method.toUpperCase()
+    const path = route.path
+    // Skip framework/middleware entries and non-body methods.
+    if (method === 'ALL' || method === 'OPTIONS' || method === 'HEAD') continue
+    if (path === '*' || path === '/*' || path === '/') continue
+    const key = `${method} ${path}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    targets.push({ method, path })
+  }
+  // Sanity: the composed app must expose the full public surface, not a handful.
+  assert.ok(targets.length >= 15, `expected the full route surface, found ${targets.length}`)
+
+  const nonEnvelope: string[] = []
+  for (const { method, path } of targets) {
+    // Fill path params (:x) and wildcards (*) with a concrete dummy segment.
+    const concretePath = path.replace(/:[^/]+/g, 'dummy').replace(/\*/g, 'dummy')
+    const init: RequestInit = { method }
+    if (method === 'POST' || method === 'PUT') {
+      init.headers = { 'content-type': 'application/json' }
+      init.body = '{}'
+    }
+    const response = await workerApp.fetch(
+      new Request(`https://worker.example${concretePath}`, init),
+      env,
+    )
+    // Public success routes (e.g. GET /version when configured) are not error paths.
+    if (response.status < 400) continue
+    const body = await response.json().catch(() => undefined)
+    if (!v.is(ApiErrorSchema, body)) {
+      nonEnvelope.push(`${method} ${path} -> ${response.status}: ${JSON.stringify(body)}`)
+    }
+  }
+  assert.deepEqual(
+    nonEnvelope,
+    [],
+    `routes returning a non-ApiError error body:\n${nonEnvelope.join('\n')}`,
+  )
 })

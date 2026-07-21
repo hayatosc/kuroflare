@@ -40,14 +40,21 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
   surfaced and fixed a delete-set leak in outbound meta updates (vector-diffing a temp
   doc re-emitted unrelated, not-yet-durable tombstones and intermittently quarantined
   binary meta updates server-side) and three redundant full-doc meta resends.
-- DR-009 is implemented: all public HTTP errors use the unified `ApiError` envelope
-  (`{code, retryable, detail}`, 12 codes) and WebSocket reject evidence is generalized
-  beyond oversized-update to the quarantine paths (`hash-mismatch`, `yjs-apply-failed`,
-  `meta-schema-invalid`) plus `metadata-read-only`, covered by worker contract tests.
-  A quarantined live update now sends `sync-update-rejected` without closing the
-  session, and the client pauses the matching outbox item instead of retrying forever.
-  `/auth/refresh` rejections distinguish `auth/expired` / `auth/revoked` /
-  `auth/rejected`; the plugin detects device revocation via `code === 'auth/revoked'`.
+- DR-009 is closed (see [design-review.md](spec/design-review.md) DR-009): all public HTTP
+  errors use the unified `ApiError` envelope (`{code, retryable, detail}`, 12 codes) and
+  WebSocket reject evidence is generalized beyond oversized-update to the quarantine paths
+  (`hash-mismatch`, `yjs-apply-failed`, `meta-schema-invalid`) plus `metadata-read-only`,
+  covered by worker contract tests. A quarantined live update now sends
+  `sync-update-rejected` without closing the session, and the client pauses the matching
+  outbox item instead of retrying forever. `/auth/refresh` rejections distinguish
+  `auth/expired` / `auth/revoked` / `auth/rejected`; the plugin detects device revocation
+  via `code === 'auth/revoked'`. 2026-07-21: a mechanical route-enumeration contract test
+  (`packages/worker/src/tests/routes.test.ts`) now asserts the envelope across the whole
+  Hono route surface (guarding against future ad hoc error bodies); it surfaced and fixed a
+  real gap where the public `POST /setup/exchange`, `POST /auth/refresh`, and
+  `GET /ws/:vaultId` routes returned the raw validator issue list on request-validation
+  failure (they run the validator before any auth middleware) instead of the `ApiError`
+  envelope.
 - Capability negotiation (DR-012) is implemented and closed in design-review.md:
   `ClientHello.capabilities` is validated as opaque, format-guarded tokens rather
   than a closed union, so an unrecognized optional capability no longer fails hello
@@ -96,14 +103,14 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 - Hydration treats prefix listing as candidate discovery only. Without authoritative, physically verified, healthy evidence, R2-only recovery fails closed with `snapshot-health:no-verified-generation`; explicit authenticated verification creates the durable document pointer and rehydrates the in-memory document.
 - Verification uses a pending lease and final authority rechecks. Checkpoint pointer advancement, rollback, quarantine, compaction, and retention deletion are serialized by the document write queue. Retention and quarantine preserve the last healthy retained floor.
 - Rollback replays a contiguous retained op-log range into a new immutable generation and commits the pointer only after source and target evidence are revalidated. Repeated verification and quarantine requests are idempotent.
-- The worker health API, SQLite/e2e coverage, and Obsidian settings panel are implemented. Protocol-level self-healing guarantees remain gated by DR-009.
+- The worker health API, SQLite/e2e coverage, and Obsidian settings panel are implemented. Protocol-level self-healing guarantees are now unblocked (DR-009 closed).
 
 ### Completed P0: DR-003 safe rejection + explicit repair
 
 - The unsafe live `snapshot-escape` branch remains disabled. Oversized live updates are rejected without acknowledgement or durable mutation using a stable close reason.
 - Protocol v1 carries one guarded `sync-update-rejected` evidence frame. The Obsidian runtime matches vault/device/message/document/hash evidence and atomically pauses the exact outbox item with `reason: sync-update-rejected`, `resumeOn: manual`, and lease release.
 - Obsidian settings now exposes an explicit per-row repair action. It verifies the complete evidence and actual update-bytes SHA-256, fetches the latest `manifestSeq` (404 means a new document), imports the exact Yjs delta through the authenticated snapshot route, and only then marks that same row done with the returned `snapshotSeq` in a guarded IndexedDB transaction. Conflict, authentication, network, malformed-response, hash, evidence, and local-commit failures leave the row paused; retries after remote success are safe.
-- This closes DR-003 narrowly as safe rejection plus explicit repair. It does not claim transparent large-update support and does not close DR-009 generally; capability negotiation, generalized rejection evidence, and public HTTP error migration remain out of scope.
+- This closes DR-003 narrowly as safe rejection plus explicit repair. It does not claim transparent large-update support. At the time it did not close DR-009 generally; capability negotiation, generalized rejection evidence, and public HTTP error migration were out of scope for DR-003 and have since been completed under DR-012 and DR-009 respectively.
 - A transactional live escape remains future work if live updates above the configured threshold become a product requirement.
 
 ### Completed P1: DR-005 grouped metadata schema

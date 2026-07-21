@@ -119,6 +119,17 @@ function authorizeAdminRequest(c: Context<{ Bindings: WorkerEnv }>): Response | 
   return undefined
 }
 
+/**
+ * Maps a request-validation failure to the guarded `ApiError` envelope (DR-009 C1).
+ * Authenticated routes fail closed at their auth middleware before validation runs, but
+ * unauthenticated public routes (`/setup/exchange`, `/auth/refresh`) reach the validator
+ * first, so without this hook they would return the validator's raw issue list instead of
+ * the envelope every public failure must use.
+ */
+function rejectInvalidRequest(c: Context): Response {
+  return c.json(apiErrorBody('request/invalid', 'request-validation-failed'), 400)
+}
+
 async function verifyBearerToken(
   env: WorkerEnv,
   request: Request,
@@ -622,33 +633,51 @@ const publicRouter = new Hono<{ Bindings: WorkerEnv }>()
     }
     return c.json(response)
   })
-  .post('/setup/exchange', sValidator('json', SetupExchangeRequestSchema), async (c) => {
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const response = await routeVaultRoom(c.env, doRequest, body.vaultId)
-    return parseDOorPassthrough(c, response, SetupExchangeResponseSchema)
-  })
-  .post('/auth/refresh', sValidator('json', DeviceTokenRefreshRequestSchema), async (c) => {
-    const body = c.req.valid('json')
-    const doRequest = new Request(c.req.raw.url, {
-      method: c.req.raw.method,
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    })
-    const response = await routeVaultRoom(c.env, doRequest, body.vaultId)
-    return parseDOorPassthrough(c, response, DeviceTokenRefreshResponseSchema)
-  })
-  .get('/ws/:vaultId', sValidator('param', v.object({ vaultId: VaultIdSchema })), async (c) => {
-    const { vaultId } = c.req.valid('param')
-    if (c.req.header('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE) {
-      return c.json(apiErrorBody('request/invalid', 'expected-websocket-upgrade'), 426)
-    }
-    return routeVaultRoom(c.env, c.req.raw, vaultId)
-  })
+  .post(
+    '/setup/exchange',
+    sValidator('json', SetupExchangeRequestSchema, (result, c) =>
+      result.success ? undefined : rejectInvalidRequest(c),
+    ),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method,
+        headers: c.req.raw.headers,
+        body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, body.vaultId)
+      return parseDOorPassthrough(c, response, SetupExchangeResponseSchema)
+    },
+  )
+  .post(
+    '/auth/refresh',
+    sValidator('json', DeviceTokenRefreshRequestSchema, (result, c) =>
+      result.success ? undefined : rejectInvalidRequest(c),
+    ),
+    async (c) => {
+      const body = c.req.valid('json')
+      const doRequest = new Request(c.req.raw.url, {
+        method: c.req.raw.method,
+        headers: c.req.raw.headers,
+        body: JSON.stringify(body),
+      })
+      const response = await routeVaultRoom(c.env, doRequest, body.vaultId)
+      return parseDOorPassthrough(c, response, DeviceTokenRefreshResponseSchema)
+    },
+  )
+  .get(
+    '/ws/:vaultId',
+    sValidator('param', v.object({ vaultId: VaultIdSchema }), (result, c) =>
+      result.success ? undefined : rejectInvalidRequest(c),
+    ),
+    async (c) => {
+      const { vaultId } = c.req.valid('param')
+      if (c.req.header('Upgrade')?.toLowerCase() !== WEBSOCKET_UPGRADE) {
+        return c.json(apiErrorBody('request/invalid', 'expected-websocket-upgrade'), 426)
+      }
+      return routeVaultRoom(c.env, c.req.raw, vaultId)
+    },
+  )
 
 // --- Compose ---
 

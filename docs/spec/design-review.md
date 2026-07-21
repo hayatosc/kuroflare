@@ -18,7 +18,7 @@ Each item states the observed mismatch, the recommended contract, and the eviden
 | DR-006 | P1       | Delete-versus-edit causality               | Closed: causal deletion witnesses and deferred reconciliation tested                 |
 | DR-007 | P1       | Yjs actor identity                         | Closed: device/actor identity separated; provider-loss and real-process restart tested |
 | DR-008 | P1       | Snapshot health and rollback               | Implemented and recovery tested                                                      |
-| DR-009 | P1       | Quarantine and public error evidence       | Implemented: unified ApiError envelope and generalized WS reject evidence            |
+| DR-009 | P1       | Quarantine and public error evidence       | Closed: unified ApiError envelope (whole route surface), generalized WS reject evidence |
 | DR-010 | P2       | Empty binary files                         | Closed: chunkless meta entries permitted and cross-checked against the manifest      |
 | DR-011 | P2       | Portable path materialization              | Closed: deterministic shared sanitizer replaces OS-specific repair                   |
 | DR-012 | P2       | Capability negotiation                     | Closed: opaque capability tokens with known-intersection negotiation                 |
@@ -279,7 +279,8 @@ Acceptance evidence:
 DR-007 is closed. The checked-in unit crash tests use fake-indexeddb for the y-indexeddb
 provider and local-store transactions; the real-process crash-boundary is covered by the
 manually-run `:app` E2E above rather than automated CI, consistent with the other real
-Obsidian acceptance gates. This section must not be read as closing DR-009 or DR-012.
+Obsidian acceptance gates. This section is scoped to DR-007; DR-009 and DR-012 are closed
+under their own sections.
 
 ### DR-008: Define snapshot health as evidence, not a key shape — closed
 
@@ -323,7 +324,7 @@ Acceptance evidence:
 
 ## 4. Protocol and compatibility
 
-### DR-009: Unify completion, quarantine, and public errors
+### DR-009: Unify completion, quarantine, and public errors — closed
 
 The protocol specifies one `ApiError` shape, while runtime routes commonly return ad hoc `{ error: string }` bodies.
 The WebSocket quarantine path intentionally sends no acknowledgement or quarantine evidence.
@@ -339,10 +340,36 @@ Recommended contract:
 
 Acceptance evidence:
 
-- Contract tests cover every public route and WebSocket rejection.
-- Oversized live updates emit exactly one guarded rejection frame followed by the existing close, and matching client evidence is persisted atomically.
-- Unknown error codes fail closed and are not retried automatically.
-- One malformed update causes one durable quarantine record and one stable client repair entry without an infinite retry loop.
+- [x] Contract tests cover every public route and WebSocket rejection. A mechanical test
+  enumerates the composed Hono route table and asserts that every registered route returns
+  the `ApiError` envelope on any 4xx/5xx (`packages/worker/src/tests/routes.test.ts`,
+  "every registered public HTTP route emits the ApiError envelope"); it also guards against
+  a future handler regressing to an ad hoc body. WebSocket rejection is covered for every
+  reason code (`hash-mismatch`, `yjs-apply-failed`, `meta-schema-invalid`,
+  `large-update-requires-snapshot-import`, `metadata-read-only`) in the room sync,
+  quarantine, and auth tests. This enumeration surfaced and fixed a real gap: the public
+  `POST /setup/exchange`, `POST /auth/refresh`, and `GET /ws/:vaultId` routes previously
+  returned the raw validator issue list (not the envelope) on request-validation failure,
+  because they reach the validator before any auth middleware; they now map validation
+  failure to `request/invalid`.
+- [x] Oversized live updates emit exactly one guarded rejection frame followed by the
+  existing close, and matching client evidence is persisted atomically
+  (`packages/worker/src/tests/room/sync.test.ts` asserts one `sync-update-rejected` frame
+  then close 1011; the client persists the matching outbox pause atomically).
+- [x] Unknown error codes fail closed and are not retried automatically: the client uses a
+  retryable allowlist and defaults any unrecognized `ApiError.code`/HTTP status to a
+  permanent, non-retried failure.
+- [x] One malformed update causes one durable quarantine record and one stable client
+  repair entry without an infinite retry loop (`packages/worker/src/tests/room/quarantine.test.ts`;
+  the client pauses the item with `resumeOn: 'manual'` and dedupes the repair-log entry by
+  stable id).
+
+DR-009 is closed. Every public HTTP failure uses the guarded `ApiError` envelope
+(structurally, via the shared `apiErrorBody` helper used by every handler and validator
+hook, and by test enumeration of the whole route surface). Quarantine/rejection evidence
+pauses the exact outbox item but never marks it done; quarantine-admin polling remains a
+recovery fallback. Secret redaction keeps update bytes and bearer/refresh/setup tokens out
+of logs and UI.
 
 ### DR-010: Zero-byte binary files are representable — closed
 
@@ -461,6 +488,6 @@ Before the first distributed release:
 1. Close DR-001 through DR-004 and rerun crash-injection models.
 2. DR-005 through DR-007 are closed with the evidence above; metadata schema version 1
    and setup credentials may be frozen against those decisions.
-3. DR-008 is closed with the evidence above. Close DR-009 before advertising
-   protocol-level self-healing guarantees.
+3. DR-008 and DR-009 are closed with the evidence above; protocol-level self-healing
+   guarantees may be advertised against those decisions.
 4. DR-010, DR-011, and DR-012 are closed with the evidence above.
