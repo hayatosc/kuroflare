@@ -30,6 +30,9 @@ const NPM_SHA512_PATTERN = /^sha512-[A-Za-z0-9+/]{85}[AQgw]==$/
 const UTC_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
 const PACKAGE_LOCK_PATH_PATTERN =
   /^node_modules\/(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:\/node_modules\/(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)*$/
+// Pinned to GitHub's current release-asset CDN redirect path shape. Fails closed (safe) if
+// GitHub changes the format, but a GitHub-side change would then break the single allowed
+// redirect until this pattern is revised; revisit if build fetches fail at the redirect step.
 const RELEASE_ASSET_PATH_PATTERN = /^\/github-production-release-asset\/[1-9]\d*\/[0-9A-Fa-f-]+$/
 const FORBIDDEN_REMOTE_FIELDS = new Set([
   'buildLockUrl',

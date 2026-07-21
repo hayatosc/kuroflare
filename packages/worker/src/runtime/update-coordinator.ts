@@ -45,6 +45,10 @@ export const UPDATE_BUILD_OBSERVATION_TIMEOUT_MS = 30 * 60 * 1_000
 const RANDOM_UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const BUILD_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+// Pinned to GitHub's current release-asset CDN redirect path shape. This fails closed
+// (safe) if GitHub changes the format, but a GitHub-side change would then break the
+// single allowed redirect until this pattern is revised; revisit if release fetches start
+// failing at the redirect step.
 const RELEASE_ASSET_PATH_PATTERN = /^\/github-production-release-asset\/[1-9]\d*\/[0-9A-Fa-f-]+$/
 const MAX_BUILD_UUID_LENGTH = 128
 
