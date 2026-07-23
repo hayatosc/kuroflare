@@ -666,7 +666,7 @@ exact release version:
 - [x] **GitHub publication:** create the public distribution repository at
       `https://github.com/hayatosc/kuroflare`, configure its remote, and publish
       `main`.
-- [ ] **GitHub release controls:** enable release immutability before the first
+- [x] **GitHub release controls:** enable release immutability before the first
       release, create a protected `release` environment with required reviewers,
       and store an Administration-read-only fine-grained token as
       `RELEASE_ADMIN_TOKEN`.

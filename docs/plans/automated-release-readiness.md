@@ -25,7 +25,6 @@ Complete every first-distribution readiness item that can be finished inside thi
 
 ## Human-owned completion gates
 
-- Configure release immutability, the protected `release` environment, and release credentials for the public GitHub repository.
 - Create npm ownership and Trusted Publisher configuration.
 - Configure the production Cloudflare account, R2 lifecycle policy, canary, and Deploy Hook.
 - Validate Windows Obsidian, real multi-device awareness, production deployment, and staged promotion.
