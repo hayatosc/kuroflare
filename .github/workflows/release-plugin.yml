@@ -150,8 +150,8 @@ jobs:
 
       # The consumer repository is pinned to an immutable commit. Final integration needs
       # an exact npm version to generate build-lock.json, so the runtime is first published
-      # under the non-user release-candidate tag. The stable tag moves only after every gate
-      # below and immutable GitHub Release publication succeed.
+      # under the non-user release-candidate tag. The stable and latest tags move only after
+      # every gate below and immutable GitHub Release publication succeed.
       # actions/checkout v4.2.2
       - name: Checkout pinned Cloudflare template
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -265,7 +265,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node "$RELEASE_ASSET_DIR/publish-plugin.mjs"
 
-      - name: Promote worker runtime to npm stable
+      - name: Promote worker runtime to npm stable and latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
           RELEASE_ASSET_DIR: ${{ runner.temp }}/kuroflare-plugin-release

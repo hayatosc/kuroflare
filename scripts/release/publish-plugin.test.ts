@@ -526,7 +526,7 @@ test('runtime candidate publish is idempotent only for exact integrity and prove
   }
 })
 
-test('stable promotion verifies the exact candidate and is retry-safe without republishing', async () => {
+test('stable/latest promotion verifies the exact candidate and retries partial completion without republishing', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'kuroflare-runtime-promote-fixture-'))
   const tarballPath = join(directory, 'worker-runtime.tgz')
   const bytes = Buffer.from('runtime tarball\n')
@@ -534,7 +534,10 @@ test('stable promotion verifies the exact candidate and is retry-safe without re
   const integrity = npmSha512Integrity(bytes)
   try {
     const operations: string[][] = []
-    let stableReadCount = 0
+    const distTags = new Map<string, string | undefined>([
+      ['stable', undefined],
+      ['latest', '0.0.0'],
+    ])
     const promoted = await promoteRuntimeStable({
       tag: RELEASE_TAG,
       tarballPath,
@@ -543,21 +546,23 @@ test('stable promotion verifies the exact candidate and is retry-safe without re
         if (args.includes('dist.attestations.provenance.predicateType')) {
           return JSON.stringify(SLSA_PROVENANCE_V1)
         }
-        if (args.includes('dist-tags.stable')) {
-          stableReadCount += 1
-          return stableReadCount === 1 ? '' : JSON.stringify(RELEASE_TAG)
+        if (args[0] === 'view' && args[2]?.startsWith('dist-tags.')) {
+          const distTag = args[2].slice('dist-tags.'.length)
+          const version = distTags.get(distTag)
+          return version === undefined ? '' : JSON.stringify(version)
         }
-        if (args[0] === 'dist-tag') return ''
+        if (args[0] === 'dist-tag') {
+          distTags.set(args[3], RELEASE_TAG)
+          return ''
+        }
         return JSON.stringify(integrity)
       },
     })
     assert.deepEqual(promoted, { promoted: true, integrity })
-    assert.deepEqual(operations[3]?.slice(0, 4), [
-      'dist-tag',
-      'add',
-      '@kuroflare/worker-runtime@0.1.0',
-      'stable',
-    ])
+    assert.deepEqual(
+      operations.filter((args) => args[0] === 'dist-tag').map((args) => args[3]),
+      ['stable', 'latest'],
+    )
 
     const retryOperations: string[][] = []
     const retried = await promoteRuntimeStable({
@@ -568,12 +573,167 @@ test('stable promotion verifies the exact candidate and is retry-safe without re
         if (args.includes('dist.attestations.provenance.predicateType')) {
           return JSON.stringify(SLSA_PROVENANCE_V1)
         }
-        return JSON.stringify(args.includes('dist-tags.stable') ? RELEASE_TAG : integrity)
+        if (args[0] === 'view' && args[2]?.startsWith('dist-tags.')) {
+          return JSON.stringify(RELEASE_TAG)
+        }
+        return JSON.stringify(integrity)
       },
     })
     assert.deepEqual(retried, { promoted: false, integrity })
-    assert.equal(retryOperations.length, 3)
+    assert.equal(retryOperations.length, 6)
     assert.ok(retryOperations.every((args) => args[0] !== 'publish' && args[0] !== 'dist-tag'))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('stable/latest promotion resumes when the stable tag moved before latest failed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kuroflare-runtime-promote-partial-fixture-'))
+  const tarballPath = join(directory, 'worker-runtime.tgz')
+  const bytes = Buffer.from('runtime tarball\n')
+  await writeFile(tarballPath, bytes)
+  const integrity = npmSha512Integrity(bytes)
+  try {
+    const distTags = new Map<string, string | undefined>([
+      ['stable', undefined],
+      ['latest', '0.0.0'],
+    ])
+    let failLatest = true
+    await assert.rejects(
+      () =>
+        promoteRuntimeStable({
+          tag: RELEASE_TAG,
+          tarballPath,
+          runNpm: async (args: string[]) => {
+            if (args.includes('dist.attestations.provenance.predicateType')) {
+              return JSON.stringify(SLSA_PROVENANCE_V1)
+            }
+            if (args[0] === 'view' && args[2]?.startsWith('dist-tags.')) {
+              const version = distTags.get(args[2].slice('dist-tags.'.length))
+              return version === undefined ? '' : JSON.stringify(version)
+            }
+            if (args[0] === 'dist-tag') {
+              if (args[3] === 'latest' && failLatest) {
+                failLatest = false
+                throw new Error('temporary registry failure')
+              }
+              distTags.set(args[3], RELEASE_TAG)
+              return ''
+            }
+            return JSON.stringify(integrity)
+          },
+        }),
+      /Cannot promote the npm runtime latest dist-tag/,
+    )
+    assert.equal(distTags.get('stable'), RELEASE_TAG)
+    assert.equal(distTags.get('latest'), '0.0.0')
+
+    const retryOperations: string[][] = []
+    const retried = await promoteRuntimeStable({
+      tag: RELEASE_TAG,
+      tarballPath,
+      runNpm: async (args: string[]) => {
+        retryOperations.push(args)
+        if (args.includes('dist.attestations.provenance.predicateType')) {
+          return JSON.stringify(SLSA_PROVENANCE_V1)
+        }
+        if (args[0] === 'view' && args[2]?.startsWith('dist-tags.')) {
+          const version = distTags.get(args[2].slice('dist-tags.'.length))
+          return version === undefined ? '' : JSON.stringify(version)
+        }
+        if (args[0] === 'dist-tag') {
+          distTags.set(args[3], RELEASE_TAG)
+          return ''
+        }
+        return JSON.stringify(integrity)
+      },
+    })
+    assert.deepEqual(retried, { promoted: true, integrity })
+    assert.deepEqual(
+      retryOperations.filter((args) => args[0] === 'dist-tag').map((args) => args[3]),
+      ['latest'],
+    )
+    assert.equal(distTags.get('stable'), RELEASE_TAG)
+    assert.equal(distTags.get('latest'), RELEASE_TAG)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('stable/latest promotion rejects a concurrent rollback before overwriting the tag', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kuroflare-runtime-promote-race-fixture-'))
+  const tarballPath = join(directory, 'worker-runtime.tgz')
+  const bytes = Buffer.from('runtime tarball\n')
+  await writeFile(tarballPath, bytes)
+  const integrity = npmSha512Integrity(bytes)
+  try {
+    const operations: string[][] = []
+    let stableReadCount = 0
+    await assert.rejects(
+      () =>
+        promoteRuntimeStable({
+          tag: RELEASE_TAG,
+          tarballPath,
+          runNpm: async (args: string[]) => {
+            operations.push(args)
+            if (args.includes('dist.attestations.provenance.predicateType')) {
+              return JSON.stringify(SLSA_PROVENANCE_V1)
+            }
+            if (args.includes('dist-tags.stable')) {
+              stableReadCount += 1
+              return stableReadCount === 1 ? '' : JSON.stringify('0.2.0')
+            }
+            if (args.includes('dist-tags.latest')) return JSON.stringify(RELEASE_TAG)
+            return JSON.stringify(integrity)
+          },
+        }),
+      /npm stable dist-tag cannot move backward from 0\.2\.0 to 0\.1\.0/,
+    )
+    assert.ok(operations.every((args) => args[0] !== 'dist-tag'))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('stable/latest promotion verifies both tags after all mutations', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kuroflare-runtime-promote-final-fixture-'))
+  const tarballPath = join(directory, 'worker-runtime.tgz')
+  const bytes = Buffer.from('runtime tarball\n')
+  await writeFile(tarballPath, bytes)
+  const integrity = npmSha512Integrity(bytes)
+  try {
+    const distTags = new Map<string, string | undefined>([
+      ['stable', undefined],
+      ['latest', '0.0.0'],
+    ])
+    let latestReadCount = 0
+    await assert.rejects(
+      () =>
+        promoteRuntimeStable({
+          tag: RELEASE_TAG,
+          tarballPath,
+          runNpm: async (args: string[]) => {
+            if (args.includes('dist.attestations.provenance.predicateType')) {
+              return JSON.stringify(SLSA_PROVENANCE_V1)
+            }
+            if (args[0] === 'view' && args[2]?.startsWith('dist-tags.')) {
+              const distTag = args[2].slice('dist-tags.'.length)
+              latestReadCount += distTag === 'latest' ? 1 : 0
+              if (distTag === 'latest' && latestReadCount === 3) {
+                distTags.set('stable', '0.0.0')
+              }
+              const version = distTags.get(distTag)
+              return version === undefined ? '' : JSON.stringify(version)
+            }
+            if (args[0] === 'dist-tag') {
+              distTags.set(args[3], RELEASE_TAG)
+              return ''
+            }
+            return JSON.stringify(integrity)
+          },
+        }),
+      /npm stable dist-tag must point to 0\.1\.0, got 0\.0\.0/,
+    )
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -636,6 +796,38 @@ test('stable promotion rejects missing, changed, or rollback runtime states', as
           },
         }),
       /cannot move backward from 0\.2\.0 to 0\.1\.0/,
+    )
+    await assert.rejects(
+      () =>
+        promoteRuntimeStable({
+          tag: RELEASE_TAG,
+          tarballPath,
+          runNpm: async (args: string[]) => {
+            if (args.includes('dist.attestations.provenance.predicateType')) {
+              return JSON.stringify(SLSA_PROVENANCE_V1)
+            }
+            if (args.includes('dist-tags.latest')) return JSON.stringify('next')
+            if (args.includes('dist-tags.stable')) return JSON.stringify(RELEASE_TAG)
+            return JSON.stringify(integrity)
+          },
+        }),
+      /npm latest dist-tag must be a stable x\.y\.z version, got next/,
+    )
+    await assert.rejects(
+      () =>
+        promoteRuntimeStable({
+          tag: RELEASE_TAG,
+          tarballPath,
+          runNpm: async (args: string[]) => {
+            if (args.includes('dist.attestations.provenance.predicateType')) {
+              return JSON.stringify(SLSA_PROVENANCE_V1)
+            }
+            if (args.includes('dist-tags.latest')) return JSON.stringify('0.2.0')
+            if (args.includes('dist-tags.stable')) return JSON.stringify(RELEASE_TAG)
+            return JSON.stringify(integrity)
+          },
+        }),
+      /npm latest dist-tag cannot move backward from 0\.2\.0 to 0\.1\.0/,
     )
   } finally {
     await rm(directory, { recursive: true, force: true })

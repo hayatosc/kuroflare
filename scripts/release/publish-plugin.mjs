@@ -17,6 +17,7 @@ const BUNDLE_TOOL_FILES = ['publish-plugin.mjs']
 const WORKER_RELEASE_ASSETS = ['build-lock.json', 'worker-release.json']
 const CHECKSUMS_FILE = 'SHA256SUMS'
 const RUNTIME_CANDIDATE_DIST_TAG = 'release-candidate'
+const RUNTIME_PROMOTION_DIST_TAGS = ['stable', 'latest']
 const ALLOWED_ASSETS = new Set([
   ...REQUIRED_ASSETS,
   ...OPTIONAL_ASSETS,
@@ -80,7 +81,12 @@ async function readDistTag(npm, distTag, cwd) {
   } catch {
     throw new Error(`Cannot verify the npm ${distTag} dist-tag`)
   }
-  const value = JSON.parse(source || 'null')
+  let value
+  try {
+    value = JSON.parse(source || 'null')
+  } catch {
+    throw new Error(`Cannot verify npm ${distTag} dist-tag`)
+  }
   return value === null ? undefined : requireString(value, `npm ${distTag} dist-tag`)
 }
 
@@ -212,7 +218,19 @@ function compareStableVersions(left, right) {
   return 0
 }
 
-/** Promote an already-published exact runtime version to stable without republishing it. */
+function validatePromotionVersion(distTag, currentVersion, targetVersion) {
+  if (currentVersion === undefined) return
+  if (!STABLE_VERSION_PATTERN.test(currentVersion)) {
+    throw new Error(`npm ${distTag} dist-tag must be a stable x.y.z version, got ${currentVersion}`)
+  }
+  if (compareStableVersions(currentVersion, targetVersion) > 0) {
+    throw new Error(
+      `npm ${distTag} dist-tag cannot move backward from ${currentVersion} to ${targetVersion}`,
+    )
+  }
+}
+
+/** Promote an already-published exact runtime version to stable and latest without republishing it. */
 export async function promoteRuntimeStable(options) {
   const tag = requireString(options.tag, 'tag')
   if (!STABLE_VERSION_PATTERN.test(tag)) {
@@ -223,33 +241,48 @@ export async function promoteRuntimeStable(options) {
   const runtime = await inspectRuntimePackage(npm, tag, tarballPath)
   if (!runtime.exists) throw new Error(`npm runtime ${tag} must exist before stable promotion`)
   await assertRuntimeProvenance(npm, tag, runtime.cwd)
-  const stableVersion = await readDistTag(npm, 'stable', runtime.cwd)
-  if (stableVersion === tag) return { promoted: false, integrity: runtime.expectedIntegrity }
-  if (stableVersion !== undefined) {
-    if (!STABLE_VERSION_PATTERN.test(stableVersion)) {
-      throw new Error(`npm stable dist-tag must be a stable x.y.z version, got ${stableVersion}`)
-    }
-    if (compareStableVersions(stableVersion, tag) > 0) {
-      throw new Error(`npm stable dist-tag cannot move backward from ${stableVersion} to ${tag}`)
-    }
+  const currentVersions = new Map(
+    await Promise.all(
+      RUNTIME_PROMOTION_DIST_TAGS.map(async (distTag) => [
+        distTag,
+        await readDistTag(npm, distTag, runtime.cwd),
+      ]),
+    ),
+  )
+  for (const distTag of RUNTIME_PROMOTION_DIST_TAGS) {
+    validatePromotionVersion(distTag, currentVersions.get(distTag), tag)
   }
-  try {
-    await npm(
-      [
-        'dist-tag',
-        'add',
-        `@kuroflare/worker-runtime@${tag}`,
-        'stable',
-        '--registry',
-        'https://registry.npmjs.org',
-      ],
-      { cwd: runtime.cwd },
-    )
-  } catch {
-    throw new Error('Cannot promote the npm runtime stable dist-tag')
+
+  const pendingTags = RUNTIME_PROMOTION_DIST_TAGS.filter(
+    (distTag) => currentVersions.get(distTag) !== tag,
+  )
+  let promoted = false
+  for (const distTag of pendingTags) {
+    const currentVersion = await readDistTag(npm, distTag, runtime.cwd)
+    validatePromotionVersion(distTag, currentVersion, tag)
+    if (currentVersion === tag) continue
+    try {
+      await npm(
+        [
+          'dist-tag',
+          'add',
+          `@kuroflare/worker-runtime@${tag}`,
+          distTag,
+          '--registry',
+          'https://registry.npmjs.org',
+        ],
+        { cwd: runtime.cwd },
+      )
+    } catch {
+      throw new Error(`Cannot promote the npm runtime ${distTag} dist-tag`)
+    }
+    await assertDistTag(npm, distTag, tag, runtime.cwd)
+    promoted = true
   }
-  await assertDistTag(npm, 'stable', tag, runtime.cwd)
-  return { promoted: true, integrity: runtime.expectedIntegrity }
+  for (const distTag of RUNTIME_PROMOTION_DIST_TAGS) {
+    await assertDistTag(npm, distTag, tag, runtime.cwd)
+  }
+  return { promoted, integrity: runtime.expectedIntegrity }
 }
 
 async function runGh(args, options = {}) {
@@ -650,7 +683,7 @@ async function main() {
       tarballPath: requireString(process.env.RELEASE_RUNTIME_TARBALL, 'RELEASE_RUNTIME_TARBALL'),
     })
     console.log(
-      `[release] Runtime stable tag ${result.promoted ? 'promoted' : 'already matched'} (${result.integrity}).`,
+      `[release] Runtime stable/latest tags ${result.promoted ? 'promoted' : 'already matched'} (${result.integrity}).`,
     )
     return
   }

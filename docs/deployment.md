@@ -386,7 +386,7 @@ Promote beta → stable only after the dedicated canary has passed on real Cloud
    `rolloutPercentage` is never an exact cap.
 3. **Promote** to the new version (`release:worker:promote --channel stable --version x.y.z`).
    The pointer switches to `x.y.z`, `paused: true`, `rolloutPercentage: 0`.
-4. **Re-verify** that the npm `stable` dist-tag, the GitHub Release assets, the release
+4. **Re-verify** that the npm `stable` and `latest` dist-tags, the GitHub Release assets, the release
    manifest, and the build lockfile all point at the same product version, bundle hash, and
    dependency tree (`pnpm release:worker:validate-pointers` plus the manifest/lockfile
    checks from §CI in distribution-pipeline.md).

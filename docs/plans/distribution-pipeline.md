@@ -262,7 +262,7 @@ channel pointerやrelease manifestから任意のpackage名または配信先URL
 
 npmの`stable`と`beta` dist-tagは公開状態を人間が確認するために使い、Workers Buildsは必ずmanifest記載の完全固定バージョンをinstallする。
 
-現行のstable release workflowは`stable` dist-tagだけを更新する。
+The stable release workflow advances both the `stable` and `latest` npm dist-tags.
 
 `beta` dist-tagとbeta pointerの自動昇格は段階配信workflowを実装した後に有効化する。
 
@@ -575,13 +575,13 @@ npm packageの公開にはTrusted Publishingとprovenanceを使い、長期npm p
 
 `@kuroflare/worker-runtime`のnpm Trusted Publisherは、このrepositoryと`release` environmentへ固定する。
 
-Trusted Publishingは`npm dist-tag`を認証しないため、`stable`昇格だけはpackage限定・read/write・2FA bypass・短期有効期限のgranular tokenを使う。
+Trusted Publishingは`npm dist-tag`を認証しないため、`stable`と`latest`の昇格だけはpackage限定・read/write・2FA bypass・短期有効期限のgranular tokenを使う。
 
 このtokenはprotected `release` environmentへ`NPM_DIST_TAG_TOKEN`として保存し、各release後に失効させる。
 
 PackageのPublishing accessは「Require 2FA or granular token with bypass 2FA」に保つ。「Require 2FA and disallow tokens」はbypass tokenも拒否するため、tokenlessなdist-tag昇格へ移行するまで選択しない。
 
-publisherは公開後と再実行時に、tarball integrity、`stable` dist-tag、SLSA v1 provenance metadataをすべて検証する。
+The publisher verifies the tarball integrity, both `stable` and `latest` dist-tags, and SLSA v1 provenance metadata after publication and on retries.
 
 GitHub Releaseはrepositoryのrelease immutabilityを有効にし、draftへ全assetを添付して検証してから公開する。
 
@@ -624,7 +624,7 @@ bootstrapはnpm registryのpackage integrityとrelease manifestのbundle hashを
 
 ### Release candidate
 
-現行workflowはstableな`x.y.z`タグだけを受け付け、npmの`stable` dist-tagと不変なGitHub Releaseを公開する。
+The current workflow accepts only stable `x.y.z` tags, publishes an immutable GitHub Release, and then advances both npm `stable` and `latest` dist-tags.
 
 コミット済みの`stable.json`と`beta.json`は、初回releaseと実Cloudflare検証が完了するまで`paused=true`、`rolloutPercentage=0`に保つ。
 
@@ -660,7 +660,7 @@ Phase 7の段階配信ツールも実装済みである。`scripts/release/worke
 
 公開GitHub repositoryは`https://github.com/hayatosc/kuroflare`に作成済みであり、local repositoryの`origin`もこのrepositoryを参照する。
 
-また、`@kuroflare/worker-runtime`はnpm registryへまだ公開されていない。
+The npm registry now contains the bootstrap `@kuroflare/worker-runtime@0.0.0` under the `bootstrap` tag (with npm's mandatory `latest` tag); the intended `0.1.0` release remains unpublished.
 
 Repository automation cannot complete or attest the checklist below. Do not present
 the Deploy Button as a supported installation path and do not advance either channel
@@ -680,10 +680,10 @@ exact release version:
       `https://github.com/hayatosc/kuroflare-cloudflare-templete`, push commit
       `0297374467e797f5690ca36ab8ee2d99ce270153`, and point its Deploy Button at
       that external repository.
-- [ ] **npm:** create or claim `@kuroflare/worker-runtime`; configure the exact GitHub
-      organization/repository/workflow and `release` environment as its Trusted
-      Publisher; store a short-lived package-scoped token as `NPM_DIST_TAG_TOKEN`
-      for the final `stable` dist-tag promotion; keep Publishing access compatible
+- [ ] **npm:** configure the exact GitHub organization/repository/workflow and
+      `release` environment as the Trusted Publisher for `@kuroflare/worker-runtime`;
+      store a short-lived package-scoped token as `NPM_DIST_TAG_TOKEN`
+      for the final `stable` and `latest` dist-tag promotion; keep Publishing access compatible
       with granular tokens that bypass 2FA.
 - [ ] **First release:** publish the intended `x.y.z`; verify npm provenance and
       integrity, GitHub Release assets and checksums, version alignment, and immutable
