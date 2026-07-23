@@ -571,9 +571,15 @@ Hook URLが漏えいした場合に備え、削除、再作成、Secret更新の
 
 Workers BuildsのdeployはCloudflareが管理するbuild tokenで実行する。
 
-npm packageの公開にはTrusted Publishingとprovenanceを使い、長期npm tokenをGitHub Secretsへ保存しない。
+npm packageの公開にはTrusted Publishingとprovenanceを使い、長期npm publish tokenをGitHub Secretsへ保存しない。
 
 `@kuroflare/worker-runtime`のnpm Trusted Publisherは、このrepositoryと`release` environmentへ固定する。
+
+Trusted Publishingは`npm dist-tag`を認証しないため、`stable`昇格だけはpackage限定・read/write・2FA bypass・短期有効期限のgranular tokenを使う。
+
+このtokenはprotected `release` environmentへ`NPM_DIST_TAG_TOKEN`として保存し、各release後に失効させる。
+
+PackageのPublishing accessは「Require 2FA or granular token with bypass 2FA」に保つ。「Require 2FA and disallow tokens」はbypass tokenも拒否するため、tokenlessなdist-tag昇格へ移行するまで選択しない。
 
 publisherは公開後と再実行時に、tarball integrity、`stable` dist-tag、SLSA v1 provenance metadataをすべて検証する。
 
@@ -676,7 +682,9 @@ exact release version:
       that external repository.
 - [ ] **npm:** create or claim `@kuroflare/worker-runtime`; configure the exact GitHub
       organization/repository/workflow and `release` environment as its Trusted
-      Publisher.
+      Publisher; store a short-lived package-scoped token as `NPM_DIST_TAG_TOKEN`
+      for the final `stable` dist-tag promotion; keep Publishing access compatible
+      with granular tokens that bypass 2FA.
 - [ ] **First release:** publish the intended `x.y.z`; verify npm provenance and
       integrity, GitHub Release assets and checksums, version alignment, and immutable
       release state.

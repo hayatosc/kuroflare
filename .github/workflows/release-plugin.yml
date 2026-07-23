@@ -267,6 +267,7 @@ jobs:
 
       - name: Promote worker runtime to npm stable
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
           RELEASE_ASSET_DIR: ${{ runner.temp }}/kuroflare-plugin-release
           RELEASE_RUNTIME_TARBALL: ${{ runner.temp }}/kuroflare-plugin-release/worker-runtime.tgz
           RELEASE_TAG: ${{ github.ref_name }}
