@@ -16,3 +16,7 @@ export default worker
 For a complete deployment, use the Kuroflare deployment template. The template
 provides bindings, release metadata, and the Wrangler configuration required by
 Cloudflare Workers.
+
+## License
+
+MIT © 2026 hayatosc

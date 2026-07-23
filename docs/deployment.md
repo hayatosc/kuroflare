@@ -1,8 +1,12 @@
 # Deploying Kuroflare
 
 This document explains how to deploy the Kuroflare Worker to Cloudflare and
-connect the Obsidian plugin to it today, and defines a stable contract so a
-separate deployment project can be built on top of `@kuroflare/worker` later.
+connect the Obsidian plugin to it today. The independent
+[`hayatosc/kuroflare-cloudflare-templete`](https://github.com/hayatosc/kuroflare-cloudflare-templete)
+repository owns the public Cloudflare deployment template and consumes the stable
+contract defined here. Its GitHub remote and Deploy Button remain human-owned
+release gates; this link identifies the intended canonical location, not a claim
+that the remote is already available.
 
 ## 1. Overview
 
@@ -33,9 +37,9 @@ Object namespace + one R2 bucket, driven by `wrangler` from
 ## 2. Deployment contract
 
 This is the fixed set of bindings, secrets, and routes that any deployment of
-`@kuroflare/worker` must provide. A future separate deployment project (its
-own `wrangler.toml`/CI, consuming this worker package) should reproduce this
-contract rather than reinvent it.
+`@kuroflare/worker` must provide. The external Cloudflare template repository
+owns its `wrangler` configuration and CI and reproduces this contract rather
+than redefining it.
 
 ### Bindings (from `packages/worker/wrangler.toml`)
 
@@ -76,7 +80,7 @@ new_sqlite_classes = ["VaultRoom"]
 | `POST /setup/exchange`                                                                                  | Setup token (body)                                                   | Exchanges a one-time setup token for a device access + refresh token pair.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `POST /auth/refresh`                                                                                    | Refresh token (body)                                                 | Rotates the device's refresh token and mints a new access token.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `POST /devices/:deviceId/revoke`                                                                        | Bearer device token, scope `sync:write`                              | Revokes a device.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `GET /admin/quarantine`, `GET /admin/quarantine/:id`                                                    | Bearer device token, scope `sync:write`                              | Inspect quarantined (rejected) updates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GET /admin/quarantine`, `GET /admin/quarantine/:id`, `GET /admin/quarantine/audit`                     | Bearer device token, scope `sync:write`                              | Inspect quarantined (rejected) updates and the append-only resolution audit trail.                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `GET /admin/retention`                                                                                  | Bearer device token, scope `sync:write`                              | Inspect `snapshot_retention_events`, newest first. Paginated: `limit` (1-200, default 50) and `cursor` (the `id` of the previous page's last item) query params; response is `{ items, nextCursor? }`, and an invalid `limit`/`cursor` returns `400 request/invalid`.                                                                                                                                                                                                                                    |
 | `POST /admin/quarantine/:id/{discard,force-apply}`                                                      | Bearer device token, scope `sync:write`                              | Resolve a quarantined update.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `GET /vaults/:vaultId/meta/latest`, `GET /vaults/:vaultId/files/:ydocId/latest`                         | Bearer device token, scope `sync:read`                               | Fetch the latest hydrated snapshot for a doc.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -276,6 +280,28 @@ plugin's settings tab, and follow §4 to connect it to your deployed Worker.
 - **Setup tokens expire fast (10 minutes by default).** Issue one
   immediately before pasting it into the plugin (§4), not ahead of time.
 
+### Bounded recovery operations
+
+Take a vault backup and stop synchronization for the affected item before manual
+recovery. Kuroflare supports only these bounded escape hatches:
+
+- For a degraded plugin local store, use the settings repair flow to export pending
+  outbox evidence before rebuilding. The export is non-authoritative and contains no
+  credentials. If the evidence is intentionally abandoned, use the separately
+  confirmed discard-and-rebuild action. Imported `y-update` rows remain paused until
+  reviewed and explicitly resumed; do not bulk replay an export.
+- For a server-quarantined update, inspect `GET /admin/quarantine` and
+  `GET /admin/quarantine/:id`. Prepare exactly one `discard` or `force-apply` action,
+  review the returned effects, then execute with the issued
+  single-use token. Re-fetch the item and `GET /admin/quarantine/audit` afterward and
+  retain the audit identifier with the incident. Prefer discard unless independent
+  evidence establishes that applying those exact bytes is correct.
+
+There is no Worker `force-local`, `force-remote`, or generic `rebuild` route. Do not
+attempt to recover by editing Durable Object SQLite or R2 objects directly. Snapshot
+health recovery follows the separate authenticated runbook in
+[operations.md](spec/operations.md#51-snapshot-health-operator-runbook).
+
 ### Alerting on structured log events
 
 There is no built-in notification/alerting integration (e.g. email, Slack,
@@ -404,9 +430,8 @@ The Worker's update permission is limited to its `DEPLOY_HOOK_URL` secret. If th
 
 - A self-service setup-URI issuance flow (e.g. rate-limited and safe to
   expose to end users), replacing the operator-run `curl` step in §4.
-- A separate deployment project with its own `wrangler.toml`/CI that
-  consumes `@kuroflare/worker` as a package and reproduces the contract in
-  §2 (bindings, secrets, migration tag, compatibility date), rather than
-  deploying straight from this monorepo.
-- CI-driven deploys (build, typecheck, test, then `wrangler deploy`) once the
-  separate deployment project exists.
+
+The separate deployment repository is no longer future work. Its local
+extraction owns the template, `wrangler` configuration, bootstrap, tests, and CI;
+publishing its GitHub remote and validating the first Deploy Button deployment
+remain human-owned release gates.

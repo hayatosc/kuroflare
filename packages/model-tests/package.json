@@ -2,6 +2,8 @@
   "name": "@kuroflare/model-tests",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "author": "hayatosc",
   "type": "module",
   "scripts": {
     "build": "echo 'no build needed'",

@@ -2,6 +2,8 @@
   "name": "kuroflare",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "author": "hayatosc",
   "type": "module",
   "scripts": {
     "build": "pnpm -r build",
@@ -26,7 +28,7 @@
     "release:worker:rollout": "node --experimental-strip-types scripts/release/worker.ts pointer-rollout",
     "release:worker:block": "node --experimental-strip-types scripts/release/worker.ts pointer-block",
     "release:worker:unblock": "node --experimental-strip-types scripts/release/worker.ts pointer-unblock",
-    "test:deploy-template": "node --test deploy/cloudflare/test/*.test.mjs",
+    "test:crash-models": "pnpm --filter @kuroflare/model-tests test",
     "test:release": "node --experimental-strip-types --test scripts/release/*.test.ts"
   },
   "devDependencies": {

@@ -14,6 +14,7 @@ import {
 } from '../../sync/store/indexeddb'
 import { type LocalStoreOutboxRecord } from '../../sync/store/store'
 import { currentSetupMetadata, findActiveFileId } from '../auth'
+import { runLocalStoreMutation } from '../local-store-coordination'
 import type KuroflareSpikePlugin from '../plugin'
 import { openLocalStoreDatabase, readOutboxWorkerSnapshot } from '../store'
 import { scheduleOutboxWorkerTick } from './tick'
@@ -35,6 +36,19 @@ export function isRepairConflictPathAvailable(plugin: KuroflareSpikePlugin, path
 }
 
 export async function completeNonAckSideEffect(
+  plugin: KuroflareSpikePlugin,
+  record: LocalStoreOutboxRecord,
+  result: OutboxWorkerSideEffectResultEvidence,
+): Promise<void> {
+  await runLocalStoreMutation(plugin, async () => {
+    const setup = currentSetupMetadata(plugin)
+    if (setup === undefined) return
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+    await completeNonAckSideEffectCoordinated(plugin, db, record, result)
+  })
+}
+
+async function completeNonAckSideEffectCoordinated(
   plugin: KuroflareSpikePlugin,
   db: IDBDatabase,
   record: LocalStoreOutboxRecord,
@@ -87,6 +101,19 @@ export async function completeNonAckSideEffect(
 }
 
 export async function completeLeasedOutboxFailure(
+  plugin: KuroflareSpikePlugin,
+  record: LocalStoreOutboxRecord,
+  error: OutboxRunError,
+): Promise<void> {
+  await runLocalStoreMutation(plugin, async () => {
+    const setup = currentSetupMetadata(plugin)
+    if (setup === undefined) return
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+    await completeLeasedOutboxFailureCoordinated(plugin, db, record, error)
+  })
+}
+
+async function completeLeasedOutboxFailureCoordinated(
   plugin: KuroflareSpikePlugin,
   db: IDBDatabase,
   record: LocalStoreOutboxRecord,
@@ -142,16 +169,18 @@ export async function recoverLeasedOutboxAfterWebSocketFailure(
   plugin: KuroflareSpikePlugin,
 ): Promise<void> {
   if (!plugin.startupSideEffectGate.canSendNetwork()) return
-  const setup = currentSetupMetadata(plugin)
-  if (setup === undefined) return
-  const db = await openLocalStoreDatabase(plugin, setup.vaultId)
-  const snapshot = await readOutboxWorkerSnapshot(db)
-  const ownedLeases = snapshot.leaseRows.filter(
-    (lease) => lease.ownerId === plugin.outboxWorkerOwnerId,
-  )
-  for (const lease of ownedLeases) {
-    const record = snapshot.outboxRecords.find((candidate) => candidate.id === lease.itemId)
-    if (record === undefined) continue
-    await completeLeasedOutboxFailure(plugin, db, record, { kind: 'network' })
-  }
+  await runLocalStoreMutation(plugin, async () => {
+    const setup = currentSetupMetadata(plugin)
+    if (setup === undefined || !plugin.startupSideEffectGate.canSendNetwork()) return
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+    const snapshot = await readOutboxWorkerSnapshot(db)
+    const ownedLeases = snapshot.leaseRows.filter(
+      (lease) => lease.ownerId === plugin.outboxWorkerOwnerId,
+    )
+    for (const lease of ownedLeases) {
+      const record = snapshot.outboxRecords.find((candidate) => candidate.id === lease.itemId)
+      if (record === undefined) continue
+      await completeLeasedOutboxFailureCoordinated(plugin, db, record, { kind: 'network' })
+    }
+  })
 }

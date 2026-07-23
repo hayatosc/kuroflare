@@ -19,7 +19,7 @@ Workers Buildsは検証済みの固定成果物を準備し、Cloudflare標準�
 - PluginのGitHub Releaseタグは`manifest.json`の`version`と一致させる。
 - Workerの主要実装は`@kuroflare/worker-runtime`へ集約する。
 - runtimeは`@kuroflare/core`を内部へbundleし、外部のworkspace依存を持たない。
-- 初回Workerデプロイには、モノレポ内の完全に独立した`deploy/cloudflare`サブディレクトリを使う。
+- 初回Workerデプロイには、外部の`hayatosc/kuroflare-cloudflare-templete`リポジトリが所有するテンプレートを使う。
 - 利用者のテンプレートリポジトリにはKuroflare本体のソースを置かない。
 - 独自のdeployer packageとdeploy CLIは実装しない。
 - ユーザー向けの更新コマンド、対話型CLI、Cloudflare API wrapperも実装しない。
@@ -54,16 +54,17 @@ kuroflare
   ├─ @kuroflare/worker-runtime
   ├─ versioned build lockfile
   ├─ versioned release manifest
-  ├─ stable.json / beta.json
-  └─ deploy/cloudflare
-      ├─ src/index.ts
-      ├─ scripts/prepare-build.mjs
-      ├─ wrangler.json
-      ├─ package.json
-      ├─ .dev.vars.example
-      └─ Deploy to Cloudflare button
-              │
-              ▼
+  └─ stable.json / beta.json
+
+hayatosc/kuroflare-cloudflare-templete
+  ├─ src/index.ts
+  ├─ scripts/prepare-build.mjs
+  ├─ wrangler.json
+  ├─ package.json
+  ├─ .dev.vars.example
+  └─ Deploy to Cloudflare button
+          │
+          ▼
 利用者のCloudflareアカウント
   ├─ Worker
   ├─ VaultRoom Durable Object namespace
@@ -105,16 +106,21 @@ runtimeは製品バージョン、Git commit、protocol version、最小対応Pl
 
 ### Cloudflareデプロイテンプレート
 
-`deploy/cloudflare`は、Deploy to Cloudflareが直接扱う完全に独立したサブディレクトリとする。
+Cloudflareデプロイテンプレートは、このモノレポではなく外部の
+[`hayatosc/kuroflare-cloudflare-templete`](https://github.com/hayatosc/kuroflare-cloudflare-templete)
+リポジトリが排他的に所有する。このURLは予定する正規リモートを示すものであり、
+リモートの作成・pushが完了済みであることは意味しない。
 
-Deploy ButtonにこのサブディレクトリURLを渡すと、Cloudflareは利用者側でその中身だけをrepository rootとして複製する。
+Deploy Buttonはこの外部リポジトリを参照し、Cloudflareは利用者側へ
+テンプレートだけをrepository rootとして複製する。
 
-これにより、利用者のリポジトリへモノレポ本体を含めず、開発側も別のテンプレートリポジトリを同期する必要がない。
+これにより、利用者のリポジトリへモノレポ本体を含めず、テンプレートの
+設定、bootstrap、テスト、CIの所有権も外部リポジトリへ限定する。
 
 テンプレートにはresource bindings、Secretの宣言、Wrangler設定、固定bootstrapだけを置く。
 
 ```text
-deploy/cloudflare/
+kuroflare-cloudflare-templete/
 ├── src/
 │   └── index.ts
 ├── scripts/
@@ -291,6 +297,30 @@ Workerは休止中の端末を含む全Pluginバージョンを把握できな�
 後方互換性を証明できないreleaseは、自動更新用のv1 manifestとして公開せず、channel pointerからも参照しない。
 
 手動移行が必要なreleaseを配布する場合は、自動更新用manifestとは別の手順と契約を先に設計する。
+
+### Persistent data migration and backward-compatibility policy
+
+Automatic Worker updates use an expand/migrate/contract policy:
+
+1. **Expand:** add new tables, columns, evidence, and readers without removing or
+   reinterpreting state required by the immediately previous stable runtime.
+2. **Migrate:** make forward migration idempotent and transactional at each Durable
+   Object boundary. A failed migration must leave the object fail-closed and safe to
+   retry; it must not accept synchronization against a partially migrated schema.
+3. **Verify:** the release gate must migrate a previous-stable fixture forward and
+   prove that the candidate preserves vault documents, device registry, operation
+   log, snapshots, quarantine/audit evidence, and blob references. It must also prove
+   that the immediately previous stable runtime can read the post-migration state.
+4. **Contract:** removal of old fields or readers is deferred to a later release,
+   after the compatibility window has elapsed and rollback no longer depends on
+   them. Destructive rewrites, irreversible data deletion, and migrations that need
+   operator choices are never automatic updates.
+
+Code rollback does not roll back Durable Object SQLite, R2, or blob state. A release
+that cannot satisfy forward migration and previous-stable read compatibility must be
+published only with a separately designed, explicit manual migration; it must not be
+referenced by an automatic-update channel pointer. Arbitrary-version downgrade
+compatibility is out of scope.
 
 ### Workerバージョン情報
 
@@ -614,9 +644,9 @@ stable成果物は公開後に差し替えない。
 
 修正が必要な場合は新しいpatch versionを発行する。
 
-## 現在の実装状態と外部設定
+## Human-owned release gates
 
-モノレポ内のversion contract、公開Worker runtime、固定bootstrap、Deploy Button用テンプレート、UpdateCoordinator、release workflowは実装済みである。
+モノレポ内のversion contract、公開Worker runtime、immutable release、channel pointer、UpdateCoordinator、protocol contract、release workflowは実装済みである。固定bootstrapとDeploy Button用テンプレートは、外部`kuroflare-cloudflare-templete`ローカルリポジトリへ抽出済みである。
 
 Phase 7の段階配信ツールも実装済みである。`scripts/release/worker.ts`のchannel pointer操作コマンド（pause / promote / rollout / block / unblock、成果物を再ビルドせずpointerだけを検証付きで変更）、`workflow_dispatch`駆動の昇格workflow（`.github/workflows/release-worker-promote.yml`）、`docs/deployment.md`§7の運用手順（stable昇格・緊急停止・Deploy Hook rotation・code rollback）を含む。ただし実際のbeta→stable自動昇格は、下記の公開repository・npm公開・canary検証が揃うまで有効化しない。
 
@@ -626,20 +656,45 @@ Phase 7の段階配信ツールも実装済みである。`scripts/release/worke
 
 また、`@kuroflare/worker-runtime`はnpm registryへまだ公開されていない。
 
-そのため、次の外部設定と実機検証が完了するまでは、Deploy Buttonを利用可能と表示しない。
+Repository automation cannot complete or attest the checklist below. Do not present
+the Deploy Button as a supported installation path and do not advance either channel
+from `paused=true`, `rolloutPercentage=0` until every item is recorded against the
+exact release version:
 
-1. 配布先となる公開GitHub repositoryを作成し、このrepositoryのremoteを設定する。
-2. repositoryのrelease immutabilityを初回releaseより前に有効にする。
-3. 承認者を設定したprotected `release` environmentを作成する。
-4. Administration readだけを持つfine-grained tokenをenvironment secretの`RELEASE_ADMIN_TOKEN`へ登録する。
-5. npmで`@kuroflare/worker-runtime`を作成し、GitHub Actions、repository、workflow、`release` environmentをTrusted Publisherとして登録する。
-6. projectのlicenseを決定し、公開前にlicense fileとpackage metadataへ反映する。
-7. 最初の`x.y.z` releaseを発行し、npm provenance、GitHub Release asset、checksum、immutable状態を確認する。
-8. 専用Cloudflare canaryへDeploy Buttonから配置し、Deploy Hookを登録して自動更新を確認する。
-9. Windows版ObsidianでBRAT導入、初期接続、二台同期、Plugin更新、Worker更新後の再接続を確認する。
-10. 検証が完了したversionへchannel pointerを向け、`paused=true`かつ0パーセントから昇格手順を開始する。
+- [x] **License:** MIT license files, package metadata, release notices, and
+      first-party credit fields consistently identify `hayatosc`.
+- [ ] **GitHub:** create the public distribution repository, configure its remote,
+      enable release immutability before the first release, create a protected `release`
+      environment with required reviewers, and store an Administration-read-only
+      fine-grained token as `RELEASE_ADMIN_TOKEN`.
+- [x] **Cloudflare template publication:** publish the canonical repository at
+      `https://github.com/hayatosc/kuroflare-cloudflare-templete`, push commit
+      `0297374467e797f5690ca36ab8ee2d99ce270153`, and point its Deploy Button at
+      that external repository.
+- [ ] **npm:** create or claim `@kuroflare/worker-runtime`; configure the exact GitHub
+      organization/repository/workflow and `release` environment as its Trusted
+      Publisher.
+- [ ] **First release:** publish the intended `x.y.z`; verify npm provenance and
+      integrity, GitHub Release assets and checksums, version alignment, and immutable
+      release state.
+- [ ] **Cloudflare:** configure the production account, R2 lifecycle policy, required
+      secrets, dedicated canary, Workers Builds, and Deploy Hook. Deploy from the Deploy
+      Button and verify the pinned runtime plus one automatic update on real Cloudflare.
+- [ ] **Windows and real devices:** install and update the Plugin through BRAT on
+      Windows Obsidian; verify initial setup, two physical-device concurrent editing and
+      awareness, offline convergence, binary transfer, Plugin update, and reconnection
+      after a Worker update. Use backed-up disposable vaults.
+- [ ] **Production operations:** exercise quarantine inspect/discard/force-apply,
+      local-store export/rebuild, alert observation, Deploy Hook rotation, emergency
+      pause, code rollback, and the documented migration boundary without using a
+      personal vault.
+- [ ] **Promotion:** point the channel at the validated immutable version while it is
+      paused at zero percent, then perform the documented 1/10/50/100 percent staged
+      promotion with observation and build-drain records.
 
-公開repositoryの作成、npm packageの所有権取得、license選択、Cloudflare account上の配置は外部状態を変更するため、この実装作業では自動実行しない。
+The remaining gates require account ownership, external configuration, or
+physical/manual environments. They must remain human-owned even when repository
+automation prepares inputs or validates their schemas.
 
 ## 実装フェーズ
 
@@ -686,11 +741,11 @@ Phase 7の段階配信ツールも実装済みである。`scripts/release/worke
 
 ### Phase 5：Deploy Button
 
-1. モノレポ内に完全独立な`deploy/cloudflare`を作成する。
+1. 外部`kuroflare-cloudflare-templete`リポジトリへテンプレートを抽出する。
 2. Wrangler設定へDurable Object、R2、Secret、Cron、Version metadataを定義する。
 3. template protocol versionを定義する。
 4. Workers Buildsへstable channelのbuild variable、build command、deploy commandを設定する。
-5. Deploy Buttonから新規Cloudflare accountへ配置する。
+5. 外部リポジトリを参照するDeploy Buttonから新規Cloudflare accountへ配置する。
 6. Deploy Hook作成と`DEPLOY_HOOK_URL`登録の手順を追加する。
 7. setup token発行からPlugin接続までを確認する。
 

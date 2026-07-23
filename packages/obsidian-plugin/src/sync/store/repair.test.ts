@@ -654,6 +654,16 @@ test('local store repair import resume emits a pending patch only after confirma
         {
           kind: 'resume-repair-import',
           itemId: yUpdateOutboxId,
+          expected: {
+            kind: 'y-update',
+            status: 'paused',
+            reason: 'imported-repair-export',
+            resumeOn: 'manual',
+            docId: record.docId,
+            messageId: record.messageId,
+            updateSha256: record.updateSha256,
+            updateBytesBase64: record.updateBytesBase64,
+          },
           patch: {
             status: 'pending',
             nextAttemptAt: undefined,
@@ -734,6 +744,16 @@ test('local store repair import transactions stage and resume imported records',
               patch: {
                 kind: 'repair-import-resume',
                 itemId: yUpdateOutboxId,
+                expected: {
+                  kind: 'y-update',
+                  status: 'paused',
+                  reason: 'imported-repair-export',
+                  resumeOn: 'manual',
+                  docId: stagedRecord.docId,
+                  messageId: stagedRecord.messageId,
+                  updateSha256: stagedRecord.updateSha256,
+                  updateBytesBase64: stagedRecord.updateBytesBase64,
+                },
                 patch: {
                   status: 'pending',
                   nextAttemptAt: undefined,
@@ -760,6 +780,16 @@ test('local store repair import transactions stage and resume imported records',
               },
             ])
           }
+
+          const racedResume = applyLocalStoreDriverTransaction({
+            source: {
+              outboxRecords: [{ ...stagedRecord, updateBytesBase64: 'BAUG' }],
+              leaseRows: [],
+            },
+            operations: planLocalStoreRepairImportResumeTransaction(resumePlan),
+          })
+          assert.equal(racedResume.ok, false)
+          if (!racedResume.ok) assert.equal(racedResume.reason, 'patch-evidence-mismatch')
         }
       }
     }

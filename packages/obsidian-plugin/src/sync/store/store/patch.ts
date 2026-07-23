@@ -50,6 +50,22 @@ export function applyLocalStoreOutboxPatch(
     }
   }
 
+  if (patch.kind === 'repair-import-resume') {
+    if (
+      record.kind !== patch.expected.kind ||
+      record.status !== patch.expected.status ||
+      record.reason !== patch.expected.reason ||
+      record.resumeOn !== patch.expected.resumeOn ||
+      record.docId === undefined ||
+      !sameDocId(record.docId, patch.expected.docId) ||
+      record.messageId !== patch.expected.messageId ||
+      record.updateSha256 !== patch.expected.updateSha256 ||
+      record.updateBytesBase64 !== patch.expected.updateBytesBase64
+    ) {
+      return { ok: false, reason: 'patch-evidence-mismatch', itemId }
+    }
+  }
+
   switch (patch.kind) {
     case 'resume':
       return {

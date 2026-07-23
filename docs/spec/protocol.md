@@ -130,9 +130,12 @@ POST /admin/quarantine/:id/{discard,force-apply}
 ```
 
 `gc`/`force-local`/`force-remote`/`rebuild` admin operations were named as a
-placeholder route family but never given a payload/effect contract, so no
-route exists for them (see docs/spec/server.md §9 and
-docs/implementation-status.md).
+placeholder route family but never given a payload, source-authority, CAS, or
+auditable effect contract, so no route exists for them. The supported escape
+hatches are the client-local export/rebuild flow and the exact quarantined-update
+inspect/discard/force-apply flow (see [operations.md](operations.md) §1 and
+[server.md](server.md) §9). A local-store rebuild is intentionally not a Worker
+administrator API.
 
 R2 の public URL を直接配らず、初期実装は Worker 経由で認証を一元化する（個人用途なので単純さを優先）。
 

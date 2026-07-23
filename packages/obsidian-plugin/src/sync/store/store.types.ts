@@ -109,6 +109,16 @@ export type LocalStoreOutboxPatch =
   | {
       readonly kind: 'repair-import-resume'
       readonly itemId: OutboxPlanItemId
+      readonly expected: {
+        readonly kind: 'y-update'
+        readonly status: 'paused'
+        readonly reason: 'imported-repair-export'
+        readonly resumeOn: 'manual'
+        readonly docId: DocId
+        readonly messageId: MessageId
+        readonly updateSha256: Sha256Hex
+        readonly updateBytesBase64: string
+      }
       readonly patch: {
         readonly status: 'pending'
         readonly nextAttemptAt: undefined

@@ -104,6 +104,16 @@ export interface LocalStoreRepairImportResumePlanInput {
 export interface LocalStoreRepairImportResumeEffect {
   readonly kind: 'resume-repair-import'
   readonly itemId: OutboxPlanItemId
+  readonly expected: {
+    readonly kind: 'y-update'
+    readonly status: 'paused'
+    readonly reason: 'imported-repair-export'
+    readonly resumeOn: 'manual'
+    readonly docId: DocId
+    readonly messageId: MessageId
+    readonly updateSha256: Sha256Hex
+    readonly updateBytesBase64: string
+  }
   readonly patch: Extract<LocalOutboxRepairResumeDecision, { readonly action: 'resume' }>['patch']
 }
 

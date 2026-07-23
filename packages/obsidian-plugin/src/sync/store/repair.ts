@@ -324,7 +324,23 @@ export function planLocalStoreRepairImportResume(
         ok: true,
         action: 'resume',
         decision,
-        effects: [{ kind: 'resume-repair-import', itemId: input.record.id, patch: decision.patch }],
+        effects: [
+          {
+            kind: 'resume-repair-import',
+            itemId: input.record.id,
+            expected: {
+              kind: 'y-update',
+              status: 'paused',
+              reason: 'imported-repair-export',
+              resumeOn: 'manual',
+              docId: input.record.docId,
+              messageId: input.record.messageId,
+              updateSha256: input.record.updateSha256,
+              updateBytesBase64: input.record.updateBytesBase64,
+            },
+            patch: decision.patch,
+          },
+        ],
       }
     case 'wait':
       return {
@@ -369,6 +385,7 @@ export function planLocalStoreRepairImportResumeTransaction(
       patch: {
         kind: 'repair-import-resume',
         itemId: effect.itemId,
+        expected: effect.expected,
         patch: effect.patch,
       },
     }),

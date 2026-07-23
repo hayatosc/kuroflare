@@ -2,12 +2,15 @@
   "name": "@kuroflare/worker-runtime",
   "version": "0.1.0",
   "description": "Public Kuroflare Cloudflare Worker runtime",
+  "license": "MIT",
+  "author": "hayatosc",
   "repository": {
     "type": "git",
     "url": "https://github.com/hayatosc/kuroflare.git"
   },
   "files": [
     "dist",
+    "LICENSE",
     "README.md"
   ],
   "type": "module",

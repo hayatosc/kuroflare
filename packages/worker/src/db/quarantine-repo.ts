@@ -63,6 +63,31 @@ export async function getQuarantinedUpdates(db: Kysely<Database>): Promise<Quara
     .execute()
 }
 
+/** Reads quarantine evidence for one exact document/message identity. */
+export async function getQuarantinedUpdateByMessage(
+  db: Kysely<Database>,
+  docKey: string,
+  messageId: string,
+  updateSha256?: string,
+): Promise<QuarantinedUpdateRow | undefined> {
+  let query = db
+    .selectFrom('quarantined_updates')
+    .select((eb) => [
+      'id',
+      eb.ref('doc_id').as('docId'),
+      eb.ref('message_id').as('messageId'),
+      eb.ref('device_id').as('deviceId'),
+      'reason',
+      eb.ref('update_sha256').as('updateSha256'),
+      eb.ref('update_bytes').as('updateBytes'),
+      eb.ref('created_at').as('createdAt'),
+    ])
+    .where('doc_id', '=', docKey)
+    .where('message_id', '=', messageId)
+  if (updateSha256 !== undefined) query = query.where('update_sha256', '=', updateSha256)
+  return query.executeTakeFirst()
+}
+
 export async function getQuarantinedUpdateById(
   db: Kysely<Database>,
   id: string,

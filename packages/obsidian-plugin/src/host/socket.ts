@@ -45,6 +45,7 @@ import {
 import type { SetupMetadataSource } from './auth'
 import { META_SYNC_DOC_ID, WORKER_ORIGIN } from './constants'
 import { safeLogError, encodeBase64, accessTokenSecretKeyForSetup } from './helpers'
+import { runLocalStoreMutation } from './local-store-coordination'
 import { loadTextDoc, metaDocWritable, metadataWritesEnabled } from './meta'
 import { recoverLeasedOutboxAfterWebSocketFailure } from './outbox/completion'
 import { runOutboxWorkerTick, scheduleOutboxWorkerTick } from './outbox/tick'
@@ -88,13 +89,17 @@ export async function sendDocUpdateToWorker(
     createdAt: Date.now(),
   } as LocalStoreOutboxRecord
   try {
-    const db = await openLocalStoreDatabase(plugin, setup.vaultId, isCurrent)
-    if (!isCurrent()) return
-    await putOutboxRecord(db, record)
-    if (!isCurrent()) {
-      await deleteOutboxRecordIfMessageMatches(db, record)
-      return
-    }
+    const persisted = await runLocalStoreMutation(plugin, async () => {
+      const db = await openLocalStoreDatabase(plugin, setup.vaultId, isCurrent)
+      if (!isCurrent()) return false
+      await putOutboxRecord(db, record)
+      if (!isCurrent()) {
+        await deleteOutboxRecordIfMessageMatches(db, record)
+        return false
+      }
+      return true
+    })
+    if (!persisted) return
   } catch (error: unknown) {
     console.error('[kuroflare] failed to persist outbound update before send', {
       reason,
@@ -488,6 +493,30 @@ export async function handleWorkerInboundMessage(
   plugin: KuroflareSpikePlugin,
   message: SyncRuntimeWebSocketInboundMessage,
 ): Promise<void> {
+  const result = await runLocalStoreMutation(plugin, () =>
+    handleWorkerInboundMessageCoordinated(plugin, message),
+  )
+  if (result === undefined || !result.isCurrent()) return
+  const { dispatched } = result
+  if (dispatched.route.action === 'apply-remote-update') {
+    await plugin.handleWorkerSyncUpdate(dispatched.route.message)
+  } else if (
+    dispatched.route.action === 'outbox-completion' &&
+    dispatched.route.message.type === 'need-full-snapshot'
+  ) {
+    // Fire-and-forget: fetch+apply retries run in the background so this doesn't block
+    // dispatch of subsequent inbound messages (see recoverFromNeedFullSnapshot).
+    void plugin.recoverFromNeedFullSnapshot(
+      dispatched.route.message.docId,
+      dispatched.route.message.reason,
+    )
+  }
+}
+
+async function handleWorkerInboundMessageCoordinated(
+  plugin: KuroflareSpikePlugin,
+  message: SyncRuntimeWebSocketInboundMessage,
+) {
   if (!plugin.startupSideEffectGate.canSendNetwork()) return
   if (
     message.ok &&
@@ -570,20 +599,7 @@ export async function handleWorkerInboundMessage(
       },
     },
   })
-  if (!isCurrent()) return
-  if (dispatched.route.action === 'apply-remote-update') {
-    await plugin.handleWorkerSyncUpdate(dispatched.route.message)
-  } else if (
-    dispatched.route.action === 'outbox-completion' &&
-    dispatched.route.message.type === 'need-full-snapshot'
-  ) {
-    // Fire-and-forget: fetch+apply retries run in the background so this doesn't block
-    // dispatch of subsequent inbound messages (see recoverFromNeedFullSnapshot).
-    void plugin.recoverFromNeedFullSnapshot(
-      dispatched.route.message.docId,
-      dispatched.route.message.reason,
-    )
-  }
+  return { dispatched, isCurrent }
 }
 
 /**

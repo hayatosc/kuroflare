@@ -15,6 +15,7 @@ export default defineConfig({
     alwaysBundle: [
       /^@kuroflare\//,
       /^hono(\/|$)/,
+      'uqr',
       'valibot',
       'y-codemirror.next',
       'y-indexeddb',

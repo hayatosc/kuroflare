@@ -1,17 +1,23 @@
 import { PRODUCT_VERSION, parseSetupUri } from '@kuroflare/core'
 import { type App, Notice, PluginSettingTab, Setting } from 'obsidian'
+import { encode } from 'uqr'
 
-import { currentSetupMetadata, readAccessToken, requireSetupMetadata } from '../host/auth'
+import {
+  currentSetupMetadata,
+  readAccessToken,
+  requireSetupMetadata,
+  revokeCurrentDeviceAfterConfirmation,
+} from '../host/auth'
 import {
   DEVICE_REVOKE_CONFIRMATION,
   INVALID_META_DISCARD_CONFIRMATION,
   LOCAL_STORE_DISCARD_CONFIRMATION,
+  LOCAL_STORE_IMPORT_RESUME_CONFIRMATION,
   LOCAL_STORE_REBUILD_CONFIRMATION,
 } from '../host/constants'
 import { accessTokenSecretKeyForSetup, docIdLabel, repairLogDescription } from '../host/helpers'
 import type KuroflareSpikePlugin from '../host/plugin'
 import { confirmAndApplySetupUri } from '../host/setup-uri'
-import { createWorkerClient } from '../sync/api-client'
 import { buildDeviceInviteSetupUri, issueDeviceInviteSetupToken } from '../sync/auth/invite'
 import { renderQuarantineAdmin } from '../sync/obsidian/quarantine-ui'
 import {
@@ -186,26 +192,9 @@ export class KuroflareSettingTab extends PluginSettingTab {
       })
       .addButton((button) => {
         button.setButtonText('Revoke').onClick(() => {
-          void (async () => {
-            if (revokeConfirmation !== DEVICE_REVOKE_CONFIRMATION) return
-            const setup = requireSetupMetadata(this.plugin)
-            const token = await readAccessToken(this.plugin, accessTokenSecretKeyForSetup(setup))
-            if (token === undefined) {
-              new Notice('No access token')
-              return
-            }
-            const client = createWorkerClient(setup.endpoint, token)
-            const response = await client.devices[':deviceId'].revoke.$post({
-              param: { deviceId: setup.deviceId },
-              json: { reason: 'user-initiated' },
-            })
-            if (response.ok) {
-              new Notice('Device revoked')
-            } else {
-              new Notice(`Revoke failed: ${response.status}`)
-            }
-            this.display()
-          })()
+          this.runRepairAction(() =>
+            revokeCurrentDeviceAfterConfirmation(this.plugin, revokeConfirmation),
+          )
         })
       })
 
@@ -258,7 +247,10 @@ export class KuroflareSettingTab extends PluginSettingTab {
       .setDesc(localStoreRepairPresentation.exportDescription)
       .addButton((button) => {
         button.setButtonText(localStoreRepairPresentation.exportButtonText).onClick(() => {
-          new Notice('Kuroflare: export local outbox under refactoring')
+          this.runRepairAction(async () => {
+            const path = await this.plugin.exportLocalStoreRepair()
+            new Notice(`Kuroflare: local outbox exported to ${path}`)
+          })
         })
       })
     let repairImportPath = localStoreRepairPresentation.importDefaultPath
@@ -275,29 +267,53 @@ export class KuroflareSettingTab extends PluginSettingTab {
       })
       .addButton((button) => {
         button.setButtonText('Stage').onClick(() => {
-          new Notice('Kuroflare: stage repair import under refactoring')
+          this.runRepairAction(async () => {
+            const count = await this.plugin.stageLocalStoreRepairImport(repairImportPath)
+            new Notice(`Kuroflare: staged ${count} repair import(s)`)
+          })
         })
       })
-    let _rebuildConfirmation = ''
+    let rebuildConfirmation = ''
     new Setting(containerEl)
       .setName('Rebuild local store')
       .setDesc(localStoreRepairPresentation.rebuildDescription)
       .addText((text) => {
         text.setPlaceholder(LOCAL_STORE_REBUILD_CONFIRMATION).onChange((value) => {
-          _rebuildConfirmation = value.trim()
+          rebuildConfirmation = value.trim()
         })
       })
       .addButton((button) => {
         button.setButtonText('Rebuild').onClick(() => {
-          new Notice('Kuroflare: rebuild local store under refactoring')
+          this.runRepairAction(() =>
+            this.plugin.rebuildDegradedLocalStore(
+              rebuildConfirmation,
+              LOCAL_STORE_REBUILD_CONFIRMATION,
+              LOCAL_STORE_DISCARD_CONFIRMATION,
+            ),
+          )
         })
       })
+    let resumeConfirmation = ''
     new Setting(containerEl)
       .setName('Resume staged repair imports')
-      .setDesc('Move reviewed repair-import outbox entries back to pending.')
+      .setDesc(
+        `Move reviewed repair-import outbox entries back to pending. Type ${LOCAL_STORE_IMPORT_RESUME_CONFIRMATION} to confirm.`,
+      )
+      .addText((text) => {
+        text.setPlaceholder(LOCAL_STORE_IMPORT_RESUME_CONFIRMATION).onChange((value) => {
+          resumeConfirmation = value.trim()
+        })
+      })
       .addButton((button) => {
         button.setButtonText('Resume').onClick(() => {
-          new Notice('Kuroflare: resume staged imports under refactoring')
+          if (resumeConfirmation !== LOCAL_STORE_IMPORT_RESUME_CONFIRMATION) {
+            new Notice(`Kuroflare: type ${LOCAL_STORE_IMPORT_RESUME_CONFIRMATION} to resume`)
+            return
+          }
+          this.runRepairAction(async () => {
+            const count = await this.plugin.resumeLocalStoreRepairImports()
+            new Notice(`Kuroflare: resumed ${count} repair import(s)`)
+          })
         })
       })
 
@@ -537,6 +553,7 @@ interface DeviceInvitePresentation {
 
 function renderDeviceInviteResult(container: HTMLElement, invite: DeviceInvitePresentation): void {
   container.empty()
+  renderSetupUriQrCode(container, invite.setupUri)
   new Setting(container)
     .setName('Invite link')
     .setDesc(
@@ -558,4 +575,33 @@ function renderDeviceInviteResult(container: HTMLElement, invite: DeviceInvitePr
           })
       })
     })
+}
+
+function renderSetupUriQrCode(container: HTMLElement, setupUri: string): void {
+  const qr = encode(setupUri, { ecc: 'M', border: 4 })
+  const namespace = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(namespace, 'svg')
+  svg.setAttribute('viewBox', `0 0 ${qr.size} ${qr.size}`)
+  svg.setAttribute('width', '256')
+  svg.setAttribute('height', '256')
+  svg.setAttribute('shape-rendering', 'crispEdges')
+  svg.setAttribute('role', 'img')
+  svg.setAttribute('aria-label', 'QR code for the one-time Kuroflare setup link')
+  svg.setAttribute('data-kuroflare-setup-qr', '')
+  const background = document.createElementNS(namespace, 'rect')
+  background.setAttribute('width', '100%')
+  background.setAttribute('height', '100%')
+  background.setAttribute('fill', 'white')
+  svg.append(background)
+  const path = document.createElementNS(namespace, 'path')
+  const commands: string[] = []
+  for (let y = 0; y < qr.size; y += 1) {
+    for (let x = 0; x < qr.size; x += 1) {
+      if (qr.data[y]?.[x] === true) commands.push(`M${x} ${y}h1v1h-1z`)
+    }
+  }
+  path.setAttribute('d', commands.join(''))
+  path.setAttribute('fill', 'black')
+  svg.append(path)
+  container.append(svg)
 }

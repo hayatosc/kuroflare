@@ -99,6 +99,13 @@ import {
 import { registerFileTreeWatcher } from './files'
 import { deferStartupReplan } from './guards'
 import { accessTokenSecretKeyForSetup, safeLogError, sameDocId } from './helpers'
+import { runLocalStoreMutation } from './local-store-coordination'
+import {
+  exportLocalStoreRepair,
+  rebuildDegradedLocalStore,
+  resumeLocalStoreRepairImports,
+  stageLocalStoreRepairImport,
+} from './local-store-repair'
 import { resolveJoinAdoptionHashCheck, resolvePendingRemoteTextFile } from './materialize'
 import {
   establishInitialDocumentEpoch,
@@ -342,6 +349,26 @@ export default class KuroflareSpikePlugin extends Plugin {
     return this.syncRejectedUpdateRepairEntries
   }
 
+  exportLocalStoreRepair(): Promise<string> {
+    return exportLocalStoreRepair(this)
+  }
+
+  stageLocalStoreRepairImport(path: string): Promise<number> {
+    return stageLocalStoreRepairImport(this, path)
+  }
+
+  resumeLocalStoreRepairImports(): Promise<number> {
+    return resumeLocalStoreRepairImports(this)
+  }
+
+  rebuildDegradedLocalStore(
+    confirmation: string,
+    rebuildConfirmation: string,
+    discardConfirmation: string,
+  ): Promise<void> {
+    return rebuildDegradedLocalStore(this, confirmation, rebuildConfirmation, discardConfirmation)
+  }
+
   async refreshSyncRejectedUpdateRepairEntries(): Promise<void> {
     const setup = requireSetupMetadata(this)
     const db = await openLocalStoreDatabase(this, setup.vaultId)
@@ -352,33 +379,35 @@ export default class KuroflareSpikePlugin extends Plugin {
   async repairSyncRejectedUpdate(
     itemId: LocalStoreOutboxRecord['id'],
   ): Promise<RejectedUpdateRepairResult> {
-    const setup = requireSetupMetadata(this)
-    const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
-    if (accessToken === undefined) {
-      return { ok: false, itemId, reason: 'auth-failed' }
-    }
-    const db = await openLocalStoreDatabase(this, setup.vaultId)
-    const result = await repairPausedRejectedUpdate({
-      db,
-      setup,
-      accessToken,
-      itemId,
-      http: createWorkerClient(setup.endpoint),
-    })
-    if (result.ok) {
-      this.syncRejectedUpdateRepairEntries = this.syncRejectedUpdateRepairEntries.filter(
-        (entry) => entry.id !== itemId,
-      )
-      return result
-    }
-    try {
-      await this.refreshSyncRejectedUpdateRepairEntries()
-    } catch (error: unknown) {
-      console.warn('[kuroflare] rejected update repair list refresh failed', {
-        error: safeLogError(error),
+    return runLocalStoreMutation(this, async () => {
+      const setup = requireSetupMetadata(this)
+      const accessToken = await readAccessToken(this, accessTokenSecretKeyForSetup(setup))
+      if (accessToken === undefined) {
+        return { ok: false, itemId, reason: 'auth-failed' }
+      }
+      const db = await openLocalStoreDatabase(this, setup.vaultId)
+      const result = await repairPausedRejectedUpdate({
+        db,
+        setup,
+        accessToken,
+        itemId,
+        http: createWorkerClient(setup.endpoint),
       })
-    }
-    return result
+      if (result.ok) {
+        this.syncRejectedUpdateRepairEntries = this.syncRejectedUpdateRepairEntries.filter(
+          (entry) => entry.id !== itemId,
+        )
+        return result
+      }
+      try {
+        await this.refreshSyncRejectedUpdateRepairEntries()
+      } catch (error: unknown) {
+        console.warn('[kuroflare] rejected update repair list refresh failed', {
+          error: safeLogError(error),
+        })
+      }
+      return result
+    })
   }
 
   getInvalidMetaIsolationSnapshot(): KuroflareInvalidMetaIsolationDetail | null {
@@ -1030,7 +1059,12 @@ function metadataMaterializationPort(plugin: KuroflareSpikePlugin): MetadataMate
     openLocalStoreDatabase: (vaultId, isCurrent) =>
       openLocalStoreDatabase(plugin, vaultId, isCurrent),
     readOutboxWorkerSnapshot: (db) => readOutboxWorkerSnapshot(db),
-    putOutboxRecords: (db, records) => putOutboxRecords(db, records),
+    putOutboxRecords: (_db, records) =>
+      runLocalStoreMutation(plugin, async () => {
+        const setup = requireSetupMetadata(plugin)
+        const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+        await putOutboxRecords(db, records)
+      }),
     runOutboxWorkerTick: (reason) => runOutboxWorkerTick(plugin, reason),
   }
 }

@@ -31,6 +31,7 @@ import {
   schedulerAuthGateFromMetadata,
   outboxAuthRefreshStateFromMetadata,
 } from '../helpers'
+import { runLocalStoreMutation } from '../local-store-coordination'
 import { metadataWritesEnabled } from '../meta'
 import type KuroflareSpikePlugin from '../plugin'
 import {
@@ -223,7 +224,9 @@ export async function runOutboxWorkerTick(
     }
     for (const transaction of planOutboxWorkerTickIndexedDbWriteTransactions(workerTick)) {
       if (!isCurrent()) return
-      await commitOutboxWorkerIndexedDbWriteTransaction(db, transaction)
+      await runLocalStoreMutation(plugin, () =>
+        commitOutboxWorkerIndexedDbWriteTransaction(db, transaction),
+      )
     }
     if (!isCurrent()) return
     if (tick.authRefresh.action === 'request-refresh') {
@@ -249,7 +252,7 @@ export async function runOutboxWorkerTick(
         if (record.docId?.kind === 'meta') {
           if (!metadataWritesEnabled(plugin)) continue
           if (!shouldSendMetadataOutbox(plugin, record)) {
-            await completeLeasedOutboxFailure(plugin, db, record, {
+            await completeLeasedOutboxFailure(plugin, record, {
               kind: 'metadata-migration-required',
             })
             continue
@@ -267,14 +270,14 @@ export async function runOutboxWorkerTick(
               reason: send.reason,
               itemId: effect.start.id,
             })
-            await completeLeasedOutboxFailure(plugin, db, record, { kind: 'invalid-payload' })
+            await completeLeasedOutboxFailure(plugin, record, { kind: 'invalid-payload' })
           }
         } catch (error: unknown) {
           console.warn('[kuroflare] outbox websocket send failed', {
             itemId: effect.start.id,
             error: safeLogError(error),
           })
-          await completeLeasedOutboxFailure(plugin, db, record, { kind: 'network' })
+          await completeLeasedOutboxFailure(plugin, record, { kind: 'network' })
         }
         continue
       }
@@ -291,7 +294,6 @@ export async function runOutboxWorkerTick(
         })
         await completeLeasedOutboxFailure(
           plugin,
-          db,
           record,
           sideEffect.reason === 'missing-access-token'
             ? { kind: 'auth' }
@@ -302,25 +304,25 @@ export async function runOutboxWorkerTick(
       if (sideEffect.action === 'blob-put') {
         const result = await runBlobPutSideEffect(plugin, sideEffect)
         if (!isCurrent()) return
-        await completeNonAckSideEffect(plugin, db, record, result)
+        await completeNonAckSideEffect(plugin, record, result)
         continue
       }
       if (sideEffect.action === 'blob-get') {
         const result = await runBlobGetSideEffect(plugin, sideEffect, isCurrent)
         if (!isCurrent()) return
-        await completeNonAckSideEffect(plugin, db, record, result)
+        await completeNonAckSideEffect(plugin, record, result)
         continue
       }
       if (sideEffect.action === 'manifest-put') {
         const result = await runManifestPutSideEffect(sideEffect)
         if (!isCurrent()) return
-        await completeNonAckSideEffect(plugin, db, record, result)
+        await completeNonAckSideEffect(plugin, record, result)
         continue
       }
       if (sideEffect.action === 'materialize') {
         const result = await runMaterializeSideEffect(plugin, sideEffect, isCurrent)
         if (!isCurrent()) return
-        await completeNonAckSideEffect(plugin, db, record, result)
+        await completeNonAckSideEffect(plugin, record, result)
         continue
       }
       if (sideEffect.action !== 'meta-ref-update') {
@@ -329,7 +331,7 @@ export async function runOutboxWorkerTick(
       if (record.docId?.kind === 'meta') {
         if (!metadataWritesEnabled(plugin)) continue
         if (!shouldSendMetadataOutbox(plugin, record)) {
-          await completeLeasedOutboxFailure(plugin, db, record, {
+          await completeLeasedOutboxFailure(plugin, record, {
             kind: 'metadata-migration-required',
           })
           continue
@@ -347,14 +349,14 @@ export async function runOutboxWorkerTick(
             reason: send.reason,
             itemId: effect.start.id,
           })
-          await completeLeasedOutboxFailure(plugin, db, record, { kind: 'invalid-payload' })
+          await completeLeasedOutboxFailure(plugin, record, { kind: 'invalid-payload' })
         }
       } catch (error: unknown) {
         console.warn('[kuroflare] outbox websocket send failed', {
           itemId: effect.start.id,
           error: safeLogError(error),
         })
-        await completeLeasedOutboxFailure(plugin, db, record, { kind: 'network' })
+        await completeLeasedOutboxFailure(plugin, record, { kind: 'network' })
       }
     }
     const completionSnapshot = await readOutboxWorkerSnapshot(db)

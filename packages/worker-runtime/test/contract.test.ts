@@ -67,11 +67,17 @@ const packedFiles = new Set(
     return path
   }),
 )
-for (const expected of ['package.json', 'README.md', 'dist/index.mjs', 'dist/index.d.mts']) {
+for (const expected of [
+  'package.json',
+  'README.md',
+  'LICENSE',
+  'dist/index.mjs',
+  'dist/index.d.mts',
+]) {
   if (!packedFiles.has(expected)) throw new Error(`Pack output is missing ${expected}`)
 }
 for (const file of packedFiles) {
-  if (!/^(?:package\.json|README\.md|dist\/)/.test(file)) {
+  if (!/^(?:package\.json|README\.md|LICENSE|dist\/)/.test(file)) {
     throw new Error(`Unexpected file in package: ${file}`)
   }
 }

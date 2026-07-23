@@ -16,6 +16,7 @@ const OPTIONAL_ASSETS = ['styles.css']
 const BUNDLE_TOOL_FILES = ['publish-plugin.mjs']
 const WORKER_RELEASE_ASSETS = ['build-lock.json', 'worker-release.json']
 const CHECKSUMS_FILE = 'SHA256SUMS'
+const RUNTIME_CANDIDATE_DIST_TAG = 'release-candidate'
 const ALLOWED_ASSETS = new Set([
   ...REQUIRED_ASSETS,
   ...OPTIONAL_ASSETS,
@@ -62,14 +63,14 @@ async function runNpm(args, options = {}) {
   return result.stdout
 }
 
-async function assertStableDistTag(npm, tag, cwd) {
+async function readDistTag(npm, distTag, cwd) {
   let source
   try {
     source = await npm(
       [
         'view',
         '@kuroflare/worker-runtime',
-        'dist-tags.stable',
+        `dist-tags.${distTag}`,
         '--json',
         '--registry',
         'https://registry.npmjs.org',
@@ -77,12 +78,16 @@ async function assertStableDistTag(npm, tag, cwd) {
       { cwd },
     )
   } catch {
-    throw new Error('Cannot verify the npm stable dist-tag')
+    throw new Error(`Cannot verify the npm ${distTag} dist-tag`)
   }
-  const stableVersion = requireString(JSON.parse(source), 'npm stable dist-tag')
-  if (stableVersion !== tag) {
-    throw new Error(`npm stable dist-tag must point to ${tag}, got ${stableVersion}`)
-  }
+  const value = JSON.parse(source || 'null')
+  return value === null ? undefined : requireString(value, `npm ${distTag} dist-tag`)
+}
+
+async function assertDistTag(npm, distTag, tag, cwd) {
+  const version = await readDistTag(npm, distTag, cwd)
+  if (version !== tag)
+    throw new Error(`npm ${distTag} dist-tag must point to ${tag}, got ${version}`)
 }
 
 async function assertRuntimeProvenance(npm, tag, cwd) {
@@ -108,17 +113,11 @@ async function assertRuntimeProvenance(npm, tag, cwd) {
   }
 }
 
-/** Publish the runtime tarball once, or prove an existing version is byte-identical. */
-export async function publishRuntimePackage(options) {
-  const tag = requireString(options.tag, 'tag')
-  if (!STABLE_VERSION_PATTERN.test(tag)) {
-    throw new Error(`tag must be a stable x.y.z version, got ${tag}`)
-  }
-  const tarballPath = requireString(options.tarballPath, 'tarballPath')
+async function inspectRuntimePackage(npm, tag, tarballPath) {
   const tarballBytes = await readFile(resolve(tarballPath))
   const expectedIntegrity = npmSha512Integrity(tarballBytes)
-  const npm = options.runNpm ?? runNpm
-  let existing
+  const cwd = resolve(tarballPath, '..')
+  let integrity
   try {
     const source = await npm(
       [
@@ -129,25 +128,34 @@ export async function publishRuntimePackage(options) {
         '--registry',
         'https://registry.npmjs.org',
       ],
-      { cwd: resolve(tarballPath, '..') },
+      { cwd },
     )
-    const integrity = JSON.parse(source)
-    existing = { integrity }
+    integrity = requireString(JSON.parse(source), 'npm runtime dist.integrity')
   } catch (error) {
     if (!npmNotFound(error)) {
       throw new Error('Cannot inspect npm runtime package; verify registry access and credentials')
     }
   }
-  if (existing !== undefined && existing !== null) {
-    const integrity = requireString(existing.integrity, 'npm runtime dist.integrity')
-    if (integrity !== expectedIntegrity) {
-      throw new Error(
-        `npm ${'@kuroflare/worker-runtime'}@${tag} already exists with a different tarball integrity`,
-      )
-    }
-    await assertStableDistTag(npm, tag, resolve(tarballPath, '..'))
-    await assertRuntimeProvenance(npm, tag, resolve(tarballPath, '..'))
-    return { published: false, integrity: expectedIntegrity }
+  if (integrity !== undefined && integrity !== expectedIntegrity) {
+    throw new Error(
+      `npm ${'@kuroflare/worker-runtime'}@${tag} already exists with a different tarball integrity`,
+    )
+  }
+  return { cwd, expectedIntegrity, exists: integrity !== undefined }
+}
+
+/** Publish the runtime under a non-user candidate tag, or verify the exact existing version. */
+export async function publishRuntimeCandidate(options) {
+  const tag = requireString(options.tag, 'tag')
+  if (!STABLE_VERSION_PATTERN.test(tag)) {
+    throw new Error(`tag must be a stable x.y.z version, got ${tag}`)
+  }
+  const tarballPath = requireString(options.tarballPath, 'tarballPath')
+  const npm = options.runNpm ?? runNpm
+  const runtime = await inspectRuntimePackage(npm, tag, tarballPath)
+  if (runtime.exists) {
+    await assertRuntimeProvenance(npm, tag, runtime.cwd)
+    return { published: false, integrity: runtime.expectedIntegrity }
   }
   try {
     await npm(
@@ -158,11 +166,11 @@ export async function publishRuntimePackage(options) {
         '--access',
         'public',
         '--tag',
-        'stable',
+        RUNTIME_CANDIDATE_DIST_TAG,
         '--registry',
         'https://registry.npmjs.org',
       ],
-      { cwd: resolve(tarballPath, '..') },
+      { cwd: runtime.cwd },
     )
   } catch {
     throw new Error(
@@ -179,19 +187,69 @@ export async function publishRuntimePackage(options) {
         '--registry',
         'https://registry.npmjs.org',
       ],
-      { cwd: resolve(tarballPath, '..') },
+      { cwd: runtime.cwd },
     )
     const visibleIntegrity = requireString(JSON.parse(source), 'npm runtime dist.integrity')
-    if (visibleIntegrity !== expectedIntegrity) {
+    if (visibleIntegrity !== runtime.expectedIntegrity) {
       throw new Error('published runtime tarball integrity does not match the local tarball')
     }
   } catch (error) {
     if (error instanceof Error && error.message.includes('published runtime tarball')) throw error
     throw new Error('npm runtime was published but is not visible at the expected registry version')
   }
-  await assertStableDistTag(npm, tag, resolve(tarballPath, '..'))
-  await assertRuntimeProvenance(npm, tag, resolve(tarballPath, '..'))
-  return { published: true, integrity: expectedIntegrity }
+  await assertDistTag(npm, RUNTIME_CANDIDATE_DIST_TAG, tag, runtime.cwd)
+  await assertRuntimeProvenance(npm, tag, runtime.cwd)
+  return { published: true, integrity: runtime.expectedIntegrity }
+}
+
+function compareStableVersions(left, right) {
+  const leftParts = left.split('.').map(BigInt)
+  const rightParts = right.split('.').map(BigInt)
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] < rightParts[index]) return -1
+    if (leftParts[index] > rightParts[index]) return 1
+  }
+  return 0
+}
+
+/** Promote an already-published exact runtime version to stable without republishing it. */
+export async function promoteRuntimeStable(options) {
+  const tag = requireString(options.tag, 'tag')
+  if (!STABLE_VERSION_PATTERN.test(tag)) {
+    throw new Error(`tag must be a stable x.y.z version, got ${tag}`)
+  }
+  const tarballPath = requireString(options.tarballPath, 'tarballPath')
+  const npm = options.runNpm ?? runNpm
+  const runtime = await inspectRuntimePackage(npm, tag, tarballPath)
+  if (!runtime.exists) throw new Error(`npm runtime ${tag} must exist before stable promotion`)
+  await assertRuntimeProvenance(npm, tag, runtime.cwd)
+  const stableVersion = await readDistTag(npm, 'stable', runtime.cwd)
+  if (stableVersion === tag) return { promoted: false, integrity: runtime.expectedIntegrity }
+  if (stableVersion !== undefined) {
+    if (!STABLE_VERSION_PATTERN.test(stableVersion)) {
+      throw new Error(`npm stable dist-tag must be a stable x.y.z version, got ${stableVersion}`)
+    }
+    if (compareStableVersions(stableVersion, tag) > 0) {
+      throw new Error(`npm stable dist-tag cannot move backward from ${stableVersion} to ${tag}`)
+    }
+  }
+  try {
+    await npm(
+      [
+        'dist-tag',
+        'add',
+        `@kuroflare/worker-runtime@${tag}`,
+        'stable',
+        '--registry',
+        'https://registry.npmjs.org',
+      ],
+      { cwd: runtime.cwd },
+    )
+  } catch {
+    throw new Error('Cannot promote the npm runtime stable dist-tag')
+  }
+  await assertDistTag(npm, 'stable', tag, runtime.cwd)
+  return { promoted: true, integrity: runtime.expectedIntegrity }
 }
 
 async function runGh(args, options = {}) {
@@ -576,13 +634,23 @@ export async function publishPluginRelease(options) {
 }
 
 async function main() {
-  if (process.argv.includes('--runtime-only')) {
-    const result = await publishRuntimePackage({
+  if (process.argv.includes('--runtime-candidate')) {
+    const result = await publishRuntimeCandidate({
       tag: requireString(process.env.RELEASE_TAG, 'RELEASE_TAG'),
       tarballPath: requireString(process.env.RELEASE_RUNTIME_TARBALL, 'RELEASE_RUNTIME_TARBALL'),
     })
     console.log(
-      `[release] Runtime package ${result.published ? 'published' : 'already matched'} (${result.integrity}).`,
+      `[release] Runtime candidate ${result.published ? 'published' : 'already matched'} (${result.integrity}).`,
+    )
+    return
+  }
+  if (process.argv.includes('--runtime-stable')) {
+    const result = await promoteRuntimeStable({
+      tag: requireString(process.env.RELEASE_TAG, 'RELEASE_TAG'),
+      tarballPath: requireString(process.env.RELEASE_RUNTIME_TARBALL, 'RELEASE_RUNTIME_TARBALL'),
+    })
+    console.log(
+      `[release] Runtime stable tag ${result.promoted ? 'promoted' : 'already matched'} (${result.integrity}).`,
     )
     return
   }

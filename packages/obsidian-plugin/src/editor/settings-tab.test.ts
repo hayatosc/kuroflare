@@ -220,6 +220,7 @@ vi.mock('../host/auth', () => ({
   currentSetupMetadata: vi.fn(() => undefined),
   readAccessToken: vi.fn(async () => undefined),
   requireSetupMetadata: vi.fn(),
+  revokeCurrentDeviceAfterConfirmation: vi.fn(async () => undefined),
 }))
 vi.mock('../sync/auth/invite', () => ({
   issueDeviceInviteSetupToken: vi.fn(),
@@ -277,6 +278,10 @@ function createPathRepairPlugin(
     getSyncRejectedUpdateRepairEntriesSnapshot: () => [],
     refreshSyncRejectedUpdateRepairEntries: vi.fn(async () => undefined),
     repairSyncRejectedUpdate: vi.fn(),
+    exportLocalStoreRepair: vi.fn(async () => '.obsidian/kuroflare/repair-exports/export.json'),
+    stageLocalStoreRepairImport: vi.fn(async () => 1),
+    resumeLocalStoreRepairImports: vi.fn(async () => 1),
+    rebuildDegradedLocalStore: vi.fn(async () => undefined),
     updateSettings: vi.fn(async () => undefined),
     inspectInvalidMetaRepairEntry: vi.fn(async () => undefined),
     discardInvalidMetaRepairEntry: vi.fn(async () => undefined),
@@ -486,6 +491,31 @@ test('issues a device invite and renders the copyable setup URI with its expiry'
   const inviteSetting = tab.containerEl.querySelector<HTMLElement>('[data-name="Invite link"]')
   assert(inviteSetting)
   assert.match(inviteSetting.dataset.description ?? '', /2023-11-14T22:13:20\.000Z/)
+  const qr = tab.containerEl.querySelector<SVGElement>('[data-kuroflare-setup-qr]')
+  assert(qr)
+  assert.equal(qr.getAttribute('role'), 'img')
+  assert.equal(qr.getAttribute('shape-rendering'), 'crispEdges')
+  assert.match(qr.getAttribute('aria-label') ?? '', /one-time Kuroflare setup link/)
+  assert((qr.querySelector('path')?.getAttribute('d')?.length ?? 0) > 0)
+})
+
+test('dispatches bounded local-store repair actions from settings', async () => {
+  installObsidianDomHelpers()
+  const plugin = createPathRepairPlugin(vi.fn(async () => undefined))
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The mocked PluginSettingTab constructor does not inspect App.
+  const tab = new KuroflareSettingTab({} as App, plugin)
+  tab.display()
+  const display = vi.spyOn(tab, 'display').mockImplementation(() => undefined)
+  const exportLocalStoreRepair = vi.spyOn(plugin, 'exportLocalStoreRepair')
+
+  const exportButton = [...tab.containerEl.querySelectorAll('button')].find(
+    (button) => button.textContent === 'Export',
+  )
+  assert(exportButton)
+  exportButton.click()
+
+  await vi.waitFor(() => assert.equal(exportLocalStoreRepair.mock.calls.length, 1))
+  await vi.waitFor(() => assert.equal(display.mock.calls.length, 1))
 })
 
 test('reports an auth-rejected invite failure without rendering a setup URI', async () => {

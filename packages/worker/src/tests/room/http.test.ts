@@ -2,6 +2,7 @@ import {
   ApiErrorSchema,
   decodeFullSnapshotBytesFromResponse,
   DocLatestSnapshotResponseSchema,
+  LocalOutboxRepairEvidenceResponseSchema,
   MetaLatestSnapshotResponseSchema,
   makeFileId,
   makeMessageId,
@@ -33,6 +34,98 @@ import {
   makeYjsUpdateBytes,
   FakeR2Bucket,
 } from '../support'
+
+test('VaultRoom returns authenticated exact local-outbox repair evidence', async () => {
+  const storage = new SqlOnlyStorage()
+  const durableMessageId = makeMessageId('repair-durable')
+  const quarantinedMessageId = makeMessageId('repair-quarantined')
+  storage.sql.messageDedup.set(`meta:${durableMessageId}`, {
+    docId: 'meta',
+    messageId: durableMessageId,
+    durableSeq: 7,
+    updateSha256: 'a'.repeat(64),
+    seenAt: 1,
+  })
+  storage.sql.quarantines.set('repair-quarantine', {
+    id: 'repair-quarantine',
+    docId: 'meta',
+    messageId: quarantinedMessageId,
+    deviceId: 'device-1',
+    reason: 'invalid-update',
+    updateSha256: 'b'.repeat(64),
+    updateBytes: new Uint8Array([1]),
+    createdAt: 1,
+  })
+  const room = new VaultRoom(
+    new FakeState(storage),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+
+  const response = await room.fetch(
+    new Request('https://worker.example/repair/local-outbox/evidence', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        items: [
+          { docId: { kind: 'meta' }, messageId: durableMessageId, updateSha256: 'c'.repeat(64) },
+          {
+            docId: { kind: 'meta' },
+            messageId: quarantinedMessageId,
+            updateSha256: 'b'.repeat(64),
+          },
+        ],
+      }),
+    }),
+  )
+
+  assert.equal(response.status, 200)
+  const body: unknown = await response.json()
+  assert(v.is(LocalOutboxRepairEvidenceResponseSchema, body))
+  assert.deepEqual(body.durableMessages, [
+    { docId: { kind: 'meta' }, messageId: durableMessageId, durableSeq: 7 },
+  ])
+  assert.deepEqual(body.quarantinedMessages, [
+    {
+      docId: { kind: 'meta' },
+      messageId: quarantinedMessageId,
+      updateSha256: 'b'.repeat(64),
+    },
+  ])
+})
+
+test('VaultRoom local-outbox repair evidence fails closed on auth and invalid input', async () => {
+  const room = new VaultRoom(
+    new FakeState(new SqlOnlyStorage()),
+    makeEnvWithDeviceTokenSecret(TEST_DEVICE_TOKEN_SECRET),
+  )
+  const unauthorized = await room.fetch(
+    new Request('https://worker.example/repair/local-outbox/evidence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [] }),
+    }),
+  )
+  assert.equal(unauthorized.status, 401)
+
+  const invalid = await room.fetch(
+    new Request('https://worker.example/repair/local-outbox/evidence', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await makeDeviceToken(TEST_DEVICE_TOKEN_SECRET, {
+          tokenVersion: 1,
+        })}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ items: [{ docId: { kind: 'meta' }, messageId: '' }] }),
+    }),
+  )
+  assert.equal(invalid.status, 400)
+})
 
 test('VaultRoom serves the latest meta snapshot from the production HTTP route', async () => {
   const storage = new SqlOnlyStorage()

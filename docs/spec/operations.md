@@ -2,16 +2,32 @@
 
 [← 設計書トップ](../../spec.md)
 
-## 1. 手動エスケープハッチ
+## 1. Bounded manual recovery
 
-self-healing で治らない時の非常口として必須。
+Kuroflare exposes two narrowly scoped recovery families. They are escape hatches,
+not alternative synchronization modes:
 
-- **「この端末を真実に」**：ローカル YDoc からスナップ生成 → DO / R2 の最新を強制置換。
-- **「リモートを真実に」**：ローカル破棄 → 最新スナップショットから再構築。
-- **「再構築」**：R2 のスナップ + blob から全再生成。
+- **Degraded local store:** export the recoverable pending outbox evidence before
+  rebuilding the local IndexedDB store, or explicitly confirm discard and rebuild.
+  A repair export is non-authoritative evidence, contains no credentials, and may
+  later stage only validated `y-update` entries as paused for operator review. See
+  [client.md](client.md) §4 for the fail-closed export, import, and resume contract.
+- **Server quarantine:** inspect the quarantined update and its current effects,
+  then explicitly discard it or force-apply that exact update. Both destructive
+  actions use the server-issued, single-use confirmation token, revalidate live
+  state at execution time, and append an audit event. See [protocol.md](protocol.md)
+  §3 and [server.md](server.md) §9.
 
-DO が plaintext を扱えるので DO 側コマンドとして素直に実装できる。
-いずれも破壊的なので dry-run と確認 token を必須にする（[protocol.md](protocol.md) §3）。
+There is deliberately no generic `force-local`, `force-remote`, or `rebuild`
+administrator API. Those names do not identify a document, authoritative source,
+CAS boundary, or auditable effect. Adding such a route would bypass the recovery
+invariants rather than repair state.
+
+Before either recovery, stop normal synchronization for the affected store or
+update, preserve the export/quarantine identifier in the incident record, and take
+a vault backup. Afterward, re-inspect the resulting state and resume only the
+specific paused items that have been reviewed. Never treat a local export as a
+server snapshot or bulk replay everything it contains.
 
 ## 2. 修復レビュー UI
 
@@ -216,9 +232,19 @@ checkpoint モデルの不変条件:
 - IndexedDB 消失後の再参加が full snapshot merge で復旧する。
 - 初回フルシンクが WS / op_log に大量 seed を流さない。
 
-**手動検証シナリオ**: 2 端末の同段落同時編集で両方残る / offline 編集の復帰 merge / 画像追加中の Worker 一時失敗からの収束 / delete vs edit の編集勝ち復活 / DO 再起動からの R2 復元。
+**Automated repository evidence:** unit, model, Worker integration, real-workerd,
+and disposable-vault Linux Obsidian suites cover the invariants above. A passing
+repository gate demonstrates deterministic behavior in those harnesses; it does not
+demonstrate a production Cloudflare deployment or a real two-device user workflow.
 
-## 8. 実装ロードマップと MVP
+**Human release validation:** on backed-up disposable vaults, verify two physical
+devices preserve concurrent same-paragraph edits, recover offline edits, converge
+after a Worker interruption during image transfer, resolve delete-versus-edit, and
+recover after a deployed Worker restart. The first release additionally requires
+Windows Obsidian and real Cloudflare validation; see
+[distribution-pipeline.md](../plans/distribution-pipeline.md#human-owned-release-gates).
+
+## 8. Historical implementation roadmap
 
 リスクの高い順に検証する（進捗は [implementation-status.md](../implementation-status.md)）。
 
@@ -235,14 +261,17 @@ checkpoint モデルの不変条件:
 
 残る未検証スパイク: mobile（iOS WebView）での IndexedDB directory API の可否。mobile 対応の着手前に必ず潰す。
 
-**MVP 縦切り**（「一番危ない仮説」から検証する）:
+**Historical validation slices** (highest-risk hypothesis first):
 
 - **MVP-0: local editor loop**。固定 1 ファイルで CM6 ⇄ Y.Text ⇄ disk materialize が往復する。active file には materialize しない。watcher echo は no-op。watcher を落としても CAS が外部編集を消さない。y-indexeddb 再起動後に YDoc が復元される。
 - **MVP-1: one file remote sync**。Worker + 1 DO + 1 file YDoc。hello で registry 検証。2 クライアント同段落同時編集で両方残る。DO restart 相当から R2 snapshot + residual op_log で復元。quarantine の最小経路。
 - **MVP-2: meta YDoc + path repair**。rename が delete+create にならない。同一 path 競合が deterministic rename に収束。delete vs edit が text は復活、binary は chunk 検証後だけ復活。
 - **MVP-3: initial sync + binary**。bootstrap と join を分離。binary は blob PUT 完了後に参照公開。初回 seed は snapshot 直 PUT。
 
-MVP を越えるまでやらないこと: full conflict UI の作り込み、tombstone / blob GC の実行、mobile 最適化、複数 vault / multi-tenant UX、marketplace 配布向け polish。
+The slices above are implemented and are retained as design history, not as the
+current release checklist. Still-future, non-blocking scope includes tombstone/blob
+GC execution, mobile optimization, multi-vault or multi-tenant UX, and marketplace
+polish.
 
 ## 9. DR-007 provider-loss runbook
 

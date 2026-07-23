@@ -45,6 +45,7 @@ import {
   setOwnedPathMarker,
 } from './guards'
 import { encodeBase64, binaryBlobCacheKey, requireOutboxPlanItemId, safeLogError } from './helpers'
+import { runLocalStoreMutation } from './local-store-coordination'
 import {
   insertMetaFile,
   loadTextDoc,
@@ -567,8 +568,10 @@ export async function enqueueBinaryUploadFromVaultFile(
     }
   }
 
-  const db = await openLocalStoreDatabase(plugin, setup.vaultId)
-  await putOutboxRecords(db, records)
+  await runLocalStoreMutation(plugin, async () => {
+    const db = await openLocalStoreDatabase(plugin, setup.vaultId)
+    await putOutboxRecords(db, records)
+  })
   Y.applyUpdate(plugin.metaDoc, metaUpdate, BINARY_UPLOAD_ORIGIN)
   void runOutboxWorkerTick(plugin, reason)
 }

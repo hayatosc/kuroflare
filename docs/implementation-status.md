@@ -5,22 +5,29 @@
 設計レビュー（2026-07-03）で見つかった項目は spec 本文へ反映済みで、記録は git 履歴にある。
 The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-review.md](spec/design-review.md).
 
-## Current summary (2026-07-20)
+## Current status and release gates (2026-07-23)
 
 - 2026-07-20: 実 Obsidian e2e が 07-19〜20 のリファクタ由来の実機限定退行 2 件を検出し修正（`hono/client` が plugin バンドルから漏れてロード失敗 → tsdown `alwaysBundle` に追加、冷えた vault では plugin コピー後に manifest 再スキャンが走らず `plugin:enable` 失敗 → smoke に `loadManifests()` を追加）。また per-file YDoc の vaultId スコープ化（fd25524）以降、setup 未完了ではプラグインの編集パイプラインが構造的に起動しないため、MVP-0/MVP-2 smoke を worker `dev:local` + setup exchange 前提に再定義し（`scripts/e2e-worker-setup.ts` に共通化、worker 未起動は fail-fast、vault 排他ロック付き）、[client.md](spec/client.md) Phase 0 の記述を実態（setup 前は安全に不活性、setup 後はオフライン編集を outbox が継続）に合わせて明確化。MVP-0/MVP-1/MVP-2 いずれも実機で green を再確認。あわせて `host/plugin.ts` を 1782→1032 行に分割（snapshot / materialize / meta-migration を抽出、挙動不変）、worker 構造化ログ next tier を実装。
 
-- ワークスペース全体の build / typecheck / lint / format は green。直近の検証 (2026-07-20) は core 214 件、worker 290 件、model-tests 17 件、Obsidian 539 件、worker e2e 16 件（multipart upload の実 R2 e2e を含む）。
-- Worker SQLite e2e suite: extended from 11 to 16 tests, adding real-workerd coverage
-  for quarantine discard (confirm/execute, audit trail, double-discard rejection),
+- The most recent recorded repository evidence predates the current release-readiness
+  changes. Historical passing runs are useful regression evidence, but their test
+  counts are not a release attestation. The exact release commit must rerun the full
+  format, lint, typecheck, test, build, distribution-contract, and artifact gates;
+  record that run in release automation rather than maintaining a hand-count here.
+- Worker SQLite e2e coverage includes real-workerd scenarios for quarantine discard
+  (confirm/execute, audit trail, double-discard rejection),
   `GET /admin/retention` cursor pagination across page boundaries, snapshot rollback
   (op-log replay onto a new authoritative generation, plus fail-closed rejection of
   an unknown source generation), and device-token refresh/revoke (fresh access-token
   window on refresh, and revoked-device rejection of both HTTP refresh and WS hello).
-  No production bugs surfaced; all four features behaved as designed.
+  The recorded harness run surfaced no additional implementation defects in those
+  scenarios; it was not a production Cloudflare validation.
 - DR-010 と DR-011 は design-review.md で acceptance evidence 付きでクローズ済み。DR-010: `blobChunks: []` をスキーマで許可し（`blobManifestHash` は必須のまま）、manifest 側の既存不変条件（size=0 ⇔ chunks=[]）と突合で空バイナリの整合性を保証。plugin の「空ファイルを黙ってスキップ」も撤去。DR-011: OS 分岐なしの純粋関数 `portablePath()`（`core/src/sync/meta.ts`）が Windows 予約名・禁止文字・末尾 space/dot・255 byte 超過を決定論的に修復し、sanitizer が生む衝突は既存の path-conflict 機構（conflict suffix / repair log / retry・resolve UI）に合流する。recommended contract にある「portable に表現できない制約向けの OS-only local conflict copy」は未実装で、acceptance evidence の対象外として design-review.md に明記した。
-- workerd 単体 e2e（JWT hello → durable ack、2 クライアント同段落並行編集の収束、meta YDoc broadcast + late join 復元、sync-request 再構成、R2 checkpoint、DO eviction → op_log cold-start）は green。
+- Historical workerd e2e evidence is green for JWT hello → durable ack, two-client
+  same-paragraph convergence, meta YDoc broadcast plus late join, sync-request
+  reconstruction, R2 checkpoint, and DO eviction → op-log cold start.
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
-- Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are committed at `122d2a0`. The rejection-evidence work described below builds on that baseline. The remaining P0/P1/P2 items and design-review release gates are still authoritative.
+- Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are implemented. DR-001 through DR-012 are closed; the design-review gate is complete. Distribution remains blocked by the repository gate for the exact release commit and the human-owned gates below.
 - DR-008 (snapshot health and rollback) is closed. Immutable R2 bytes are now admitted only by append-only SQLite evidence, and the authenticated health API and Obsidian operator panel expose server-computed action authority.
 - DR-001 (durability contract) is closed. Recovery authority is the latest authoritative, verified, healthy R2 snapshot plus later SQLite op-log rows; normal runtime eviction is recoverable, while complete SQLite loss is a disaster/manual-recovery case. The Worker disaster test and snapshot-health operator note prove that R2 bytes without pointer/health evidence fail closed. The nominal 128-operation / 30-second checkpoint triggers remain best-effort signals, not an RPO bound.
 - DR-005 (metadata merge granularity) and DR-006 (delete-versus-edit causality) are closed. Schema version 2 stores each file ID in grouped child maps (`identity`, `location`, `content`, `deletion`), preserves concurrent rename/content and rename/delete changes, and rejects immutable-identity changes. Deleted v2 entries carry a typed `deletedContentVersion` witness (text YDoc state vector + canonical content hash, or binary manifest hash). Reconciliation is clock-skew invariant, restores unseen edits, keeps deletes whose base content is unchanged, and defers missing/incomplete evidence without materializing deletion. Legacy migration is an authoritative snapshot-import CAS after Hello admission; stale retries rebuild from the latest v1 snapshot, while an already-v2 remote is adopted only when all local entries are represented unchanged. Otherwise local metadata is retained and downgraded to read-only; legacy outbox rows are paused with an actionable migration reason. Legacy deleted tombstones remain read-only/manual recovery.
@@ -67,19 +74,27 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
   mandatory (`REQUIRED_CLIENT_CAPABILITIES` is empty), so the required-capability
   path is exercised by unit tests rather than live traffic.
 
-### MVP チェックリスト（[operations.md](spec/operations.md) §8 対応）
+### Completed validation slices ([operations.md](spec/operations.md) §8)
 
 - [x] MVP-0: local editor loop。実 Linux Obsidian + obsidian-cli で CM6 ⇄ Y.Text ⇄ disk の両レグ、per-file YDoc、watcher-drop CAS conflict-copy を往復（`test:e2e:obsidian`）。2026-07-20 以降は worker `dev:local` + setup exchange 済みを前提に実行する（per-file YDoc の IndexedDB 名前空間が vaultId でスコープされるため。setup 前のプラグインは安全に不活性 — [client.md](spec/client.md) Phase 0 参照）。
 - [x] MVP-1: one file remote sync。The real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14 with `worker dev:local` running separately.
 - [x] MVP-2: meta YDoc + path repair。rename = 同一 fileId の path 更新、Worker 経由 cross-device concurrent rename の収束、text 本文の per-file YDoc 化を実機 e2e で実証。
-- [x] MVP-3: initial sync + binary。binary blob PUT → meta 参照公開、manifest/chunk 再取得、初回 meta/file snapshot からの Markdown materialize を実機 e2e で証明。production API / UX 化は残タスク。
+- [x] MVP-3: initial sync + binary。binary blob PUT → meta 参照公開、manifest/chunk 再取得、初回 meta/file snapshot からの Markdown materialize を実機 e2e で証明。
 
-### 次にやるべきこと
+### Release completion boundary
 
-1. Keep the real Obsidian + miniflare `:app` E2E green while changing the production runtime.
-2. Close the remaining P0/P1/P2 and design-review release gates before distribution.
+1. Rerun and preserve automated evidence for the exact release commit, including the
+   real Obsidian + miniflare `:app` lane and all distribution contracts.
+2. Complete the human-owned checklist in
+   [distribution-pipeline.md](plans/distribution-pipeline.md#human-owned-release-gates):
+   GitHub/npm/Cloudflare account configuration, Windows and real multi-device
+   validation, production operations, and staged promotion.
 
-## 残タスク
+Automated evidence must not be used to mark a physical-device or production-account
+gate complete. Conversely, a manual smoke test does not replace deterministic
+repository checks.
+
+## Implementation record and remaining scope
 
 ### Completed P0: atomic update append
 
@@ -152,8 +167,14 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 - Auth refresh / revoke runtime and plugin lifecycle wiring (foreground/resume, pre-expiry refresh, and revoked-device local shutdown) are active at HEAD `122d2a0`; distribution still requires the surrounding settings UX, migration policy, and operator documentation.
 - Device setup-token issuance now uses an operator-secret-gated route (`POST /admin/setup-tokens`, `ADMIN_TOKEN_SECRET`, constant-time comparison, `ApiError`-envelope responses) instead of the former e2e-disguised `/__e2e/setup-token` path. The e2e-only snapshot-seeding route was folded into the same admin secret as `POST /admin/snapshots/seed` (test/fixture use only, not part of the normal operator flow). Enrolling a device is now self-service after the first one: the settings tab exposes an "Invite another device" action that calls `POST /devices/setup-tokens` under the normal device bearer auth and renders the resulting `kuroflare://setup` URI with a copy button and an expiry, clearing it when the tab closes so the one-time credential is never logged or persisted. The vault comes from the caller's JWT `aud` rather than the request body, the token is generated at the edge, and the Durable Object re-authorizes the caller with `sync:write` instead of trusting the entrypoint's bearer check — the entrypoint only verifies the JWT signature and expiry, so without the DO-side check a revoked device could spend the remaining hour of its unexpired access token enrolling a fresh device and permanently undo its own revocation (regression-tested in `packages/worker/src/tests/room/auth.test.ts`). The device permission model this rests on — every registered device is flat and equal, including for revoke — is written down in [protocol.md](spec/protocol.md) §10. The operator `curl` route (see `docs/deployment.md` §4) remains for bootstrapping a vault's very first device, after which the user can paste the generated `kuroflare://setup` URI or open an `obsidian://kuroflare-setup` deep link. On an unregistered, idle device both entry points share validated, confirmation-gated application; the confirmation shows the endpoint, vault ID, and effective bootstrap intent but never the setup token, and only a confirmed action writes settings and resumes startup. Existing registration metadata, a pending setup response, a settings write, or an in-flight lifecycle tick rejects a new URI without mutation; URI application remains serialized until startup reaches a non-blocked shell result. Terminal startup-plan rejection releases the staged response for a fresh token, while transient credential-persist failure retains it for retry. The operator route remains verified by unit/worker-e2e suites plus the real Obsidian + miniflare `:app` E2E (green 2026-07-18); the new plugin onboarding boundary is covered by core/plugin unit tests added 2026-07-20.
 - presence / awareness は WS 伝搬まで実装済み: `awareness-update` control frame（[protocol.md](spec/protocol.md) §1）を DO が永続化なしで vault 内 fan-out し、切断時は最後に広告された presence の `state: null` を合成 broadcast する。クライアントは接続中のみローカル state 変更を送信（オフライン時は黙って捨て、outbox に積まない）、受信した peer state を `LocalAwareness` に反映して y-codemirror.next がリモートカーソルを描画する。worker unit + 実 workerd e2e + plugin unit でカバー。実 Obsidian 複数端末での目視確認は未実施。
-- 配布前に settings UI、QR、migration / backward-incompatible policy、手動エスケープハッチの UI を整える。Setup URI confirmation/Obsidian deep-link handling and log secret redaction are implemented.
-- 段階配信（distribution-pipeline.md Phase 7）のツール一式を実装済み: `scripts/release/worker.ts` の pointer 操作コマンド（`pointer-pause` / `pointer-promote` / `pointer-rollout` / `pointer-block` / `pointer-unblock`、いずれも成果物を再ビルドせず channel pointer だけを検証付きで変更 — allowed stage {1,10,50,100}、stage スキップ/後退の禁止、旧版への promote 禁止）、`workflow_dispatch` 駆動の昇格 workflow（`.github/workflows/release-worker-promote.yml`、pointer を default branch に commit）、deployment.md §7 の runbook（stable 昇格手順・緊急停止・Deploy Hook rotation・Cloudflare deployment history からの code rollback）。pure 関数は `scripts/release/worker.test.ts` で網羅（36 tests）。実 beta→stable 自動昇格は公開 repo / npm / canary の外部セットアップが揃うまで保留。
+- The persistent-data migration and backward-compatibility policy is defined in
+  [distribution-pipeline.md](plans/distribution-pipeline.md#persistent-data-migration-and-backward-compatibility-policy).
+  Supported recovery is limited to local-store export/rebuild and quarantine
+  inspect/discard/force-apply; the generic force-local/force-remote/rebuild admin APIs
+  remain removed. Release completion still requires the exact repository gate and
+  the human-owned checklist; Setup URI confirmation, Obsidian deep-link handling,
+  and log secret redaction are implemented.
+- 段階配信（distribution-pipeline.md Phase 7）のツール一式を実装済み: `scripts/release/worker.ts` の pointer 操作コマンド（`pointer-pause` / `pointer-promote` / `pointer-rollout` / `pointer-block` / `pointer-unblock`、いずれも成果物を再ビルドせず channel pointer だけを検証付きで変更 — allowed stage {1,10,50,100}、stage スキップ/後退の禁止、旧版への promote 禁止）、`workflow_dispatch` 駆動の昇格 workflow（`.github/workflows/release-worker-promote.yml`、pointer を default branch に commit）、deployment.md §7 の runbook（stable 昇格手順・緊急停止・Deploy Hook rotation・Cloudflare deployment history からの code rollback）。pure decision は `scripts/release/worker.test.ts` でカバー。実 beta→stable 自動昇格は公開 repo / npm / canary の外部セットアップが揃うまで保留。
 - Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）は `logEvent` 経由で実装済み（quarantine イベントは `quarantineId` 付き）。next tier も実装済み (2026-07-20): `connection-open`/`connection-close`（接続数付き）、`op-append-latency`、`checkpoint-duration`、`doc-restore-source`（`r2-snapshot` / `op-log-replay` / `empty` の別）、`sync-duplicate-ignored`。既存イベントのスキーマは無変更（追加のみ）。
 - `BlobHeadEntrySchema` の size 必須化（[sync-model.md](spec/sync-model.md) §5 の「size 不明なら復活させない」）は schema 側でも強制済み（`found === (size !== undefined)` の双方向チェック、worker の head 応答計画も size 欠如を reject）。
 

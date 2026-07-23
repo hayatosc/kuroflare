@@ -48,11 +48,11 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      - name: Crash-injection models (release gate)
+        run: pnpm test:crash-models
+
       - name: Release pipeline tests
         run: pnpm test:release
-
-      - name: Deploy template contract tests
-        run: pnpm test:deploy-template
 
       - name: Distribution channel pointers
         run: pnpm release:worker:validate-pointers

@@ -483,11 +483,14 @@ Acceptance evidence:
 The main specifications should adopt a review item only after its decision and acceptance evidence are complete.
 Until then, implementation status must link to the corresponding DR identifier instead of describing the property as implemented.
 
-Before the first distributed release:
+DR-001 through DR-012 are closed with the acceptance evidence recorded above. The
+design-review gate is therefore complete, but it is not by itself a distribution
+approval.
 
-1. Close DR-001 through DR-004 and rerun crash-injection models.
-2. DR-005 through DR-007 are closed with the evidence above; metadata schema version 1
-   and setup credentials may be frozen against those decisions.
-3. DR-008 and DR-009 are closed with the evidence above; protocol-level self-healing
-   guarantees may be advertised against those decisions.
-4. DR-010, DR-011, and DR-012 are closed with the evidence above.
+Before the first distributed release, repository automation must pass for the exact
+release commit, including crash-injection models, package tests, type checking,
+lint/format checks, builds, distribution contracts, and release artifact checks.
+This is automated evidence only. The separate human-owned gates are public GitHub
+and npm configuration, production Cloudflare/canary setup, and Windows plus real
+multi-device validation. The authoritative checklist is
+[distribution-pipeline.md](../plans/distribution-pipeline.md#human-owned-release-gates).

@@ -856,6 +856,22 @@ export class RecordingSqlStorage implements DurableObjectSqlStorageBinding {
       this.quarantines.delete(expectString(bindings[0]))
       return []
     }
+    if (
+      normalized.includes('from quarantined_updates') &&
+      normalized.includes('where doc_id') &&
+      normalized.includes('message_id')
+    ) {
+      const docId = expectString(bindings[0])
+      const messageId = expectString(bindings[1])
+      const updateSha256 = bindings[2] === undefined ? undefined : expectString(bindings[2])
+      const row = [...this.quarantines.values()].find(
+        (candidate) =>
+          candidate.docId === docId &&
+          candidate.messageId === messageId &&
+          (updateSha256 === undefined || candidate.updateSha256 === updateSha256),
+      )
+      return (row === undefined ? [] : [quarantineSqlRow(row)]) as Iterable<T>
+    }
     if (normalized.includes('from quarantined_updates') && normalized.includes('where id')) {
       const id = expectString(bindings[0])
       const row = this.quarantines.get(id)

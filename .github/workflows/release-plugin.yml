@@ -8,7 +8,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: release-plugin-${{ github.ref }}
+  group: release-plugin
   cancel-in-progress: false
 
 jobs:
@@ -81,11 +81,11 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      - name: Crash-injection models (release gate)
+        run: pnpm test:crash-models
+
       - name: Release pipeline tests
         run: pnpm test:release
-
-      - name: Deploy template contract tests
-        run: pnpm test:deploy-template
 
       - name: Worker e2e (real workerd / DO / R2)
         run: pnpm --filter @kuroflare/worker test:e2e
@@ -148,16 +148,37 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
+      # The consumer repository is pinned to an immutable commit. Final integration needs
+      # an exact npm version to generate build-lock.json, so the runtime is first published
+      # under the non-user release-candidate tag. The stable tag moves only after every gate
+      # below and immutable GitHub Release publication succeed.
+      # actions/checkout v4.2.2
+      - name: Checkout pinned Cloudflare template
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: hayatosc/kuroflare-cloudflare-templete
+          ref: 0297374467e797f5690ca36ab8ee2d99ce270153
+          path: cloudflare-template
+          persist-credentials: false
+
+      - name: Verify pinned Cloudflare template
+        working-directory: cloudflare-template
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "0297374467e797f5690ca36ab8ee2d99ce270153"
+          npm run check
+          npm test
+
       - name: Verify release bundle
         working-directory: ${{ runner.temp }}/kuroflare-plugin-release
         run: sha256sum -c INPUT_SHA256SUMS
 
-      - name: Publish worker runtime to npm
+      - name: Publish worker runtime candidate to npm
         env:
           RELEASE_ASSET_DIR: ${{ runner.temp }}/kuroflare-plugin-release
           RELEASE_RUNTIME_TARBALL: ${{ runner.temp }}/kuroflare-plugin-release/worker-runtime.tgz
           RELEASE_TAG: ${{ github.ref_name }}
-        run: node "$RELEASE_ASSET_DIR/publish-plugin.mjs" --runtime-only
+        run: node "$RELEASE_ASSET_DIR/publish-plugin.mjs" --runtime-candidate
 
       - name: Generate immutable worker metadata
         env:
@@ -171,6 +192,62 @@ jobs:
           --tag "$RELEASE_TAG"
           --commit "$RELEASE_COMMIT"
           --published-at "$RELEASE_PUBLISHED_AT"
+
+      - name: Verify staged release with pinned Cloudflare template
+        env:
+          RELEASE_ASSET_DIR: ${{ runner.temp }}/kuroflare-plugin-release
+          RELEASE_TAG: ${{ github.ref_name }}
+          TEMPLATE_DIR: ${{ github.workspace }}/cloudflare-template
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises'
+          import { join } from 'node:path'
+          import { pathToFileURL } from 'node:url'
+
+          const assetDir = process.env.RELEASE_ASSET_DIR
+          const releaseTag = process.env.RELEASE_TAG
+          const templateDir = process.env.TEMPLATE_DIR
+          if (!assetDir || !releaseTag || !templateDir) throw new Error('release gate environment is incomplete')
+
+          const template = await import(
+            pathToFileURL(join(templateDir, 'scripts/prepare-build.mjs')).href
+          )
+          const manifestBytes = await readFile(join(assetDir, 'worker-release.json'))
+          const lockBytes = await readFile(join(assetDir, 'build-lock.json'))
+          const manifest = JSON.parse(manifestBytes.toString('utf8'))
+          const pointer = Buffer.from(
+            `${JSON.stringify({
+              schemaVersion: 1,
+              channel: 'stable',
+              productVersion: releaseTag,
+              rolloutPercentage: 100,
+              blockedSourceVersions: [],
+              paused: false,
+              updatedAt: manifest.publishedAt,
+            })}\n`,
+          )
+          const responses = new Map([
+            [`${template.CHANNEL_POINTER_BASE_URL}/stable.json`, pointer],
+            [`${template.RELEASE_BASE_URL}/${releaseTag}/worker-release.json`, manifestBytes],
+            [`${template.RELEASE_BASE_URL}/${releaseTag}/build-lock.json`, lockBytes],
+          ])
+          const result = await template.prepareBuild({
+            rootDir: templateDir,
+            env: { ...process.env, KUROFLARE_UPDATE_CHANNEL: 'stable' },
+            fetchImpl: async (url) => {
+              const bytes = responses.get(String(url))
+              if (!bytes) throw new Error(`unexpected consumer request: ${url}`)
+              return new Response(bytes)
+            },
+          })
+          if (result.productVersion !== releaseTag) {
+            throw new Error(`consumer prepared ${result.productVersion}, expected ${releaseTag}`)
+          }
+          NODE
+          "$TEMPLATE_DIR/.kuroflare-build/node_modules/.bin/wrangler" deploy \
+            --dry-run \
+            --config "$TEMPLATE_DIR/.kuroflare-build/wrangler.generated.json"
 
       - name: Recompute and verify release checksums
         working-directory: ${{ runner.temp }}/kuroflare-plugin-release
@@ -187,3 +264,10 @@ jobs:
           RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: node "$RELEASE_ASSET_DIR/publish-plugin.mjs"
+
+      - name: Promote worker runtime to npm stable
+        env:
+          RELEASE_ASSET_DIR: ${{ runner.temp }}/kuroflare-plugin-release
+          RELEASE_RUNTIME_TARBALL: ${{ runner.temp }}/kuroflare-plugin-release/worker-runtime.tgz
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node "$RELEASE_ASSET_DIR/publish-plugin.mjs" --runtime-stable

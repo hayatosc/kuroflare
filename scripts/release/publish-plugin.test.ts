@@ -8,7 +8,8 @@ import { writeChecksums } from './plugin.ts'
 import {
   npmSha512Integrity,
   publishPluginRelease,
-  publishRuntimePackage,
+  publishRuntimeCandidate,
+  promoteRuntimeStable,
 } from './publish-plugin.mjs'
 import { sha256, writePublicChecksums } from './worker.ts'
 
@@ -448,7 +449,7 @@ test('publish rejects a moved tag and invalid release state', async () => {
   }
 })
 
-test('runtime publish is idempotent only for an exact npm tarball integrity', async () => {
+test('runtime candidate publish is idempotent only for exact integrity and provenance', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'kuroflare-runtime-publish-fixture-'))
   const tarballPath = join(directory, 'worker-runtime.tgz')
   const bytes = Buffer.from('runtime tarball\n')
@@ -456,7 +457,7 @@ test('runtime publish is idempotent only for an exact npm tarball integrity', as
   const integrity = npmSha512Integrity(bytes)
   try {
     const operations: string[][] = []
-    const matched = await publishRuntimePackage({
+    const matched = await publishRuntimeCandidate({
       tag: RELEASE_TAG,
       tarballPath,
       runNpm: async (args: string[]) => {
@@ -464,41 +465,20 @@ test('runtime publish is idempotent only for an exact npm tarball integrity', as
         if (args.includes('dist.attestations.provenance.predicateType')) {
           return JSON.stringify(SLSA_PROVENANCE_V1)
         }
-        return JSON.stringify(args.includes('dist-tags.stable') ? RELEASE_TAG : integrity)
+        return JSON.stringify(integrity)
       },
     })
     assert.deepEqual(matched, { published: false, integrity })
-    assert.equal(operations.length, 3)
+    assert.equal(operations.length, 2)
 
     await assert.rejects(
       () =>
-        publishRuntimePackage({
+        publishRuntimeCandidate({
           tag: RELEASE_TAG,
           tarballPath,
           runNpm: async (args: string[]) =>
             JSON.stringify(
-              args.includes('dist-tags.stable')
-                ? '0.0.9'
-                : args.includes('dist.attestations.provenance.predicateType')
-                  ? SLSA_PROVENANCE_V1
-                  : integrity,
-            ),
-        }),
-      /stable dist-tag must point to 0\.1\.0/,
-    )
-
-    await assert.rejects(
-      () =>
-        publishRuntimePackage({
-          tag: RELEASE_TAG,
-          tarballPath,
-          runNpm: async (args: string[]) =>
-            JSON.stringify(
-              args.includes('dist-tags.stable')
-                ? RELEASE_TAG
-                : args.includes('dist.attestations.provenance.predicateType')
-                  ? null
-                  : integrity,
+              args.includes('dist.attestations.provenance.predicateType') ? null : integrity,
             ),
         }),
       /provenance predicateType/,
@@ -506,7 +486,7 @@ test('runtime publish is idempotent only for an exact npm tarball integrity', as
 
     await assert.rejects(
       () =>
-        publishRuntimePackage({
+        publishRuntimeCandidate({
           tag: RELEASE_TAG,
           tarballPath,
           runNpm: async () => JSON.stringify(`${integrity}x`),
@@ -516,12 +496,12 @@ test('runtime publish is idempotent only for an exact npm tarball integrity', as
 
     const publishOperations: string[][] = []
     let viewCount = 0
-    const published = await publishRuntimePackage({
+    const published = await publishRuntimeCandidate({
       tag: RELEASE_TAG,
       tarballPath,
       runNpm: async (args: string[]) => {
         publishOperations.push(args)
-        if (args.includes('dist-tags.stable')) return JSON.stringify(RELEASE_TAG)
+        if (args.includes('dist-tags.release-candidate')) return JSON.stringify(RELEASE_TAG)
         if (args.includes('dist.attestations.provenance.predicateType')) {
           return JSON.stringify(SLSA_PROVENANCE_V1)
         }
@@ -536,9 +516,127 @@ test('runtime publish is idempotent only for an exact npm tarball integrity', as
     })
     assert.deepEqual(published, { published: true, integrity })
     assert.equal(publishOperations[1]?.[0], 'publish')
+    assert.ok(publishOperations[1]?.includes('release-candidate'))
+    assert.ok(!publishOperations[1]?.includes('stable'))
     assert.equal(publishOperations[2]?.[0], 'view')
-    assert.ok(publishOperations[3]?.includes('dist-tags.stable'))
+    assert.ok(publishOperations[3]?.includes('dist-tags.release-candidate'))
     assert.ok(publishOperations[4]?.includes('dist.attestations.provenance.predicateType'))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('stable promotion verifies the exact candidate and is retry-safe without republishing', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kuroflare-runtime-promote-fixture-'))
+  const tarballPath = join(directory, 'worker-runtime.tgz')
+  const bytes = Buffer.from('runtime tarball\n')
+  await writeFile(tarballPath, bytes)
+  const integrity = npmSha512Integrity(bytes)
+  try {
+    const operations: string[][] = []
+    let stableReadCount = 0
+    const promoted = await promoteRuntimeStable({
+      tag: RELEASE_TAG,
+      tarballPath,
+      runNpm: async (args: string[]) => {
+        operations.push(args)
+        if (args.includes('dist.attestations.provenance.predicateType')) {
+          return JSON.stringify(SLSA_PROVENANCE_V1)
+        }
+        if (args.includes('dist-tags.stable')) {
+          stableReadCount += 1
+          return stableReadCount === 1 ? '' : JSON.stringify(RELEASE_TAG)
+        }
+        if (args[0] === 'dist-tag') return ''
+        return JSON.stringify(integrity)
+      },
+    })
+    assert.deepEqual(promoted, { promoted: true, integrity })
+    assert.deepEqual(operations[3]?.slice(0, 4), [
+      'dist-tag',
+      'add',
+      '@kuroflare/worker-runtime@0.1.0',
+      'stable',
+    ])
+
+    const retryOperations: string[][] = []
+    const retried = await promoteRuntimeStable({
+      tag: RELEASE_TAG,
+      tarballPath,
+      runNpm: async (args: string[]) => {
+        retryOperations.push(args)
+        if (args.includes('dist.attestations.provenance.predicateType')) {
+          return JSON.stringify(SLSA_PROVENANCE_V1)
+        }
+        return JSON.stringify(args.includes('dist-tags.stable') ? RELEASE_TAG : integrity)
+      },
+    })
+    assert.deepEqual(retried, { promoted: false, integrity })
+    assert.equal(retryOperations.length, 3)
+    assert.ok(retryOperations.every((args) => args[0] !== 'publish' && args[0] !== 'dist-tag'))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('stable promotion rejects missing, changed, or rollback runtime states', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kuroflare-runtime-reject-fixture-'))
+  const tarballPath = join(directory, 'worker-runtime.tgz')
+  const bytes = Buffer.from('runtime tarball\n')
+  await writeFile(tarballPath, bytes)
+  const integrity = npmSha512Integrity(bytes)
+  try {
+    await assert.rejects(
+      () =>
+        promoteRuntimeStable({
+          tag: RELEASE_TAG,
+          tarballPath,
+          runNpm: async () => {
+            const error = Object.assign(new Error('not found'), { stderr: 'E404' })
+            throw error
+          },
+        }),
+      /must exist before stable promotion/,
+    )
+    await assert.rejects(
+      () =>
+        promoteRuntimeStable({
+          tag: RELEASE_TAG,
+          tarballPath,
+          runNpm: async () => JSON.stringify(`${integrity}x`),
+        }),
+      /different tarball integrity/,
+    )
+    const provenanceOperations: string[][] = []
+    await assert.rejects(
+      () =>
+        promoteRuntimeStable({
+          tag: RELEASE_TAG,
+          tarballPath,
+          runNpm: async (args: string[]) => {
+            provenanceOperations.push(args)
+            return JSON.stringify(
+              args.includes('dist.attestations.provenance.predicateType') ? null : integrity,
+            )
+          },
+        }),
+      /provenance predicateType/,
+    )
+    assert.ok(provenanceOperations.every((args) => args[0] !== 'dist-tag'))
+    await assert.rejects(
+      () =>
+        promoteRuntimeStable({
+          tag: RELEASE_TAG,
+          tarballPath,
+          runNpm: async (args: string[]) => {
+            if (args.includes('dist.attestations.provenance.predicateType')) {
+              return JSON.stringify(SLSA_PROVENANCE_V1)
+            }
+            return JSON.stringify(args.includes('dist-tags.stable') ? '0.2.0' : integrity)
+          },
+        }),
+      /cannot move backward from 0\.2\.0 to 0\.1\.0/,
+    )
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

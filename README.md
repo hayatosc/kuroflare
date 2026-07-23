@@ -16,10 +16,17 @@ The repository contains:
 Kuroflare is preparing its first public release. The automated GitHub Release
 pipeline produces the Obsidian assets required by BRAT and the Community Plugin
 directory, the pinned Worker runtime, and immutable deployment metadata. The
-isolated Cloudflare deployment template and Deploy Hook based Worker updater
-are implemented but are not a live installation path until the public
-repository, npm trusted publisher, release environment, and first release are
-configured. See [the distribution plan](docs/plans/distribution-pipeline.md).
+Cloudflare deployment template is maintained outside this monorepo in the
+intended canonical repository,
+[`hayatosc/kuroflare-cloudflare-templete`](https://github.com/hayatosc/kuroflare-cloudflare-templete).
+Its public repository, Deploy Button target, local extraction, and Deploy Hook
+based Worker updater are implemented, but the template is not a supported live
+installation path until the npm trusted publisher, release environment, and
+first release are configured.
+Repository automation and historical test runs do not satisfy the
+account-configuration, production Cloudflare, Windows, or real multi-device
+gates. See the exact
+[human-owned release checklist](docs/plans/distribution-pipeline.md#human-owned-release-gates).
 
 Do not use a personal vault for development or pre-release testing. Follow the
 [desktop trial guide](packages/obsidian-plugin/README.md) with a disposable
@@ -46,3 +53,9 @@ path.
 Never commit Worker secrets, device tokens, setup tokens, Cloudflare API
 tokens, or Deploy Hook URLs. Report vulnerabilities according to
 [SECURITY.md](SECURITY.md).
+
+## License
+
+Kuroflare is licensed under the [MIT License](LICENSE).
+
+Copyright (c) 2026 hayatosc.

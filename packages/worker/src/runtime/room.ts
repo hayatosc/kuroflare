@@ -23,6 +23,7 @@ import {
   handleDeviceRevoke,
   handleSetupExchange,
 } from '../room/http/auth'
+import { handleLocalOutboxRepairEvidence } from '../room/http/local-store-repair'
 import {
   handleSnapshotHealthQuarantine,
   handleSnapshotRollback,
@@ -108,6 +109,7 @@ export class VaultRoom {
       .post('/setup/exchange', (c) => handleSetupExchange(this, c))
       .post('/auth/refresh', (c) => handleAuthRefresh(this, c))
       .post('/devices/:deviceId/revoke', (c) => handleDeviceRevoke(this, c))
+      .post('/repair/local-outbox/evidence', (c) => handleLocalOutboxRepairEvidence(this, c))
       .get('/admin/quarantine', (c) => handleQuarantineList(this, c))
       .get('/admin/quarantine/audit', (c) => handleQuarantineAudit(this, c))
       .get('/admin/quarantine/:id', (c) => handleQuarantineDetail(this, c))
