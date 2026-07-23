@@ -652,7 +652,7 @@ Phase 7の段階配信ツールも実装済みである。`scripts/release/worke
 
 独自deployer packageとdeploy CLIは存在せず、今後も追加しない。
 
-ただし、現在のlocal repositoryにはGit remoteが設定されておらず、`hayatosc/kuroflare`という公開GitHub repositoryもまだ存在しない。
+公開GitHub repositoryは`https://github.com/hayatosc/kuroflare`に作成済みであり、local repositoryの`origin`もこのrepositoryを参照する。
 
 また、`@kuroflare/worker-runtime`はnpm registryへまだ公開されていない。
 
@@ -663,10 +663,13 @@ exact release version:
 
 - [x] **License:** MIT license files, package metadata, release notices, and
       first-party credit fields consistently identify `hayatosc`.
-- [ ] **GitHub:** create the public distribution repository, configure its remote,
-      enable release immutability before the first release, create a protected `release`
-      environment with required reviewers, and store an Administration-read-only
-      fine-grained token as `RELEASE_ADMIN_TOKEN`.
+- [x] **GitHub publication:** create the public distribution repository at
+      `https://github.com/hayatosc/kuroflare`, configure its remote, and publish
+      `main`.
+- [ ] **GitHub release controls:** enable release immutability before the first
+      release, create a protected `release` environment with required reviewers,
+      and store an Administration-read-only fine-grained token as
+      `RELEASE_ADMIN_TOKEN`.
 - [x] **Cloudflare template publication:** publish the canonical repository at
       `https://github.com/hayatosc/kuroflare-cloudflare-templete`, push commit
       `0297374467e797f5690ca36ab8ee2d99ce270153`, and point its Deploy Button at
