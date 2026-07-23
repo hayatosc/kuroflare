@@ -6,7 +6,7 @@
   "author": "hayatosc",
   "repository": {
     "type": "git",
-    "url": "https://github.com/hayatosc/kuroflare.git"
+    "url": "git+https://github.com/hayatosc/kuroflare.git"
   },
   "files": [
     "dist",
