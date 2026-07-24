@@ -67,7 +67,7 @@ jobs:
       - name: Release contract
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: pnpm release:plugin:validate -- --tag "$RELEASE_TAG"
+        run: pnpm release:plugin:validate --tag "$RELEASE_TAG"
 
       - name: Format check
         run: pnpm format:check
@@ -104,7 +104,7 @@ jobs:
           set -euo pipefail
           staging_dir="$(mktemp -d "$RUNNER_TEMP/kuroflare-plugin.XXXXXX")"
           runtime_dir="$(mktemp -d "$RUNNER_TEMP/kuroflare-runtime.XXXXXX")"
-          pnpm release:plugin:stage -- --tag "$RELEASE_TAG" --staging-dir "$staging_dir"
+          pnpm release:plugin:stage --tag "$RELEASE_TAG" --staging-dir "$staging_dir"
           cp scripts/release/publish-plugin.mjs "$staging_dir/publish-plugin.mjs"
           pnpm --filter @kuroflare/worker-runtime pack --pack-destination "$runtime_dir" >/dev/null
           runtime_tarball="$(find "$runtime_dir" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
@@ -112,8 +112,8 @@ jobs:
             echo "Worker runtime pack did not produce a tarball." >&2
             exit 1
           fi
-          pnpm release:worker:stage -- --staging-dir "$staging_dir" --runtime-tarball "$runtime_tarball" --tag "$RELEASE_TAG"
-          pnpm release:worker:checksum -- --staging-dir "$staging_dir"
+          pnpm release:worker:stage --staging-dir "$staging_dir" --runtime-tarball "$runtime_tarball" --tag "$RELEASE_TAG"
+          pnpm release:worker:checksum --staging-dir "$staging_dir"
           printf 'staging_dir=%s\n' "$staging_dir" >> "$GITHUB_OUTPUT"
 
       # actions/upload-artifact v4.6.2

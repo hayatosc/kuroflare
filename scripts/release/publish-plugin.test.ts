@@ -526,6 +526,22 @@ test('runtime candidate publish is idempotent only for exact integrity and prove
   }
 })
 
+test('release workflow forwards direct script arguments to pnpm', async () => {
+  const workflow = await readFile(
+    new URL('../../.github/workflows/release-plugin.yml', import.meta.url),
+    'utf8',
+  )
+  assert.ok(!/pnpm release:[^\n]+ -- --/.test(workflow))
+  for (const invocation of [
+    'pnpm release:plugin:validate --tag "$RELEASE_TAG"',
+    'pnpm release:plugin:stage --tag "$RELEASE_TAG" --staging-dir "$staging_dir"',
+    'pnpm release:worker:stage --staging-dir "$staging_dir" --runtime-tarball "$runtime_tarball" --tag "$RELEASE_TAG"',
+    'pnpm release:worker:checksum --staging-dir "$staging_dir"',
+  ]) {
+    assert.ok(workflow.includes(invocation), `missing workflow invocation: ${invocation}`)
+  }
+})
+
 test('stable/latest promotion verifies the exact candidate and retries partial completion without republishing', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'kuroflare-runtime-promote-fixture-'))
   const tarballPath = join(directory, 'worker-runtime.tgz')
