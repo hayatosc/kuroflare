@@ -680,7 +680,7 @@ exact release version:
       `https://github.com/hayatosc/kuroflare-cloudflare-templete`, push commit
       `0297374467e797f5690ca36ab8ee2d99ce270153`, and point its Deploy Button at
       that external repository.
-- [ ] **npm:** configure the exact GitHub organization/repository/workflow and
+- [x] **npm:** configure the exact GitHub organization/repository/workflow and
       `release` environment as the Trusted Publisher for `@kuroflare/worker-runtime`;
       store a short-lived package-scoped token as `NPM_DIST_TAG_TOKEN`
       for the final `stable` and `latest` dist-tag promotion; keep Publishing access compatible
