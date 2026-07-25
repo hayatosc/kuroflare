@@ -10,6 +10,7 @@ import {
   publishPluginRelease,
   publishRuntimeCandidate,
   promoteRuntimeStable,
+  selectReleaseByTag,
 } from './publish-plugin.mjs'
 import { sha256, writePublicChecksums } from './worker.ts'
 
@@ -69,6 +70,8 @@ class FakeReleaseClient {
   readonly downloads = new Map<string, Buffer>()
   readonly tagCommit: string
   release: Release | undefined
+  postCreateVisibilityMisses = 0
+  private postCreateReadsRemaining = 0
 
   constructor(tagCommit: string, release: Release | undefined) {
     this.tagCommit = tagCommit
@@ -86,11 +89,16 @@ class FakeReleaseClient {
 
   async getRelease(): Promise<Release | undefined> {
     this.operations.push('get-release')
+    if (this.postCreateReadsRemaining > 0) {
+      this.postCreateReadsRemaining -= 1
+      return undefined
+    }
     return this.release
   }
 
   async createRelease(tag: string): Promise<void> {
     this.operations.push('create-draft')
+    this.postCreateReadsRemaining = this.postCreateVisibilityMisses
     this.release = {
       tag_name: tag,
       target_commitish: 'main',
@@ -146,7 +154,11 @@ function existingRelease(
   }
 }
 
-async function publish(options: { assetDirectory: string; client: FakeReleaseClient }) {
+async function publish(options: {
+  assetDirectory: string
+  client: FakeReleaseClient
+  wait?: (milliseconds: number) => Promise<void>
+}) {
   return publishPluginRelease({
     ...options,
     expectedCommit: RELEASE_COMMIT,
@@ -181,6 +193,61 @@ test('first publish creates a draft, uploads every asset, verifies, then publish
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('first publish retries draft discovery when creation visibility lags', async () => {
+  const directory = await createAssetFixture()
+  try {
+    const client = new FakeReleaseClient(RELEASE_COMMIT, undefined)
+    client.postCreateVisibilityMisses = 2
+    const waits: number[] = []
+    await publish({
+      assetDirectory: directory,
+      client,
+      wait: async (milliseconds) => {
+        waits.push(milliseconds)
+      },
+    })
+    assert.deepEqual(waits, [250, 250])
+    assert.equal(client.release?.immutable, true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('release discovery selects an exact tag across paginated list results', () => {
+  const release = { tag_name: RELEASE_TAG, draft: true }
+  assert.equal(selectReleaseByTag([[{ tag_name: '0.0.9' }]], RELEASE_TAG), undefined)
+  assert.equal(
+    selectReleaseByTag([[{ tag_name: '0.0.9' }], [release, { tag_name: '0.1.1' }]], RELEASE_TAG),
+    release,
+  )
+})
+
+test('duplicate release discovery fails before create or upload', async () => {
+  const directory = await createAssetFixture()
+  try {
+    const release = { tag_name: RELEASE_TAG, draft: true }
+    const client = new FakeReleaseClient(RELEASE_COMMIT, undefined)
+    client.getRelease = async () => {
+      client.operations.push('get-release')
+      return selectReleaseByTag([[release], [release]], RELEASE_TAG)
+    }
+    await assert.rejects(
+      () => publish({ assetDirectory: directory, client }),
+      /multiple matching releases/,
+    )
+    assert.deepEqual(client.operations, ['check-immutable-releases', 'resolve-tag', 'get-release'])
+    assert.deepEqual(client.uploads, [])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('release discovery rejects malformed list results', () => {
+  const release = { tag_name: RELEASE_TAG, draft: true }
+  assert.throws(() => selectReleaseByTag([release], RELEASE_TAG), /page must be an array/)
+  assert.throws(() => selectReleaseByTag([[null]], RELEASE_TAG), /entry must be an object/)
 })
 
 test('release publishing fails before mutation when immutable releases are disabled', async () => {

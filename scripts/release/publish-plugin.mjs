@@ -18,6 +18,8 @@ const WORKER_RELEASE_ASSETS = ['build-lock.json', 'worker-release.json']
 const CHECKSUMS_FILE = 'SHA256SUMS'
 const RUNTIME_CANDIDATE_DIST_TAG = 'release-candidate'
 const RUNTIME_PROMOTION_DIST_TAGS = ['stable', 'latest']
+const RELEASE_VISIBILITY_ATTEMPTS = 5
+const RELEASE_VISIBILITY_DELAY_MS = 250
 const ALLOWED_ASSETS = new Set([
   ...REQUIRED_ASSETS,
   ...OPTIONAL_ASSETS,
@@ -313,6 +315,35 @@ function isNotFound(error) {
   return error instanceof GhCommandError && /\bHTTP 404\b/.test(error.stderr)
 }
 
+function flattenReleasePages(source) {
+  if (!Array.isArray(source)) {
+    throw new Error('GitHub releases response must be an array of pages')
+  }
+  const releases = []
+  for (const page of source) {
+    if (!Array.isArray(page)) {
+      throw new Error('GitHub releases page must be an array')
+    }
+    for (const release of page) {
+      if (release === null || typeof release !== 'object' || Array.isArray(release)) {
+        throw new Error('GitHub Release entry must be an object')
+      }
+      requireString(release.tag_name, 'GitHub Release tag_name')
+      releases.push(release)
+    }
+  }
+  return releases
+}
+
+export function selectReleaseByTag(source, tag) {
+  const releaseTag = requireString(tag, 'tag')
+  const matches = flattenReleasePages(source).filter((release) => release.tag_name === releaseTag)
+  if (matches.length > 1) {
+    throw new Error(`GitHub Release ${releaseTag} has multiple matching releases`)
+  }
+  return matches[0]
+}
+
 export function createGhReleaseClient(repository, immutableReleaseToken) {
   const repo = requireString(repository, 'repository')
   const adminToken = requireString(immutableReleaseToken, 'immutableReleaseToken')
@@ -371,7 +402,8 @@ export function createGhReleaseClient(repository, immutableReleaseToken) {
         return await runGhJson(['api', `repos/${repo}/releases/tags/${tag}`])
       } catch (error) {
         if (isNotFound(error)) {
-          return undefined
+          const pages = await runGhJson(['api', '--paginate', '--slurp', `repos/${repo}/releases`])
+          return selectReleaseByTag(pages, tag)
         }
         throw error
       }
@@ -422,6 +454,21 @@ export function createGhReleaseClient(repository, immutableReleaseToken) {
       await runGh(['release', 'upload', tag, path, '--repo', repo])
     },
   }
+}
+
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
+async function getReleaseAfterCreation(client, tag, wait) {
+  for (let attempt = 0; attempt < RELEASE_VISIBILITY_ATTEMPTS; attempt += 1) {
+    const release = await client.getRelease(tag)
+    if (release !== undefined) {
+      return release
+    }
+    if (attempt + 1 < RELEASE_VISIBILITY_ATTEMPTS) {
+      await wait(RELEASE_VISIBILITY_DELAY_MS)
+    }
+  }
+  throw new Error(`GitHub Release ${tag} was not visible after creation`)
 }
 
 async function loadLocalAssets(assetDirectory, requireWorkerAssets, requireBundleTool) {
@@ -607,15 +654,13 @@ export async function publishPluginRelease(options) {
     requireWorkerAssets,
     requireBundleTool,
   )
+  const wait = options.wait ?? sleep
   let release = await client.getRelease(tag)
   let created = false
   if (release === undefined) {
     await client.createRelease(tag, expectedCommit)
     created = true
-    release = await client.getRelease(tag)
-    if (release === undefined) {
-      throw new Error(`GitHub Release ${tag} was not visible after creation`)
-    }
+    release = await getReleaseAfterCreation(client, tag, wait)
   }
 
   const releaseState = validateRelease(release, tag)
