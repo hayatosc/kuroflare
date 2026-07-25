@@ -106,10 +106,10 @@ runtimeは製品バージョン、Git commit、protocol version、最小対応Pl
 
 ### Cloudflareデプロイテンプレート
 
-Cloudflareデプロイテンプレートは、このモノレポではなく外部の
+The external
 [`hayatosc/kuroflare-cloudflare-templete`](https://github.com/hayatosc/kuroflare-cloudflare-templete)
-リポジトリが排他的に所有する。このURLは予定する正規リモートを示すものであり、
-リモートの作成・pushが完了済みであることは意味しない。
+repository exclusively owns the Cloudflare deployment template. The canonical
+template is published at commit `0297374467e797f5690ca36ab8ee2d99ce270153`.
 
 Deploy Buttonはこの外部リポジトリを参照し、Cloudflareは利用者側へ
 テンプレートだけをrepository rootとして複製する。
@@ -660,7 +660,9 @@ Phase 7の段階配信ツールも実装済みである。`scripts/release/worke
 
 公開GitHub repositoryは`https://github.com/hayatosc/kuroflare`に作成済みであり、local repositoryの`origin`もこのrepositoryを参照する。
 
-The npm registry now contains the bootstrap `@kuroflare/worker-runtime@0.0.0` under the `bootstrap` tag (with npm's mandatory `latest` tag); the intended `0.1.0` release remains unpublished.
+The npm registry contains `@kuroflare/worker-runtime@0.1.0` under the
+`release-candidate`, `stable`, and `latest` tags. The bootstrap `0.0.0` package
+remains available under the `bootstrap` tag.
 
 Repository automation cannot complete or attest the checklist below. Do not present
 the Deploy Button as a supported installation path and do not advance either channel
@@ -685,7 +687,7 @@ exact release version:
       store a short-lived package-scoped token as `NPM_DIST_TAG_TOKEN`
       for the final `stable` and `latest` dist-tag promotion; keep Publishing access compatible
       with granular tokens that bypass 2FA.
-- [ ] **First release:** publish the intended `x.y.z`; verify npm provenance and
+- [x] **First release:** publish `0.1.0`; verify npm provenance and
       integrity, GitHub Release assets and checksums, version alignment, and immutable
       release state.
 - [ ] **Cloudflare:** configure the production account, R2 lifecycle policy, required

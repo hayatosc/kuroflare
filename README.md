@@ -13,7 +13,7 @@ The repository contains:
 
 ## Release status
 
-Kuroflare is preparing its first public release. The automated GitHub Release
+Kuroflare has published its first public release. The automated GitHub Release
 pipeline produces the Obsidian assets required by BRAT and the Community Plugin
 directory, the pinned Worker runtime, and immutable deployment metadata. The
 Cloudflare deployment template is maintained outside this monorepo in the
@@ -21,8 +21,8 @@ intended canonical repository,
 [`hayatosc/kuroflare-cloudflare-templete`](https://github.com/hayatosc/kuroflare-cloudflare-templete).
 Its public repository, Deploy Button target, local extraction, and Deploy Hook
 based Worker updater are implemented, but the template is not a supported live
-installation path until the npm trusted publisher, release environment, and
-first release are configured.
+installation path until the production Cloudflare and real-device validation
+gates are complete.
 Repository automation and historical test runs do not satisfy the
 account-configuration, production Cloudflare, Windows, or real multi-device
 gates. See the exact
