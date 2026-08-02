@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "channel": "beta",
   "productVersion": "0.1.0",
-  "rolloutPercentage": 0,
+  "rolloutPercentage": 1,
   "blockedSourceVersions": [],
-  "paused": true,
-  "updatedAt": "2026-07-21T00:00:00.000Z"
+  "paused": false,
+  "updatedAt": "2026-08-02T16:13:23.967Z"
 }
