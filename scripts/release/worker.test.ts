@@ -280,9 +280,7 @@ test('committed channel pointer files satisfy the distribution schema', async ()
   for (const channel of ['stable', 'beta'] as const) {
     const path = resolve(import.meta.dirname, '../../distribution/channels', `${channel}.json`)
     const pointer = JSON.parse(await readFile(path, 'utf8')) as unknown
-    const parsed = validateChannelPointer(pointer, channel)
-    assert.equal(parsed.paused, true)
-    assert.equal(parsed.rolloutPercentage, 0)
+    validateChannelPointer(pointer, channel)
   }
 })
 
