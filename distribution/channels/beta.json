@@ -4,6 +4,6 @@
   "productVersion": "0.1.0",
   "rolloutPercentage": 1,
   "blockedSourceVersions": [],
-  "paused": false,
-  "updatedAt": "2026-08-02T16:13:23.967Z"
+  "paused": true,
+  "updatedAt": "2026-08-02T16:44:44.140Z"
 }
