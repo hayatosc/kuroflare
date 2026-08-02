@@ -4,9 +4,8 @@ This document explains how to deploy the Kuroflare Worker to Cloudflare and
 connect the Obsidian plugin to it today. The independent
 [`hayatosc/kuroflare-cloudflare-templete`](https://github.com/hayatosc/kuroflare-cloudflare-templete)
 repository owns the public Cloudflare deployment template and consumes the stable
-contract defined here. Its GitHub remote and Deploy Button remain human-owned
-release gates; this link identifies the intended canonical location, not a claim
-that the remote is already available.
+contract defined here. The repository is public, and its Deploy Button points to
+that canonical location.
 
 ## 1. Overview
 
@@ -33,6 +32,12 @@ best-effort scheduling signals, not a hard recovery-point bound.
 For personal use, all of this is deployed as a single Worker + one Durable
 Object namespace + one R2 bucket, driven by `wrangler` from
 `packages/worker`.
+
+The production deployment named `yakugakunotes` was deployed from the canonical
+template and verified on Cloudflare. Its production URL responds, the R2 bucket,
+required secrets, Workers Builds, and the one-day incomplete-multipart lifecycle
+rule are configured. The direct Deploy Hook path was also exercised; the
+scheduled automatic-update path still requires a newer product version.
 
 ## 2. Deployment contract
 
@@ -255,12 +260,17 @@ plugin's settings tab, and follow §4 to connect it to your deployed Worker.
 
 ## 6. Operational caveats
 
-- **Production Cloudflare deploy is so-far unverified.** The project's e2e
-  suites exercise the Worker against `wrangler dev`/miniflare and
-  `@cloudflare/vitest-pool-workers` (real `workerd`), not an actual deployed
-  Cloudflare account. Treat the first real deploy as a trial: watch logs
-  (`wrangler tail`) and confirm sync end-to-end before trusting it with real
-  notes.
+- **Production Cloudflare deployment is verified, but scheduled updates are not.**
+  Worker `yakugakunotes` was deployed from the canonical template and its
+  production URL responds. The R2 bucket, required secrets, Workers Builds,
+  `DEPLOY_HOOK_URL`, and the one-day incomplete-multipart lifecycle rule are
+  configured. This validates the template and deployment path; it does not
+  verify `UpdateCoordinator` automatically updating to a newer product version.
+- **Direct Deploy Hook test (2026-08-03).** A direct POST to the deployed hook
+  produced Cloudflare Worker Version 9 and deployed it at 100%. The public
+  `/version` response changed to that version, and all required bindings and
+  secrets remained present. The test did not advance the product version: the
+  current Worker and both channel pointers are still `0.1.0`.
 - **Large attachments use multipart upload, but it's untested by real
   traffic.** Blobs at or above `BLOB_MULTIPART_THRESHOLD_BYTES` (16 MiB,
   `packages/worker/src/runtime/constants.ts`) go through the multipart
@@ -343,6 +353,17 @@ and issues a Deploy Hook only when eligible (see
 [distribution-pipeline.md](plans/distribution-pipeline.md)). Promotion **only edits a
 pointer** — it never rebuilds or republishes a release, because the immutable release
 manifest already fixes the runtime bundle.
+
+### Current channel state (2026-08-03)
+
+Both `stable.json` and `beta.json` point to product version `0.1.0` with
+`rolloutPercentage: 0` and `paused: true`. Beta was temporarily resumed at one
+percent for the Cloudflare test and is paused again; stable remains paused. The
+[beta pause workflow run](https://github.com/hayatosc/kuroflare/actions/runs/30761103196)
+records that stop. A historical GitHub release-visibility race was fixed after
+the affected runs and is not a current blocker. Branch protection is intentionally
+skipped and is not a pending release task. The Deploy Hook test evidence is in
+Cloudflare; the linked GitHub run records only the beta pause.
 
 `rolloutPercentage` is the share of installations that _newly_ issue a Deploy Hook; it is
 not a hard cap on deployed Workers, because a build queued before a pointer change can
@@ -434,4 +455,8 @@ The Worker's update permission is limited to its `DEPLOY_HOOK_URL` secret. If th
 The separate deployment repository is no longer future work. Its local
 extraction owns the template, `wrangler` configuration, bootstrap, tests, and CI;
 publishing its GitHub remote and validating the first Deploy Button deployment
-remain human-owned release gates.
+are complete. Remaining human-only release gates are Windows Obsidian BRAT
+install/update, two physical-device concurrent editing/awareness/offline/
+binary/reconnect validation, a full scheduled update against a newer canary
+version, production operations drills, and staged 1/10/50/100 promotion
+observations.

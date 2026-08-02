@@ -5,15 +5,19 @@
 設計レビュー（2026-07-03）で見つかった項目は spec 本文へ反映済みで、記録は git 履歴にある。
 The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-review.md](spec/design-review.md).
 
-## Current status and release gates (2026-07-23)
+## Current status and release gates (2026-08-03)
 
 - 2026-07-20: 実 Obsidian e2e が 07-19〜20 のリファクタ由来の実機限定退行 2 件を検出し修正（`hono/client` が plugin バンドルから漏れてロード失敗 → tsdown `alwaysBundle` に追加、冷えた vault では plugin コピー後に manifest 再スキャンが走らず `plugin:enable` 失敗 → smoke に `loadManifests()` を追加）。また per-file YDoc の vaultId スコープ化（fd25524）以降、setup 未完了ではプラグインの編集パイプラインが構造的に起動しないため、MVP-0/MVP-2 smoke を worker `dev:local` + setup exchange 前提に再定義し（`scripts/e2e-worker-setup.ts` に共通化、worker 未起動は fail-fast、vault 排他ロック付き）、[client.md](spec/client.md) Phase 0 の記述を実態（setup 前は安全に不活性、setup 後はオフライン編集を outbox が継続）に合わせて明確化。MVP-0/MVP-1/MVP-2 いずれも実機で green を再確認。あわせて `host/plugin.ts` を 1782→1032 行に分割（snapshot / materialize / meta-migration を抽出、挙動不変）、worker 構造化ログ next tier を実装。
 
-- The most recent recorded repository evidence predates the current release-readiness
-  changes. Historical passing runs are useful regression evidence, but their test
-  counts are not a release attestation. The exact release commit must rerun the full
-  format, lint, typecheck, test, build, distribution-contract, and artifact gates;
-  record that run in release automation rather than maintaining a hand-count here.
+- Kuroflare `0.1.0` is an immutable release at commit/tag
+  `7593cbc21f6bb6c5df207b6f8f433a16d1fdc76d`. Release assets and checksums are
+  complete. A historical GitHub release-visibility race was fixed after the
+  affected red runs; those runs are not current release blockers.
+- `@kuroflare/worker-runtime@0.1.0` is published with provenance and the
+  `stable`, `latest`, and `release-candidate` dist-tags.
+- The canonical Cloudflare template is public at
+  [`hayatosc/kuroflare-cloudflare-templete`](https://github.com/hayatosc/kuroflare-cloudflare-templete),
+  and the Deploy Button points to that repository.
 - Worker SQLite e2e coverage includes real-workerd scenarios for quarantine discard
   (confirm/execute, audit trail, double-discard rejection),
   `GET /admin/retention` cursor pagination across page boundaries, snapshot rollback
@@ -27,7 +31,15 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
   same-paragraph convergence, meta YDoc broadcast plus late join, sync-request
   reconstruction, R2 checkpoint, and DO eviction → op-log cold start.
 - **Real Linux Obsidian + miniflare `:app` E2E passed on 2026-07-14** after starting `worker dev:local` in a separate terminal. This resolves the previously recorded active-file first-full-sync content-loss regression and returns MVP-1 to green.
-- Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are implemented. DR-001 through DR-012 are closed; the design-review gate is complete. Distribution remains blocked by the repository gate for the exact release commit and the human-owned gates below.
+- Production composition/startup, durable outbox worker, authentication refresh/revoke lifecycle wiring, and the trial-readiness baseline are implemented. DR-001 through DR-012 are closed; the design-review gate and the exact `0.1.0` repository release gate are complete. Remaining release work is human-only validation listed below.
+- The real Cloudflare Worker `yakugakunotes` is deployed from the canonical
+  template. Its production URL works, R2 and required secrets are configured,
+  Workers Builds is connected, and the R2 incomplete-multipart lifecycle rule
+  aborts uploads after one day. `DEPLOY_HOOK_URL` is deployed and a direct POST
+  produced Worker Version 9 at 100%; `/version` changed and required bindings
+  and secrets remained intact. This did not verify `UpdateCoordinator`'s
+  scheduled update against a newer product version; the Worker and both channel
+  pointers remain at `0.1.0`.
 - DR-008 (snapshot health and rollback) is closed. Immutable R2 bytes are now admitted only by append-only SQLite evidence, and the authenticated health API and Obsidian operator panel expose server-computed action authority.
 - DR-001 (durability contract) is closed. Recovery authority is the latest authoritative, verified, healthy R2 snapshot plus later SQLite op-log rows; normal runtime eviction is recoverable, while complete SQLite loss is a disaster/manual-recovery case. The Worker disaster test and snapshot-health operator note prove that R2 bytes without pointer/health evidence fail closed. The nominal 128-operation / 30-second checkpoint triggers remain best-effort signals, not an RPO bound.
 - DR-005 (metadata merge granularity) and DR-006 (delete-versus-edit causality) are closed. Schema version 2 stores each file ID in grouped child maps (`identity`, `location`, `content`, `deletion`), preserves concurrent rename/content and rename/delete changes, and rejects immutable-identity changes. Deleted v2 entries carry a typed `deletedContentVersion` witness (text YDoc state vector + canonical content hash, or binary manifest hash). Reconciliation is clock-skew invariant, restores unseen edits, keeps deletes whose base content is unchanged, and defers missing/incomplete evidence without materializing deletion. Legacy migration is an authoritative snapshot-import CAS after Hello admission; stale retries rebuild from the latest v1 snapshot, while an already-v2 remote is adopted only when all local entries are represented unchanged. Otherwise local metadata is retained and downgraded to read-only; legacy outbox rows are paused with an actionable migration reason. Legacy deleted tombstones remain read-only/manual recovery.
@@ -83,12 +95,18 @@ The 2026-07-10 cross-cutting audit and its release gates are tracked in [design-
 
 ### Release completion boundary
 
-1. Rerun and preserve automated evidence for the exact release commit, including the
-   real Obsidian + miniflare `:app` lane and all distribution contracts.
-2. Complete the human-owned checklist in
-   [distribution-pipeline.md](plans/distribution-pipeline.md#human-owned-release-gates):
-   GitHub/npm/Cloudflare account configuration, Windows and real multi-device
-   validation, production operations, and staged promotion.
+The exact `0.1.0` release commit has completed the automated repository gate,
+including the immutable GitHub release assets and checksums, npm provenance, and
+the published runtime dist-tags. The canonical template and its Deploy Button
+are public, and the first real Cloudflare deployment is verified.
+
+Remaining human-owned gates are tracked in
+[distribution-pipeline.md](plans/distribution-pipeline.md#human-owned-release-gates):
+Windows Obsidian BRAT install/update; two physical-device concurrent editing,
+awareness, offline, binary, and reconnect validation; a scheduled automatic
+update against a newer canary version; production operations drills; and staged
+1/10/50/100 promotion observations. Branch protection is intentionally skipped,
+not a release task.
 
 Automated evidence must not be used to mark a physical-device or production-account
 gate complete. Conversely, a manual smoke test does not replace deterministic
@@ -171,10 +189,11 @@ repository checks.
   [distribution-pipeline.md](plans/distribution-pipeline.md#persistent-data-migration-and-backward-compatibility-policy).
   Supported recovery is limited to local-store export/rebuild and quarantine
   inspect/discard/force-apply; the generic force-local/force-remote/rebuild admin APIs
-  remain removed. Release completion still requires the exact repository gate and
-  the human-owned checklist; Setup URI confirmation, Obsidian deep-link handling,
-  and log secret redaction are implemented.
-- 段階配信（distribution-pipeline.md Phase 7）のツール一式を実装済み: `scripts/release/worker.ts` の pointer 操作コマンド（`pointer-pause` / `pointer-promote` / `pointer-rollout` / `pointer-block` / `pointer-unblock`、いずれも成果物を再ビルドせず channel pointer だけを検証付きで変更 — allowed stage {1,10,50,100}、stage スキップ/後退の禁止、旧版への promote 禁止）、`workflow_dispatch` 駆動の昇格 workflow（`.github/workflows/release-worker-promote.yml`、pointer を default branch に commit）、deployment.md §7 の runbook（stable 昇格手順・緊急停止・Deploy Hook rotation・Cloudflare deployment history からの code rollback）。pure decision は `scripts/release/worker.test.ts` でカバー。実 beta→stable 自動昇格は公開 repo / npm / canary の外部セットアップが揃うまで保留。
+  remain removed. The `0.1.0` repository release gate and first production
+  deployment are complete; Setup URI confirmation, Obsidian deep-link handling,
+  and log secret redaction are implemented. Human-only device, scheduled-update,
+  operations, and staged-promotion gates remain open.
+- 段階配信（distribution-pipeline.md Phase 7）のツール一式を実装済み: `scripts/release/worker.ts` の pointer 操作コマンド（`pointer-pause` / `pointer-promote` / `pointer-rollout` / `pointer-block` / `pointer-unblock`、いずれも成果物を再ビルドせず channel pointer だけを検証付きで変更 — allowed stage {1,10,50,100}、stage スキップ/後退の禁止、旧版への promote 禁止）、`workflow_dispatch` 駆動の昇格 workflow（`.github/workflows/release-worker-promote.yml`、pointer を default branch に commit）、deployment.md §7 の runbook（stable 昇格手順・緊急停止・Deploy Hook rotation・Cloudflare deployment history からの code rollback）。pure decision は `scripts/release/worker.test.ts` でカバー。現在の stable/beta pointer はともに `0.1.0`、paused at 0%。beta はテスト時に一時 1% へ再開したが、現在は停止済み。自動スケジュール更新と実 1/10/50/100 昇格観測は未検証。
 - Worker/DO の構造化ログ（[operations.md](spec/operations.md) §5 の最小セット: checkpoint 開始/完了/失敗、quarantine 発生、auth reject reason）は `logEvent` 経由で実装済み（quarantine イベントは `quarantineId` 付き）。next tier も実装済み (2026-07-20): `connection-open`/`connection-close`（接続数付き）、`op-append-latency`、`checkpoint-duration`、`doc-restore-source`（`r2-snapshot` / `op-log-replay` / `empty` の別）、`sync-duplicate-ignored`。既存イベントのスキーマは無変更（追加のみ）。
 - `BlobHeadEntrySchema` の size 必須化（[sync-model.md](spec/sync-model.md) §5 の「size 不明なら復活させない」）は schema 側でも強制済み（`found === (size !== undefined)` の双方向チェック、worker の head 応答計画も size 欠如を reject）。
 

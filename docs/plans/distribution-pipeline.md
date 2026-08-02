@@ -1,4 +1,9 @@
-# Kuroflare 配布パイプライン実装計画
+# Kuroflare 配布パイプライン実装計画 (historical plan; status updated 2026-08-03)
+
+> This document records the original distribution-pipeline design. The `0.1.0`
+> immutable release, public template split, and first production Cloudflare
+> deployment are complete. The checklist in **Human-owned release gates** is the
+> current status; design sections below remain historical contract context.
 
 ## 目的
 
@@ -109,7 +114,9 @@ runtimeは製品バージョン、Git commit、protocol version、最小対応Pl
 The external
 [`hayatosc/kuroflare-cloudflare-templete`](https://github.com/hayatosc/kuroflare-cloudflare-templete)
 repository exclusively owns the Cloudflare deployment template. The canonical
-template is published at commit `0297374467e797f5690ca36ab8ee2d99ce270153`.
+template is public and its Deploy Button points to that repository. The
+extraction snapshot is published at commit
+`0297374467e797f5690ca36ab8ee2d99ce270153`.
 
 Deploy Buttonはこの外部リポジトリを参照し、Cloudflareは利用者側へ
 テンプレートだけをrepository rootとして複製する。
@@ -626,7 +633,10 @@ bootstrapはnpm registryのpackage integrityとrelease manifestのbundle hashを
 
 The current workflow accepts only stable `x.y.z` tags, publishes an immutable GitHub Release, and then advances both npm `stable` and `latest` dist-tags.
 
-コミット済みの`stable.json`と`beta.json`は、初回releaseと実Cloudflare検証が完了するまで`paused=true`、`rolloutPercentage=0`に保つ。
+For `0.1.0`, the immutable release and first real Cloudflare validation are
+complete. Both committed pointers currently remain `paused=true` with
+`rolloutPercentage=0`; beta was briefly resumed at 1% for testing and paused
+again, while stable remained paused.
 
 mainへのmerge後にrelease candidateを`beta`チャネルへ公開する処理はPhase 7で追加する。
 
@@ -652,22 +662,25 @@ stable成果物は公開後に差し替えない。
 
 ## Human-owned release gates
 
-モノレポ内のversion contract、公開Worker runtime、immutable release、channel pointer、UpdateCoordinator、protocol contract、release workflowは実装済みである。固定bootstrapとDeploy Button用テンプレートは、外部`kuroflare-cloudflare-templete`ローカルリポジトリへ抽出済みである。
+モノレポ内のversion contract、公開Worker runtime、immutable release、channel pointer、UpdateCoordinator、protocol contract、release workflowは実装済みである。固定bootstrapとDeploy Button用テンプレートは、公開された外部`kuroflare-cloudflare-templete`リポジトリへ抽出済みである。
 
-Phase 7の段階配信ツールも実装済みである。`scripts/release/worker.ts`のchannel pointer操作コマンド（pause / promote / rollout / block / unblock、成果物を再ビルドせずpointerだけを検証付きで変更）、`workflow_dispatch`駆動の昇格workflow（`.github/workflows/release-worker-promote.yml`）、`docs/deployment.md`§7の運用手順（stable昇格・緊急停止・Deploy Hook rotation・code rollback）を含む。ただし実際のbeta→stable自動昇格は、下記の公開repository・npm公開・canary検証が揃うまで有効化しない。
+Phase 7の段階配信ツールも実装済みである。`scripts/release/worker.ts`のchannel pointer操作コマンド（pause / promote / rollout / block / unblock、成果物を再ビルドせずpointerだけを検証付きで変更）、`workflow_dispatch`駆動の昇格workflow（`.github/workflows/release-worker-promote.yml`）、`docs/deployment.md`§7の運用手順（stable昇格・緊急停止・Deploy Hook rotation・code rollback）を含む。ただし実際のbeta→stable自動昇格と段階観測は、残る人手のcanary・デバイス・運用検証が揃うまで有効化しない。
 
 独自deployer packageとdeploy CLIは存在せず、今後も追加しない。
 
 公開GitHub repositoryは`https://github.com/hayatosc/kuroflare`に作成済みであり、local repositoryの`origin`もこのrepositoryを参照する。
 
-The npm registry contains `@kuroflare/worker-runtime@0.1.0` under the
+The immutable `0.1.0` release is tagged at commit
+`7593cbc21f6bb6c5df207b6f8f433a16d1fdc76d`; its release assets and checksums
+are complete. The npm registry contains `@kuroflare/worker-runtime@0.1.0` under the
 `release-candidate`, `stable`, and `latest` tags. The bootstrap `0.0.0` package
 remains available under the `bootstrap` tag.
 
-Repository automation cannot complete or attest the checklist below. Do not present
-the Deploy Button as a supported installation path and do not advance either channel
-from `paused=true`, `rolloutPercentage=0` until every item is recorded against the
-exact release version:
+Repository automation cannot complete or attest the remaining physical/manual
+checks below. The Deploy Button is a supported installation path, and the
+external setup for `yakugakunotes` is complete. Do not advance either channel
+from `paused=true`, `rolloutPercentage=0` until each open item is recorded against
+the exact release version:
 
 - [x] **License:** MIT license files, package metadata, release notices, and
       first-party credit fields consistently identify `hayatosc`.
@@ -688,15 +701,23 @@ exact release version:
       for the final `stable` and `latest` dist-tag promotion; keep Publishing access compatible
       with granular tokens that bypass 2FA.
 - [x] **First release:** publish `0.1.0`; verify npm provenance and
-      integrity, GitHub Release assets and checksums, version alignment, and immutable
-      release state.
-- [ ] **Cloudflare:** configure the production account, R2 lifecycle policy, required
-      secrets, dedicated canary, Workers Builds, and Deploy Hook. Deploy from the Deploy
-      Button and verify the pinned runtime plus one automatic update on real Cloudflare.
-- [ ] **Windows and real devices:** install and update the Plugin through BRAT on
-      Windows Obsidian; verify initial setup, two physical-device concurrent editing and
-      awareness, offline convergence, binary transfer, Plugin update, and reconnection
-      after a Worker update. Use backed-up disposable vaults.
+      integrity, GitHub Release assets and checksums, version alignment, immutable
+      release state, and commit/tag `7593cbc21f6bb6c5df207b6f8f433a16d1fdc76d`.
+- [x] **Cloudflare external setup:** configure the production account, one-day R2
+      incomplete-multipart lifecycle policy, required secrets, Workers Builds,
+      and Deploy Hook. Deploy `yakugakunotes` from the canonical Deploy Button
+      template and verify the production URL.
+- [x] **Direct Deploy Hook test:** POST the deployed hook; Cloudflare produced
+      Worker Version 9 at 100%, public `/version` changed, and required bindings
+      and secrets remained present. The evidence is in Cloudflare rather than a
+      GitHub Actions run.
+- [ ] **Scheduled update:** verify `UpdateCoordinator` automatically updates to a
+      newer canary product version. The current Worker and both pointers remain
+      at `0.1.0`; the direct hook test does not close this item.
+- [ ] **Windows:** install and update the Plugin through BRAT on Windows Obsidian.
+- [ ] **Real devices:** verify two physical-device concurrent editing and
+      awareness, offline convergence, binary transfer, Plugin update, and
+      reconnection after a Worker update. Use backed-up disposable vaults.
 - [ ] **Production operations:** exercise quarantine inspect/discard/force-apply,
       local-store export/rebuild, alert observation, Deploy Hook rotation, emergency
       pause, code rollback, and the documented migration boundary without using a
@@ -704,6 +725,10 @@ exact release version:
 - [ ] **Promotion:** point the channel at the validated immutable version while it is
       paused at zero percent, then perform the documented 1/10/50/100 percent staged
       promotion with observation and build-drain records.
+
+Branch protection is intentionally skipped and is not a release task. Historical
+GitHub release-visibility red runs are not current blockers; that race was fixed
+after those runs.
 
 The remaining gates require account ownership, external configuration, or
 physical/manual environments. They must remain human-owned even when repository
